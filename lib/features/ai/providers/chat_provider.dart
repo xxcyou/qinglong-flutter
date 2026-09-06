@@ -787,6 +787,37 @@ class ChatNotifier extends Notifier<ChatState> {
     return trimmed;
   }
 
+  /// 生成“当前上下文内容”的可读预览，供上下文面板展开查看。
+  ///
+  /// 用的是真正会发给模型的同一份 history（含系统提示、用户、AI、
+  /// 工具结果明细），不是界面上的气泡列表——所以展开后能看到 AI
+  /// 到底记住了哪些东西。
+  String contextPreview({int maxChars = 8000}) {
+    final history = _history();
+    final out = <String>[];
+    var used = 0;
+    for (final m in history) {
+      final role = switch (m.role) {
+        'system' => '【系统】',
+        'user' => '【用户】',
+        'assistant' => '【AI】',
+        'tool' => '【工具】',
+        _ => '[${m.role}]',
+      };
+      final content = m.content.replaceAll('\n', ' ⏎ ');
+      final snippet =
+          content.length > 180 ? '${content.substring(0, 180)}…' : content;
+      final line = '$role（${content.length} 字）$snippet';
+      if (used + line.length > maxChars) {
+        out.add('…（预览截断，只展示前 $maxChars 字符）');
+        break;
+      }
+      used += line.length;
+      out.add(line);
+    }
+    return out.join('\n');
+  }
+
   /// 发送。AI 正在跑的时候不再丢弃输入，而是进排队区。
   Future<void> send(String text) async {
     final value = text.trim();

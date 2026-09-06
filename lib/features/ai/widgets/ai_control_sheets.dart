@@ -156,107 +156,212 @@ class AiControlSheets {
 
   /// 上下文占用 + 当前模型上限。
   static void showContext(BuildContext context, WidgetRef outerRef) {
-    final used = estimateUsedTokens(outerRef.read(chatProvider));
-    final limitController = TextEditingController(
-      text: outerRef.read(chatProvider).contextLimit.toString(),
-    );
     showModalBottomSheet<void>(
       context: context,
-      builder: (context) => Consumer(
-        builder: (context, ref, _) {
-          final state = ref.watch(chatProvider);
-          final notifier = ref.read(chatProvider.notifier);
-          final limit = state.contextLimit;
-          final percent = limit <= 0 ? 0.0 : (used / limit).clamp(0.0, 1.0);
-          void save() {
-            final n = int.tryParse(limitController.text.trim());
-            if (n == null || n <= 0) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('请输入大于 0 的数字')),
-              );
-              return;
-            }
-            notifier.setModelContextLimit(
-              state.selectedModel.isEmpty ? 'default' : state.selectedModel,
-              n,
-            );
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('已保存：$n tokens')),
-            );
-          }
+      isScrollControlled: true,
+      builder: (context) => const _ContextSheet(),
+    );
+  }
+}
 
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
+/// 上下文面板：默认折叠，可展开看当前上下文里到底有什么。
+class _ContextSheet extends ConsumerStatefulWidget {
+  const _ContextSheet();
+
+  @override
+  ConsumerState<_ContextSheet> createState() => _ContextSheetState();
+}
+
+class _ContextSheetState extends ConsumerState<_ContextSheet> {
+  late final TextEditingController _limitController;
+  bool _expanded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _limitController = TextEditingController(
+      text: ref.read(chatProvider).contextLimit.toString(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _limitController.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final n = int.tryParse(_limitController.text.trim());
+    if (n == null || n <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请输入大于 0 的数字')),
+      );
+      return;
+    }
+    final state = ref.read(chatProvider);
+    ref.read(chatProvider.notifier).setModelContextLimit(
+          state.selectedModel.isEmpty ? 'default' : state.selectedModel,
+          n,
+        );
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('已保存：$n tokens')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(chatProvider);
+    final used = AiControlSheets.estimateUsedTokens(state);
+    final limit = state.contextLimit;
+    final percent = limit <= 0 ? 0.0 : (used / limit).clamp(0.0, 1.0);
+    final scheme = Theme.of(context).colorScheme;
+    // 用当前真正的 history 生成可读预览，确认上下文不是空壳。
+    final preview =
+        ref.read(chatProvider.notifier).contextPreview(maxChars: 8000);
+
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                SizedBox(
+                  width: 56,
+                  height: 56,
+                  child: Stack(
+                    alignment: Alignment.center,
                     children: [
-                      SizedBox(
-                        width: 56,
-                        height: 56,
-                        child: Stack(
-                          alignment: Alignment.center,
-                          children: [
-                            CircularProgressIndicator(
-                              value: percent,
-                              strokeWidth: 6,
-                            ),
-                            Text('${(percent * 100).round()}%'),
-                          ],
-                        ),
+                      CircularProgressIndicator(
+                        value: percent,
+                        strokeWidth: 6,
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          [
-                            '上下文占用 ${Formatter.tokens(used)} / '
-                                '${Formatter.tokens(limit)} tokens'
-                                '${state.lastPromptTokens > 0 ? '（服务端实测）' : '（估算）'}',
-                            '本会话累计 '
-                                '${Formatter.tokens(state.sessionTokens)} tokens、'
-                                '${state.sessionRequests} 次请求',
-                            if (state.lastTokens > 0)
-                              '上一次任务累计计费 '
-                                  '${Formatter.tokens(state.lastTokens)} tokens'
-                                  '（每轮都会重发历史，所以远大于上下文）',
-                            if (state.lastCacheHitTokens > 0)
-                              '其中命中提示词缓存 '
-                                  '${Formatter.tokens(state.lastCacheHitTokens)} tokens，'
-                                  '这部分按约 1/10 计价',
-                            '超过 ${(state.autoCompressThreshold * 100).round()}% 会自动压缩',
-                          ].join('\n'),
-                          style: const TextStyle(fontSize: 12.5, height: 1.4),
-                        ),
-                      ),
+                      Text('${(percent * 100).round()}%'),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: limitController,
-                    keyboardType: TextInputType.number,
-                    textInputAction: TextInputAction.done,
-                    decoration: const InputDecoration(
-                      labelText: '当前模型上下文上限（tokens）',
-                      border: OutlineInputBorder(),
-                    ),
-                    onSubmitted: (_) => save(),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    [
+                      '上下文占用 ${Formatter.tokens(used)} / '
+                          '${Formatter.tokens(limit)} tokens'
+                          '${state.lastPromptTokens > 0 ? '（服务端实测）' : '（估算）'}',
+                      '本会话累计 '
+                          '${Formatter.tokens(state.sessionTokens)} tokens、'
+                          '${state.sessionRequests} 次请求',
+                      if (state.lastTokens > 0)
+                        '上一次任务累计计费 '
+                            '${Formatter.tokens(state.lastTokens)} tokens'
+                            '（每轮都会重发历史，所以远大于上下文）',
+                      if (state.lastCacheHitTokens > 0)
+                        '其中命中提示词缓存 '
+                            '${Formatter.tokens(state.lastCacheHitTokens)} tokens，'
+                            '这部分按约 1/10 计价',
+                      '超过 ${(state.autoCompressThreshold * 100).round()}% 会自动压缩',
+                    ].join('\n'),
+                    style: const TextStyle(fontSize: 12.5, height: 1.4),
                   ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      onPressed: save,
-                      child: const Text('保存上下文上限'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            // 默认折叠：点一下才展开看上下文内容，避免每次弹窗都一大坨。
+            InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHighest.withValues(alpha: 0.35),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      _expanded ? Icons.expand_less : Icons.expand_more,
+                      size: 20,
+                      color: scheme.primary,
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 8),
+                    Text(
+                      _expanded ? '收起上下文内容' : '展开上下文内容',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: scheme.primary,
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      '${state.messages.length} 条会话消息',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-          );
-        },
+            if (_expanded) ...[
+              const SizedBox(height: 8),
+              Container(
+                height: 300,
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHigh.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: scheme.outlineVariant.withValues(alpha: 0.5),
+                  ),
+                ),
+                child: preview.isEmpty
+                    ? Center(
+                        child: Text(
+                          '当前还没有可预览的上下文',
+                          style: TextStyle(color: scheme.onSurfaceVariant),
+                        ),
+                      )
+                    : SingleChildScrollView(
+                        child: SelectableText(
+                          preview,
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            height: 1.45,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ),
+              ),
+            ],
+            const SizedBox(height: 16),
+            TextField(
+              controller: _limitController,
+              keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.done,
+              decoration: const InputDecoration(
+                labelText: '当前模型上下文上限（tokens）',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _save(),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: _save,
+                child: const Text('保存上下文上限'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
