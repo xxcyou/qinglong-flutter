@@ -1718,6 +1718,7 @@ class AgentLoop {
                 durationMs: elapsed,
                 ok: true,
                 turn: turnsUsed,
+                isWrite: isWrite,
               ),
             );
           } on TimeoutException {
@@ -1748,6 +1749,7 @@ class AgentLoop {
                 durationMs: DateTime.now().difference(startedAt).inMilliseconds,
                 ok: false,
                 turn: turnsUsed,
+                isWrite: isWrite,
               ),
             );
           } catch (e) {
@@ -1779,6 +1781,7 @@ class AgentLoop {
                 durationMs: DateTime.now().difference(startedAt).inMilliseconds,
                 ok: false,
                 turn: turnsUsed,
+                isWrite: isWrite,
               ),
             );
           }

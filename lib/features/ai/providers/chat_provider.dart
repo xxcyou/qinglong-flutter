@@ -2105,25 +2105,43 @@ class ChatNotifier extends Notifier<ChatState> {
         invoke: (args) async {
           final key = args['key']?.toString().trim() ?? '';
           if (key.isEmpty) return 'key 不能为空。';
-          for (final m in state.messages.reversed) {
-            for (final e in m.agentEvents.reversed) {
-              if (e.kind != AgentEventKind.toolEnd) continue;
-              if (_toolCacheKey(e) != key) continue;
-              final full = e.fullResult ?? e.result ?? '';
-              if (full.trim().isEmpty) return '这个 key 对应的结果为空。';
-              return '${e.toolName} 完整返回（${full.length} 字，来自本会话缓存）：\n$full';
+          // 完整事件序列：已落盘的历史 + 正在跑的 live（同一轮里先读后写再读缓存
+          // 这种场景，写事件还在 live 里，没进 messages）。
+          final events = <AgentEvent>[
+            for (final m in state.messages)
+              for (final e in m.agentEvents)
+                if (e.kind == AgentEventKind.toolEnd) e,
+            for (final e in state.liveAgentEvents)
+              if (e.kind == AgentEventKind.toolEnd) e,
+          ];
+          var found = -1;
+          for (var i = events.length - 1; i >= 0; i--) {
+            if (_toolCacheKey(events[i]) == key) {
+              found = i;
+              break;
             }
           }
-          final available = <String>{};
-          for (final m in state.messages) {
-            for (final e in m.agentEvents) {
-              if (e.kind != AgentEventKind.toolEnd) continue;
+          if (found < 0) {
+            final available = <String>{};
+            for (final e in events) {
               if ((e.fullResult ?? e.result ?? '').trim().isEmpty) continue;
               available.add(_toolCacheKey(e));
             }
+            return '没有找到 key=$key。\n当前会话可用缓存 key：\n'
+                '${available.isEmpty ? '（无）' : available.join('\n')}';
           }
-          return '没有找到 key=$key。\n当前会话可用缓存 key：\n'
-              '${available.isEmpty ? '（无）' : available.join('\n')}';
+          final e = events[found];
+          // 写操作之后缓存作废：比如 AI 先读脚本→改脚本→再读缓存，
+          // 必须让 AI 知道这份是旧的，去用原工具拿最新内容，不能卡在循环里。
+          for (var i = found + 1; i < events.length; i++) {
+            if (!events[i].isWrite) continue;
+            return '缓存已失效：${e.toolName} 的结果发生在 ${events[i].toolName}'
+                '（写操作）之后就不再可信。'
+                '请直接用原工具重新读取最新内容，不要使用这份旧缓存，也不要重复改写。';
+          }
+          final full = e.fullResult ?? e.result ?? '';
+          if (full.trim().isEmpty) return '这个 key 对应的结果为空。';
+          return '${e.toolName} 完整返回（${full.length} 字，来自本会话缓存）：\n$full';
         },
       ),
     ];

@@ -64,6 +64,7 @@ class AgentEvent {
     this.durationMs,
     this.ok = true,
     this.turn = 0,
+    this.isWrite = false,
   });
 
   final AgentEventKind kind;
@@ -83,6 +84,10 @@ class AgentEvent {
 
   final bool ok;
   final int turn;
+
+  /// 这次工具调用是不是写操作。会话缓存据此判断：写操作之后，
+  /// 之前的只读缓存一律失效，不能再让 AI 读到旧快照。
+  final bool isWrite;
 
   /// 人看的那份返回：有完整的就用完整的。
   String get displayResult =>
@@ -115,6 +120,7 @@ class AgentEvent {
         if (durationMs != null) 'durationMs': durationMs,
         'ok': ok,
         'turn': turn,
+        if (isWrite) 'isWrite': true,
       };
 
   factory AgentEvent.fromJson(Map<String, dynamic> json) {
@@ -134,6 +140,7 @@ class AgentEvent {
       durationMs: (json['durationMs'] as num?)?.toInt(),
       ok: json['ok'] != false,
       turn: (json['turn'] as num?)?.toInt() ?? 0,
+      isWrite: json['isWrite'] == true,
     );
   }
 }
