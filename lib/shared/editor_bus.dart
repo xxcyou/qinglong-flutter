@@ -313,7 +313,7 @@ class EditorBus extends ChangeNotifier {
       await _typeAt(handle, 0, next, pace);
       return '已重写${handle.kind.label}「${handle.title}」，'
           '现在 ${next.split('\n').length} 行、${next.length} 字符。';
-    });
+    }, focusOffset: 0);
   }
 
   /// 精确替换一段文本（就是 AI 最常用的"改这几行"）。
@@ -358,7 +358,7 @@ class EditorBus extends ChangeNotifier {
       }
       final line = _lineOf(handle.text, first);
       return '已在${handle.kind.label}「${handle.title}」第 $line 行附近替换 $count 处。';
-    });
+    }, focusOffset: first);
   }
 
   /// 按**行号**替换：把 [from]..[to] 这几行整体换成 [text]。
@@ -374,14 +374,12 @@ class EditorBus extends ChangeNotifier {
     TypingPace pace = const TypingPace(),
   }) async {
     _assertWritable(handle);
+    final lines = handle.text.split('\n');
+    final start = from.clamp(1, lines.length);
+    final end = to.clamp(start, lines.length);
+    final focusOffset = _lineStartOffset(handle.text, start);
     return _stroke(handle, () async {
-      final lines = handle.text.split('\n');
-      final start = from.clamp(1, lines.length);
-      final end = to.clamp(start, lines.length);
-      var offset = 0;
-      for (var i = 0; i < start - 1; i++) {
-        offset += lines[i].length + 1;
-      }
+      var offset = focusOffset;
       var tail = offset;
       for (var i = start - 1; i < end; i++) {
         tail += lines[i].length + (i == lines.length - 1 ? 0 : 1);
@@ -394,7 +392,7 @@ class EditorBus extends ChangeNotifier {
       return '已在${handle.kind.label}「${handle.title}」把第 $start'
           '${end == start ? '' : '-$end'} 行换成 '
           '${payload.split('\n').where((l) => l.isNotEmpty).length} 行新内容。';
-    });
+    }, focusOffset: focusOffset);
   }
 
   /// 在某一行前/后插入整段代码。[line] 从 1 开始；0 或负数表示插到最前面。
@@ -406,20 +404,17 @@ class EditorBus extends ChangeNotifier {
     TypingPace pace = const TypingPace(),
   }) async {
     _assertWritable(handle);
+    final lines = handle.text.split('\n');
+    final clamped = line.clamp(0, lines.length);
+    final target = after ? clamped : clamped - 1;
+    final focusOffset = _lineStartOffset(handle.text, target + 1);
     return _stroke(handle, () async {
-      final lines = handle.text.split('\n');
-      final clamped = line.clamp(0, lines.length);
-      var offset = 0;
-      final target = after ? clamped : clamped - 1;
-      for (var i = 0; i < target && i < lines.length; i++) {
-        offset += lines[i].length + 1;
-      }
-      if (offset > handle.text.length) offset = handle.text.length;
+      final offset = focusOffset.clamp(0, handle.text.length);
       final payload = text.endsWith('\n') ? text : '$text\n';
       await _typeAt(handle, offset, payload, pace);
       return '已在${handle.kind.label}「${handle.title}」第 ${target + 1} 行处插入 '
           '${payload.split('\n').length - 1} 行。';
-    });
+    }, focusOffset: focusOffset);
   }
 
   /// 删掉一段行（含首尾）。
@@ -430,14 +425,12 @@ class EditorBus extends ChangeNotifier {
     TypingPace pace = const TypingPace(),
   }) async {
     _assertWritable(handle);
+    final lines = handle.text.split('\n');
+    final start = from.clamp(1, lines.length);
+    final end = to.clamp(start, lines.length);
+    final focusOffset = _lineStartOffset(handle.text, start);
     return _stroke(handle, () async {
-      final lines = handle.text.split('\n');
-      final start = from.clamp(1, lines.length);
-      final end = to.clamp(start, lines.length);
-      var offset = 0;
-      for (var i = 0; i < start - 1; i++) {
-        offset += lines[i].length + 1;
-      }
+      final offset = focusOffset;
       var length = 0;
       for (var i = start - 1; i <= end - 1; i++) {
         length += lines[i].length + 1;
@@ -445,7 +438,7 @@ class EditorBus extends ChangeNotifier {
       final endOffset = (offset + length).clamp(0, handle.text.length);
       await _deleteRange(handle, offset, endOffset, pace);
       return '已删除${handle.kind.label}「${handle.title}」第 $start~$end 行。';
-    });
+    }, focusOffset: focusOffset);
   }
 
   /// 删掉一段指定文本。
@@ -463,7 +456,7 @@ class EditorBus extends ChangeNotifier {
     return _stroke(handle, () async {
       await _deleteRange(handle, index, index + snippet.length, pace);
       return '已删除 ${snippet.length} 个字符。';
-    });
+    }, focusOffset: index);
   }
 
   void _assertWritable(EditorHandle handle) {
@@ -493,11 +486,13 @@ class EditorBus extends ChangeNotifier {
   /// 一段动画有几十帧，用户得点几十次撤销才能回到原样。
   Future<String> _stroke(
     EditorHandle handle,
-    Future<String> Function() body,
-  ) {
+    Future<String> Function() body, {
+    int? focusOffset,
+  }) {
     return _guard(() async {
       final field = handle.fieldState;
-      field?.focus();
+      // 先定位到要改的位置，再开始敲：不要“改完才跳过去”。
+      field?.focus(offset: focusOffset);
       field?.beginBatch();
       try {
         return await body();
@@ -597,6 +592,20 @@ class EditorBus extends ChangeNotifier {
       if (text.codeUnitAt(i) == 10) line++;
     }
     return line;
+  }
+
+  /// 第 [line] 行（从 1 开始）的行首偏移。越界时落到文档尾部。
+  static int _lineStartOffset(String text, int line) {
+    var offset = 0;
+    var current = 1;
+    for (var i = 0; i < text.length; i++) {
+      if (current >= line) break;
+      if (text.codeUnitAt(i) == 10) {
+        current++;
+        offset = i + 1;
+      }
+    }
+    return offset.clamp(0, text.length);
   }
 }
 

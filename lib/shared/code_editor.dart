@@ -244,6 +244,14 @@ class CodeEditorFieldState extends State<CodeEditorField> {
     setState(() => _fontSize = next);
   }
 
+  /// 行号列宽度随字号和行数位数自适应，防止放大后数字被切掉一半。
+  double get _lineNumberWidth {
+    final lineCount = '\n'.allMatches(widget.controller.text).length + 1;
+    final digits = lineCount.toString().length;
+    final width = 16 + _fontSize * digits * 0.72;
+    return width.clamp(44.0, 160.0);
+  }
+
   bool get wrap => _wrap;
 
   /// 切换自动换行。
@@ -354,8 +362,12 @@ class CodeEditorFieldState extends State<CodeEditorField> {
       offset: selection.extentOffset.clamp(0, widget.controller.text.length),
     );
 
-    final scrollable = _findScrollable(context);
-    if (scrollable == null || !scrollable.position.hasContentDimensions) {
+    // 竖向 + 横向都要跟着光标走：AI 在长行中段打字时，
+    // 只滚竖向不滚横向，用户看到的就是"光标跟丢了"。
+    final vertical = _findScrollable(context, Axis.vertical);
+    final horizontal = _findScrollable(context, Axis.horizontal);
+    if ((vertical == null || !vertical.position.hasContentDimensions) &&
+        (horizontal == null || !horizontal.position.hasContentDimensions)) {
       // 拿不到滚动位置就退回框架自带的做法（至少能进可见区）。
       try {
         editable.bringIntoView(position);
@@ -364,19 +376,23 @@ class CodeEditorFieldState extends State<CodeEditorField> {
       }
       return;
     }
-    _scrollCaretToThird(editable, position, scrollable);
+    if (vertical != null && vertical.position.hasContentDimensions) {
+      _scrollCaretToThird(editable, position, vertical);
+    }
+    if (horizontal != null && horizontal.position.hasContentDimensions) {
+      _scrollCaretHorizontal(editable, position, horizontal);
+    }
   }
 
-  /// 往下找竖向滚动的那个 Scrollable（EditableText 内部那个）。
-  ScrollableState? _findScrollable(BuildContext context) {
+  /// 往下找指定轴向的 Scrollable（EditableText 内部那个）。
+  ScrollableState? _findScrollable(BuildContext context, Axis axis) {
     if (context is! Element) return null;
     ScrollableState? found;
     void visit(Element element) {
       if (found != null) return;
       if (element is StatefulElement && element.state is ScrollableState) {
         final state = element.state as ScrollableState;
-        // 只要竖向的：横向那个（长行不换行时）不关我们的事。
-        if (state.position.axis == Axis.vertical) {
+        if (state.position.axis == axis) {
           found = state;
           return;
         }
@@ -420,14 +436,48 @@ class CodeEditorFieldState extends State<CodeEditorField> {
     }
   }
 
+  /// 把光标横向滚进可视区（长行不换行时靠它跟上打字位置）。
+  void _scrollCaretHorizontal(
+    EditableTextState editable,
+    TextPosition position,
+    ScrollableState scrollable,
+  ) {
+    try {
+      final caret = editable.renderEditable.getLocalRectForCaret(position);
+      final pos = scrollable.position;
+      final viewport = pos.viewportDimension;
+      if (viewport <= 0) return;
+      if (caret.left >= viewport * 0.04 && caret.right <= viewport * 0.96) {
+        return;
+      }
+      final wanted = (pos.pixels + caret.left - viewport * 0.3)
+          .clamp(pos.minScrollExtent, pos.maxScrollExtent);
+      if ((wanted - pos.pixels).abs() < 1) return;
+      pos.animateTo(
+        wanted,
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOutCubic,
+      );
+    } catch (_) {
+      // 布局/字形还没算完时会抛，下一次落值会再滚一次。
+    }
+  }
+
   /// 让编辑器拿到焦点（AI 改代码前调用，用户能看到光标在动）。
   ///
   /// 专供 AI 可视化编辑：焦点留着（光标/滚动定位需要它），
   /// 但**不弹输入法**——AI 改代码时弹键盘既挡视野又烦。
-  void focus() {
+  void focus({int? offset}) {
+    if (offset != null) {
+      final clamped = offset.clamp(0, widget.controller.text.length);
+      widget.controller.selection = TextSelection.collapsed(offset: clamped);
+    }
     _focusNode.requestFocus();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // 先滚到要改的位置，再转身把输入法按回去：用户看到的是
+      // “AI 定位到目标，然后开始原地打字”，而不是改完才跳过去。
+      revealCursor();
       // requestFocus 会异步唤醒输入法，帧后再按回去。
       SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
     });
@@ -451,13 +501,15 @@ class CodeEditorFieldState extends State<CodeEditorField> {
                 expands: true,
                 lineNumbers: true,
                 lineNumberStyle: LineNumberStyle(
-                  width: 54,
+                  width: _lineNumberWidth,
                   margin: 10,
                   background: Colors.black.withValues(alpha: 0.18),
                   textStyle: TextStyle(
                     fontFamily: kMonoFamily,
                     fontFamilyFallback: kMonoFallback,
                     fontSize: _fontSize,
+                    // 行高必须和代码完全一致，否则行号对不上代码行。
+                    height: 1.4,
                     // 行号要一眼能看到：亮白 85%，别再跟着主题变淡。
                     color: Colors.white.withValues(alpha: 0.85),
                   ),
