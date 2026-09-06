@@ -185,6 +185,11 @@ class LlmRegistryNotifier extends Notifier<LlmRegistry> {
     await _save();
   }
 
+  Future<void> setMainMaxTurns(int turns) async {
+    state = state.copyWith(mainMaxTurns: turns.clamp(4, 1000));
+    await _save();
+  }
+
   /// 记下某家的模型缓存（"重新获取"之后调用）。
   Future<void> setModels(
     String providerId, {

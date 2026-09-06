@@ -216,12 +216,16 @@ class LlmRegistry {
     this.providers = const [],
     this.activeId = '',
     this.subAgent = const SubAgentPlan(),
+    this.mainMaxTurns = 200,
     this.loaded = false,
   });
 
   final List<LlmProviderConfig> providers;
   final String activeId;
   final SubAgentPlan subAgent;
+
+  /// 主 agent 的轮次预算。手动在设置里调，默认 200。
+  final int mainMaxTurns;
 
   /// 磁盘读完了没有。没读完之前界面不该显示"未配置"——
   /// 那会让人以为设置丢了。
@@ -249,12 +253,14 @@ class LlmRegistry {
     List<LlmProviderConfig>? providers,
     String? activeId,
     SubAgentPlan? subAgent,
+    int? mainMaxTurns,
     bool? loaded,
   }) =>
       LlmRegistry(
         providers: providers ?? this.providers,
         activeId: activeId ?? this.activeId,
         subAgent: subAgent ?? this.subAgent,
+        mainMaxTurns: mainMaxTurns ?? this.mainMaxTurns,
         loaded: loaded ?? this.loaded,
       );
 
@@ -262,6 +268,7 @@ class LlmRegistry {
         'providers': [for (final p in providers) p.toJson()],
         'activeId': activeId,
         'subAgent': subAgent.toJson(),
+        'mainMaxTurns': mainMaxTurns,
       };
 
   static LlmRegistry fromJson(Map<String, dynamic> json) {
@@ -276,6 +283,8 @@ class LlmRegistry {
       subAgent: sub is Map<String, dynamic>
           ? SubAgentPlan.fromJson(sub)
           : const SubAgentPlan(),
+      mainMaxTurns:
+          ((json['mainMaxTurns'] as num?)?.toInt() ?? 200).clamp(4, 1000),
       loaded: true,
     );
   }

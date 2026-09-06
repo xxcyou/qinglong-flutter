@@ -86,10 +86,41 @@ class LlmProviderPage extends ConsumerWidget {
               ),
             ),
           ),
+          const SectionLabel('主代理'),
+          const _MainAgentSection(),
           const SectionLabel('子代理'),
           const _SubAgentSection(),
         ],
       ),
+    );
+  }
+}
+
+/// 主代理轮次预算：默认 200，手动填。
+class _MainAgentSection extends ConsumerWidget {
+  const _MainAgentSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final registry = ref.watch(llmRegistryProvider);
+    final notifier = ref.read(llmRegistryProvider.notifier);
+    return _PickRow(
+      icon: Icons.loop,
+      title: '主代理轮次预算',
+      value: '${registry.mainMaxTurns} 轮',
+      onTap: () async {
+        final v = await showTextInputDialog(
+          context,
+          title: '主代理轮次预算',
+          initialValue: '${registry.mainMaxTurns}',
+          helperText: '主 agent 最多跑几轮工具调用。4-1000，默认 200',
+          keyboardType: TextInputType.number,
+          confirmText: '保存',
+        );
+        final n = int.tryParse((v ?? '').trim());
+        if (n == null) return;
+        await notifier.setMainMaxTurns(n);
+      },
     );
   }
 }

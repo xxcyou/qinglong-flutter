@@ -1947,6 +1947,7 @@ class ChatNotifier extends Notifier<ChatState> {
           ),
         ],
         approvalMode: state.approvalMode,
+        maxTurns: ref.read(llmRegistryProvider).mainMaxTurns,
         cancelToken: token,
       ).run(
         history: history,

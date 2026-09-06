@@ -173,17 +173,17 @@ class AgentLoop {
   final int maxTurns;
   final AgentCancelToken? cancelToken;
 
-  static const _maxToolResultChars = 6000;
+  static const _maxToolResultChars = 30000;
 
   /// 工具结果在历史里的"退役"长度。
   ///
-  /// 同一段 6000 字的日志会在**每一轮**被完整重发，跑 10 轮就是 10 倍开销。
-  /// 模型真正需要全文的时候只有紧接着的那一两轮，之后它已经把结论写进正文了。
+  /// 同一段 30000 字的日志会在**每一轮**被完整重发，跑 10 轮就是 10 倍开销。
+  /// 模型真正需要全文的时候只有紧接着的那几轮，之后它已经把结论写进正文了。
   /// 所以隔了 [_toolResultFreshTurns] 轮以上的工具结果压缩到这个长度。
-  static const _agedToolResultChars = 400;
+  static const _agedToolResultChars = 2000;
 
   /// 最近几轮的工具结果保持全文。
-  static const _toolResultFreshTurns = 2;
+  static const _toolResultFreshTurns = 3;
 
   /// 只读结果最多复用这么久。超过就重新跑一次——面板和本机的状态一直在变，
   /// "我们没写过"不代表"它没变"。
@@ -1688,7 +1688,8 @@ class AgentLoop {
                 toolName: call.name,
                 args: call.arguments,
                 status: 'ok',
-                result: result,
+                // UI/历史记录保留完整原始输出；只有喂给模型的上下文用截断版。
+                result: raw,
                 durationMs: elapsed,
                 createdAt: startedAt,
               ),
@@ -2123,7 +2124,7 @@ class AgentLoop {
     if (args.isEmpty) return '-';
     return args.entries.map((e) {
       final value = e.value?.toString() ?? '';
-      final short = value.length > 60 ? '${value.substring(0, 60)}…' : value;
+      final short = value.length > 200 ? '${value.substring(0, 200)}…' : value;
       return '${e.key}=$short';
     }).join('，');
   }
