@@ -234,13 +234,14 @@ class _SubAgentSection extends ConsumerWidget {
               context,
               title: '子代理轮次预算',
               initialValue: '${plan.maxTurns}',
-              helperText: '一个子代理最多跑几轮工具调用。4-40，默认 16',
+              helperText: '一个子代理最多跑几轮工具调用。4-200，默认 64',
               keyboardType: TextInputType.number,
               confirmText: '保存',
             );
             final n = int.tryParse((v ?? '').trim());
             if (n == null) return;
-            await notifier.setSubAgent(plan.copyWith(maxTurns: n.clamp(4, 40)));
+            await notifier
+                .setSubAgent(plan.copyWith(maxTurns: n.clamp(4, 200)));
           },
         ),
       ],

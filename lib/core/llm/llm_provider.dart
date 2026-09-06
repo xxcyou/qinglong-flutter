@@ -164,7 +164,7 @@ class SubAgentPlan {
     this.parallel = 3,
     this.providerId = '',
     this.model = '',
-    this.maxTurns = 16,
+    this.maxTurns = 64,
   });
 
   /// `parallel_agents` 默认同时跑几个，也是它的上限。
@@ -206,7 +206,7 @@ class SubAgentPlan {
         parallel: ((json['parallel'] as num?)?.toInt() ?? 3).clamp(1, 8),
         providerId: json['providerId']?.toString() ?? '',
         model: json['model']?.toString() ?? '',
-        maxTurns: ((json['maxTurns'] as num?)?.toInt() ?? 16).clamp(4, 40),
+        maxTurns: ((json['maxTurns'] as num?)?.toInt() ?? 64).clamp(4, 200),
       );
 }
 

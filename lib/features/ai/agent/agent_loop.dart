@@ -157,7 +157,7 @@ class AgentLoop {
     required this.confirmedActionKeys,
     this.externalTools = const [],
     this.approvalMode = AiApprovalMode.cautious,
-    this.maxTurns = 40,
+    this.maxTurns = 200,
     this.cancelToken,
   });
 
