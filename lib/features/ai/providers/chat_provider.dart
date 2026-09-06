@@ -1959,7 +1959,9 @@ class ChatNotifier extends Notifier<ChatState> {
           // 分两种落点：悬浮窗模式下弹成同层的浮动窗口，AI 页里还是底部弹窗。
           // 原因是悬浮层画在路由 Navigator 之上，底部弹窗会被它整块盖住——
           // 用户只会看到"AI 说弹了个卡片，但屏幕上什么都没有"。
-          if (ref.read(aiDockProvider).expanded) {
+          final dock = ref.read(aiDockProvider);
+          if (dock.expanded || dock.quickOpen || dock.quickBusy) {
+            // 完整悬浮窗、快问模式都走浮动画布窗；只有 AI 页正文才用底部弹窗。
             ref.read(aiDockProvider.notifier).showCanvas(canvas);
             return;
           }
