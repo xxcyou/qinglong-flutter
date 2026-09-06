@@ -16,7 +16,7 @@ class CodeEditorField extends StatefulWidget {
     this.onChanged,
     this.padding = const EdgeInsets.all(12),
     this.initialFontSize = 13,
-    this.minFontSize = 8,
+    this.minFontSize = 11,
     this.maxFontSize = 32,
     this.wrap = false,
     this.readOnly = false,
@@ -343,7 +343,7 @@ class CodeEditorFieldState extends State<CodeEditorField> {
   /// 程序性地改 `controller.text` 时 Flutter **不会**自动滚动（只有用户输入才会），
   /// 于是 AI 在长文件里改第 300 行，用户盯着第 1 行什么都看不见。
   /// 这里顺着焦点节点找到内部的 EditableText，直接调它的 bringIntoView。
-  void revealCursor() {
+  void revealCursor({bool immediate = false}) {
     final context = _focusNode.context;
     if (context == null) return;
 
@@ -377,10 +377,11 @@ class CodeEditorFieldState extends State<CodeEditorField> {
       return;
     }
     if (vertical != null && vertical.position.hasContentDimensions) {
-      _scrollCaretToThird(editable, position, vertical);
+      _scrollCaretToCenter(editable, position, vertical, immediate: immediate);
     }
     if (horizontal != null && horizontal.position.hasContentDimensions) {
-      _scrollCaretHorizontal(editable, position, horizontal);
+      _scrollCaretHorizontal(editable, position, horizontal,
+          immediate: immediate);
     }
   }
 
@@ -404,35 +405,43 @@ class CodeEditorFieldState extends State<CodeEditorField> {
     return found;
   }
 
-  /// 把光标所在行滚到视口上方 1/3 处。
+  /// 把光标所在行滚到视口**正中**。
+  ///
+  /// [immediate] 为 true 时同步跳转（AI 动手前先定位，不等动画）；
+  /// false 时动画跟手（AI 打字过程中跟着走）。
   ///
   /// 坑点：[RenderEditable.getLocalRectForCaret] 给的是**视口坐标**
   /// （已经把滚动偏移算进去了），不是文档坐标。所以判断"在不在视野里"
   /// 直接和 0..viewportDimension 比，算目标位置才要加上当前 pixels。
-  void _scrollCaretToThird(
+  void _scrollCaretToCenter(
     EditableTextState editable,
     TextPosition position,
-    ScrollableState scrollable,
-  ) {
+    ScrollableState scrollable, {
+    required bool immediate,
+  }) {
     try {
       final caret = editable.renderEditable.getLocalRectForCaret(position);
       final pos = scrollable.position;
       final viewport = pos.viewportDimension;
       if (viewport <= 0) return;
-      // 已经在视野中间那一大块里就别动：来回跳比不跳更难受。
-      if (caret.top >= viewport * 0.08 && caret.bottom <= viewport * 0.92) {
+      // 已经在屏幕中间那一大块里就别动：来回跳比不跳更难受。
+      if (caret.top >= viewport * 0.2 && caret.bottom <= viewport * 0.8) {
         return;
       }
-      final wanted = (pos.pixels + caret.top - viewport / 3)
+      final wanted = (pos.pixels + caret.top - viewport / 2)
           .clamp(pos.minScrollExtent, pos.maxScrollExtent);
       if ((wanted - pos.pixels).abs() < 1) return;
-      pos.animateTo(
-        wanted,
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutCubic,
-      );
+      if (immediate) {
+        pos.jumpTo(wanted);
+      } else {
+        pos.animateTo(
+          wanted,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+        );
+      }
     } catch (_) {
-      // 布局/字形还没算完时会抛，下一段打字会再滚一次。
+      // 布局/字形还没算完时会抛，下一次落值会再滚一次。
     }
   }
 
@@ -440,24 +449,29 @@ class CodeEditorFieldState extends State<CodeEditorField> {
   void _scrollCaretHorizontal(
     EditableTextState editable,
     TextPosition position,
-    ScrollableState scrollable,
-  ) {
+    ScrollableState scrollable, {
+    required bool immediate,
+  }) {
     try {
       final caret = editable.renderEditable.getLocalRectForCaret(position);
       final pos = scrollable.position;
       final viewport = pos.viewportDimension;
       if (viewport <= 0) return;
-      if (caret.left >= viewport * 0.04 && caret.right <= viewport * 0.96) {
+      if (caret.left >= viewport * 0.1 && caret.right <= viewport * 0.9) {
         return;
       }
-      final wanted = (pos.pixels + caret.left - viewport * 0.3)
+      final wanted = (pos.pixels + caret.left - viewport / 2)
           .clamp(pos.minScrollExtent, pos.maxScrollExtent);
       if ((wanted - pos.pixels).abs() < 1) return;
-      pos.animateTo(
-        wanted,
-        duration: const Duration(milliseconds: 160),
-        curve: Curves.easeOutCubic,
-      );
+      if (immediate) {
+        pos.jumpTo(wanted);
+      } else {
+        pos.animateTo(
+          wanted,
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOutCubic,
+        );
+      }
     } catch (_) {
       // 布局/字形还没算完时会抛，下一次落值会再滚一次。
     }
@@ -473,11 +487,13 @@ class CodeEditorFieldState extends State<CodeEditorField> {
       widget.controller.selection = TextSelection.collapsed(offset: clamped);
     }
     _focusNode.requestFocus();
+    // 同步先跳到目标位置（不用动画），再让 `_stroke` 开始打字。
+    // 这样用户先看到“光标来到目标行正中”，然后才看到代码变化。
+    revealCursor(immediate: true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      // 先滚到要改的位置，再转身把输入法按回去：用户看到的是
-      // “AI 定位到目标，然后开始原地打字”，而不是改完才跳过去。
-      revealCursor();
+      // 如果首帧还没布局完，帧后再补一次定位；顺便把输入法按回去。
+      revealCursor(immediate: true);
       // requestFocus 会异步唤醒输入法，帧后再按回去。
       SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
     });

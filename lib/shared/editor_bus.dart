@@ -494,6 +494,8 @@ class EditorBus extends ChangeNotifier {
       // 先定位到要改的位置，再开始敲：不要“改完才跳过去”。
       field?.focus(offset: focusOffset);
       field?.beginBatch();
+      // 让刚发起的同步滚动 `jumpTo` 落定，再开始改代码。
+      await Future<void>.delayed(const Duration(milliseconds: 16));
       try {
         return await body();
       } finally {
