@@ -407,14 +407,15 @@ class ChatNotifier extends Notifier<ChatState> {
       for (final m in state.messages)
         if (!m.failedToSend) m
     ];
-    // 最后一条 assistant 回复要带**工具结果明细**，不能只带工具名。
+    // assistant 回复要带**工具结果明细**，不能只带工具名。
     //
     // 这是"中断后重来"那个 bug 的根因：被中断时 tool_calls 留在了历史里、
     // 结果却一个都没留（tool 消息不持久化），模型下一轮看到的是"我调用过
     // cron_list、script_read、shell_exec…"但没有任何返回内容——它只能把
     // 那几步全部重跑一遍，用户看到的就是"中断一次白烧一遍 token"。
-    // 只给最后一条带明细：中断永远发生在末尾，而给每条都带会把上下文撑爆。
-    final detailAt = msgs.lastIndexWhere((m) => m.isAssistant);
+    // 只给最后一条带明细还不够——连续聊几轮后前面的结果也会被忘掉，
+    // 所以最近 [_toolDigestDetailedCount] 条 assistant 回复都带结果明细；
+    // 更早的只留工具名，避免把上下文撑爆（自动压缩还会按预算从旧到新裁）。
     // ===== 簿记（"这一轮调用过的工具：…"、工具结果明细）绝不能写进 =====
     // ===== assistant 消息的正文里 =====
     //
@@ -442,10 +443,7 @@ class ChatNotifier extends Notifier<ChatState> {
             ),
         ],
         [
-          for (var i = 0; i < msgs.length; i++)
-            msgs[i].role == 'assistant'
-                ? _historyNote(msgs[i], detailed: i == detailAt)
-                : '',
+          for (var i = 0; i < msgs.length; i++) _historyNoteForIdx(i, msgs),
         ],
       ),
     ];
@@ -490,6 +488,10 @@ class ChatNotifier extends Notifier<ChatState> {
 
   /// 单条工具结果在明细里保留的长度。
   static const _toolDigestPerCall = 420;
+
+  /// 最近几条 assistant 回复都要带工具结果明细，避免 AI 忘了前面干过什么、
+  /// 下一条又重复查/重复做。更早的只保留工具名，由自动压缩按预算裁掉。
+  static const _toolDigestDetailedCount = 6;
 
   /// 把这条回复的执行过程压成"工具 → 结果"清单。
   ///
@@ -582,9 +584,25 @@ class ChatNotifier extends Notifier<ChatState> {
     return (kept.join('\n').trim(), question);
   }
 
+  /// 第 [index] 条历史消息的簿记；assistant 按倒序最近
+  /// [_toolDigestDetailedCount] 条给详细工具结果。
+  String _historyNoteForIdx(int index, List<AiChatMessage> msgs) {
+    final m = msgs[index];
+    if (m.role != 'assistant') return '';
+    var detailedLeft = _toolDigestDetailedCount;
+    for (var i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role != 'assistant') continue;
+      if (i == index) {
+        return _historyNote(m, detailed: detailedLeft > 0);
+      }
+      detailedLeft--;
+    }
+    return _historyNote(m);
+  }
+
   /// 这条 assistant 回复对应的簿记，挂到后面那条 user 消息上（见 [_history]）。
   ///
-  /// 两类内容：① 这一轮实际跑过的工具（连结果明细，仅最后一条带）；
+  /// 两类内容：① 这一轮实际跑过的工具（最近几条连结果明细）；
   /// ② 提问那一轮的"提问必须走 ask_user"提醒。
   String _historyNote(AiChatMessage m, {bool detailed = false}) {
     // 被中断 / 半途停下的那一轮：把已经跑过的工具连**结果**一起交回去。
