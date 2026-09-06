@@ -329,9 +329,18 @@ class ChatNotifier extends Notifier<ChatState> {
           if (item is Map<String, dynamic>) AiSession.fromJson(item),
       ];
       if (sessions.isEmpty) return;
+      // 下次打开以上一次用过的会话为主：按 updatedAt 取最新，而不是列表第一条。
+      var lastId = sessions.first.id;
+      var lastAt = sessions.first.updatedAt;
+      for (final s in sessions.skip(1)) {
+        if (s.updatedAt.isAfter(lastAt)) {
+          lastAt = s.updatedAt;
+          lastId = s.id;
+        }
+      }
       state = state.copyWith(
         sessions: sessions,
-        currentSessionId: sessions.first.id,
+        currentSessionId: lastId,
       );
     } catch (e) {
       Logger.e('ai', 'load sessions failed', e);
@@ -1554,14 +1563,26 @@ class ChatNotifier extends Notifier<ChatState> {
   }
 
   void selectSession(String id) {
-    if (state.sessions.any((s) => s.id == id)) {
-      state = state.copyWith(
-        currentSessionId: id,
-        toolRecords: const [],
-        pendingPlan: const [],
-        clearError: true,
-      );
-    }
+    final index = state.sessions.indexWhere((s) => s.id == id);
+    if (index < 0) return;
+    // 标记成"最近用过"，下次启动才会默认回到这个会话。
+    final sessions = [...state.sessions];
+    final old = sessions[index];
+    sessions[index] = AiSession(
+      id: old.id,
+      title: old.title,
+      messages: old.messages,
+      createdAt: old.createdAt,
+      updatedAt: DateTime.now(),
+    );
+    state = state.copyWith(
+      sessions: sessions,
+      currentSessionId: id,
+      toolRecords: const [],
+      pendingPlan: const [],
+      clearError: true,
+    );
+    _persist();
   }
 
   void deleteSession(String id) {
