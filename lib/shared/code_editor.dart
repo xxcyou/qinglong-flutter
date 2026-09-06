@@ -152,6 +152,7 @@ class CodeEditorFieldState extends State<CodeEditorField> {
   }
 
   void _onPointerDown(PointerDownEvent event) {
+    final wasPinching = _pinching;
     _activePointers[event.pointer] = event.localPosition;
     if (_activePointers.length == 2) {
       _pinchBaseFontSize = _fontSize;
@@ -159,7 +160,8 @@ class CodeEditorFieldState extends State<CodeEditorField> {
       _pinchStartDistance = (pts[1] - pts[0]).distance;
       _pinching = true;
     }
-    setState(() {});
+    // 单指按下不要 setState：那会让编辑器在每次滑动开始都重建一遍，反而卡。
+    if (_pinching != wasPinching) setState(() {});
   }
 
   void _onPointerMove(PointerMoveEvent event) {
@@ -181,9 +183,10 @@ class CodeEditorFieldState extends State<CodeEditorField> {
   }
 
   void _onPointerEnd(PointerEvent event) {
+    final wasPinching = _pinching;
     _activePointers.remove(event.pointer);
     if (_activePointers.length < 2) _pinching = false;
-    setState(() {});
+    if (_pinching != wasPinching) setState(() {});
   }
 
   /// 撤销最近一次编辑。
@@ -365,7 +368,10 @@ class CodeEditorFieldState extends State<CodeEditorField> {
     // 竖向 + 横向都要跟着光标走：AI 在长行中段打字时，
     // 只滚竖向不滚横向，用户看到的就是"光标跟丢了"。
     final vertical = _findScrollable(context, Axis.vertical);
-    final horizontal = _findScrollable(context, Axis.horizontal);
+    // 横向滚动在 CodeField 里是**包在编辑器外面**的 SingleChildScrollView，
+    // 是 Focus 的祖先而不是子孙，所以要先找子孙、找不到再找祖先。
+    final horizontal = _findScrollable(context, Axis.horizontal) ??
+        _findAncestorScrollable(context, Axis.horizontal);
     if ((vertical == null || !vertical.position.hasContentDimensions) &&
         (horizontal == null || !horizontal.position.hasContentDimensions)) {
       // 拿不到滚动位置就退回框架自带的做法（至少能进可见区）。
@@ -402,6 +408,23 @@ class CodeEditorFieldState extends State<CodeEditorField> {
     }
 
     context.visitChildren(visit);
+    return found;
+  }
+
+  /// 往上找指定轴向的 Scrollable（CodeField 外包的横向 SingleChildScrollView）。
+  ScrollableState? _findAncestorScrollable(BuildContext context, Axis axis) {
+    if (context is! Element) return null;
+    ScrollableState? found;
+    context.visitAncestorElements((element) {
+      if (element is StatefulElement && element.state is ScrollableState) {
+        final state = element.state as ScrollableState;
+        if (state.position.axis == axis) {
+          found = state;
+          return false;
+        }
+      }
+      return true;
+    });
     return found;
   }
 
