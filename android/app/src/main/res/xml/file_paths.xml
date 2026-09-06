@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 可暴露的目录白名单。
+
+  只给 cache/share 这一个中转目录：文件管理器要"用其它 APP 打开"时，
+  先把文件复制进这里再分享。这样 rootfs、workspace、shared_prefs 里的
+  凭据文件永远不可能被外部 APP 通过 content:// 读到。
+-->
+<paths>
+    <cache-path name="share" path="share/" />
+</paths>

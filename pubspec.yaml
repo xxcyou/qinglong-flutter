@@ -1,0 +1,61 @@
+name: qinglong_flutter
+description: 青龙面板 Flutter 客户端（含青龙专用 AI）。完整工程骨架 + P0/P1 核心实现。
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.10.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  flutter_riverpod: ^2.4.9
+  go_router: ^13.0.1
+  dio: ^5.4.0
+  flutter_secure_storage: ^9.0.0
+  shared_preferences: ^2.2.2
+  flutter_code_editor: ^0.3.1
+  highlight: ^0.7.0
+  cron: ^0.6.0
+  xterm: ^4.0.0
+  flutter_markdown: ^0.6.18
+  drift: ^2.13.0
+  sqlite3_flutter_libs: ^0.5.20
+  path_provider: ^2.1.1
+  file_picker: ^11.0.3
+  package_info_plus: ^9.0.1
+  url_launcher: ^6.2.1
+  connectivity_plus: ^5.0.2
+  flutter_slidable: ^3.0.1
+  intl: ^0.20.2
+  code_text_field: ^1.1.0
+  flutter_highlight: ^0.7.0
+  webview_flutter: ^4.13.1
+  # 直接依赖 Android 实现：第三方 Cookie 开关、控制台回调这些"像真浏览器"
+  # 必需的能力只在平台实现里，公共接口没暴露。
+  webview_flutter_android: ^4.12.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.1
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/runtime/
+
+  # 代码编辑器和终端都靠等宽字体活着。Android 自带的 monospace（Droid Sans Mono）
+  # 字形窄、没有连字、和中文混排时基线乱跳，看起来就是"很丑"。
+  # JetBrains Mono 是主流终端/编辑器的默认脸，OFL 许可可以随包分发。
+  fonts:
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-Regular.ttf
+        - asset: assets/fonts/JetBrainsMono-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/JetBrainsMono-Italic.ttf
+          style: italic
