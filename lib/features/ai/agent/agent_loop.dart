@@ -159,6 +159,7 @@ class AgentLoop {
     this.approvalMode = AiApprovalMode.cautious,
     this.maxTurns = 200,
     this.cancelToken,
+    this.onUsage,
   });
 
   final LlmConfig config;
@@ -172,6 +173,10 @@ class AgentLoop {
   final AiApprovalMode approvalMode;
   final int maxTurns;
   final AgentCancelToken? cancelToken;
+
+  /// 每完成一轮 LLM 请求就回调一次最新用量，界面据此实时刷新上下文/token。
+  final void Function(int totalTokens, int promptTokens, int cacheHitTokens)?
+      onUsage;
 
   static const _maxToolResultChars = 30000;
 
@@ -877,6 +882,12 @@ class AgentLoop {
           lastPromptTokens = response.usage.promptTokens;
           lastCacheHitTokens = response.usage.cacheHitTokens;
         }
+        // 实时用量：每轮请求回来就把最新数字推给界面，不用等整轮 Agent 跑完。
+        onUsage?.call(
+          usage.totalTokens,
+          lastPromptTokens,
+          lastCacheHitTokens,
+        );
 
         final reasoning = response.reasoningContent.trim();
         if (reasoning.isNotEmpty) {

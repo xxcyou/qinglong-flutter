@@ -1972,6 +1972,15 @@ class ChatNotifier extends Notifier<ChatState> {
         approvalMode: state.approvalMode,
         maxTurns: ref.read(llmRegistryProvider).mainMaxTurns,
         cancelToken: token,
+        // 每轮 LLM 请求一回来就刷新顶部上下文/token，不用等整轮跑完。
+        onUsage: (total, prompt, cache) {
+          if (_cancelToken != token) return;
+          state = state.copyWith(
+            lastTokens: total,
+            lastPromptTokens: prompt,
+            lastCacheHitTokens: cache,
+          );
+        },
       ).run(
         history: history,
         onEvent: onEvent,

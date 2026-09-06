@@ -1617,6 +1617,7 @@ class _WindowState extends ConsumerState<_Window> {
                                   AgentProcessCard(
                                     events: chat.liveAgentEvents,
                                     running: chat.isLoading,
+                                    totalTokens: chat.lastTokens,
                                   ),
                                 // 正在流的那一段：悬浮窗矮，用 dense 排版。
                                 if (chat.isLoading)

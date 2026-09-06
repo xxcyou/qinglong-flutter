@@ -477,6 +477,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                 events: state.liveAgentEvents,
                                 running: state.isLoading,
                                 initiallyExpanded: state.isLoading,
+                                totalTokens: state.lastTokens,
                               );
                             }
                             slot -= 1;
