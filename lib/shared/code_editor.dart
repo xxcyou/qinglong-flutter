@@ -52,11 +52,15 @@ class CodeEditorField extends StatefulWidget {
 /// 撤销/重做、字号调整、换行开关与查找跳转等能力。
 class CodeEditorFieldState extends State<CodeEditorField> {
   late double _fontSize;
-  late double _baseFontSize;
 
   /// 双指缩放中：期间显示字号提示，松手后隐藏。
   bool _pinching = false;
   double _pinchLabel = 0;
+
+  /// 手动跟踪双指距离：不占用手势竞技场，单指滑动/编辑完全留给编辑器。
+  final Map<int, Offset> _activePointers = {};
+  double _pinchStartDistance = 0;
+  double _pinchBaseFontSize = 0;
   late bool _wrap;
 
   final List<String> _undoStack = [];
@@ -81,7 +85,6 @@ class CodeEditorFieldState extends State<CodeEditorField> {
   void initState() {
     super.initState();
     _fontSize = widget.initialFontSize;
-    _baseFontSize = _fontSize;
     _wrap = widget.wrap;
     _lastKnownText = widget.controller.text;
     widget.controller.addListener(_onControllerChanged);
@@ -147,16 +150,25 @@ class CodeEditorFieldState extends State<CodeEditorField> {
     _lastKnownText = widget.controller.text;
   }
 
-  void _onScaleStart(ScaleStartDetails details) {
-    if (details.pointerCount >= 2) {
-      _baseFontSize = _fontSize;
+  void _onPointerDown(PointerDownEvent event) {
+    _activePointers[event.pointer] = event.localPosition;
+    if (_activePointers.length == 2) {
+      _pinchBaseFontSize = _fontSize;
+      final pts = _activePointers.values.toList();
+      _pinchStartDistance = (pts[1] - pts[0]).distance;
       _pinching = true;
     }
+    setState(() {});
   }
 
-  void _onScaleUpdate(ScaleUpdateDetails details) {
-    if (details.pointerCount < 2) return;
-    final raw = (_baseFontSize * details.scale)
+  void _onPointerMove(PointerMoveEvent event) {
+    if (!_activePointers.containsKey(event.pointer)) return;
+    _activePointers[event.pointer] = event.localPosition;
+    if (_activePointers.length < 2 || _pinchStartDistance <= 0) return;
+    final pts = _activePointers.values.toList();
+    final distance = (pts[1] - pts[0]).distance;
+    if (distance <= 0) return;
+    final raw = (_pinchBaseFontSize * (distance / _pinchStartDistance))
         .clamp(widget.minFontSize, widget.maxFontSize)
         .toDouble();
     // 双指缩放每帧都会来事件，而改字号会让整个代码域重新分行、重新着色。
@@ -167,9 +179,9 @@ class CodeEditorFieldState extends State<CodeEditorField> {
     setState(() => _fontSize = stepped);
   }
 
-  void _onScaleEnd(ScaleEndDetails details) {
-    if (!_pinching) return;
-    _pinching = false;
+  void _onPointerEnd(PointerEvent event) {
+    _activePointers.remove(event.pointer);
+    if (_activePointers.length < 2) _pinching = false;
     setState(() {});
   }
 
@@ -412,11 +424,12 @@ class CodeEditorFieldState extends State<CodeEditorField> {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return Listener(
       behavior: HitTestBehavior.translucent,
-      onScaleStart: _onScaleStart,
-      onScaleUpdate: _onScaleUpdate,
-      onScaleEnd: _onScaleEnd,
+      onPointerDown: _onPointerDown,
+      onPointerMove: _onPointerMove,
+      onPointerUp: _onPointerEnd,
+      onPointerCancel: _onPointerEnd,
       child: Stack(
         children: [
           Positioned.fill(
@@ -425,6 +438,20 @@ class CodeEditorFieldState extends State<CodeEditorField> {
               child: CodeField(
                 controller: widget.controller,
                 expands: true,
+                lineNumbers: true,
+                lineNumberStyle: LineNumberStyle(
+                  width: 46,
+                  margin: 8,
+                  textStyle: TextStyle(
+                    fontFamily: kMonoFamily,
+                    fontFamilyFallback: kMonoFallback,
+                    fontSize: _fontSize,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurfaceVariant
+                        .withValues(alpha: 0.65),
+                  ),
+                ),
                 wrap: _wrap,
                 enabled: widget.enabled,
                 readOnly: widget.readOnly,

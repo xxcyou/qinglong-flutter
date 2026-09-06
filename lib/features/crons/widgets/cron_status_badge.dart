@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 enum CronRunStatus {
   disabled('已禁用', Icons.block, null),
-  idle('空闲', Icons.schedule, null),
+  idle('已启用', Icons.schedule, null),
   running('运行中', Icons.directions_run, Colors.green),
   failed('失败', Icons.error_outline, Colors.red);
 
