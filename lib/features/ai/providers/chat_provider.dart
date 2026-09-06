@@ -485,18 +485,24 @@ class ChatNotifier extends Notifier<ChatState> {
   }
 
   /// 一条 assistant 回复里的工具明细最多占这么多字符。
-  static const _toolDigestBudget = 4000;
+  ///
+  /// 这里**不放全文**：全文可以远超 token 预算，几百轮必炸。改成只留小摘要
+  /// + 缓存 key，AI 需要完整内容时调 `tool_cache_read` 按 key 取，不重跑原工具。
+  static const _toolDigestBudget = 6000;
 
-  /// 单条工具结果在明细里保留的长度。
-  static const _toolDigestPerCall = 420;
+  /// 单条工具结果在明细里保留的摘要长度。
+  static const _toolDigestPerCall = 220;
 
-  /// 所有 assistant 回复都带工具结果明细；超预算由自动压缩从旧到新裁掉。
-  /// 几百轮的长对话，也只有在真的超过模型上下文时才丢最早的部分。
+  /// 所有 assistant 回复都带工具明细（摘要 + 缓存指针）；超预算由自动压缩从旧到新裁掉。
 
-  /// 把这条回复的执行过程压成"工具 → 结果"清单。
+  /// 把这条回复的执行过程压成"工具 → 摘要 + 缓存 key"清单。
   ///
   /// 数据来自持久化的 agentEvents（工具起止都在里面），所以退出重进、
   /// 中断重来都还在。倒着取最近的若干条：越靠后的越可能是下一步要用的。
+  ///
+  /// 策略：不塞全文，塞「简短摘要 + 缓存 key + 明确指令」——模型需要完整
+  /// 内容时应该调 `tool_cache_read(key)`（本地取，不用重跑外部工具），
+  /// 而不是傻乎乎地把同一个文件/命令再查一遍。
   String _toolDigest(AiChatMessage m) {
     final done = [
       for (final e in m.agentEvents)
@@ -508,20 +514,40 @@ class ChatNotifier extends Notifier<ChatState> {
     for (final e in done.reversed) {
       final name = (e.toolName ?? '').trim();
       if (name.isEmpty) continue;
-      final raw = (e.result ?? '').trim();
+      final raw = (e.fullResult ?? e.result ?? '').trim();
+      if (raw.isEmpty) continue;
+      final cacheKey = _toolCacheKey(e);
       final body = raw.length > _toolDigestPerCall
-          ? '${raw.substring(0, _toolDigestPerCall)}…（还有 ${raw.length - _toolDigestPerCall} 字，需要就重新调一次）'
+          ? '${raw.substring(0, _toolDigestPerCall)}…'
           : raw;
       final args =
           e.args == null || e.args!.isEmpty ? '' : ' ${jsonEncode(e.args)}';
       final line = '· $name${args.length > 160 ? '' : args}'
-          ' ${e.ok ? '→' : '✗'} ${body.isEmpty ? '(无输出)' : body}';
+          ' ${e.ok ? '→' : '✗'} $body'
+          '【完整 ${raw.length} 字已缓存 key=$cacheKey；'
+          '需要全文/复述时调 tool_cache_read(key="$cacheKey")，别重跑原工具】';
       if (used + line.length > _toolDigestBudget) break;
       used += line.length;
       lines.add(line);
     }
     if (lines.isEmpty) return '';
     return lines.reversed.join('\n');
+  }
+
+  /// 工具结果缓存的稳定 key：工具名 + 参数。
+  ///
+  /// 同一工具同一参数在一个会话里可能调过多次（比如 shell_exec），
+  /// [tool_cache_read] 返回最近一次的结果；要最新状态应直接用原工具。
+  static String _toolCacheKey(AgentEvent e) =>
+      '${e.toolName ?? ''}|${_canonicalArgs(e.args)}';
+
+  static String _canonicalArgs(Map<String, dynamic>? args) {
+    if (args == null || args.isEmpty) return '';
+    final entries = args.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+    return jsonEncode({
+      for (final e in entries) e.key: e.value,
+    });
   }
 
   /// 一条历史消息的正文：**只有模型/用户真正说过的话**。
@@ -2055,6 +2081,50 @@ class ChatNotifier extends Notifier<ChatState> {
         mcp: ref.read(mcpProvider.notifier),
         mcpState: ref.read(mcpProvider),
         skillList: ref.read(skillProvider).skills,
+      ),
+      // 会话内工具结果缓存：上下文只留摘要 + key，模型要全文时按 key 取，
+      // 不用把同一个文件/命令再跑一遍，也不会把几千字结果塞进历史撑爆 token。
+      ExternalTool(
+        name: 'tool_cache_read',
+        description: '读取本会话内某次工具调用的完整原始返回（不会重新执行那个工具）。'
+            '当系统记录里的工具结果被截断、或用户让你复述/查看之前读到的完整内容时使用。'
+            'key 在系统记录的工具摘要里，形如 toolName|{"path":"..."}。'
+            '注意这是缓存快照：文件/面板状态可能已变化，需要最新数据时直接用原工具。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'key': {
+              'type': 'string',
+              'description':
+                  '缓存 key，例如 shell_read_file|{"path":"/workspace/dino.html"}'
+            },
+          },
+          'required': ['key'],
+        },
+        origin: '会话结果缓存',
+        invoke: (args) async {
+          final key = args['key']?.toString().trim() ?? '';
+          if (key.isEmpty) return 'key 不能为空。';
+          for (final m in state.messages.reversed) {
+            for (final e in m.agentEvents.reversed) {
+              if (e.kind != AgentEventKind.toolEnd) continue;
+              if (_toolCacheKey(e) != key) continue;
+              final full = e.fullResult ?? e.result ?? '';
+              if (full.trim().isEmpty) return '这个 key 对应的结果为空。';
+              return '${e.toolName} 完整返回（${full.length} 字，来自本会话缓存）：\n$full';
+            }
+          }
+          final available = <String>{};
+          for (final m in state.messages) {
+            for (final e in m.agentEvents) {
+              if (e.kind != AgentEventKind.toolEnd) continue;
+              if ((e.fullResult ?? e.result ?? '').trim().isEmpty) continue;
+              available.add(_toolCacheKey(e));
+            }
+          }
+          return '没有找到 key=$key。\n当前会话可用缓存 key：\n'
+              '${available.isEmpty ? '（无）' : available.join('\n')}';
+        },
       ),
     ];
 
