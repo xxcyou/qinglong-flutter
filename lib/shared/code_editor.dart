@@ -1,5 +1,6 @@
 import 'package:code_text_field/code_text_field.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_highlight/themes/monokai-sublime.dart';
 import 'mono_text.dart';
 
@@ -420,7 +421,17 @@ class CodeEditorFieldState extends State<CodeEditorField> {
   }
 
   /// 让编辑器拿到焦点（AI 改代码前调用，用户能看到光标在动）。
-  void focus() => _focusNode.requestFocus();
+  ///
+  /// 专供 AI 可视化编辑：焦点留着（光标/滚动定位需要它），
+  /// 但**不弹输入法**——AI 改代码时弹键盘既挡视野又烦。
+  void focus() {
+    _focusNode.requestFocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      // requestFocus 会异步唤醒输入法，帧后再按回去。
+      SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -440,16 +451,15 @@ class CodeEditorFieldState extends State<CodeEditorField> {
                 expands: true,
                 lineNumbers: true,
                 lineNumberStyle: LineNumberStyle(
-                  width: 46,
-                  margin: 8,
+                  width: 54,
+                  margin: 10,
+                  background: Colors.black.withValues(alpha: 0.18),
                   textStyle: TextStyle(
                     fontFamily: kMonoFamily,
                     fontFamilyFallback: kMonoFallback,
                     fontSize: _fontSize,
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurfaceVariant
-                        .withValues(alpha: 0.65),
+                    // 行号要一眼能看到：亮白 85%，别再跟着主题变淡。
+                    color: Colors.white.withValues(alpha: 0.85),
                   ),
                 ),
                 wrap: _wrap,
