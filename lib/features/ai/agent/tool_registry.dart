@@ -670,6 +670,50 @@ class QlToolRegistry {
           impact: '覆盖本机 Debian 里的文件内容，旧内容不保留',
           reversible: false,
         ),
+        ToolDefinition(
+          name: 'shell_write_binary',
+          description: '写入本地 Debian **二进制文件**（如 tarball、zip、图片、可执行文件）。'
+              'content 传 base64 文本；工具会在终端里解码落盘。'
+              '这是装市面技能时处理 scripts/ 里二进制资源的专用工具。',
+          parameters: _obj([
+            'path',
+            'base64'
+          ], {
+            'path': _stringProp,
+            'base64': {
+              'type': 'string',
+              'description': '文件的 base64 编码内容',
+            },
+          }),
+          isWrite: true,
+          impact: '在本机 PRoot Debian 写入二进制文件，旧内容被覆盖',
+          reversible: false,
+        ),
+        ToolDefinition(
+          name: 'shell_read_binary',
+          description: '把本地 Debian 里的文件读成 base64（用于备份、搬运二进制文件、'
+              '或把二进制作为模板交给其它工具）。',
+          parameters: _obj(['path'], {'path': _stringProp}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'shell_archive_extract',
+          description: '解压本地归档文件到指定目录（支持 .tar / .tar.gz / .tgz / .zip）。'
+              '装市面技能时先 shell_write_binary 写入 tarball/zip，再用它解压到技能目录。',
+          parameters: _obj([
+            'archive',
+            'dest'
+          ], {
+            'archive': _stringProp,
+            'dest': {
+              'type': 'string',
+              'description': '解压目标目录，默认 archive 同目录',
+            },
+          }),
+          isWrite: true,
+          impact: '在本地 Debian 解压归档，会创建/覆盖目标目录里的文件',
+          reversible: false,
+        ),
       ];
 
   /// 这些工具只碰本机 Debian，不需要选中青龙面板。
@@ -680,6 +724,9 @@ class QlToolRegistry {
     'shell_list_files',
     'shell_read_file',
     'shell_write_file',
+    'shell_write_binary',
+    'shell_read_binary',
+    'shell_archive_extract',
   };
 
   Future<String> execute({
@@ -1252,6 +1299,130 @@ class QlToolRegistry {
           timeout: const Duration(seconds: 60),
         );
         return '已写入 ${entry.path}（${entry.size} 字节）';
+
+      case 'shell_write_binary':
+        final bPath = args['path']?.toString() ?? '';
+        if (bPath.isEmpty) return jsonEncode({'error': '缺少 path'});
+        final b64 =
+            (args['base64']?.toString() ?? '').replaceAll(RegExp(r'\s'), '');
+        List<int> bBytes;
+        try {
+          bBytes = base64Decode(b64);
+        } catch (_) {
+          return jsonEncode({'error': 'base64 无效，无法解码'});
+        }
+        final tmp =
+            '/workspace/.ai/b64_${DateTime.now().microsecondsSinceEpoch}.b64';
+        final bParent = bPath.contains('/')
+            ? bPath.substring(0, bPath.lastIndexOf('/'))
+            : '';
+        return ShellLock.run(
+          ShellLock.file(bPath),
+          () async {
+            final bridge = ProotBridge();
+            if (bParent.isNotEmpty) {
+              await bridge.exec(
+                command: 'mkdir',
+                args: ['-p', bParent],
+              );
+            }
+            await bridge.writeFile(path: tmp, content: b64);
+            final result = await bridge.exec(
+              command: 'sh',
+              args: [
+                '-c',
+                'base64 -d ${_quote(tmp)} > ${_quote(bPath)}'
+                    ' && rm -f ${_quote(tmp)}',
+              ],
+              timeoutSeconds: 120,
+            );
+            if (result.exitCode != 0) {
+              return jsonEncode({
+                'error': 'base64 解码失败',
+                'stderr': result.stderr,
+                if (result.exitCode == 127)
+                  'hint':
+                      '没有 base64 命令，先 shell_exec: apt-get install -y coreutils',
+              });
+            }
+            return jsonEncode({
+              'ok': true,
+              'path': bPath,
+              'bytes': bBytes.length,
+            });
+          },
+          label: 'shell_write_binary:$bPath',
+          timeout: const Duration(seconds: 180),
+        );
+
+      case 'shell_read_binary':
+        final rPath = args['path']?.toString() ?? '';
+        if (rPath.isEmpty) return jsonEncode({'error': '缺少 path'});
+        final rResult = await ShellLock.run(
+          ShellLock.terminal,
+          () => _exec(
+            'base64 -w0 ${_quote(rPath)}',
+            timeoutSeconds: 120,
+          ),
+          label: 'shell_read_binary:$rPath',
+          timeout: const Duration(seconds: 180),
+        );
+        if (rResult.exitCode != 0) {
+          return jsonEncode({
+            'error': '读取/编码失败',
+            'stderr': rResult.stderr,
+          });
+        }
+        return jsonEncode({
+          'path': rPath,
+          'base64': rResult.stdout.trim(),
+          'note': '这是 base64 文本，可用 shell_write_binary 写回任意位置',
+        });
+
+      case 'shell_archive_extract':
+        final archive = args['archive']?.toString() ?? '';
+        final lower = archive.toLowerCase();
+        final dest = args['dest']?.toString().isNotEmpty == true
+            ? args['dest'].toString()
+            : (archive.contains('.')
+                ? archive.substring(0, archive.lastIndexOf('.'))
+                : '$archive-extracted');
+        final String cmd;
+        if (lower.endsWith('.zip')) {
+          cmd = 'mkdir -p ${_quote(dest)} && unzip -o '
+              '${_quote(archive)} -d ${_quote(dest)}';
+        } else if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) {
+          cmd = 'mkdir -p ${_quote(dest)} && tar -xzf '
+              '${_quote(archive)} -C ${_quote(dest)}';
+        } else if (lower.endsWith('.tar')) {
+          cmd = 'mkdir -p ${_quote(dest)} && tar -xf '
+              '${_quote(archive)} -C ${_quote(dest)}';
+        } else {
+          return jsonEncode({
+            'error': '不支持的归档格式：$archive',
+            'supported': '.zip / .tar / .tar.gz / .tgz',
+          });
+        }
+        final aResult = await ShellLock.run(
+          ShellLock.terminal,
+          () => _exec(cmd, timeoutSeconds: 180),
+          label: 'shell_archive_extract:$archive',
+          timeout: const Duration(seconds: 240),
+        );
+        if (aResult.exitCode != 0) {
+          return jsonEncode({
+            'error': '解压失败',
+            'stderr': aResult.stderr,
+            if (aResult.exitCode == 127)
+              'hint': '缺少 unzip/tar，先 shell_exec: apt-get install -y unzip tar',
+          });
+        }
+        return jsonEncode({
+          'ok': true,
+          'archive': archive,
+          'dest': dest,
+          'stdout': aResult.stdout,
+        });
 
       default:
         throw ArgumentError('未实现工具：$toolName');
