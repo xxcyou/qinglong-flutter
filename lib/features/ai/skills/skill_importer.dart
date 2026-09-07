@@ -107,7 +107,8 @@ class SkillImporter {
           'https://raw.githubusercontent.com/${blob.group(1)}/${blob.group(2)}/'
           '${blob.group(3)}/${blob.group(4)}';
       final dir = rawFile.substring(0, rawFile.lastIndexOf('/'));
-      return (rawFile, [dir]);
+      final isSkillDoc = rawFile.split('/').last.toLowerCase() == 'skill.md';
+      return (rawFile, isSkillDoc ? [dir] : const <String>[]);
     }
 
     // 仓库 / 目录首页（owner/repo 或 owner/repo/tree/branch/path）
@@ -140,12 +141,17 @@ class SkillImporter {
         throw StateError(
             '在 $owner/$repo 没找到 SKILL.md 或 README.md。技能仓库一般要在根目录或子目录放一个 SKILL.md。');
       }
-      final dir = path.isEmpty ? base : '$base/$path';
-      return (hit, [dir]);
+      final isSkillDoc = hit.split('/').last.toLowerCase() == 'skill.md';
+      // 只对真正的 SKILL.md 递归拉同目录文件；万一命中的是 README，
+      // 只当一份说明装进来，不把整个仓库当技能文件夹下载。
+      final dir = isSkillDoc ? (path.isEmpty ? base : '$base/$path') : '';
+      return (hit, dir.isEmpty ? const <String>[] : [dir]);
     }
 
-    // 其它：直接当 raw 文件地址。
-    return (u, [u.substring(0, u.lastIndexOf('/'))]);
+    // 其它：直接当 raw 文件地址；只有是 SKILL.md 才试着带同目录文件。
+    final isSkillDoc = u.split('/').last.toLowerCase() == 'skill.md';
+    final dir = u.contains('/') ? u.substring(0, u.lastIndexOf('/')) : '';
+    return (u, isSkillDoc && dir.isNotEmpty ? [dir] : const <String>[]);
   }
 
   static Future<String> _fetchText(String url) async {
@@ -176,7 +182,7 @@ class SkillImporter {
     final m = RegExp(
       r'^https?://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.*)$',
     ).firstMatch(dirUrl);
-    if (m == null) return const [];
+    if (m == null) return const <String>[];
     final owner = m.group(1)!;
     final repo = m.group(2)!;
     final ref = m.group(3)!;
