@@ -143,7 +143,8 @@ class MetaTools {
     List<AiSkill> skillList,
   ) {
     String describe(AiSkill s) =>
-        '- ${s.name}（id=${s.id}${s.builtin ? '，内置' : ''}${s.enabled ? '' : '，已停用'}）：${s.description}';
+        '- ${s.name}（id=${s.id}${s.builtin ? '，内置' : ''}${s.enabled ? '' : '，已停用'}'
+        '${s.files.isEmpty ? '' : '，${s.files.length} 个附件/${s.files.where((f) => f.isScript).length} 脚本'}）：${s.description}';
 
     return [
       ExternalTool(
@@ -470,8 +471,9 @@ class MetaTools {
       '- 记忆：memory_write / memory_search / memory_delete。当前 $memoryCount 条。'
           '每次学到跨会话有用的结论（用户偏好、环境事实、踩坑教训）就立刻 memory_write，'
           '别指望下次还记得；发现记忆过时就删掉重写。',
-      '- 技能：skill_list / skill_read / skill_create / skill_delete / skill_toggle。当前 $skillCount 个。'
-          '用户说"这个项目不错帮我装成技能"→ web_fetch 抓正文 → 读懂 → 提炼成步骤化手册 → skill_create。'
+      '- 技能：skill_list / skill_read / skill_install / skill_run / skill_create / skill_delete / skill_toggle。当前 $skillCount 个。'
+          '用户要给市面上的技能仓库（含 SKILL.md 和 scripts 代码）时，直接用 skill_install 完整导入，'
+          '不要 web_fetch 抓个 README 再魔改成简化版；带脚本的技能用 skill_run 在终端/青龙跑。'
           '用户说某技能不好用 → skill_read 看现状 → skill_create 传同一个 id 覆盖。'
           '重复踩同一个坑三次以上，主动提议把正确做法写成技能。',
       '- MCP：mcp_list / mcp_add / mcp_remove / mcp_toggle / mcp_refresh。当前 $mcpServerCount 个服务器。'

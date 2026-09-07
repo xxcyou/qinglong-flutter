@@ -9,6 +9,8 @@ import '../../../core/llm/llm_client.dart';
 import '../../../core/llm/llm_config_provider.dart';
 import '../../../core/llm/llm_provider.dart';
 import '../../../core/network/error_handler.dart';
+import '../../../core/local_shell/proot_bridge.dart';
+import '../../../core/local_shell/shell_lock.dart';
 import '../../../core/utils/logger.dart';
 import '../../../router.dart';
 import '../../panels/providers/panel_list_provider.dart';
@@ -2163,17 +2165,125 @@ class ChatNotifier extends Notifier<ChatState> {
       tools.add(
         ExternalTool(
           name: 'skill_read',
-          description: '读取一个技能的完整操作手册。看到匹配场景时先读手册再动手。',
+          description: '读取一个技能的操作手册或附件代码/资源文件。'
+              '看到匹配场景时先读手册再动手；需要看技能里的脚本时传 path。',
           parameters: const {
             'type': 'object',
             'properties': {
               'name': {'type': 'string', 'description': '技能名，例如 script-debug'},
+              'path': {
+                'type': 'string',
+                'description': '可选。技能内相对路径，如 scripts/check.py',
+              },
             },
             'required': ['name'],
           },
           origin: '本地技能库',
+          invoke: (args) async => skillNotifier.read(
+            args['name']?.toString() ?? '',
+            path: args['path']?.toString(),
+          ),
+        ),
+      );
+      tools.add(
+        ExternalTool(
+          name: 'skill_install',
+          description: '从市面技能仓库/GitHub/直链完整安装一个技能（含 SKILL.md、'
+              'scripts 代码、references 资料）。'
+              '输入可以是 GitHub 仓库首页、技能子目录、或 SKILL.md raw 直链。'
+              '用户说"装个技能/这个仓库不错帮我装成技能"时用这个，不要只抓 README 拼个简化版。',
+          parameters: const {
+            'type': 'object',
+            'properties': {
+              'url': {'type': 'string', 'description': 'GitHub 仓库/目录/直链'},
+            },
+            'required': ['url'],
+          },
+          origin: '技能市场',
+          isWrite: true,
           invoke: (args) async =>
-              skillNotifier.read(args['name']?.toString() ?? ''),
+              skillNotifier.importFromSource(args['url']?.toString() ?? ''),
+        ),
+      );
+      tools.add(
+        ExternalTool(
+          name: 'skill_run',
+          description: '把技能里的某个脚本（如 scripts/xxx.py、scripts/xxx.js）'
+              '落盘到本机终端 /workspace/skills/<技能名>/ 并直接运行。'
+              '运行前先 skill_read 看手册确认脚本用途和参数。',
+          parameters: const {
+            'type': 'object',
+            'properties': {
+              'name': {'type': 'string', 'description': '技能名'},
+              'script': {
+                'type': 'string',
+                'description': '技能内脚本路径，如 scripts/check.py',
+              },
+              'args': {
+                'type': 'array',
+                'items': {'type': 'string'},
+                'description': '传给脚本的参数（可选）',
+              },
+              'timeoutSeconds': {
+                'type': 'integer',
+                'description': '超时，默认 60',
+              },
+            },
+            'required': ['name', 'script'],
+          },
+          origin: '本地技能库',
+          isWrite: true,
+          invoke: (args) async {
+            String clip(String s, [int n = 20000]) =>
+                s.length > n ? '${s.substring(0, n)}\n…（输出已截断）' : s;
+            final name = args['name']?.toString() ?? '';
+            final script = args['script']?.toString() ?? '';
+            final skill = skillNotifier.skillByName(name);
+            if (skill == null) {
+              return '没有技能「$name」。可用：${skillNotifier.enabledNames.join('、')}';
+            }
+            final file = skillNotifier.skillFile(name, script);
+            if (file == null) {
+              final avail = skill.files.isEmpty
+                  ? '（没有附件文件）'
+                  : skill.files.map((f) => f.path).join('、');
+              return '技能「$name」没有脚本「$script」。附件：$avail';
+            }
+            final ext = file.path.toLowerCase();
+            final bin = ext.endsWith('.js')
+                ? 'node'
+                : (ext.endsWith('.sh') || ext.endsWith('.bash'))
+                    ? 'bash'
+                    : 'python3';
+            final base = '/workspace/skills/${skill.name}';
+            final guestPath = '$base/${file.path}';
+            final timeout = (args['timeoutSeconds'] as num?)?.toInt() ?? 60;
+            final argList = <String>[
+              for (final a in (args['args'] as List? ?? const [])) a.toString(),
+            ];
+            return ShellLock.run(
+              ShellLock.terminal,
+              () async {
+                final bridge = ProotBridge();
+                final parent =
+                    guestPath.substring(0, guestPath.lastIndexOf('/'));
+                await bridge.exec(command: 'mkdir', args: ['-p', parent]);
+                await bridge.writeFile(path: guestPath, content: file.content);
+                final result = await bridge.exec(
+                  command: bin,
+                  args: [guestPath, ...argList],
+                  cwd: base,
+                  timeoutSeconds: timeout,
+                );
+                return '技能脚本已运行：$bin $guestPath\n'
+                    '退出码：${result.exitCode}\n'
+                    'stdout：${clip(result.stdout)}\n'
+                    'stderr：${clip(result.stderr)}';
+              },
+              label: 'skill_run:$name/${file.path}',
+              timeout: Duration(seconds: timeout + 60),
+            );
+          },
         ),
       );
     }

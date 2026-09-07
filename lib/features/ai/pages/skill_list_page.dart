@@ -26,6 +26,11 @@ class SkillListPage extends ConsumerWidget {
       subtitle: '${state.enabled.length}/${state.skills.length} 个已启用',
       actions: [
         IconButton(
+          tooltip: '从市面技能仓库完整安装',
+          onPressed: () => _import(context, ref),
+          icon: const Icon(Icons.download_outlined, size: 22),
+        ),
+        IconButton(
           tooltip: '新建技能',
           onPressed: () => _edit(context, ref, null),
           icon: const Icon(Icons.add, size: 22),
@@ -90,6 +95,40 @@ class SkillListPage extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _import(BuildContext context, WidgetRef ref) async {
+    final controller = TextEditingController();
+    final url = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('从市面技能仓库安装'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.url,
+          decoration: const InputDecoration(
+            labelText: 'GitHub 仓库 / 技能目录 / SKILL.md 直链',
+            hintText: 'https://github.com/xxx/skills/tree/main/skills/pdf',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('安装'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (url == null || url.isEmpty) return;
+    final msg = await ref.read(skillProvider.notifier).importFromSource(url);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> _edit(
@@ -195,6 +234,17 @@ class _SkillCard extends StatelessWidget {
             ],
           ),
           Text(skill.description, style: const TextStyle(fontSize: 12.5)),
+          if (skill.files.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              '${skill.files.length} 个附件 · '
+              '${skill.files.where((f) => f.isScript).length} 个脚本'
+              '${skill.sourceUrl.isEmpty ? '' : ' · ${skill.sourceUrl}'}',
+              style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
           if (skill.whenToUse.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(
@@ -273,6 +323,10 @@ class _SkillEditPageState extends State<_SkillEditPage> {
                 whenToUse: _when.text.trim(),
                 instructions: _body.text,
                 enabled: widget.skill?.enabled ?? true,
+                // 市面导入的技能带代码/资源文件，编辑手册时不能丢。
+                files: widget.skill?.files ?? const [],
+                license: widget.skill?.license ?? '',
+                sourceUrl: widget.skill?.sourceUrl ?? '',
               ),
             );
           },

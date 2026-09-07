@@ -1,9 +1,40 @@
 import 'dart:convert';
 
-/// 一个「技能」= 一段可复用的操作手册。
+/// 技能里的一个附属文件（代码脚本 / 参考资料 / 资源）。
 ///
-/// 设计成渐进披露：系统提示里只放名字 + 一句话描述 + 触发场景，
-/// AI 判断需要时用 skill_read 工具把正文读出来。这样装十几个技能
+/// 市面技能是「文件夹」：SKILL.md 之外往往还有 `scripts/*.py|*.js`、
+/// `references/*.md` 等。完整支持就得把这些文件随技能一起存下来，
+/// 让 AI 既能读到内容，也能落盘到终端实际运行。
+class SkillFile {
+  const SkillFile({required this.path, required this.content});
+
+  /// 技能内相对路径，如 `scripts/check.py`、`references/guide.md`。
+  final String path;
+
+  /// 文件文本内容。二进制资源（图片等）暂以 base64 文本存。
+  final String content;
+
+  /// 是不是脚本（.py/.js/.sh 等），决定能否直接跑。
+  bool get isScript => RegExp(r'\.(py|js|jsx|ts|sh|bash|pl|rb|go)$')
+      .hasMatch(path.toLowerCase());
+
+  Map<String, dynamic> toJson() => {'path': path, 'content': content};
+
+  factory SkillFile.fromJson(Map<String, dynamic> json) => SkillFile(
+        path: json['path']?.toString() ?? '',
+        content: json['content']?.toString() ?? '',
+      );
+}
+
+/// 一个「技能」= 一份 SKILL.md 手册 + 可选的一批代码/资源文件。
+///
+/// 兼容市面 Agent Skills（Anthropic 标准）：
+/// - `name` / `description` 来自 SKILL.md 的 YAML frontmatter；
+/// - `instructions` 是 SKILL.md 正文；
+/// - `files` 是同目录下的 scripts/references/resources 等附属文件。
+///
+/// 渐进披露：系统提示里只放名字 + 一句话描述 + 触发场景，
+/// AI 判断需要时用 skill_read 工具把正文/代码读出来。这样装几十个技能
 /// 也不会把上下文撑爆。
 class AiSkill {
   const AiSkill({
@@ -14,23 +45,38 @@ class AiSkill {
     this.whenToUse = '',
     this.enabled = true,
     this.builtin = false,
+    this.license = '',
+    this.sourceUrl = '',
+    this.files = const [],
   });
 
   final String id;
 
-  /// 供 AI 引用的名字，建议 kebab-case。
+  /// 供 AI 引用的名字，kebab-case，与 SKILL.md frontmatter 的 name 一致。
   final String name;
   final String description;
 
   /// 什么时候该用它——写清楚 AI 才知道何时加载。
   final String whenToUse;
 
-  /// 正文：步骤、注意事项、模板代码。
+  /// SKILL.md 正文：步骤、注意事项、模板代码。
   final String instructions;
   final bool enabled;
 
   /// 内置技能不可删除，可以停用。
   final bool builtin;
+
+  /// SKILL.md frontmatter 里的 license（可选）。
+  final String license;
+
+  /// 来源（GitHub 仓库/URL），便于追踪更新。
+  final String sourceUrl;
+
+  /// 随技能一起导入的附属文件（scripts/references/resources…）。
+  final List<SkillFile> files;
+
+  /// 相对某目录展开标题时，直接从正文里提取一级标题当名字。
+  bool get hasCode => files.any((f) => f.isScript);
 
   AiSkill copyWith({
     String? name,
@@ -38,6 +84,9 @@ class AiSkill {
     String? whenToUse,
     String? instructions,
     bool? enabled,
+    String? license,
+    String? sourceUrl,
+    List<SkillFile>? files,
   }) {
     return AiSkill(
       id: id,
@@ -47,6 +96,9 @@ class AiSkill {
       instructions: instructions ?? this.instructions,
       enabled: enabled ?? this.enabled,
       builtin: builtin,
+      license: license ?? this.license,
+      sourceUrl: sourceUrl ?? this.sourceUrl,
+      files: files ?? this.files,
     );
   }
 
@@ -58,6 +110,9 @@ class AiSkill {
         'instructions': instructions,
         'enabled': enabled,
         'builtin': builtin,
+        'license': license,
+        'sourceUrl': sourceUrl,
+        'files': [for (final f in files) f.toJson()],
       };
 
   factory AiSkill.fromJson(Map<String, dynamic> json) => AiSkill(
@@ -69,6 +124,12 @@ class AiSkill {
         instructions: json['instructions']?.toString() ?? '',
         enabled: json['enabled'] as bool? ?? true,
         builtin: json['builtin'] as bool? ?? false,
+        license: json['license']?.toString() ?? '',
+        sourceUrl: json['sourceUrl']?.toString() ?? '',
+        files: [
+          for (final f in (json['files'] as List? ?? const []))
+            if (f is Map<String, dynamic>) SkillFile.fromJson(f),
+        ],
       );
 
   static String encodeList(List<AiSkill> skills) =>
@@ -76,12 +137,16 @@ class AiSkill {
 
   static List<AiSkill> decodeList(String raw) {
     if (raw.isEmpty) return const [];
-    final decoded = jsonDecode(raw);
-    if (decoded is! List) return const [];
-    return [
-      for (final item in decoded)
-        if (item is Map<String, dynamic>) AiSkill.fromJson(item),
-    ];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return const [];
+      return [
+        for (final item in decoded)
+          if (item is Map<String, dynamic>) AiSkill.fromJson(item),
+      ];
+    } catch (e) {
+      return const [];
+    }
   }
 }
 
