@@ -67,12 +67,21 @@ class SkillImporter {
           try {
             final rawUrl = item;
             if (rawUrl.isEmpty) continue;
-            final content = await _fetchText(rawUrl);
             final rel = rawUrl.startsWith(base)
                 ? rawUrl.substring(base.length)
                 : rawUrl.split('/').last;
             if (rel.isEmpty) continue;
-            files.add(SkillFile(path: rel, content: content));
+            if (_isBinaryPath(rel)) {
+              final bytes = await _fetchBytes(rawUrl);
+              files.add(SkillFile(
+                path: rel,
+                content: base64Encode(bytes),
+                binary: true,
+              ));
+            } else {
+              final content = await _fetchText(rawUrl);
+              files.add(SkillFile(path: rel, content: content));
+            }
           } catch (_) {
             // 单个文件拉失败不阻止整个技能导入。
           }
@@ -167,6 +176,22 @@ class SkillImporter {
     return body;
   }
 
+  static Future<List<int>> _fetchBytes(String url) async {
+    final resp = await _dio.get<List<int>>(
+      url,
+      options: Options(responseType: ResponseType.bytes),
+    );
+    final code = resp.statusCode ?? 0;
+    final bytes = resp.data ?? const <int>[];
+    if (code >= 400 || bytes.isEmpty) {
+      throw StateError('抓取二进制失败（HTTP $code）：$url');
+    }
+    if (bytes.length > _maxFileSize) {
+      throw StateError('二进制文件过大（${bytes.length} 字节）：$url');
+    }
+    return bytes;
+  }
+
   static Future<int> _statusCode(String url) async {
     try {
       final resp = await _dio.get<String>(url);
@@ -210,6 +235,25 @@ class SkillImporter {
       // API 不可用时退回只拿 SKILL.md 本身。
     }
     return out;
+  }
+
+  static bool _isBinaryPath(String p) {
+    final lower = p.toLowerCase();
+    return lower.endsWith('.tar') ||
+        lower.endsWith('.tar.gz') ||
+        lower.endsWith('.tgz') ||
+        lower.endsWith('.gz') ||
+        lower.endsWith('.zip') ||
+        lower.endsWith('.jar') ||
+        lower.endsWith('.bin') ||
+        lower.endsWith('.dat') ||
+        lower.endsWith('.exe') ||
+        lower.endsWith('.so') ||
+        lower.endsWith('.dll') ||
+        lower.endsWith('.pdf') ||
+        lower.endsWith('.docx') ||
+        lower.endsWith('.xlsx') ||
+        lower.endsWith('.pptx');
   }
 
   static bool _wantedPath(String p) {

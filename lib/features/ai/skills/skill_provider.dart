@@ -134,6 +134,12 @@ class SkillNotifier extends Notifier<SkillState> {
         return '技能「${skill.name}」没有文件「$p」。该技能附件：$avail';
       }
       final f = file.first;
+      if (f.binary) {
+        return '技能「${skill.name}」文件 ${f.path} 是二进制附件'
+            '（${f.content.length} 个 base64 字符）。'
+            '用 skill_export(name, path) 把内容写到 /workspace/skills 下，'
+            '再用 shell_archive_extract 解压或直接处理。';
+      }
       return '技能「${skill.name}」文件 ${f.path}（${f.content.length} 字）：\n${f.content}';
     }
     var out =

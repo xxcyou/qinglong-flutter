@@ -6,23 +6,35 @@ import 'dart:convert';
 /// `references/*.md` 等。完整支持就得把这些文件随技能一起存下来，
 /// 让 AI 既能读到内容，也能落盘到终端实际运行。
 class SkillFile {
-  const SkillFile({required this.path, required this.content});
+  const SkillFile({
+    required this.path,
+    required this.content,
+    this.binary = false,
+  });
 
   /// 技能内相对路径，如 `scripts/check.py`、`references/guide.md`。
   final String path;
 
-  /// 文件文本内容。二进制资源（图片等）暂以 base64 文本存。
+  /// 文本内容；[binary] 为 true 时是 base64 编码的二进制内容。
   final String content;
+
+  /// 是否二进制文件（tarball/zip/图片等）。二进制内容以 base64 存。
+  final bool binary;
 
   /// 是不是脚本（.py/.js/.sh 等），决定能否直接跑。
   bool get isScript => RegExp(r'\.(py|js|jsx|ts|sh|bash|pl|rb|go)$')
       .hasMatch(path.toLowerCase());
 
-  Map<String, dynamic> toJson() => {'path': path, 'content': content};
+  /// 文本文件的原始内容（二进制时返回空/提示）。
+  String? get textContent => binary ? null : content;
+
+  Map<String, dynamic> toJson() =>
+      {'path': path, 'content': content, 'binary': binary};
 
   factory SkillFile.fromJson(Map<String, dynamic> json) => SkillFile(
         path: json['path']?.toString() ?? '',
         content: json['content']?.toString() ?? '',
+        binary: json['binary'] == true,
       );
 }
 

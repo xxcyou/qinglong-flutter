@@ -2074,6 +2074,8 @@ class ChatNotifier extends Notifier<ChatState> {
     }
   }
 
+  static String _quote(String value) => "'${value.replaceAll("'", "'\\''")}'";
+
   /// 组装运行期扩展工具：元能力（记忆/技能/MCP 自管理）+ 技能读取 + MCP 工具。
   List<ExternalTool> _buildExternalTools() {
     final tools = <ExternalTool>[
@@ -2282,6 +2284,77 @@ class ChatNotifier extends Notifier<ChatState> {
               },
               label: 'skill_run:$name/${file.path}',
               timeout: Duration(seconds: timeout + 60),
+            );
+          },
+        ),
+      );
+      tools.add(
+        ExternalTool(
+          name: 'skill_export',
+          description: '把技能里的附件文件（含二进制 tarball/zip）落盘到'
+              ' /workspace/skills/<技能名>/<path>。'
+              '文本直接写盘；二进制用 base64 解码写盘。'
+              '装带资源的市面技能时先 skill_export，再 shell_archive_extract 解压、'
+              '或 shell_exec 执行。',
+          parameters: const {
+            'type': 'object',
+            'properties': {
+              'name': {'type': 'string', 'description': '技能名'},
+              'path': {
+                'type': 'string',
+                'description': '技能内附件路径，例如 scripts/tool.tar.gz',
+              },
+            },
+            'required': ['name', 'path'],
+          },
+          origin: '本地技能库',
+          isWrite: true,
+          invoke: (args) async {
+            final name = args['name']?.toString() ?? '';
+            final path = args['path']?.toString() ?? '';
+            final skill = skillNotifier.skillByName(name);
+            if (skill == null) {
+              return '没有技能「$name」。可用：${skillNotifier.enabledNames.join('、')}';
+            }
+            final file = skillNotifier.skillFile(name, path);
+            if (file == null) {
+              final avail = skill.files.isEmpty
+                  ? '（没有附件文件）'
+                  : skill.files.map((f) => f.path).join('、');
+              return '技能「$name」没有附件「$path」。附件：$avail';
+            }
+            final base = '/workspace/skills/${skill.name}';
+            final guestPath = '$base/${file.path}';
+            final parent = guestPath.substring(0, guestPath.lastIndexOf('/'));
+            return ShellLock.run(
+              ShellLock.file(guestPath),
+              () async {
+                final bridge = ProotBridge();
+                await bridge.exec(command: 'mkdir', args: ['-p', parent]);
+                if (file.binary) {
+                  final tmp = '/workspace/.ai/export_'
+                      '${DateTime.now().microsecondsSinceEpoch}.b64';
+                  await bridge.writeFile(path: tmp, content: file.content);
+                  final result = await bridge.exec(
+                    command: 'sh',
+                    args: [
+                      '-c',
+                      'base64 -d ${_quote(tmp)} > '
+                          '${_quote(guestPath)}'
+                          ' && rm -f ${_quote(tmp)}',
+                    ],
+                    timeoutSeconds: 120,
+                  );
+                  if (result.exitCode != 0) {
+                    return '二进制导出失败：${result.stderr}';
+                  }
+                  return '已导出二进制附件：$guestPath';
+                }
+                await bridge.writeFile(path: guestPath, content: file.content);
+                return '已导出文本附件：$guestPath';
+              },
+              label: 'skill_export:$name/${file.path}',
+              timeout: const Duration(seconds: 180),
             );
           },
         ),
