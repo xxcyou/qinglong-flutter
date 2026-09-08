@@ -18,7 +18,13 @@ class AiControlSheets {
   /// 有服务端报回来的 prompt_tokens 就用它——那是唯一准确的数字；
   /// 还没跑过一轮时才退回字符估算。
   static int estimateUsedTokens(ChatState state) {
-    if (state.lastPromptTokens > 0) return state.lastPromptTokens;
+    // 服务端数值优先；如果它明显低于本地按真实 history 的估算
+    // （常见于网关只报了“增量/其他”token），就取较大者，避免显示成几百 token。
+    if (state.lastPromptTokens > 0) {
+      return state.lastPromptTokens > state.estimatedContextTokens
+          ? state.lastPromptTokens
+          : state.estimatedContextTokens;
+    }
     if (state.estimatedContextTokens > 0) return state.estimatedContextTokens;
     final chars = state.messages.fold<int>(
       0,

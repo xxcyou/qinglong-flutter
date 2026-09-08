@@ -202,8 +202,11 @@ class _ControlRow extends StatelessWidget {
                 ) /
                 3.5)
             .ceil();
-    final usedTokens =
-        state.lastPromptTokens > 0 ? state.lastPromptTokens : estimated;
+    final usedTokens = state.lastPromptTokens > 0
+        ? (state.lastPromptTokens > state.estimatedContextTokens
+            ? state.lastPromptTokens
+            : state.estimatedContextTokens)
+        : estimated;
     final limit = state.contextLimit;
     final percent = limit <= 0 ? 0.0 : (usedTokens / limit).clamp(0.0, 1.0);
     final approval = state.approvalMode;
