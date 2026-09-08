@@ -151,6 +151,25 @@ class SkillImporter {
             '在 $owner/$repo 没找到 SKILL.md 或 README.md。技能仓库一般要在根目录或子目录放一个 SKILL.md。');
       }
       final isSkillDoc = hit.split('/').last.toLowerCase() == 'skill.md';
+      if (!isSkillDoc && path.isEmpty) {
+        // 根目录只有 README 时，可能是 monorepo：技能放在某个子目录里。
+        final subSkills = await _findSkillDocsInTree(owner, repo, branch);
+        if (subSkills.isNotEmpty) {
+          if (subSkills.length > 1) {
+            final example = subSkills.first;
+            final exampleDir = example.contains('/')
+                ? example.substring(0, example.lastIndexOf('/'))
+                : example;
+            throw StateError('仓库根目录下找到 ${subSkills.length} 个技能子目录，无法自动选一个。'
+                '请粘贴具体技能目录链接，例如 '
+                '$base/$exampleDir。');
+          }
+          final subSkill = subSkills.first;
+          final subDir = subSkill.substring(0, subSkill.lastIndexOf('/'));
+          final rawDoc = '$base/$subSkill';
+          return (rawDoc, ['$base/$subDir']);
+        }
+      }
       // 只对真正的 SKILL.md 递归拉同目录文件；万一命中的是 README，
       // 只当一份说明装进来，不把整个仓库当技能文件夹下载。
       final dir = isSkillDoc ? (path.isEmpty ? base : '$base/$path') : '';
@@ -159,6 +178,35 @@ class SkillImporter {
 
     // 其它：直接当 raw 文件地址；只有是 SKILL.md 才试着带同目录文件。
     final isSkillDoc = u.split('/').last.toLowerCase() == 'skill.md';
+    // 如果给的是同目录里的 README/说明链接，也试着把同目录真正的 SKILL.md
+    // 找出来再导入，避免“只装了一个 md、脚本全没装”。
+    if (!isSkillDoc && u.split('/').last.toLowerCase().endsWith('.md')) {
+      final rawMd = RegExp(
+        r'^https?://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.*)$',
+      ).firstMatch(u);
+      if (rawMd != null) {
+        final owner = rawMd.group(1)!;
+        final repo = rawMd.group(2)!;
+        final ref = rawMd.group(3)!;
+        final p = rawMd.group(4) ?? '';
+        final dirPath =
+            p.contains('/') ? p.substring(0, p.lastIndexOf('/')) : '';
+        final found = await _findSkillDocsInTree(
+          owner,
+          repo,
+          ref,
+          underPath: dirPath.isEmpty ? null : dirPath,
+        );
+        if (found.isNotEmpty) {
+          final skillDoc = found.first;
+          final base = 'https://raw.githubusercontent.com/$owner/$repo/$ref';
+          final fdir = skillDoc.contains('/')
+              ? skillDoc.substring(0, skillDoc.lastIndexOf('/'))
+              : '';
+          return ('$base/$skillDoc', ['$base/$fdir']);
+        }
+      }
+    }
     final dir = u.contains('/') ? u.substring(0, u.lastIndexOf('/')) : '';
     return (u, isSkillDoc && dir.isNotEmpty ? [dir] : const <String>[]);
   }
@@ -212,6 +260,39 @@ class SkillImporter {
       throw StateError('二进制文件过大（${bytes.length} 字节）：$url');
     }
     return bytes;
+  }
+
+  static Future<List<String>> _findSkillDocsInTree(
+    String owner,
+    String repo,
+    String ref, {
+    String? underPath,
+  }) async {
+    try {
+      final api = 'https://api.github.com/repos/$owner/$repo/git/trees/'
+          '${Uri.encodeComponent(ref)}?recursive=1';
+      final resp = await _dio.get<String>(api);
+      final decoded = jsonDecode(resp.data ?? '{}');
+      if (decoded is! Map || decoded['tree'] is! List) return const <String>[];
+      final prefix =
+          underPath == null || underPath.isEmpty ? '' : '$underPath/';
+      final candidates = <String>[
+        for (final entry in decoded['tree'] as List)
+          if (entry is Map &&
+              entry['type']?.toString() == 'blob' &&
+              (entry['path']?.toString() ?? '').toLowerCase().endsWith(
+                    '/skill.md',
+                  ) &&
+              (prefix.isEmpty ||
+                  (entry['path']?.toString() ?? '').startsWith(prefix)))
+            entry['path']!.toString(),
+      ];
+      // 优先最靠近根目录的那个，避免选中深层无关示例。
+      candidates.sort((a, b) => a.length.compareTo(b.length));
+      return candidates;
+    } catch (_) {
+      return const <String>[];
+    }
   }
 
   static Future<int> _statusCode(String url) async {
