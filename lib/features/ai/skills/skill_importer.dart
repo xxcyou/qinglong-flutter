@@ -61,31 +61,23 @@ class SkillImporter {
     for (final dirUrl in folderRawUrls) {
       final list = await _listGitDir(dirUrl);
       final base = dirUrl.endsWith('/') ? dirUrl : '$dirUrl/';
-      for (final item in list) {
-        if (item.endsWith('/SKILL.md') || item.endsWith('/skill.md')) continue;
-        if (!item.endsWith('/')) {
-          try {
-            final rawUrl = item;
-            if (rawUrl.isEmpty) continue;
-            final rel = rawUrl.startsWith(base)
-                ? rawUrl.substring(base.length)
-                : rawUrl.split('/').last;
-            if (rel.isEmpty) continue;
-            if (_isBinaryPath(rel)) {
-              final bytes = await _fetchBytes(rawUrl);
-              files.add(SkillFile(
-                path: rel,
-                content: base64Encode(bytes),
-                binary: true,
-              ));
-            } else {
-              final content = await _fetchText(rawUrl);
-              files.add(SkillFile(path: rel, content: content));
-            }
-          } catch (_) {
-            // 单个文件拉失败不阻止整个技能导入。
-          }
-        }
+      final tasks = <String>[
+        for (final item in list)
+          if (!item.endsWith('/') &&
+              !item.endsWith('/SKILL.md') &&
+              !item.endsWith('/skill.md') &&
+              item.isNotEmpty)
+            item,
+      ];
+      // 并发拉取，避免几十个文件串行把 skill_install 拖到 Agent 看门狗超时。
+      const batch = 6;
+      for (var i = 0; i < tasks.length; i += batch) {
+        final end = i + batch < tasks.length ? i + batch : tasks.length;
+        final results = await Future.wait([
+          for (final rawUrl in tasks.sublist(i, end))
+            _fetchSkillFile(rawUrl, base),
+        ]);
+        files.addAll(results.whereType<SkillFile>());
       }
     }
 
@@ -161,6 +153,28 @@ class SkillImporter {
     final isSkillDoc = u.split('/').last.toLowerCase() == 'skill.md';
     final dir = u.contains('/') ? u.substring(0, u.lastIndexOf('/')) : '';
     return (u, isSkillDoc && dir.isNotEmpty ? [dir] : const <String>[]);
+  }
+
+  static Future<SkillFile?> _fetchSkillFile(String rawUrl, String base) async {
+    try {
+      final rel = rawUrl.startsWith(base)
+          ? rawUrl.substring(base.length)
+          : rawUrl.split('/').last;
+      if (rel.isEmpty) return null;
+      if (_isBinaryPath(rel)) {
+        final bytes = await _fetchBytes(rawUrl);
+        return SkillFile(
+          path: rel,
+          content: base64Encode(bytes),
+          binary: true,
+        );
+      }
+      final content = await _fetchText(rawUrl);
+      return SkillFile(path: rel, content: content);
+    } catch (_) {
+      // 单个文件拉失败不阻止整个技能导入。
+      return null;
+    }
   }
 
   static Future<String> _fetchText(String url) async {

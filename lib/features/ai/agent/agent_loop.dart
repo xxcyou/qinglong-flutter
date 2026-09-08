@@ -221,6 +221,14 @@ class AgentLoop {
       'dependency_',
       'panel_update',
       'editor_run',
+      // 装技能可能拉整个仓库目录（含脚本/资源/二进制），天然是慢操作；
+      // 跑技能脚本、导出/写入大二进制、解压归档也一样。
+      'skill_install',
+      'skill_run',
+      'skill_export',
+      'shell_write_binary',
+      'shell_read_binary',
+      'shell_archive_extract',
     ];
     return slow.any(name.startsWith) ? _slowToolTimeout : _toolTimeout;
   }
