@@ -193,12 +193,15 @@ class _ControlRow extends StatelessWidget {
     final model = state.selectedModel.isEmpty ? '未选择模型' : state.selectedModel;
     // 上下文占用要用服务端报回来的 prompt_tokens，没有再退回字符估算。
     // 以前拿"累计计费 token"或纯估算去算百分比，和真实占用差一个数量级。
-    final estimated = (state.messages.fold<int>(
-              0,
-              (sum, m) => sum + m.content.length + m.toolCalls.length * 80 + 20,
-            ) /
-            3.5)
-        .ceil();
+    final estimated = state.estimatedContextTokens > 0
+        ? state.estimatedContextTokens
+        : (state.messages.fold<int>(
+                  0,
+                  (sum, m) =>
+                      sum + m.content.length + m.toolCalls.length * 80 + 20,
+                ) /
+                3.5)
+            .ceil();
     final usedTokens =
         state.lastPromptTokens > 0 ? state.lastPromptTokens : estimated;
     final limit = state.contextLimit;

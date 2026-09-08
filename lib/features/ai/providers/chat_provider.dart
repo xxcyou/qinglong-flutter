@@ -72,6 +72,7 @@ class ChatState {
     this.interruptedRun,
     this.lastPromptTokens = 0,
     this.lastCacheHitTokens = 0,
+    this.estimatedContextTokens = 0,
     this.isLoading = false,
     this.runningSessionIds = const <String>{},
     this.lastTurns = 0,
@@ -140,6 +141,12 @@ class ChatState {
 
   /// 上一轮真实的 prompt_tokens（上下文实际占用），与累计计费量区分。
   final int lastPromptTokens;
+
+  /// 本地根据“真正会发给模型的 history”估算的上下文 token 数。
+  ///
+  /// 服务端没报 prompt_tokens 时用来显示“上下文占用”，
+  /// 比拿气泡文字长度估算准很多（会算进系统提示、工具结果明细、压缩后历史）。
+  final int estimatedContextTokens;
 
   /// 上一轮命中提示词缓存的 token 数。
   final int lastCacheHitTokens;
@@ -236,6 +243,7 @@ class ChatState {
     bool clearInterruptedRun = false,
     int? lastPromptTokens,
     int? lastCacheHitTokens,
+    int? estimatedContextTokens,
     bool? isLoading,
     Set<String>? runningSessionIds,
     int? lastTurns,
@@ -277,6 +285,8 @@ class ChatState {
           clearInterruptedRun ? null : interruptedRun ?? this.interruptedRun,
       lastPromptTokens: lastPromptTokens ?? this.lastPromptTokens,
       lastCacheHitTokens: lastCacheHitTokens ?? this.lastCacheHitTokens,
+      estimatedContextTokens:
+          estimatedContextTokens ?? this.estimatedContextTokens,
       isLoading: isLoading ?? this.isLoading,
       runningSessionIds: runningSessionIds ?? this.runningSessionIds,
       lastTurns: lastTurns ?? this.lastTurns,
@@ -376,6 +386,7 @@ class ChatNotifier extends Notifier<ChatState> {
       state = state.copyWith(
         sessions: sessions,
         currentSessionId: lastId,
+        estimatedContextTokens: _estimateContextFor(lastId),
       );
     } catch (e) {
       Logger.e('ai', 'load sessions failed', e);
@@ -1774,6 +1785,7 @@ class ChatNotifier extends Notifier<ChatState> {
       liveContentChars: run?.liveContent.length ?? 0,
       liveTool: run?.liveTool ?? '',
       livePlan: run?.livePlan ?? const AgentTaskPlan(),
+      estimatedContextTokens: _estimateContextFor(id),
     );
     _persist();
   }
@@ -2637,12 +2649,26 @@ class ChatNotifier extends Notifier<ChatState> {
     return '';
   }
 
+  int _estimateContextFor(String? id) {
+    if (id == null) return 0;
+    try {
+      return _estimateTokens(_historyWithAutoCompress(sessionId: id));
+    } catch (_) {
+      return 0;
+    }
+  }
+
   void _replaceSession(AiSession next) {
     final sessions = [
       for (final s in state.sessions)
         if (s.id == next.id) next else s,
     ];
     state = state.copyWith(sessions: sessions);
+    if (next.id == state.currentSessionId) {
+      state = state.copyWith(
+        estimatedContextTokens: _estimateContextFor(next.id),
+      );
+    }
     _persist();
   }
 

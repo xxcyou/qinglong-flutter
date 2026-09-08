@@ -19,6 +19,7 @@ class AiControlSheets {
   /// 还没跑过一轮时才退回字符估算。
   static int estimateUsedTokens(ChatState state) {
     if (state.lastPromptTokens > 0) return state.lastPromptTokens;
+    if (state.estimatedContextTokens > 0) return state.estimatedContextTokens;
     final chars = state.messages.fold<int>(
       0,
       (sum, m) => sum + m.content.length + m.toolCalls.length * 80 + 20,
