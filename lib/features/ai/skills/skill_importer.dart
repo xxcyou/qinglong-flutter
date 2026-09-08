@@ -37,7 +37,7 @@ class SkillImporter {
 
   /// 从 [url] 导入一个技能。返回 (技能, 来源 URL 列表里命中的那个)。
   /// [into] 指定将文件落盘到的本地目录（None 则不落盘，仅存进内存）。
-  static Future<(AiSkill, String)> import(String url) async {
+  static Future<(AiSkill, String, String)> import(String url) async {
     final urlNorm = url.trim();
     if (urlNorm.isEmpty) throw ArgumentError('链接为空');
 
@@ -58,6 +58,8 @@ class SkillImporter {
 
     // 2. 拉取同目录下的附属脚本/资源文件。
     final files = <SkillFile>[];
+    var partialNote = '';
+    final sw = Stopwatch()..start();
     for (final dirUrl in folderRawUrls) {
       final list = await _listGitDir(dirUrl);
       final base = dirUrl.endsWith('/') ? dirUrl : '$dirUrl/';
@@ -78,7 +80,13 @@ class SkillImporter {
             _fetchSkillFile(rawUrl, base),
         ]);
         files.addAll(results.whereType<SkillFile>());
+        if (sw.elapsed > const Duration(seconds: 120)) {
+          partialNote = '附件下载已到 120 秒时间预算，先导入前 ${files.length} 个文件'
+              '（共 ${tasks.length} 个）。如果需要完整导入，稍后重试或换更快的网络。';
+          break;
+        }
       }
+      if (partialNote.isNotEmpty) break;
     }
 
     final skill = AiSkill(
@@ -91,7 +99,7 @@ class SkillImporter {
       sourceUrl: urlNorm,
       files: files,
     );
-    return (skill, skillDocUrl);
+    return (skill, skillDocUrl, partialNote);
   }
 
   /// 定位一份技能文档的 raw 地址，同时返回可用来抓目录的 raw 目录地址。
@@ -215,7 +223,10 @@ class SkillImporter {
     }
   }
 
-  /// 通过 GitHub Contents API 递归列出 raw 目录下的所有文件地址。
+  /// 通过 GitHub Git Trees API 一次性列出目录下的所有文本/二进制文件。
+  ///
+  /// 之前用 Contents API 对每个子目录递归 HTTP，技能目录层级一多就非常慢，
+  /// 这也是 skill_install 300 秒超时的主因之一。Trees API 一次拿全树，再本地过滤。
   static Future<List<String>> _listGitDir(String dirUrl) async {
     // 把 raw.githubusercontent.com/{o}/{r}/{ref}/{path} 转成 api 地址。
     final m = RegExp(
@@ -226,24 +237,27 @@ class SkillImporter {
     final repo = m.group(2)!;
     final ref = m.group(3)!;
     final path = (m.group(4) ?? '').replaceAll(RegExp(r'/+$'), '');
-    final api =
-        'https://api.github.com/repos/$owner/$repo/contents/$path?ref=$ref';
     final out = <String>[];
     try {
+      final api = 'https://api.github.com/repos/$owner/$repo/git/trees/'
+          '${Uri.encodeComponent(ref)}?recursive=1';
       final resp = await _dio.get<String>(api);
-      final decoded = jsonDecode(resp.data ?? '[]');
-      if (decoded is! List) return out;
-      for (final entry in decoded) {
+      final decoded = jsonDecode(resp.data ?? '{}');
+      if (decoded is! Map || decoded['tree'] is! List) return out;
+      final prefix = path.isEmpty ? '' : '$path/';
+      final rawBase = 'https://raw.githubusercontent.com/$owner/$repo/$ref';
+      for (final entry in decoded['tree'] as List) {
         if (entry is! Map) continue;
-        final type = entry['type']?.toString();
+        if (entry['type']?.toString() != 'blob') continue;
         final p = entry['path']?.toString() ?? '';
-        final rawBase = 'https://raw.githubusercontent.com/$owner/$repo/$ref';
-        if (type == 'dir') {
-          final sub = await _listGitDir('$rawBase/$p');
-          out.addAll(sub);
-        } else if (type == 'file' && _wantedPath(p)) {
-          out.add('$rawBase/$p');
-        }
+        if (prefix.isNotEmpty && !p.startsWith(prefix)) continue;
+        if (!_wantedPath(p)) continue;
+        out.add('$rawBase/$p');
+      }
+      // 仓库过大被 GitHub 截断时，trees 返回 truncated=true；
+      // 这里仍然尽量用已拿到的部分，不阻塞整个导入。
+      if (decoded['truncated'] == true) {
+        // 不抛错，后面解析会做出“可能不完整”的标记。
       }
     } catch (_) {
       // API 不可用时退回只拿 SKILL.md 本身。

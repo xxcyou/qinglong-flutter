@@ -94,7 +94,7 @@ class SkillNotifier extends Notifier<SkillState> {
   /// 返回一段给人/AI 看的导入结果说明。
   Future<String> importFromSource(String source) async {
     try {
-      final (skill, docUrl) = await SkillImporter.import(source);
+      final (skill, docUrl, note) = await SkillImporter.import(source);
       // 技能名冲突时自动追加后缀避免覆盖。
       var name = skill.name;
       if (state.skills.any((s) => s.name == name)) {
@@ -106,7 +106,8 @@ class SkillNotifier extends Notifier<SkillState> {
       return '技能「${skill.name}」导入成功（来自 $docUrl）。'
           '共 $fileCount 个附件文件，其中 $scriptCount 个是脚本。'
           '正文与代码都已存好，AI 可用 skill_read 读取。'
-          '${skill.license.isEmpty ? '' : ' 许可证：${skill.license}'}';
+          '${skill.license.isEmpty ? '' : ' 许可证：${skill.license}'}'
+          '${note.isEmpty ? '' : '\n$note'}';
     } catch (e) {
       return '导入失败：${e is StateError ? e.message : e}';
     }
