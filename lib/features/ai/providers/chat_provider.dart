@@ -27,6 +27,7 @@ import '../agent/qinglong_skill.dart';
 import '../agent/tool_registry.dart';
 import '../mcp/mcp_provider.dart';
 import '../memory/memory_provider.dart';
+import '../skills/skill_models.dart';
 import '../skills/skill_provider.dart';
 import '../models/ai_message.dart';
 import '../models/agent_event.dart';
@@ -2331,10 +2332,22 @@ class ChatNotifier extends Notifier<ChatState> {
               () async {
                 final bridge = ProotBridge();
                 await bridge.exec(command: 'mkdir', args: ['-p', parent]);
-                if (file.binary) {
+                final binaryMode =
+                    file.binary || SkillFile.isBinaryPath(file.path);
+                if (binaryMode) {
+                  final b64 = file.content.replaceAll(RegExp(r'\s'), '');
+                  List<int> decoded;
+                  try {
+                    decoded = base64Decode(b64);
+                  } catch (_) {
+                    return '附件「${file.path}」不是合法的 base64 二进制数据：'
+                        '它很可能来自旧版本导入的 UTF-8 损坏数据。'
+                        '请先删除该技能，再用 skill_install 从原仓库重新导入一次；'
+                        '新版本会按二进制原样抓取并保存。';
+                  }
                   final tmp = '/workspace/.ai/export_'
                       '${DateTime.now().microsecondsSinceEpoch}.b64';
-                  await bridge.writeFile(path: tmp, content: file.content);
+                  await bridge.writeFile(path: tmp, content: b64);
                   final result = await bridge.exec(
                     command: 'sh',
                     args: [
@@ -2348,7 +2361,8 @@ class ChatNotifier extends Notifier<ChatState> {
                   if (result.exitCode != 0) {
                     return '二进制导出失败：${result.stderr}';
                   }
-                  return '已导出二进制附件：$guestPath';
+                  return '已导出二进制附件：$guestPath'
+                      '（${decoded.length} 字节）';
                 }
                 await bridge.writeFile(path: guestPath, content: file.content);
                 return '已导出文本附件：$guestPath';

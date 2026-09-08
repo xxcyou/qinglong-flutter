@@ -237,24 +237,7 @@ class SkillImporter {
     return out;
   }
 
-  static bool _isBinaryPath(String p) {
-    final lower = p.toLowerCase();
-    return lower.endsWith('.tar') ||
-        lower.endsWith('.tar.gz') ||
-        lower.endsWith('.tgz') ||
-        lower.endsWith('.gz') ||
-        lower.endsWith('.zip') ||
-        lower.endsWith('.jar') ||
-        lower.endsWith('.bin') ||
-        lower.endsWith('.dat') ||
-        lower.endsWith('.exe') ||
-        lower.endsWith('.so') ||
-        lower.endsWith('.dll') ||
-        lower.endsWith('.pdf') ||
-        lower.endsWith('.docx') ||
-        lower.endsWith('.xlsx') ||
-        lower.endsWith('.pptx');
-  }
+  static bool _isBinaryPath(String p) => SkillFile.isBinaryPath(p);
 
   static bool _wantedPath(String p) {
     final lower = p.toLowerCase();

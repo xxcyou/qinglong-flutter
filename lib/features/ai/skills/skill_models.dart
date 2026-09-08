@@ -25,6 +25,26 @@ class SkillFile {
   bool get isScript => RegExp(r'\.(py|js|jsx|ts|sh|bash|pl|rb|go)$')
       .hasMatch(path.toLowerCase());
 
+  /// 相对路径是不是常见二进制（tarball/zip/可执行等）。
+  static bool isBinaryPath(String path) {
+    final lower = path.toLowerCase();
+    return lower.endsWith('.tar') ||
+        lower.endsWith('.tar.gz') ||
+        lower.endsWith('.tgz') ||
+        lower.endsWith('.gz') ||
+        lower.endsWith('.zip') ||
+        lower.endsWith('.jar') ||
+        lower.endsWith('.bin') ||
+        lower.endsWith('.dat') ||
+        lower.endsWith('.exe') ||
+        lower.endsWith('.so') ||
+        lower.endsWith('.dll') ||
+        lower.endsWith('.pdf') ||
+        lower.endsWith('.docx') ||
+        lower.endsWith('.xlsx') ||
+        lower.endsWith('.pptx');
+  }
+
   /// 文本文件的原始内容（二进制时返回空/提示）。
   String? get textContent => binary ? null : content;
 
