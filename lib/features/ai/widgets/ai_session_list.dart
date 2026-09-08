@@ -145,9 +145,11 @@ class _AiSessionListState extends ConsumerState<AiSessionList> {
                     final session = sessions[index];
                     final current = session.id == state.currentSessionId;
                     final pending = _pendingDelete == session.id;
+                    final running =
+                        state.runningSessionIds.contains(session.id);
                     // 正在跑的会话不能删：请求还挂在它身上，删了工具回调会
-                    // 落到一个已经不存在的会话里。
-                    final locked = current && state.isLoading;
+                    // 落到一个已经不存在的会话里。后台话题在跑也一样锁。
+                    final locked = running;
                     if (_renaming == session.id) {
                       return _renameRow(session.id, dense, scheme);
                     }
@@ -177,7 +179,7 @@ class _AiSessionListState extends ConsumerState<AiSessionList> {
                         ),
                         subtitle: Text(
                           '${session.messages.length} 条 · ${_stamp(session.updatedAt)}'
-                          '${locked ? ' · 执行中' : ''}',
+                          '${running ? ' · 执行中' : ''}',
                           style: TextStyle(fontSize: dense ? 10.5 : 13),
                         ),
                         onTap: () {
@@ -187,6 +189,18 @@ class _AiSessionListState extends ConsumerState<AiSessionList> {
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            if (running)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 4),
+                                child: SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: scheme.primary,
+                                  ),
+                                ),
+                              ),
                             IconButton(
                               tooltip: '改名',
                               visualDensity: VisualDensity.compact,

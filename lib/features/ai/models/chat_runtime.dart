@@ -7,21 +7,28 @@ class QueuedMessage {
   QueuedMessage({
     required this.id,
     required this.text,
+    this.sessionId = '',
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
 
   final String id;
   final String text;
+
+  /// 这条消息属于哪个会话；空表示旧数据/全局。并发跑时每个会话各自排各的队。
+  final String sessionId;
   final DateTime createdAt;
 
-  factory QueuedMessage.create(String text) => QueuedMessage(
+  factory QueuedMessage.create(String text, {String sessionId = ''}) =>
+      QueuedMessage(
         id: DateTime.now().microsecondsSinceEpoch.toRadixString(36),
         text: text,
+        sessionId: sessionId,
       );
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'text': text,
+        'sessionId': sessionId,
         'createdAt': createdAt.toIso8601String(),
       };
 
@@ -29,6 +36,7 @@ class QueuedMessage {
         id: json['id']?.toString() ??
             DateTime.now().microsecondsSinceEpoch.toRadixString(36),
         text: json['text']?.toString() ?? '',
+        sessionId: json['sessionId']?.toString() ?? '',
         createdAt: DateTime.tryParse(json['createdAt']?.toString() ?? ''),
       );
 }
