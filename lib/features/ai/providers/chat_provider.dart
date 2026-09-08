@@ -844,7 +844,49 @@ class ChatNotifier extends Notifier<ChatState> {
     return (chars / 3.5).ceil();
   }
 
-  /// 按 模型上下文上限 * 自动压缩阈值 裁剪历史，优先丢弃最早的非系统消息。
+  /// 历史里"系统记录 ·工具摘要/提问记录"的前缀。
+  static final RegExp _systemNoteRe = RegExp(
+    r'（系统记录 ·.*?）',
+    dotAll: true,
+  );
+
+  /// 把较老消息里的工具结果摘要、提问簿记剥掉，只留对话正文。
+  ///
+  /// 之前自动压缩是直接从最旧开始**整条丢消息**：界面气泡还在，模型却
+  /// 完全不记得前面几百轮聊过什么——用户感觉就是"上下文被丢了，但对话框
+  /// 里还能找到记录"。改成先丢老消息里最占地方的系统记录（工具摘要、缓存
+  /// key、ask_user 提醒），把真正的人话尽量留住；实在还超预算才丢整条。
+  static List<LlmMessage> _stripOldToolNotes(
+    List<LlmMessage> history,
+    int keepNewest,
+  ) {
+    if (history.length <= keepNewest) return history;
+    final cut = history.length - keepNewest;
+    final out = <LlmMessage>[];
+    for (var i = 0; i < history.length; i++) {
+      final m = history[i];
+      if (i < cut) {
+        final content = m.content.replaceAll(_systemNoteRe, '').trim();
+        // 纯系统记录的用户消息剥完就空了，直接丢掉，不占位。
+        if (m.role == 'user' && content.isEmpty) continue;
+        out.add(LlmMessage(
+          role: m.role,
+          content: content,
+          toolCalls: m.toolCalls,
+          toolCallId: m.toolCallId,
+          name: m.name,
+        ));
+      } else {
+        out.add(m);
+      }
+    }
+    return out;
+  }
+
+  /// 按 模型上下文上限 * 自动压缩阈值 裁剪历史。
+  ///
+  /// 顺序是：①先只剥老消息的系统记录（保留对话正文）；②还不够再丢最老的
+  /// 非系统消息。这样"后面新需求能看懂项目前因后果"优先于"少发几个 token"。
   List<LlmMessage> _historyWithAutoCompress({
     String userInput = '',
     String? sessionId,
@@ -853,8 +895,17 @@ class ChatNotifier extends Notifier<ChatState> {
     final limit = state.contextLimit;
     if (limit <= 0 || history.length < 2) return history;
     final threshold = (limit * state.autoCompressThreshold).round();
-    var trimmed = history;
+    // 最近 8 条一律保留完整工具明细（含缓存 key），只能动更早的。
+    const keepNewestWithDetails = 8;
+    var trimmed = _stripOldToolNotes(history, keepNewestWithDetails);
     var estimated = _estimateTokens(trimmed);
+    if (estimated <= threshold) {
+      if (trimmed.length != history.length) {
+        Logger.d('ai',
+            'auto compress (strip notes): ${history.length} -> ${trimmed.length}');
+      }
+      return trimmed;
+    }
     while (estimated > threshold && trimmed.length > 2) {
       trimmed = [trimmed.first, ...trimmed.sublist(2)];
       estimated = _estimateTokens(trimmed);
