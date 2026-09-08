@@ -306,6 +306,9 @@ class _SessionRun {
 
   AgentCancelToken? cancelToken;
 
+  /// 继续上次被打断的运行时要带给模型的中断前事件快照。
+  List<AgentEvent> resumeEvents = const [];
+
   final List<AgentEvent> events = [];
   final StringBuffer liveReasoning = StringBuffer();
   final StringBuffer liveContent = StringBuffer();
@@ -445,7 +448,11 @@ class ChatNotifier extends Notifier<ChatState> {
     }
   }
 
-  List<LlmMessage> _history({String userInput = '', String? sessionId}) {
+  List<LlmMessage> _history({
+    String userInput = '',
+    String? sessionId,
+    List<AgentEvent>? resumeEvents,
+  }) {
     final sessionMessages = sessionId == null
         ? state.messages
         : (_sessionById(sessionId)?.messages ?? const <AiChatMessage>[]);
@@ -479,7 +486,7 @@ class ChatNotifier extends Notifier<ChatState> {
     // 那条 user 消息**前面（没有后续 user 消息就作为末尾一条 user 追加）。
     // 放在 user 一侧，模型只会把它当"用户/系统告诉我的事实"，不会当成
     // 自己的说话模板去模仿。
-    return [
+    var history = <LlmMessage>[
       LlmMessage(role: 'system', content: _systemPrompt(userInput: userInput)),
       // 发送失败的消息不进上下文。模型压根没收到过它，把它当"说过的话"
       // 塞进历史，模型会以为自己已经回过，下一轮基于一段不存在的对话推理。
@@ -497,6 +504,33 @@ class ChatNotifier extends Notifier<ChatState> {
         ],
       ),
     ];
+    // 继续被中断的运行：把中断前**已经真实执行过的工具链和结果**注入历史。
+    // 以前这里只把原始用户输入再发一遍，模型看不到执行到一半的过程，
+    // 于是它以为这条消息从未发生，要么从头重来、要么只知道上一个完整任务的
+    // 总结——这正是"执行一半再继续，AI 没上下文"的根因。
+    if (resumeEvents != null && resumeEvents.isNotEmpty) {
+      final digest = _toolDigestFromEvents(resumeEvents);
+      if (digest.isNotEmpty) {
+        final note = '（系统记录 · 上次运行被中断。**下面这些工具已经真的执行过了，'
+            '结果就在这儿**，不要重复调用同样的参数——接着往下做，'
+            '或者按用户新说的方向走。）\n$digest';
+        if (history.length > 1) {
+          final last = history.last;
+          history = [
+            ...history.take(history.length - 1),
+            LlmMessage(
+              role: last.role,
+              content: last.content.trim().isEmpty
+                  ? note
+                  : '${last.content}\n\n$note',
+            ),
+          ];
+        } else {
+          history.add(LlmMessage(role: 'user', content: note));
+        }
+      }
+    }
+    return history;
   }
 
   /// 把"消息 + 这条消息的簿记"编织成最终 payload。
@@ -552,9 +586,12 @@ class ChatNotifier extends Notifier<ChatState> {
   /// 策略：不塞全文，塞「简短摘要 + 缓存 key + 明确指令」——模型需要完整
   /// 内容时应该调 `tool_cache_read(key)`（本地取，不用重跑外部工具），
   /// 而不是傻乎乎地把同一个文件/命令再查一遍。
-  String _toolDigest(AiChatMessage m) {
+  String _toolDigest(AiChatMessage m) => _toolDigestFromEvents(m.agentEvents);
+
+  /// 工具结果明细的通用实现：给已完成的 assistant 消息用，也给出中断快照用。
+  String _toolDigestFromEvents(List<AgentEvent> events) {
     final done = [
-      for (final e in m.agentEvents)
+      for (final e in events)
         if (e.kind == AgentEventKind.toolEnd) e,
     ];
     if (done.isEmpty) return '';
@@ -890,8 +927,13 @@ class ChatNotifier extends Notifier<ChatState> {
   List<LlmMessage> _historyWithAutoCompress({
     String userInput = '',
     String? sessionId,
+    List<AgentEvent>? resumeEvents,
   }) {
-    final history = _history(userInput: userInput, sessionId: sessionId);
+    final history = _history(
+      userInput: userInput,
+      sessionId: sessionId,
+      resumeEvents: resumeEvents,
+    );
     final limit = state.contextLimit;
     if (limit <= 0 || history.length < 2) return history;
     final threshold = (limit * state.autoCompressThreshold).round();
@@ -1060,13 +1102,15 @@ class ChatNotifier extends Notifier<ChatState> {
     String value, {
     bool appendUser = true,
     String? sessionId,
+    List<AgentEvent>? resumeEvents,
   }) async {
     final session =
         sessionId == null ? state.currentSession : _sessionById(sessionId);
     if (session == null) return;
 
     // 每个会话独立一个运行态：话题 1 还在跑时，话题 2 可以立刻另起一个 run。
-    final run = _SessionRun(sessionId: session.id);
+    final run = _SessionRun(sessionId: session.id)
+      ..resumeEvents = resumeEvents ?? const [];
     _runs[session.id] = run;
     if (session.id == state.currentSessionId) {
       state = state.copyWith(
@@ -1364,8 +1408,12 @@ class ChatNotifier extends Notifier<ChatState> {
       enqueue(run.userInput);
       return;
     }
-    await _sendNow(run.userInput,
-        appendUser: !alreadyThere, sessionId: state.currentSessionId);
+    await _sendNow(
+      run.userInput,
+      appendUser: !alreadyThere,
+      sessionId: state.currentSessionId,
+      resumeEvents: run.events,
+    );
     _pumpQueue(state.currentSessionId);
   }
 
@@ -2193,6 +2241,7 @@ class ChatNotifier extends Notifier<ChatState> {
     final history = _historyWithAutoCompress(
       userInput: userInput,
       sessionId: run?.sessionId,
+      resumeEvents: run?.resumeEvents,
     );
     final token = run?.cancelToken ?? AgentCancelToken();
     run?.cancelToken = token;
