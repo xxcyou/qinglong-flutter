@@ -182,7 +182,7 @@ class SkillImporter {
     // 找出来再导入，避免“只装了一个 md、脚本全没装”。
     if (!isSkillDoc && u.split('/').last.toLowerCase().endsWith('.md')) {
       final rawMd = RegExp(
-        r'^https?://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.*)$',
+        r'^https?://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)(?:/(.*))?$',
       ).firstMatch(u);
       if (rawMd != null) {
         final owner = rawMd.group(1)!;
@@ -311,7 +311,7 @@ class SkillImporter {
   static Future<List<String>> _listGitDir(String dirUrl) async {
     // 把 raw.githubusercontent.com/{o}/{r}/{ref}/{path} 转成 api 地址。
     final m = RegExp(
-      r'^https?://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.*)$',
+      r'^https?://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)(?:/(.*))?$',
     ).firstMatch(dirUrl);
     if (m == null) return const <String>[];
     final owner = m.group(1)!;
