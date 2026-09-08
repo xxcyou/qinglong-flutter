@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/theme/glass.dart';
+import '../features/browser/browser_engine.dart';
 import 'ask_ai.dart';
 import 'code_editor.dart';
 import 'code_language.dart';
@@ -157,6 +158,37 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
     );
   }
 
+  bool get _isHtml {
+    final name = widget.path.toLowerCase();
+    return name.endsWith('.html') || name.endsWith('.htm');
+  }
+
+  Future<void> _openInBrowser() async {
+    // 有未保存的修改就先落盘，再打开；不然浏览器里看到的是旧文件。
+    if (_dirty && !widget.readOnly && widget.onSave != null) {
+      final ok = await widget.onSave!(_controller.text);
+      if (!ok) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('保存失败，未打开浏览器')),
+          );
+        }
+        return;
+      }
+      if (mounted) setState(() => _dirty = false);
+    }
+    try {
+      await BrowserEngine.instance.openLocal(widget.path);
+      if (!mounted) return;
+      BrowserEngine.instance.show();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('打开网页失败：$e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final canSave = widget.onSave != null && !widget.readOnly;
@@ -190,6 +222,12 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
             '${languageNameForPath(widget.path)} · ${widget.path}',
         showBack: true,
         actions: [
+          if (_isHtml)
+            IconButton(
+              tooltip: '在悬浮浏览器中打开',
+              onPressed: _openInBrowser,
+              icon: const Icon(Icons.play_circle_outline),
+            ),
           IconButton(
             tooltip: '复制全文',
             onPressed: () {
