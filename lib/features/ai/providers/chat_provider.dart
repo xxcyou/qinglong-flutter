@@ -309,6 +309,9 @@ class _SessionRun {
   /// 继续上次被打断的运行时要带给模型的中断前事件快照。
   List<AgentEvent> resumeEvents = const [];
 
+  /// 这次发送是否由“继续中断任务”触发；失败时用来保留中断快照，避免丢了没法再试。
+  bool isResume = false;
+
   final List<AgentEvent> events = [];
   final StringBuffer liveReasoning = StringBuffer();
   final StringBuffer liveContent = StringBuffer();
@@ -1110,7 +1113,8 @@ class ChatNotifier extends Notifier<ChatState> {
 
     // 每个会话独立一个运行态：话题 1 还在跑时，话题 2 可以立刻另起一个 run。
     final run = _SessionRun(sessionId: session.id)
-      ..resumeEvents = resumeEvents ?? const [];
+      ..resumeEvents = resumeEvents ?? const []
+      ..isResume = resumeEvents != null;
     _runs[session.id] = run;
     if (session.id == state.currentSessionId) {
       state = state.copyWith(
@@ -1256,6 +1260,20 @@ class ChatNotifier extends Notifier<ChatState> {
           updatedAt: DateTime.now(),
         ),
       );
+      // 继续中断任务时如果发送失败（网络/Base URL 问题），不能把中断快照丢掉：
+      // 用户修好网络后还得能再点一次“继续”。把中断状态原样留回去。
+      if (run.isResume) {
+        state = state.copyWith(
+          interruptedRun: InterruptedRun(
+            sessionId: session.id,
+            userInput: value,
+            events: List<AgentEvent>.from(run.events),
+            startedAt: DateTime.now(),
+          ),
+          liveAgentEvents: List<AgentEvent>.from(run.events),
+        );
+        await _saveActiveRun();
+      }
       _runs.remove(session.id);
       run.dispose();
       if (session.id == state.currentSessionId) {
@@ -1269,7 +1287,11 @@ class ChatNotifier extends Notifier<ChatState> {
       } else {
         state = state.copyWith(runningSessionIds: {..._runs.keys});
       }
-      unawaited(_clearActiveRun());
+      if (run.isResume) {
+        // resume 失败：不清 active run，保留“继续”入口。
+      } else {
+        unawaited(_clearActiveRun());
+      }
       unawaited(BrowserEngine.instance.settleAfterRun());
       _pumpQueue(session.id);
     }
