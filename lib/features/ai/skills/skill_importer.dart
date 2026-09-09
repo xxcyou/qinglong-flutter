@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 
+import '../../../core/utils/logger.dart';
+
 import 'skill_models.dart';
 import 'skill_parser.dart';
 
@@ -37,6 +39,56 @@ class SkillImporter {
 
   /// 从 [url] 导入一个技能。返回 (技能, 来源 URL 列表里命中的那个)。
   /// [into] 指定将文件落盘到的本地目录（None 则不落盘，仅存进内存）。
+  /// 导入一个 URL。如果发现它是技能合集仓库的 README（目录页），
+  /// 就把它下面的每个 `SKILL.md` 子技能分别导入成独立技能。
+  ///
+  /// 返回 (技能, 来源 URL, 备注) 列表；单个技能时列表长度 1。
+  static Future<List<(AiSkill, String, String)>> importAll(String url) async {
+    final urlNorm = url.trim();
+    if (urlNorm.isEmpty) throw ArgumentError('链接为空');
+
+    // raw.githubusercontent.com 的 README/说明文件 + 仓库根目录：
+    // 很可能是像 garden-skills 这样的「技能合集目录页」，下面挂着多个 SKILL.md。
+    final rawMd = RegExp(
+      r'^https?://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)(?:/(.*))?$',
+    ).firstMatch(urlNorm);
+    if (rawMd != null &&
+        !urlNorm.split('/').last.toLowerCase().endsWith('skill.md')) {
+      final owner = rawMd.group(1)!;
+      final repo = rawMd.group(2)!;
+      final ref = rawMd.group(3)!;
+      final p = rawMd.group(4) ?? '';
+      final dirPath = p.contains('/') ? p.substring(0, p.lastIndexOf('/')) : '';
+      if (dirPath.isEmpty) {
+        final docs = await _findSkillDocsInTree(owner, repo, ref);
+        if (docs.length > 1) {
+          final base = 'https://raw.githubusercontent.com/$owner/$repo/$ref';
+          final results = <(AiSkill, String, String)>[];
+          // 并排导入各子技能：最慢的那个也受单技能 120 秒附件预算约束，
+          // 不会 5 个串行把 Agent 看门狗拖爆。
+          await Future.wait([
+            for (final doc in docs)
+              () async {
+                try {
+                  results.add(await import('$base/$doc'));
+                } catch (e) {
+                  // 单个子技能导入失败不阻塞其它子技能；全失败时下面会走普通 import
+                  // 抛出明确错误。
+                  Logger.e(
+                    'skill',
+                    'collection member import failed: $doc',
+                    e,
+                  );
+                }
+              }(),
+          ]);
+          if (results.isNotEmpty) return results;
+        }
+      }
+    }
+    return [await import(urlNorm)];
+  }
+
   static Future<(AiSkill, String, String)> import(String url) async {
     final urlNorm = url.trim();
     if (urlNorm.isEmpty) throw ArgumentError('链接为空');
