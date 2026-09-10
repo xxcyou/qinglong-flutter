@@ -1136,9 +1136,10 @@ return JSON.stringify({
     if (!visible.value || !_agentOwned) return;
     // 还在等用户操作就不能收：那正是需要他看见窗口的时候。
     if (isWaitingUser) return;
+    // 用户反馈：AI 打开浏览器“一会就自动关了”，体验像 bug。
+    // 改成 AI 借的窗口跑完任务也保持打开，由用户自己手动关。
     _agentOwned = false;
     await persist();
-    visible.value = false;
   }
 
   void hide() {

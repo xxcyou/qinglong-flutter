@@ -9,7 +9,6 @@ import 'ask_ai.dart';
 import 'code_editor.dart';
 import 'code_language.dart';
 import 'editor_bus.dart';
-import 'glass_scaffold.dart';
 import 'highlighting_code_controller.dart';
 
 /// 通用「代码级」查看器 / 编辑器页。
@@ -29,6 +28,7 @@ class CodeEditorPage extends ConsumerStatefulWidget {
     this.subtitle,
     this.editorKind = EditorKind.shellFile,
     this.showBack = true,
+    this.floatingMode = false,
   });
 
   final String path;
@@ -49,6 +49,9 @@ class CodeEditorPage extends ConsumerStatefulWidget {
 
   /// 悬浮窗里用：不画返回箭头。
   final bool showBack;
+
+  /// 悬浮编辑器里用：不额外叠系统状态栏 SafeArea，因为窗口本身已避开状态栏。
+  final bool floatingMode;
 
   @override
   ConsumerState<CodeEditorPage> createState() => _CodeEditorPageState();
@@ -203,6 +206,11 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
   @override
   Widget build(BuildContext context) {
     final canSave = widget.onSave != null && !widget.readOnly;
+    // 悬浮窗里窗口本身已经避开状态栏，不再叠 SafeArea；整页模式要避。
+    final topInset =
+        widget.floatingMode ? 0.0 : MediaQuery.paddingOf(context).top;
+    final bottomInset =
+        widget.floatingMode ? 0.0 : MediaQuery.paddingOf(context).bottom;
     return PopScope(
       canPop: !_dirty,
       onPopInvokedWithResult: (didPop, _) async {
@@ -227,78 +235,147 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
         );
         if (leave == true) navigator.pop();
       },
-      child: GlassScaffold(
-        title: _fileName,
-        subtitle: widget.subtitle ??
-            '${languageNameForPath(widget.path)} · ${widget.path}',
-        showBack: widget.showBack,
-        actions: [
-          if (_isMarkdown)
-            IconButton(
-              tooltip: _previewing ? '查看源码' : '渲染预览',
-              onPressed: () => setState(() => _previewing = !_previewing),
-              icon: Icon(
-                _previewing ? Icons.code : Icons.visibility_outlined,
-              ),
+      child: Stack(
+        children: [
+          // 代码/预览铺满整个编辑器区域，最大化显示量。
+          Positioned.fill(
+            child: GestureDetector(
+              // 用户戳一下这个编辑器就把它设成 AI 的默认改动目标：
+              // 同时开着几个编辑器时，"当前"必须跟着用户的手走。
+              behavior: HitTestBehavior.translucent,
+              onTapDown: (_) {
+                final id = _busId;
+                if (id != null) EditorBus.instance.touch(id);
+              },
+              child: _previewing && _isMarkdown
+                  ? _buildMarkdownPreview()
+                  : CodeEditorField(
+                      key: _editorKey,
+                      controller: _controller,
+                      path: widget.path,
+                      padding: EdgeInsets.fromLTRB(
+                          10, topInset + 56, 10, bottomInset + 76),
+                      wrap: _wrap,
+                      readOnly: widget.readOnly,
+                      onChanged: (_) {
+                        if (!_dirty) setState(() => _dirty = true);
+                      },
+                    ),
             ),
-          if (_isHtml)
-            IconButton(
-              tooltip: '在悬浮浏览器中打开',
-              onPressed: _openInBrowser,
-              icon: const Icon(Icons.play_circle_outline),
-            ),
-          IconButton(
-            tooltip: '复制全文',
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: _controller.text));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('已复制'),
-                  duration: Duration(seconds: 1),
-                ),
-              );
-            },
-            icon: const Icon(Icons.copy_all_outlined),
           ),
-          if (canSave)
-            IconButton(
-              tooltip: '保存',
-              onPressed: _saving ? null : _save,
-              icon: _saving
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Icon(_dirty ? Icons.save : Icons.save_outlined),
+          // 顶部透明玻璃操作条：浮在代码上面，不占内容高度。
+          Positioned(
+            top: topInset,
+            left: 0,
+            right: 0,
+            child: _buildTopOverlay(canSave, topInset),
+          ),
+          // 查找框也浮在代码上，比顶部操作条矮一格，独立一层。
+          if (_searching)
+            Positioned(
+              top: topInset + 52,
+              left: 0,
+              right: 0,
+              child: _buildSearchBar(),
             ),
+          // 底部工具条同样透明玻璃浮层。
+          Positioned(
+            bottom: bottomInset,
+            left: 0,
+            right: 0,
+            child: _buildToolbar(),
+          ),
         ],
-        headerBottom: _searching ? _buildSearchBar() : null,
-        bottomBar: _buildToolbar(),
-        body: _previewing && _isMarkdown
-            ? _buildMarkdownPreview()
-            : Padding(
-                padding: const EdgeInsets.fromLTRB(4, 0, 4, 96),
-                child: GestureDetector(
-                  // 用户戳一下这个编辑器就把它设成 AI 的默认改动目标：
-                  // 同时开着几个编辑器时，"当前"必须跟着用户的手走。
-                  behavior: HitTestBehavior.translucent,
-                  onTapDown: (_) {
-                    final id = _busId;
-                    if (id != null) EditorBus.instance.touch(id);
-                  },
-                  child: CodeEditorField(
-                    key: _editorKey,
-                    controller: _controller,
-                    path: widget.path,
-                    wrap: _wrap,
-                    readOnly: widget.readOnly,
-                    onChanged: (_) {
-                      if (!_dirty) setState(() => _dirty = true);
-                    },
+      ),
+    );
+  }
+
+  Widget _buildTopOverlay(bool canSave, double topInset) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(8, topInset + 6, 8, 0),
+      child: GlassPanel(
+        radius: 18,
+        blur: 18,
+        shadowY: 3,
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        child: Row(
+          children: [
+            if (widget.showBack)
+              IconButton(
+                tooltip: '返回',
+                onPressed: () => Navigator.of(context).maybePop(),
+                icon: const Icon(Icons.arrow_back, size: 20),
+              ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _fileName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
+                  Text(
+                    widget.subtitle ??
+                        '${languageNameForPath(widget.path)} · ${widget.path}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (_isMarkdown)
+              IconButton(
+                tooltip: _previewing ? '查看源码' : '渲染预览',
+                onPressed: () => setState(() => _previewing = !_previewing),
+                icon: Icon(
+                  _previewing ? Icons.code : Icons.visibility_outlined,
+                  size: 20,
                 ),
               ),
+            if (_isHtml)
+              IconButton(
+                tooltip: '在悬浮浏览器中打开',
+                onPressed: _openInBrowser,
+                icon: const Icon(Icons.play_circle_outline, size: 20),
+              ),
+            IconButton(
+              tooltip: '复制全文',
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: _controller.text));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('已复制'),
+                    duration: Duration(seconds: 1),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.copy_all_outlined, size: 20),
+            ),
+            if (canSave)
+              IconButton(
+                tooltip: '保存',
+                onPressed: _saving ? null : _save,
+                icon: _saving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(_dirty ? Icons.save : Icons.save_outlined, size: 20),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -306,7 +383,7 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
   Widget _buildMarkdownPreview() {
     final scheme = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
+      padding: const EdgeInsets.fromLTRB(10, 56, 10, 76),
       child: Container(
         decoration: BoxDecoration(
           color: scheme.surface.withValues(alpha: 0.5),

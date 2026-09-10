@@ -222,6 +222,7 @@ class _FloatingEditorWindowState extends State<_FloatingEditorWindow> {
                       onSave: widget.onSave,
                       onDelete: widget.onDelete,
                       showBack: false,
+                      floatingMode: true,
                     ),
                   ),
                 ],
