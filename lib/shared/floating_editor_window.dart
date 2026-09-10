@@ -62,15 +62,25 @@ class _FloatingEditorWindowState extends State<_FloatingEditorWindow> {
   late double _top;
   late double _width;
   late double _height;
+  bool _geometryReady = false;
 
   @override
   void initState() {
     super.initState();
+    // 不能在 initState 里读 MediaQuery，会触发
+    // dependOnInheritedWidgetOfExactType<MediaQuery>() 报错。
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_geometryReady) return;
     final size = MediaQuery.sizeOf(context);
     _width = size.width * 0.92;
     _height = size.height * 0.86;
     _left = (size.width - _width) / 2;
     _top = (size.height - _height) / 2;
+    _geometryReady = true;
   }
 
   void _clampPosition(Size screen) {
