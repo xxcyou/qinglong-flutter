@@ -758,11 +758,20 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
               color: scheme.surface.withValues(alpha: 0.96),
               child: Stack(
                 children: [
-                  ShellFilesPage(
-                    asSheet: true,
-                    floatingEditor: true,
-                    onClose: _closeFilePanel,
-                    closeIcon: Icons.arrow_back_ios_new_rounded,
+                  // 左滑收回的范围包含整个已经展开的半屏，不只在右边缝上触发。
+                  GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onHorizontalDragEnd: (details) {
+                      if ((details.primaryVelocity ?? 0) < -300) {
+                        _closeFilePanel();
+                      }
+                    },
+                    child: ShellFilesPage(
+                      asSheet: true,
+                      floatingEditor: true,
+                      onClose: _closeFilePanel,
+                      closeIcon: Icons.arrow_back_ios_new_rounded,
+                    ),
                   ),
                   // 右缘中间的小白条：按住左右拉可改面板宽度，松开固定。
                   Positioned(
