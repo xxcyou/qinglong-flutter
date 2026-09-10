@@ -1348,20 +1348,20 @@ class QlToolRegistry {
 import sys
 p, s, e, by = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4] == '1'
 if s < 1: s = 1
-if e < s: e = s
 if by:
     with open(p, 'rb') as f:
-        f.seek(s - 1)
-        raw = f.read(e - s + 1)
-    sys.stdout.write(raw.decode('utf-8', errors='replace'))
+        raw = f.read()
+    if e <= 0: e = len(raw)
+    if e > len(raw): e = len(raw)
+    if e < s: e = s
+    sys.stdout.write(raw[s - 1:e].decode('utf-8', errors='replace'))
 else:
     with open(p, encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
-    if s > len(lines):
-        sys.stdout.write('')
-    else:
-        if e > len(lines): e = len(lines)
-        sys.stdout.write(''.join(lines[s - 1:e]))
+    if e <= 0: e = len(lines)
+    if e > len(lines): e = len(lines)
+    if e < s: e = s
+    sys.stdout.write(''.join(lines[s - 1:e]))
 ''';
         final rRes = await ShellLock.run(
           ShellLock.terminal,
@@ -1404,10 +1404,12 @@ p, act, s, e, content, by = (
     sys.argv[5], sys.argv[6] == '1',
 )
 if s < 1: s = 1
-if e < s: e = s
 if by:
     with open(p, 'rb') as f:
         data = f.read()
+    if e <= 0: e = len(data)
+    if e > len(data): e = len(data)
+    if e < s: e = s
     head = data[:s - 1]
     tail = data[e:]
     if act == 'delete':
@@ -1424,6 +1426,9 @@ if by:
 else:
     with open(p, encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
+    if e <= 0: e = len(lines)
+    if e > len(lines): e = len(lines)
+    if e < s: e = s
     if act == 'delete':
         new = lines[:s - 1] + lines[e:]
     elif act == 'overwrite':
