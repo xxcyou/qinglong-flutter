@@ -651,6 +651,29 @@ class QlToolRegistry {
           isWrite: false,
         ),
         ToolDefinition(
+          name: 'shell_search_code',
+          description: '在本地 Debian 的文件或目录里搜索代码特征/关键字（支持正则），'
+              '返回每个匹配所在行号和 1-based 字节区间。'
+              '搜到后用 shell_read_range 按行/字节精读或 shell_modify_range 精改。'
+              '不会截断也能定位，一次最多返回 maxMatches 条。',
+          parameters: _obj([
+            'pattern',
+            'path'
+          ], {
+            'pattern': {
+              'type': 'string',
+              'description':
+                  '要搜索的关键字或正则，例如 "class User" / "TODO" / "function\\s+\\w+"',
+            },
+            'path': _stringProp,
+            'maxMatches': {
+              'type': 'integer',
+              'description': '最多返回多少条，默认 50，最大 200',
+            },
+          }),
+          isWrite: false,
+        ),
+        ToolDefinition(
           name: 'shell_read_file',
           description: '读取本地 Debian 里的文本文件内容',
           parameters: _obj(['path'], {'path': _stringProp}),
@@ -774,6 +797,7 @@ class QlToolRegistry {
     'shell_script',
     'shell_list_files',
     'shell_read_file',
+    'shell_search_code',
     'shell_read_range',
     'shell_modify_range',
     'shell_write_file',
@@ -1329,6 +1353,83 @@ class QlToolRegistry {
               },
           ],
         });
+
+      case 'shell_search_code':
+        final sPath = args['path']?.toString() ?? '';
+        final sPattern = args['pattern']?.toString() ?? '';
+        if (sPath.isEmpty) return jsonEncode({'error': '缺少 path'});
+        if (sPattern.isEmpty) return jsonEncode({'error': '缺少 pattern'});
+        final sMax =
+            ((args['maxMatches'] as num?)?.toInt() ?? 50).clamp(1, 200);
+        const sScript = r'''
+import os, re, sys, json
+root, pattern_raw, max_matches = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    rx = re.compile(pattern_raw)
+except re.error:
+    rx = re.compile(re.escape(pattern_raw))
+
+def search_file(f):
+    try:
+        with open(f, 'rb') as fh:
+            data = fh.read()
+        text = data.decode('utf-8', errors='replace')
+    except Exception:
+        return []
+    prefix_len = 0
+    out = []
+    for i, line in enumerate(text.splitlines(True), 1):
+        for m in rx.finditer(line):
+            try:
+                start = prefix_len + len(line[:m.start()].encode('utf-8')) + 1
+                end = start + len(m.group().encode('utf-8')) - 1
+            except Exception:
+                start = prefix_len + m.start() + 1
+                end = prefix_len + m.end()
+            out.append({
+                'file': f,
+                'line': i,
+                'startByte': start,
+                'endByte': end,
+                'text': line.strip()[:160],
+            })
+            if len(out) >= max_matches:
+                return out
+        prefix_len += len(line.encode('utf-8'))
+    return out
+
+matches = []
+if os.path.isdir(root):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in ('.git', '.dart_tool', 'build', 'node_modules')]
+        for fn in filenames:
+            if len(matches) >= max_matches:
+                break
+            matches.extend(search_file(os.path.join(dirpath, fn)))
+            if len(matches) >= max_matches:
+                break
+else:
+    matches = search_file(root)
+
+matches = matches[:max_matches]
+print(json.dumps({'pattern': pattern_raw, 'total': len(matches), 'matches': matches}, ensure_ascii=False))
+''';
+        final sRes = await ShellLock.run(
+          ShellLock.terminal,
+          () => _exec(
+            'python3',
+            args: ['-c', sScript, sPath, sPattern, '$sMax'],
+            timeoutSeconds: 120,
+          ),
+          label: 'shell_search_code:$sPath',
+          timeout: const Duration(seconds: 180),
+        );
+        if (sRes.exitCode != 0) {
+          return jsonEncode({'error': '搜索失败', 'stderr': sRes.stderr});
+        }
+        return sRes.stdout.trim().isEmpty
+            ? jsonEncode({'pattern': sPattern, 'total': 0, 'matches': []})
+            : sRes.stdout.trim();
 
       case 'shell_read_file':
         final content = await ProotBridge().readFile(

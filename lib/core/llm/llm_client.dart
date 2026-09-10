@@ -266,7 +266,7 @@ class LlmStreamAssembler {
   bool _done = false;
 
   String get content => _content.toString();
-  String get reasoning => _reasoning.toString();
+  String get reasoning => LlmClient.sanitizeReasoning(_reasoning.toString());
   String get finishReason => _finishReason;
   LlmUsage get usage => _usage;
 
@@ -357,8 +357,14 @@ class LlmStreamAssembler {
     for (final key in const ['reasoning_content', 'reasoning', 'thinking']) {
       final r = delta[key];
       if (r is String && r.isNotEmpty) {
-        reasoning += r;
-        _reasoning.write(r);
+        // 第一个分片里如果带了 "thinking"/"思考内容" 这类网关标签，先剥掉。
+        if (_reasoning.isEmpty) {
+          reasoning = LlmClient.sanitizeReasoning(r);
+          if (reasoning.isNotEmpty) _reasoning.write(reasoning);
+        } else {
+          reasoning = r;
+          _reasoning.write(r);
+        }
         break;
       }
     }
@@ -401,6 +407,34 @@ class _ToolAccum {
 
 class LlmClient {
   LlmClient._();
+
+  /// 剥掉网关/模型在 reasoning_content 前面硬塞的标签前缀。
+  ///
+  /// 常见形态：`thinking\n...`、`thinking 思考内容...`、`Thought: ...`、
+  /// `思考\n...`。只剥开头，不影响正文里的同类词。
+  static String sanitizeReasoning(String raw) {
+    var text = raw.trimLeft();
+    final label = RegExp(
+      r'^(thinking|thought|reasoning|思考|思考内容|推理过程|推理内容)',
+      caseSensitive: false,
+    );
+    var guard = 0;
+    while (text.isNotEmpty && guard++ < 8) {
+      final m = label.firstMatch(text);
+      if (m == null) break;
+      final after = text.substring(m.end);
+      if (after.isEmpty) {
+        text = '';
+        break;
+      }
+      final next = after.codeUnitAt(0);
+      final isSep = RegExp(r'[\s:：\-_，,、.。!！?？]').hasMatch(after[0]);
+      final isCjk = next >= 0x4E00 && next <= 0x9FFF;
+      if (!isSep && !isCjk) break; // 后面紧跟英文字母，不是标签
+      text = after.replaceFirst(RegExp(r'^[\s:：\-_，,、.。]+'), '');
+    }
+    return text;
+  }
 
   static String _base(String baseUrl) {
     final base = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
@@ -733,9 +767,11 @@ class LlmClient {
     return _finalize(
       endpoint: endpoint,
       content: message['content']?.toString() ?? '',
-      reasoningContent: message['reasoning_content']?.toString() ??
-          message['reasoning']?.toString() ??
-          '',
+      reasoningContent: LlmClient.sanitizeReasoning(
+        message['reasoning_content']?.toString() ??
+            message['reasoning']?.toString() ??
+            '',
+      ),
       toolCalls: parseToolCalls(message['tool_calls']),
       finishReason: first['finish_reason']?.toString() ?? '',
       usage: usageRaw is Map ? LlmUsage.fromJson(usageRaw) : const LlmUsage(),
