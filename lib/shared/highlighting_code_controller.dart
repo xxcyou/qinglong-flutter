@@ -163,7 +163,7 @@ class HighlightingCodeController extends CodeController {
   /// HTML 混合高亮：拆出 <script> 和 <style> 的内嵌代码块。
   TextSpan _buildHtmlSpan(String code, TextStyle? style) {
     final splitPattern = RegExp(
-      r'''<script[^>]*>([\s\S]*?)</script\s*>|<style[^>]*>([\s\S]*?)</style\s*>''',
+      r'''<script\b[^>]*>([\s\S]*?)</script\s*>|<style\b[^>]*>([\s\S]*?)</style\s*>''',
       caseSensitive: false,
     );
     final children = <TextSpan>[];

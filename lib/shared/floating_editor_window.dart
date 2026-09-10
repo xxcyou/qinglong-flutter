@@ -84,10 +84,13 @@ class _FloatingEditorWindowState extends State<_FloatingEditorWindow> {
   }
 
   void _clampPosition(Size screen) {
-    _left = _left.clamp(0.0, screen.width - _width);
-    _top = _top.clamp(0.0, screen.height - _height);
+    // 先收尺寸再算位置：旋转后新屏可能比旧窗口小，直接拿旧宽度算
+    // screen.width - _width 会变成负数，clamp 上界小于下界就抛
+    // Invalid argument(s): 0.0。
     _width = _width.clamp(_minWidth, screen.width);
     _height = _height.clamp(_minHeight, screen.height);
+    _left = _left.clamp(0.0, screen.width - _width);
+    _top = _top.clamp(0.0, screen.height - _height);
   }
 
   @override
