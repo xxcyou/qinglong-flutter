@@ -205,7 +205,8 @@ class _ControlRow extends StatelessWidget {
     // 服务端 prompt_tokens 在有提示词缓存时往往只报“新写入/未命中”的部分，
     // 真正占用的上下文还要加上缓存命中量（cache_read），否则第二次同话题提问
     // 会看到上下文从 39k 掉到 4k 的假象。
-    final lastContext = state.lastPromptTokens + state.lastCacheHitTokens;
+    final lastContext = Formatter.serverContextTokens(
+        state.lastPromptTokens, state.lastCacheHitTokens);
     final usedTokens = lastContext > 0
         ? (lastContext > state.estimatedContextTokens
             ? lastContext
