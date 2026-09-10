@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -391,19 +393,45 @@ class _TimelineRowState extends State<_TimelineRow> {
 
   /// 展开后要显示的全文：不折行、不压缩空白。
   ///
-  /// 思考取 message（那才是完整的推理），工具取返回——返回优先用
-  /// [AgentEvent.displayResult]（它带着未截断的那份）。
+  /// 工具调用展开后直接给「输入参数 + 输出/返回」两段；思考取 message。
   String _full(AgentEvent event) {
     final source = switch (event.kind) {
       AgentEventKind.thinking || AgentEventKind.answer => event.message,
       _ => () {
+          final parts = <String>[];
+          final args = event.args;
+          if (args != null && args.isNotEmpty) {
+            parts.add('输入参数：\n${_prettyJson(args)}');
+          }
           final result = event.displayResult.trim();
-          if (result.isEmpty) return event.message;
-          return event.message.isEmpty ? result : '${event.message}\n\n$result';
+          if (result.isNotEmpty) {
+            parts.add('输出/返回：\n${_prettyIfJson(result)}');
+          }
+          if (parts.isNotEmpty) return parts.join('\n\n');
+          if (event.message.trim().isNotEmpty) return event.message.trim();
+          return '（这一步没有更多内容）';
         }(),
     };
     final text = source.trim();
     return text.isEmpty ? '（这一步没有更多内容）' : text;
+  }
+
+  static String _prettyJson(Map<String, dynamic> args) {
+    try {
+      return const JsonEncoder.withIndent('  ').convert(args);
+    } catch (_) {
+      return args.toString();
+    }
+  }
+
+  static String _prettyIfJson(String text) {
+    final trimmed = text.trim();
+    if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return text;
+    try {
+      return const JsonEncoder.withIndent('  ').convert(jsonDecode(trimmed));
+    } catch (_) {
+      return text;
+    }
   }
 
   String _preview(AgentEvent event) {
