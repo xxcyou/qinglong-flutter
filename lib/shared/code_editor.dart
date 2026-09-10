@@ -22,6 +22,7 @@ class CodeEditorField extends StatefulWidget {
     this.readOnly = false,
     this.enabled = true,
     this.focusNode,
+    this.showLineNumbers = false,
   });
 
   final CodeController controller;
@@ -44,6 +45,9 @@ class CodeEditorField extends StatefulWidget {
   final bool readOnly;
   final bool enabled;
   final FocusNode? focusNode;
+
+  /// 行号列。用户反馈左侧行号又丑又占地方，默认关闭。
+  final bool showLineNumbers;
 
   @override
   State<CodeEditorField> createState() => CodeEditorFieldState();
@@ -538,7 +542,7 @@ class CodeEditorFieldState extends State<CodeEditorField> {
               child: CodeField(
                 controller: widget.controller,
                 expands: true,
-                lineNumbers: true,
+                lineNumbers: widget.showLineNumbers,
                 lineNumberStyle: LineNumberStyle(
                   width: _lineNumberWidth,
                   margin: 10,

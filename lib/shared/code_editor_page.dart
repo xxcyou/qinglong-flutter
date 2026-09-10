@@ -206,11 +206,6 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
   @override
   Widget build(BuildContext context) {
     final canSave = widget.onSave != null && !widget.readOnly;
-    // 悬浮窗里窗口本身已经避开状态栏，不再叠 SafeArea；整页模式要避。
-    final topInset =
-        widget.floatingMode ? 0.0 : MediaQuery.paddingOf(context).top;
-    final bottomInset =
-        widget.floatingMode ? 0.0 : MediaQuery.paddingOf(context).bottom;
     return PopScope(
       canPop: !_dirty,
       onPopInvokedWithResult: (didPop, _) async {
@@ -235,65 +230,53 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
         );
         if (leave == true) navigator.pop();
       },
-      child: Stack(
-        children: [
-          // 代码/预览铺满整个编辑器区域，最大化显示量。
-          Positioned.fill(
-            child: GestureDetector(
-              // 用户戳一下这个编辑器就把它设成 AI 的默认改动目标：
-              // 同时开着几个编辑器时，"当前"必须跟着用户的手走。
-              behavior: HitTestBehavior.translucent,
-              onTapDown: (_) {
-                final id = _busId;
-                if (id != null) EditorBus.instance.touch(id);
-              },
-              child: _previewing && _isMarkdown
-                  ? _buildMarkdownPreview()
-                  : CodeEditorField(
-                      key: _editorKey,
-                      controller: _controller,
-                      path: widget.path,
-                      padding: EdgeInsets.fromLTRB(
-                          10, topInset + 56, 10, bottomInset + 76),
-                      wrap: _wrap,
-                      readOnly: widget.readOnly,
-                      onChanged: (_) {
-                        if (!_dirty) setState(() => _dirty = true);
-                      },
-                    ),
-            ),
+      // 黑底无边框：顶栏/搜索/工具条都是独立的一行，不再悬浮盖住代码，
+      // 保证按钮不挡视野、不挡点击。
+      child: ColoredBox(
+        color: const Color(0xFF0B0D10),
+        child: SafeArea(
+          top: !widget.floatingMode,
+          bottom: !widget.floatingMode,
+          child: Column(
+            children: [
+              if (!widget.floatingMode) _buildTopBar(canSave),
+              if (_searching) _buildSearchBar(),
+              Expanded(
+                child: GestureDetector(
+                  // 用户戳一下这个编辑器就把它设成 AI 的默认改动目标：
+                  // 同时开着几个编辑器时，"当前"必须跟着用户的手走。
+                  behavior: HitTestBehavior.translucent,
+                  onTapDown: (_) {
+                    final id = _busId;
+                    if (id != null) EditorBus.instance.touch(id);
+                  },
+                  child: _previewing && _isMarkdown
+                      ? _buildMarkdownPreview()
+                      : CodeEditorField(
+                          key: _editorKey,
+                          controller: _controller,
+                          path: widget.path,
+                          padding: const EdgeInsets.all(12),
+                          wrap: _wrap,
+                          readOnly: widget.readOnly,
+                          onChanged: (_) {
+                            if (!_dirty) setState(() => _dirty = true);
+                          },
+                        ),
+                ),
+              ),
+              _buildToolbar(),
+            ],
           ),
-          // 顶部透明玻璃操作条：浮在代码上面，不占内容高度。
-          Positioned(
-            top: topInset,
-            left: 0,
-            right: 0,
-            child: _buildTopOverlay(canSave, topInset),
-          ),
-          // 查找框也浮在代码上，比顶部操作条矮一格，独立一层。
-          if (_searching)
-            Positioned(
-              top: topInset + 52,
-              left: 0,
-              right: 0,
-              child: _buildSearchBar(),
-            ),
-          // 底部工具条同样透明玻璃浮层。
-          Positioned(
-            bottom: bottomInset,
-            left: 0,
-            right: 0,
-            child: _buildToolbar(),
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _buildTopOverlay(bool canSave, double topInset) {
+  Widget _buildTopBar(bool canSave) {
     final scheme = Theme.of(context).colorScheme;
     return Padding(
-      padding: EdgeInsets.fromLTRB(8, topInset + 6, 8, 0),
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
       child: GlassPanel(
         radius: 18,
         blur: 18,
@@ -383,7 +366,7 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
   Widget _buildMarkdownPreview() {
     final scheme = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(10, 56, 10, 76),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
       child: Container(
         decoration: BoxDecoration(
           color: scheme.surface.withValues(alpha: 0.5),
@@ -495,6 +478,44 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (widget.floatingMode) ...[
+              if (_isMarkdown)
+                GlassPill(
+                  icon: _previewing ? Icons.code : Icons.visibility_outlined,
+                  tooltip: _previewing ? '查看源码' : '渲染预览',
+                  dense: true,
+                  onTap: () => setState(() => _previewing = !_previewing),
+                ),
+              if (_isHtml)
+                GlassPill(
+                  icon: Icons.play_circle_outline,
+                  tooltip: '在悬浮浏览器中打开',
+                  dense: true,
+                  onTap: _openInBrowser,
+                ),
+              GlassPill(
+                icon: Icons.copy_all_outlined,
+                tooltip: '复制全文',
+                dense: true,
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: _controller.text));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('已复制'),
+                      duration: Duration(seconds: 1),
+                    ),
+                  );
+                },
+              ),
+              if (widget.onSave != null && !widget.readOnly)
+                GlassPill(
+                  icon: _dirty ? Icons.save : Icons.save_outlined,
+                  tooltip: '保存',
+                  dense: true,
+                  onTap: _saving ? null : _save,
+                ),
+              const SizedBox(width: 6),
+            ],
             GlassPill(
               icon: Icons.undo,
               tooltip: '撤销',
