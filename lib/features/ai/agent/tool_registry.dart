@@ -1369,13 +1369,36 @@ try:
 except re.error:
     rx = re.compile(re.escape(pattern_raw))
 
+def decode_text(data):
+    # 支持 UTF-8、UTF-16 和常见中文编码；以前只按 UTF-8 解，
+    # UTF-16 文件里 fcmbox 这种内容会被 null 字节拆开而搜不到。
+    if data.startswith(b'\xff\xfe') or data.startswith(b'\xfe\xff'):
+        try:
+            return data.decode('utf-16')
+        except Exception:
+            pass
+    # 无 BOM 的 UTF-16 也能解出来：ASCII 字符之间会有很多 0x00。
+    if data.count(0) > 0:
+        for enc in ('utf-16-le', 'utf-16-be'):
+            try:
+                return data.decode(enc)
+            except Exception:
+                pass
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        try:
+            return data.decode('gbk')
+        except Exception:
+            return data.decode('latin-1', errors='replace')
+
 def search_file(f):
     try:
         with open(f, 'rb') as fh:
             data = fh.read()
-        text = data.decode('utf-8', errors='replace')
+        text = decode_text(data)
     except Exception:
-        return []
+        return ('skip', f)
     prefix_len = 0
     out = []
     for i, line in enumerate(text.splitlines(True), 1):
@@ -1394,25 +1417,48 @@ def search_file(f):
                 'text': line.strip()[:160],
             })
             if len(out) >= max_matches:
-                return out
+                return ('ok', out)
         prefix_len += len(line.encode('utf-8'))
-    return out
+    return ('ok', out)
+
+if not os.path.exists(root):
+    print(json.dumps({'error': '路径不存在', 'path': root}, ensure_ascii=False))
+    sys.exit(0)
 
 matches = []
+errors = []
+scanned = 0
 if os.path.isdir(root):
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         dirnames[:] = [d for d in dirnames if d not in ('.git', '.dart_tool', 'build', 'node_modules')]
         for fn in filenames:
             if len(matches) >= max_matches:
                 break
-            matches.extend(search_file(os.path.join(dirpath, fn)))
+            scanned += 1
+            state, res = search_file(os.path.join(dirpath, fn))
+            if state == 'skip':
+                errors.append(res)
+            else:
+                matches.extend(res)
             if len(matches) >= max_matches:
                 break
 else:
-    matches = search_file(root)
+    scanned += 1
+    state, res = search_file(root)
+    if state == 'ok':
+        matches = res
+    else:
+        errors.append(res)
 
 matches = matches[:max_matches]
-print(json.dumps({'pattern': pattern_raw, 'total': len(matches), 'matches': matches}, ensure_ascii=False))
+print(json.dumps({
+    'path': root,
+    'pattern': pattern_raw,
+    'scanned': scanned,
+    'total': len(matches),
+    'matches': matches,
+    'errors': errors[:5],
+}, ensure_ascii=False))
 ''';
         final sRes = await ShellLock.run(
           ShellLock.terminal,
