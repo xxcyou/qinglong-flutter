@@ -283,7 +283,13 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                         ],
                       ),
                     ),
-                    ...actions,
+                    // 半屏里标题和按钮抢宽度容易黄条，操作按钮横向可滚动。
+                    Flexible(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(children: actions),
+                      ),
+                    ),
                     IconButton(
                       tooltip: '收起',
                       onPressed: widget.onClose ??
@@ -887,46 +893,57 @@ class _PathBar extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                if (state.clipboardPath != null)
+              ],
+            ),
+            // 操作按钮横排可滚动：半屏侧滑面板宽度有限，硬塞一排会黄条溢出。
+            SizedBox(
+              height: 40,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                children: [
+                  if (state.clipboardPath != null)
+                    IconButton(
+                      tooltip: state.clipboardIsCut ? '粘贴（移动）' : '粘贴（复制）',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => notifier.paste(),
+                      icon: Icon(
+                        Icons.content_paste_go,
+                        size: 20,
+                        color: scheme.primary,
+                      ),
+                    ),
                   IconButton(
-                    tooltip: state.clipboardIsCut ? '粘贴（移动）' : '粘贴（复制）',
+                    tooltip: '上传手机文件',
                     visualDensity: VisualDensity.compact,
-                    onPressed: () => notifier.paste(),
+                    onPressed: () => _import(context),
                     icon: Icon(
-                      Icons.content_paste_go,
+                      Icons.file_upload_outlined,
                       size: 20,
                       color: scheme.primary,
                     ),
                   ),
-                IconButton(
-                  tooltip: '上传手机文件',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => _import(context),
-                  icon: Icon(
-                    Icons.file_upload_outlined,
-                    size: 20,
-                    color: scheme.primary,
+                  IconButton(
+                    tooltip: '新建文件',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _create(context, directory: false),
+                    icon: const Icon(Icons.note_add_outlined, size: 20),
                   ),
-                ),
-                IconButton(
-                  tooltip: '新建文件',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => _create(context, directory: false),
-                  icon: const Icon(Icons.note_add_outlined, size: 20),
-                ),
-                IconButton(
-                  tooltip: '新建目录',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => _create(context, directory: true),
-                  icon: const Icon(Icons.create_new_folder_outlined, size: 20),
-                ),
-                IconButton(
-                  tooltip: '刷新',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: notifier.refresh,
-                  icon: const Icon(Icons.refresh, size: 20),
-                ),
-              ],
+                  IconButton(
+                    tooltip: '新建目录',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _create(context, directory: true),
+                    icon:
+                        const Icon(Icons.create_new_folder_outlined, size: 20),
+                  ),
+                  IconButton(
+                    tooltip: '刷新',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: notifier.refresh,
+                    icon: const Icon(Icons.refresh, size: 20),
+                  ),
+                ],
+              ),
             ),
             SizedBox(
               height: 34,

@@ -53,6 +53,13 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
 
   /// AI 页左侧半屏文件面板。
   bool _filePanelOpen = false;
+
+  /// 面板宽度占屏幕比例，默认 2/3；可拖动右侧小白条在 0.4~0.95 间调整。
+  double _filePanelFraction = 0.66;
+
+  /// 开始滑动的位置：从屏幕最左边缘滑会留给系统返回手势，避免误触。
+  double _fileDragStartDx = -1;
+
   void _openFilePanel() => setState(() => _filePanelOpen = true);
   void _closeFilePanel() => setState(() => _filePanelOpen = false);
 
@@ -307,9 +314,15 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
         GestureDetector(
           // 半屏文件面板：右滑打开，再左滑收起；面板打开时不挡右侧聊天区。
           behavior: HitTestBehavior.translucent,
+          onHorizontalDragStart: (details) {
+            _fileDragStartDx = details.globalPosition.dx;
+          },
           onHorizontalDragEnd: (details) {
             final velocity = details.primaryVelocity ?? 0;
-            if (!_filePanelOpen && velocity > 300) _openFilePanel();
+            // 从屏幕最左边沿开始的手势让给系统返回；离边稍远再右滑才开面板。
+            if (!_filePanelOpen && velocity > 300 && _fileDragStartDx > 60) {
+              _openFilePanel();
+            }
             if (_filePanelOpen && velocity < -300) _closeFilePanel();
           },
           child: GlassScaffold(
@@ -698,7 +711,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   Widget _buildFilePanel() {
     final size = MediaQuery.sizeOf(context);
     final scheme = Theme.of(context).colorScheme;
-    final panelWidth = size.width * 0.5;
+    final panelWidth = size.width * _filePanelFraction;
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 260),
       curve: Curves.easeOutCubic,
@@ -717,11 +730,48 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                 sigmaX: Glass.blurStrong, sigmaY: Glass.blurStrong),
             child: Container(
               color: scheme.surface.withValues(alpha: 0.96),
-              child: ShellFilesPage(
-                asSheet: true,
-                floatingEditor: true,
-                onClose: _closeFilePanel,
-                closeIcon: Icons.arrow_back_ios_new_rounded,
+              child: Stack(
+                children: [
+                  ShellFilesPage(
+                    asSheet: true,
+                    floatingEditor: true,
+                    onClose: _closeFilePanel,
+                    closeIcon: Icons.arrow_back_ios_new_rounded,
+                  ),
+                  // 右缘中间的小白条：按住左右拉可改面板宽度，松开固定。
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                    child: Align(
+                      alignment: Alignment.center,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onHorizontalDragStart: (_) {
+                          HapticFeedback.lightImpact();
+                        },
+                        onHorizontalDragUpdate: (details) {
+                          final delta = details.delta.dx / size.width;
+                          setState(() {
+                            _filePanelFraction =
+                                (_filePanelFraction + delta).clamp(0.4, 0.95);
+                          });
+                        },
+                        onHorizontalDragEnd: (_) {
+                          HapticFeedback.selectionClick();
+                        },
+                        child: Container(
+                          width: 5,
+                          height: 76,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.65),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
