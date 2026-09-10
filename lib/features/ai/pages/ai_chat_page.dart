@@ -1248,13 +1248,13 @@ class _MessageBubble extends StatelessWidget {
     // 两个数字含义不同，必须分开写清楚，否则"十几万 token"看着莫名其妙：
     // 计费 = 每轮重发历史的累计量；上下文 = 最后一轮真实占用。
     if (message.totalTokens > 0) parts.add('计费 ${_kilo(message.totalTokens)}');
-    if (message.promptTokens > 0) {
-      parts.add('上下文 ${_kilo(message.promptTokens)}');
+    final contextTokens = message.promptTokens + message.cachedTokens;
+    if (contextTokens > 0) {
+      parts.add('上下文 ${_kilo(contextTokens)}');
     }
-    if (message.cachedTokens > 0 && message.promptTokens > 0) {
-      final rate = (message.cachedTokens / message.promptTokens * 100)
-          .round()
-          .clamp(0, 100);
+    if (message.cachedTokens > 0 && contextTokens > 0) {
+      final rate =
+          (message.cachedTokens / contextTokens * 100).round().clamp(0, 100);
       parts.add('缓存命中 $rate%');
     }
     return parts.join(' · ');

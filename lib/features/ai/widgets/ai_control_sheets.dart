@@ -20,9 +20,10 @@ class AiControlSheets {
   static int estimateUsedTokens(ChatState state) {
     // 服务端数值优先；如果它明显低于本地按真实 history 的估算
     // （常见于网关只报了“增量/其他”token），就取较大者，避免显示成几百 token。
-    if (state.lastPromptTokens > 0) {
-      return state.lastPromptTokens > state.estimatedContextTokens
-          ? state.lastPromptTokens
+    final lastContext = state.lastPromptTokens + state.lastCacheHitTokens;
+    if (lastContext > 0) {
+      return lastContext > state.estimatedContextTokens
+          ? lastContext
           : state.estimatedContextTokens;
     }
     if (state.estimatedContextTokens > 0) return state.estimatedContextTokens;

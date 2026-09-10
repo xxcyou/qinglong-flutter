@@ -13,6 +13,11 @@ import 'code_language.dart';
 /// 这里在检测到纯文本结果时再走一层轻量正则兜底，保证所有 JS 至少
 /// 有注释/字符串/关键字/数字的颜色，而不是整片白色。
 class HighlightingCodeController extends CodeController {
+  /// HTML 标签用偏橙/红的可见色，不用 monokai 自带的“tag 白”，
+  /// 否则 `<style>` `<script>` 在白底黑字里像没上色。
+  static const Color _htmlTagColor = Color(0xFFFF7B72);
+  static const Color _htmlAttrColor = Color(0xFF79C0FF);
+
   HighlightingCodeController({
     super.language,
     super.text,
@@ -152,6 +157,30 @@ class HighlightingCodeController extends CodeController {
     return TextSpan(style: nodeStyle, children: children);
   }
 
+  /// HTML 专用节点构建：把标签/属性名从“白色 tag”换成肉眼可见的颜色。
+  TextSpan _buildHtmlNode(Node node) {
+    TextStyle? nodeStyle = monokaiSublimeTheme[node.className];
+    if (node.className == 'tag' || node.className == 'name') {
+      nodeStyle = const TextStyle(color: _htmlTagColor);
+    } else if (node.className == 'attr' ||
+        node.className == 'attribute' ||
+        node.className == 'selector-attr') {
+      nodeStyle = const TextStyle(color: _htmlAttrColor);
+    }
+    final value = node.value;
+    final nodeChildren = node.children;
+
+    if (value != null) {
+      return TextSpan(text: value, style: nodeStyle);
+    }
+
+    final children = <TextSpan>[];
+    for (final child in nodeChildren ?? const <Node>[]) {
+      children.add(_buildHtmlNode(child));
+    }
+    return TextSpan(style: nodeStyle, children: children);
+  }
+
   int _countColored(TextSpan span) {
     var n = span.style?.color != null ? 1 : 0;
     for (final child in span.children ?? const <InlineSpan>[]) {
@@ -218,7 +247,7 @@ class HighlightingCodeController extends CodeController {
     _localHighlight.registerLanguage(id, xmlMode);
     final result = _localHighlight.parse(segment, language: id);
     final children = [
-      for (final node in result.nodes ?? const <Node>[]) _buildNode(node),
+      for (final node in result.nodes ?? const <Node>[]) _buildHtmlNode(node),
     ];
     if (_countColored(TextSpan(children: children)) > 0) {
       return TextSpan(children: children);
@@ -252,7 +281,7 @@ class HighlightingCodeController extends CodeController {
       } else if (token.startsWith('<')) {
         children.add(TextSpan(
           text: token,
-          style: monokaiSublimeTheme['tag'] ?? monokaiSublimeTheme['keyword'],
+          style: const TextStyle(color: _htmlTagColor),
         ));
       } else {
         children.add(TextSpan(
