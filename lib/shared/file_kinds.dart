@@ -276,10 +276,10 @@ class FileKinds {
     ),
     'vue': FileKind(
       category: FileCategory.code,
-      label: 'Vue',
+      label: 'Vue 组件',
       icon: Icons.code_rounded,
       color: Color(0xFF41B883),
-      language: 'xml',
+      language: 'html',
     ),
 
     // ---------------- 配置 / 数据 / 文本 ----------------
