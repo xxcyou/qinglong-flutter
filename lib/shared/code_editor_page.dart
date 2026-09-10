@@ -232,41 +232,44 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
       },
       // 黑底无边框：顶栏/搜索/工具条都是独立的一行，不再悬浮盖住代码，
       // 保证按钮不挡视野、不挡点击。
-      child: ColoredBox(
-        color: const Color(0xFF0B0D10),
-        child: SafeArea(
-          top: !widget.floatingMode,
-          bottom: !widget.floatingMode,
-          child: Column(
-            children: [
-              if (!widget.floatingMode) _buildTopBar(canSave),
-              if (_searching) _buildSearchBar(),
-              Expanded(
-                child: GestureDetector(
-                  // 用户戳一下这个编辑器就把它设成 AI 的默认改动目标：
-                  // 同时开着几个编辑器时，"当前"必须跟着用户的手走。
-                  behavior: HitTestBehavior.translucent,
-                  onTapDown: (_) {
-                    final id = _busId;
-                    if (id != null) EditorBus.instance.touch(id);
-                  },
-                  child: _previewing && _isMarkdown
-                      ? _buildMarkdownPreview()
-                      : CodeEditorField(
-                          key: _editorKey,
-                          controller: _controller,
-                          path: widget.path,
-                          padding: const EdgeInsets.all(12),
-                          wrap: _wrap,
-                          readOnly: widget.readOnly,
-                          onChanged: (_) {
-                            if (!_dirty) setState(() => _dirty = true);
-                          },
-                        ),
+      child: Material(
+        type: MaterialType.transparency,
+        child: ColoredBox(
+          color: const Color(0xFF0B0D10),
+          child: SafeArea(
+            top: !widget.floatingMode,
+            bottom: !widget.floatingMode,
+            child: Column(
+              children: [
+                if (!widget.floatingMode) _buildTopBar(canSave),
+                if (_searching) _buildSearchBar(),
+                Expanded(
+                  child: GestureDetector(
+                    // 用户戳一下这个编辑器就把它设成 AI 的默认改动目标：
+                    // 同时开着几个编辑器时，"当前"必须跟着用户的手走。
+                    behavior: HitTestBehavior.translucent,
+                    onTapDown: (_) {
+                      final id = _busId;
+                      if (id != null) EditorBus.instance.touch(id);
+                    },
+                    child: _previewing && _isMarkdown
+                        ? _buildMarkdownPreview()
+                        : CodeEditorField(
+                            key: _editorKey,
+                            controller: _controller,
+                            path: widget.path,
+                            padding: const EdgeInsets.all(12),
+                            wrap: _wrap,
+                            readOnly: widget.readOnly,
+                            onChanged: (_) {
+                              if (!_dirty) setState(() => _dirty = true);
+                            },
+                          ),
+                  ),
                 ),
-              ),
-              _buildToolbar(),
-            ],
+                _buildToolbar(),
+              ],
+            ),
           ),
         ),
       ),
