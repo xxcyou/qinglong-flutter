@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../core/theme/glass.dart';
 import '../features/browser/browser_engine.dart';
@@ -62,6 +63,7 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
   bool _saving = false;
   bool _searching = false;
   bool _wrap = false;
+  bool _previewing = false;
   int _matchCount = 0;
 
   /// 编辑器总线上的注册 id：AI 的 editor_* 工具靠它找到这个编辑框。
@@ -167,6 +169,11 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
     return name.endsWith('.html') || name.endsWith('.htm');
   }
 
+  bool get _isMarkdown {
+    final name = widget.path.toLowerCase();
+    return name.endsWith('.md') || name.endsWith('.markdown');
+  }
+
   Future<void> _openInBrowser() async {
     // 有未保存的修改就先落盘，再打开；不然浏览器里看到的是旧文件。
     if (_dirty && !widget.readOnly && widget.onSave != null) {
@@ -226,6 +233,14 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
             '${languageNameForPath(widget.path)} · ${widget.path}',
         showBack: widget.showBack,
         actions: [
+          if (_isMarkdown)
+            IconButton(
+              tooltip: _previewing ? '查看源码' : '渲染预览',
+              onPressed: () => setState(() => _previewing = !_previewing),
+              icon: Icon(
+                _previewing ? Icons.code : Icons.visibility_outlined,
+              ),
+            ),
           if (_isHtml)
             IconButton(
               tooltip: '在悬浮浏览器中打开',
@@ -260,25 +275,74 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
         ],
         headerBottom: _searching ? _buildSearchBar() : null,
         bottomBar: _buildToolbar(),
-        body: Padding(
-          padding: const EdgeInsets.fromLTRB(4, 0, 4, 96),
-          child: GestureDetector(
-            // 用户戳一下这个编辑器就把它设成 AI 的默认改动目标：
-            // 同时开着几个编辑器时，"当前"必须跟着用户的手走。
-            behavior: HitTestBehavior.translucent,
-            onTapDown: (_) {
-              final id = _busId;
-              if (id != null) EditorBus.instance.touch(id);
-            },
-            child: CodeEditorField(
-              key: _editorKey,
-              controller: _controller,
-              path: widget.path,
-              wrap: _wrap,
-              readOnly: widget.readOnly,
-              onChanged: (_) {
-                if (!_dirty) setState(() => _dirty = true);
-              },
+        body: _previewing && _isMarkdown
+            ? _buildMarkdownPreview()
+            : Padding(
+                padding: const EdgeInsets.fromLTRB(4, 0, 4, 96),
+                child: GestureDetector(
+                  // 用户戳一下这个编辑器就把它设成 AI 的默认改动目标：
+                  // 同时开着几个编辑器时，"当前"必须跟着用户的手走。
+                  behavior: HitTestBehavior.translucent,
+                  onTapDown: (_) {
+                    final id = _busId;
+                    if (id != null) EditorBus.instance.touch(id);
+                  },
+                  child: CodeEditorField(
+                    key: _editorKey,
+                    controller: _controller,
+                    path: widget.path,
+                    wrap: _wrap,
+                    readOnly: widget.readOnly,
+                    onChanged: (_) {
+                      if (!_dirty) setState(() => _dirty = true);
+                    },
+                  ),
+                ),
+              ),
+      ),
+    );
+  }
+
+  Widget _buildMarkdownPreview() {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
+      child: Container(
+        decoration: BoxDecoration(
+          color: scheme.surface.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 20),
+        child: SingleChildScrollView(
+          child: MarkdownBody(
+            data: _controller.text,
+            selectable: true,
+            styleSheet:
+                MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+              h1: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                color: scheme.onSurface,
+              ),
+              h2: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                color: scheme.onSurface,
+              ),
+              h3: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: scheme.onSurface,
+              ),
+              code: TextStyle(
+                fontFamily: 'monospace',
+                backgroundColor: scheme.surfaceContainerHighest,
+                color: scheme.primary,
+              ),
+              codeblockDecoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
             ),
           ),
         ),

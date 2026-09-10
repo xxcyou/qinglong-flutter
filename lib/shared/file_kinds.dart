@@ -244,14 +244,14 @@ class FileKinds {
       label: 'HTML',
       icon: Icons.html_rounded,
       color: Color(0xFFE44D26),
-      language: 'xml',
+      language: 'html',
     ),
     'htm': FileKind(
       category: FileCategory.code,
       label: 'HTML',
       icon: Icons.html_rounded,
       color: Color(0xFFE44D26),
-      language: 'xml',
+      language: 'html',
     ),
     'xml': FileKind(
       category: FileCategory.code,

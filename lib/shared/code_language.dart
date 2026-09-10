@@ -49,6 +49,9 @@ final Map<String, Mode> _modes = {
   'lua': lua,
   'sql': sql,
   'xml': xml,
+  // HTML 用 xml 模式解析标签；HighlightingCodeController 会额外拆分
+  // <script>/<style> 内部做 JS/CSS 高亮，所以这里单独占一个语言名。
+  'html': xml,
   'css': css,
   'scss': scss,
   'markdown': markdown,
@@ -65,6 +68,10 @@ Mode? languageForPath(String path) {
   if (name == null) return null;
   return _modes[name];
 }
+
+/// 按高亮语言名取 Mode；[HighlightingCodeController] 拆 HTML 里内嵌
+/// script/style 时也要按名字拿 JS/CSS 的定义。
+Mode? modeForLanguage(String name) => _modes[name];
 
 /// 返回可被 `package:highlight` 识别的语言名，例如 `javascript`。
 String? languageNameForPath(String path) {

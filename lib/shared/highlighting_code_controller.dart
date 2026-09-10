@@ -4,6 +4,8 @@ import 'package:flutter_highlight/themes/monokai-sublime.dart';
 import 'package:highlight/highlight.dart' as full;
 import 'package:highlight/highlight_core.dart';
 
+import 'code_language.dart';
+
 /// 使用本地 `Highlight` 实例 + Monokai 主题直接高亮。
 ///
 /// highlight 自带解析器遇到个别 JS 非法词法时会直接降级成纯文本
@@ -103,45 +105,117 @@ class HighlightingCodeController extends CodeController {
       return TextSpan(text: text, style: style);
     }
 
+    // HTML 不是整块用 xml 高亮：<script>/<style> 内部要分别交给
+    // JS/CSS 高亮，标签和属性仍用 xml 高亮。
+    if (name == 'html') {
+      return _buildHtmlSpan(text, style);
+    }
+
+    return _buildLanguageSpan(text, name, languageMode, style);
+  }
+
+  /// 用指定语言高亮一段代码；如果解析结果全无色就落到轻量正则兜底。
+  TextSpan _buildLanguageSpan(
+    String code,
+    String name,
+    Mode languageMode,
+    TextStyle? style,
+  ) {
     final langId = 'ql_full_$name';
     _localHighlight.registerLanguage(langId, languageMode);
-    final result = _localHighlight.parse(text, language: langId);
-
-    TextSpan buildNode(Node node) {
-      final nodeStyle = monokaiSublimeTheme[node.className];
-      final value = node.value;
-      final nodeChildren = node.children;
-
-      if (value != null) {
-        return TextSpan(text: value, style: nodeStyle);
-      }
-
-      final children = <TextSpan>[];
-      for (final child in nodeChildren ?? const <Node>[]) {
-        children.add(buildNode(child));
-      }
-      return TextSpan(style: nodeStyle, children: children);
-    }
-
-    final children = <TextSpan>[
-      for (final node in result.nodes ?? const <Node>[]) buildNode(node),
+    final result = _localHighlight.parse(code, language: langId);
+    final children = [
+      for (final node in result.nodes ?? const <Node>[]) _buildNode(node),
     ];
 
-    int countColored(TextSpan span) {
-      var n = span.style?.color != null ? 1 : 0;
-      for (final child in span.children ?? const <InlineSpan>[]) {
-        if (child is TextSpan) n += countColored(child);
-      }
-      return n;
-    }
-
-    final coloredCount = countColored(TextSpan(children: children));
-
-    if (coloredCount == 0 && text.trim().isNotEmpty) {
+    if (_countColored(TextSpan(children: children)) == 0 &&
+        code.trim().isNotEmpty) {
       return TextSpan(style: style, children: _buildFallback(name));
     }
 
     return TextSpan(style: style, children: children);
+  }
+
+  TextSpan _buildNode(Node node) {
+    final nodeStyle = monokaiSublimeTheme[node.className];
+    final value = node.value;
+    final nodeChildren = node.children;
+
+    if (value != null) {
+      return TextSpan(text: value, style: nodeStyle);
+    }
+
+    final children = <TextSpan>[];
+    for (final child in nodeChildren ?? const <Node>[]) {
+      children.add(_buildNode(child));
+    }
+    return TextSpan(style: nodeStyle, children: children);
+  }
+
+  int _countColored(TextSpan span) {
+    var n = span.style?.color != null ? 1 : 0;
+    for (final child in span.children ?? const <InlineSpan>[]) {
+      if (child is TextSpan) n += _countColored(child);
+    }
+    return n;
+  }
+
+  /// HTML 混合高亮：拆出 <script> 和 <style> 的内嵌代码块。
+  TextSpan _buildHtmlSpan(String code, TextStyle? style) {
+    final splitPattern = RegExp(
+      r'''<script[^>]*>([\s\S]*?)</script\s*>|<style[^>]*>([\s\S]*?)</style\s*>''',
+      caseSensitive: false,
+    );
+    final children = <TextSpan>[];
+    var last = 0;
+
+    for (final match in splitPattern.allMatches(code)) {
+      if (match.start > last) {
+        children.add(_parseHtmlSegment(code.substring(last, match.start)));
+      }
+      final full = match[0]!;
+      final isScript = match.group(1) != null;
+      final inner = isScript ? match.group(1)! : match.group(2)!;
+      final openEnd = full.indexOf(inner);
+      final closeStart = openEnd + inner.length;
+
+      // 开始标签（含 <script src=...>）按 HTML 高亮。
+      children.add(_parseHtmlSegment(full.substring(0, openEnd)));
+      // 内嵌代码按 JS/CSS 高亮。
+      final innerMode = modeForLanguage(isScript ? 'javascript' : 'css');
+      if (innerMode != null) {
+        children.add(_buildLanguageSpan(
+          inner,
+          isScript ? 'javascript' : 'css',
+          innerMode,
+          style,
+        ));
+      } else {
+        children.add(TextSpan(text: inner, style: style));
+      }
+      // 结束标签按 HTML 高亮。
+      children.add(_parseHtmlSegment(full.substring(closeStart)));
+      last = match.end;
+    }
+
+    if (last < code.length) {
+      children.add(_parseHtmlSegment(code.substring(last)));
+    }
+    return TextSpan(style: style, children: children);
+  }
+
+  /// HTML 片段：用 xml 模式解析标签/属性/注释。
+  TextSpan _parseHtmlSegment(String segment) {
+    final xmlMode = modeForLanguage('xml');
+    if (xmlMode == null || segment.trim().isEmpty) {
+      return TextSpan(text: segment);
+    }
+    const id = 'ql_html_xml';
+    _localHighlight.registerLanguage(id, xmlMode);
+    final result = _localHighlight.parse(segment, language: id);
+    return TextSpan(children: [
+      for (final node in result.nodes ?? const <Node>[]) _buildNode(node),
+    ]);
   }
 
   /// highlight 解析失败时使用的轻量正则高亮。
