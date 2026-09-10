@@ -362,6 +362,31 @@ class ChatNotifier extends Notifier<ChatState> {
   /// 把界面上的选择覆盖回旧值（之前就是这么丢设置的）。
   bool _settingsLoaded = false;
 
+  /// 从会话最后一条 assistant 消息里还原"服务端实测上下文/用量"。
+  ///
+  /// 这些数字之前只活在全局 ChatState 上，切换话题/重启后就串味了：
+  /// 切到另一个话题，输入行还显示上一条话题的 39k；重启后因为上次统计
+  /// 没落盘，界面只剩本地估算。每个 assistant 消息已经持久化了
+  /// promptTokens/cachedTokens/turns/totalTokens，直接读它最可靠。
+  ({int prompt, int cache, int turns, int tokens}) _lastStatsForSession(
+      AiSession session) {
+    for (final m in session.messages.reversed) {
+      if (!m.isAssistant) continue;
+      if (m.promptTokens > 0 ||
+          m.cachedTokens > 0 ||
+          m.turns > 0 ||
+          m.totalTokens > 0) {
+        return (
+          prompt: m.promptTokens,
+          cache: m.cachedTokens,
+          turns: m.turns,
+          tokens: m.totalTokens,
+        );
+      }
+    }
+    return (prompt: 0, cache: 0, turns: 0, tokens: 0);
+  }
+
   Future<void> loadSessions() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -389,10 +414,17 @@ class ChatNotifier extends Notifier<ChatState> {
           lastId = s.id;
         }
       }
+      final lastStats = _lastStatsForSession(
+        sessions.firstWhere((s) => s.id == lastId),
+      );
       state = state.copyWith(
         sessions: sessions,
         currentSessionId: lastId,
         estimatedContextTokens: _estimateContextFor(lastId),
+        lastPromptTokens: lastStats.prompt,
+        lastCacheHitTokens: lastStats.cache,
+        lastTurns: lastStats.turns,
+        lastTokens: lastStats.tokens,
       );
     } catch (e) {
       Logger.e('ai', 'load sessions failed', e);
@@ -1547,6 +1579,8 @@ class ChatNotifier extends Notifier<ChatState> {
           clearLiveText: true,
           lastTurns: result.turns,
           lastTokens: result.usage.totalTokens,
+          lastPromptTokens: result.lastPromptTokens,
+          lastCacheHitTokens: result.lastCacheHitTokens,
           clearError: true,
           runningSessionIds: {..._runs.keys},
         );
@@ -1746,6 +1780,11 @@ class ChatNotifier extends Notifier<ChatState> {
       selectedModel: selected,
       modelTestResults: switched ? const {} : state.modelTestResults,
     );
+    // 模型上下文上限刚就位，之前 loadSessions 可能还拿默认 8000 估算过，
+    // 现在按真实上限重算一次，避免重启后显示成 3.9k 这种"被默认上限剪过"的数。
+    state = state.copyWith(
+      estimatedContextTokens: _estimateContextFor(state.currentSessionId),
+    );
   }
 
   /// 上一次投影的是哪家，用来判断"是不是换了家"。
@@ -1930,10 +1969,16 @@ class ChatNotifier extends Notifier<ChatState> {
       createdAt: old.createdAt,
       updatedAt: DateTime.now(),
     );
+    final target = sessions[index];
+    final lastStats = _lastStatsForSession(target);
     final run = _runs[id];
     state = state.copyWith(
       sessions: sessions,
       currentSessionId: id,
+      lastPromptTokens: lastStats.prompt,
+      lastCacheHitTokens: lastStats.cache,
+      lastTurns: lastStats.turns,
+      lastTokens: lastStats.tokens,
       toolRecords: const [],
       pendingPlan: const [],
       clearError: true,
@@ -1960,14 +2005,19 @@ class ChatNotifier extends Notifier<ChatState> {
     }
     final sessions =
         state.sessions.where((s) => s.id != id).toList(growable: false);
-    final current = state.currentSessionId == id
-        ? sessions.first.id
-        : state.currentSessionId;
+    final switched = state.currentSessionId == id;
+    final current = switched ? sessions.first.id : state.currentSessionId;
+    final currentSession = sessions.firstWhere((s) => s.id == current);
+    final lastStats = _lastStatsForSession(currentSession);
     state = state.copyWith(
       sessions: sessions,
       currentSessionId: current,
       toolRecords: const [],
       pendingPlan: const [],
+      lastPromptTokens: switched ? lastStats.prompt : state.lastPromptTokens,
+      lastCacheHitTokens: switched ? lastStats.cache : state.lastCacheHitTokens,
+      lastTurns: switched ? lastStats.turns : state.lastTurns,
+      lastTokens: switched ? lastStats.tokens : state.lastTokens,
     );
     _persist();
   }
