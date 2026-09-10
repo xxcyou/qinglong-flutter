@@ -18,16 +18,92 @@ import '../providers/shell_files_provider.dart';
 import '../widgets/file_action_sheet.dart';
 import '../../../shared/mono_text.dart';
 
+/// 在页面上方弹出一个悬浮编辑器（不离开当前页面）。
+Future<void> showFloatingCodeEditor(
+  BuildContext context, {
+  required String path,
+  required String initial,
+  String subtitle = '',
+  Future<bool> Function(String content)? onSave,
+  Future<bool> Function()? onDelete,
+}) {
+  final size = MediaQuery.sizeOf(context);
+  return showGeneralDialog<void>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: '关闭编辑器',
+    barrierColor: Colors.black54,
+    transitionDuration: const Duration(milliseconds: 220),
+    pageBuilder: (context, animation, secondaryAnimation) => Align(
+      alignment: Alignment.center,
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          width: size.width * 0.94,
+          height: size.height * 0.86,
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x66000000),
+                blurRadius: 32,
+                offset: Offset(0, 12),
+              ),
+            ],
+          ),
+          child: CodeEditorPage(
+            path: path,
+            initial: initial,
+            subtitle: subtitle,
+            aiSource: 'file_manager',
+            onSave: onSave,
+            onDelete: onDelete,
+          ),
+        ),
+      ),
+    ),
+    transitionBuilder: (context, animation, secondaryAnimation, child) =>
+        FadeTransition(
+      opacity: animation,
+      child: ScaleTransition(
+        scale: CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutBack,
+        ),
+        child: child,
+      ),
+    ),
+  );
+}
+
 /// 完整文件管理器：终端（PRoot guest，含 rootfs 根目录）与 APP 沙箱两套根，
 /// 支持新建/重命名/复制/剪切/粘贴/删除/权限/属性/搜索/排序/多选。
 ///
 /// 它不再是独立一页——从终端页底部拉起来的面板，用完就收，
 /// 终端本体始终占满整屏。
 class ShellFilesPage extends ConsumerStatefulWidget {
-  const ShellFilesPage({super.key, this.asSheet = false});
+  const ShellFilesPage({
+    super.key,
+    this.asSheet = false,
+    this.floatingEditor = false,
+    this.onClose,
+    this.closeIcon,
+  });
 
   /// 以底部面板形式出现时自带拖动把手与关闭按钮，不画返回箭头。
   final bool asSheet;
+
+  /// 在 AI 半屏文件面板里使用时，点文本/代码文件弹出悬浮编辑器，
+  /// 而不是全屏跳转。
+  final bool floatingEditor;
+
+  /// 面板模式的自定义收起回调；不传时默认 Navigator.maybePop。
+  final VoidCallback? onClose;
+
+  /// 面板模式收起按钮图标。
+  final IconData? closeIcon;
 
   /// 从终端页底部拉起文件管理。
   static Future<void> showSheet(BuildContext context) {
@@ -210,8 +286,9 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                     ...actions,
                     IconButton(
                       tooltip: '收起',
-                      onPressed: () => Navigator.of(context).maybePop(),
-                      icon: const Icon(Icons.close),
+                      onPressed: widget.onClose ??
+                          () => Navigator.of(context).maybePop(),
+                      icon: Icon(widget.closeIcon ?? Icons.close),
                     ),
                   ],
                 ),
@@ -443,6 +520,17 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
     final content = await _notifier.readFile(entry.path);
     if (content == null || !mounted) return;
     final kind = FileKinds.of(entry.name);
+    if (widget.floatingEditor) {
+      await showFloatingCodeEditor(
+        context,
+        path: entry.path,
+        initial: content,
+        subtitle: '${kind.label} · ${FileKinds.sizeText(entry.size)}',
+        onSave: (text) => _notifier.saveFile(entry.path, text),
+        onDelete: () => _notifier.delete(entry.path),
+      );
+      return;
+    }
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => CodeEditorPage(

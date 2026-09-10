@@ -1,3 +1,5 @@
+import 'dart:ui' show ImageFilter;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -29,6 +31,7 @@ import 'mcp_server_page.dart';
 import 'skill_list_page.dart';
 import '../widgets/markdown_message.dart';
 import '../../../shared/mono_text.dart';
+import '../../terminal/pages/shell_files_page.dart';
 
 class AiChatPage extends ConsumerStatefulWidget {
   const AiChatPage({super.key});
@@ -47,6 +50,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   /// 但用户往上翻看历史时必须立刻停下——正在读旧消息却被拽回底部
   /// 比不自动滚更烦。判据是"离底部还有多远"，不是"有没有滑过"。
   bool _pinned = true;
+
+  /// AI 页左侧半屏文件面板。
+  bool _filePanelOpen = false;
+  void _openFilePanel() => setState(() => _filePanelOpen = true);
+  void _closeFilePanel() => setState(() => _filePanelOpen = false);
 
   /// 每条消息一个 RepaintBoundary key：撤回时按它抓图做消散。
   /// 用列表而不是 Map<int,GlobalKey>，因为索引就是消息在会话里的位置，
@@ -294,372 +302,430 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     final mcpCount = ref.watch(mcpProvider).tools.length;
     final skillCount = ref.watch(skillProvider).enabled.length;
 
-    return GlassScaffold(
-      title: 'AI 助手',
-      subtitle: [
-        state.selectedModel.isEmpty ? '未选择模型' : state.selectedModel,
-        if (skillCount > 0) '$skillCount 技能',
-        if (mcpCount > 0) '$mcpCount MCP 工具',
-      ].join(' · '),
-      actions: [
-        // 会话用量：贴着浏览器按钮左边，半透明、不抢戏，但一直在动。
-        const Padding(
-          padding: EdgeInsets.only(right: 2),
-          child: SessionUsageChip(),
-        ),
-        // 浏览器入口：常驻内核，点开就是个正常浏览器（悬浮窗，可拖可缩放）。
-        // 登录、Cloudflare 人机验证都在这里手动点掉——AI 用的是同一个内核，
-        // 所以你验证过一次，它后面调接口就一直带着票。
-        ValueListenableBuilder<bool>(
-          valueListenable: BrowserEngine.instance.visible,
-          builder: (context, visible, _) => IconButton(
-            tooltip: visible ? '浏览器已打开' : '打开浏览器（登录 / 过人机验证）',
-            onPressed: () => visible
-                ? BrowserEngine.instance.hide()
-                : BrowserEngine.instance.show(),
-            icon: Icon(
-              visible ? Icons.public : Icons.public_outlined,
-              color: visible ? scheme.primary : null,
-            ),
-          ),
-        ),
-        IconButton(
-          tooltip: '会话列表',
-          onPressed: _showSessionManager,
-          icon: const Icon(Icons.forum_outlined),
-        ),
-        IconButton(
-          tooltip: '审计记录',
-          onPressed: _showAudit,
-          icon: const Icon(Icons.receipt_long_outlined),
-        ),
-        PopupMenuButton<String>(
-          tooltip: '更多',
-          icon: const Icon(Icons.more_vert),
-          onSelected: (value) {
-            switch (value) {
-              case 'approval':
-                AiControlSheets.showApproval(context);
-              case 'context':
-                AiControlSheets.showContext(context, ref);
-              case 'skills':
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const SkillListPage()),
-                );
-              case 'mcp':
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const McpServerPage()),
-                );
-              case 'new':
-                notifier.createSession();
-              case 'clear':
-                notifier.clear();
-            }
+    return Stack(
+      children: [
+        GestureDetector(
+          // 半屏文件面板：右滑打开，再左滑收起；面板打开时不挡右侧聊天区。
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragEnd: (details) {
+            final velocity = details.primaryVelocity ?? 0;
+            if (!_filePanelOpen && velocity > 300) _openFilePanel();
+            if (_filePanelOpen && velocity < -300) _closeFilePanel();
           },
-          itemBuilder: (context) => [
-            PopupMenuItem(
-              value: 'approval',
-              child: ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.verified_user_outlined),
-                title: const Text('确认策略'),
-                subtitle: Text(state.approvalMode.label),
+          child: GlassScaffold(
+            title: 'AI 助手',
+            subtitle: [
+              state.selectedModel.isEmpty ? '未选择模型' : state.selectedModel,
+              if (skillCount > 0) '$skillCount 技能',
+              if (mcpCount > 0) '$mcpCount MCP 工具',
+            ].join(' · '),
+            actions: [
+              // 会话用量：贴着浏览器按钮左边，半透明、不抢戏，但一直在动。
+              const Padding(
+                padding: EdgeInsets.only(right: 2),
+                child: SessionUsageChip(),
               ),
-            ),
-            const PopupMenuItem(
-              value: 'context',
-              child: ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.data_usage_outlined),
-                title: Text('上下文与压缩'),
-              ),
-            ),
-            PopupMenuItem(
-              value: 'skills',
-              child: ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.auto_stories_outlined),
-                title: const Text('技能库'),
-                subtitle: Text('$skillCount 个已启用'),
-              ),
-            ),
-            PopupMenuItem(
-              value: 'mcp',
-              child: ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.extension_outlined),
-                title: const Text('MCP 扩展'),
-                subtitle: Text(mcpCount == 0 ? '未接入' : '$mcpCount 个工具'),
-              ),
-            ),
-            const PopupMenuItem(
-              value: 'new',
-              child: ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.add_comment_outlined),
-                title: Text('新建会话'),
-              ),
-            ),
-            const PopupMenuItem(
-              value: 'clear',
-              child: ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.delete_sweep_outlined),
-                title: Text('清空当前会话'),
-              ),
-            ),
-          ],
-        ),
-      ],
-      body: Column(
-        children: [
-          Expanded(
-            child: state.messages.isEmpty
-                ? _WelcomeView(
-                    onTap: (text) {
-                      // 走 _send 而不是直接 send：不然示例问句会把已挂的附件丢掉。
-                      _controller.text = text;
-                      _send();
-                    },
-                  )
-                : Builder(
-                    builder: (context) {
-                      final hasLive = state.liveAgentEvents.isNotEmpty;
-                      final hasLivePlan = state.livePlan.isNotEmpty;
-                      // 请求已发出但一个字都还没回来时也占一格：那正是最需要
-                      // "它在动"这个信号的几秒钟。
-                      final hasStream = state.isLoading;
-                      final extraCount = (hasLivePlan ? 1 : 0) +
-                          (hasLive ? 1 : 0) +
-                          (hasStream ? 1 : 0) +
-                          1;
-                      return ListView.builder(
-                        key: _listKey,
-                        controller: _scrollController,
-                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-                        itemCount: state.messages.length + extraCount,
-                        itemBuilder: (context, index) {
-                          if (index < state.messages.length) {
-                            return RepaintBoundary(
-                              key: _bubbleKeyAt(index),
-                              child: _MessageBubble(
-                                message: state.messages[index],
-                                onResend: state.isLoading
-                                    ? null
-                                    : () => notifier.resendAt(index),
-                                onRollback: state.isLoading
-                                    ? null
-                                    : () => _rollbackTo(index),
-                              ),
-                            );
-                          }
-                          var slot = index - state.messages.length;
-                          if (hasLivePlan) {
-                            if (slot == 0) {
-                              // 下面紧跟过程卡（它只有 bottom margin），
-                              // 所以这里必须自己留下边距，否则两张卡贴在一起。
-                              return TaskPlanCard(
-                                plan: state.livePlan,
-                                margin: const EdgeInsets.only(bottom: 8),
-                              );
-                            }
-                            slot -= 1;
-                          }
-                          if (hasLive) {
-                            if (slot == 0) {
-                              return AgentProcessCard(
-                                events: state.liveAgentEvents,
-                                running: state.isLoading,
-                                initiallyExpanded: state.isLoading,
-                                totalTokens: state.lastTokens,
-                              );
-                            }
-                            slot -= 1;
-                          }
-                          if (hasStream && slot == 0) {
-                            return AgentStreamCard(
-                              reasoning: state.liveReasoning,
-                              content: state.liveContent,
-                              reasoningChars: state.liveReasoningChars,
-                              contentChars: state.liveContentChars,
-                              tool: state.liveTool,
-                            );
-                          }
-                          return _buildTail(context, state);
-                        },
-                      );
-                    },
+              // 浏览器入口：常驻内核，点开就是个正常浏览器（悬浮窗，可拖可缩放）。
+              // 登录、Cloudflare 人机验证都在这里手动点掉——AI 用的是同一个内核，
+              // 所以你验证过一次，它后面调接口就一直带着票。
+              ValueListenableBuilder<bool>(
+                valueListenable: BrowserEngine.instance.visible,
+                builder: (context, visible, _) => IconButton(
+                  tooltip: visible ? '浏览器已打开' : '打开浏览器（登录 / 过人机验证）',
+                  onPressed: () => visible
+                      ? BrowserEngine.instance.hide()
+                      : BrowserEngine.instance.show(),
+                  icon: Icon(
+                    visible ? Icons.public : Icons.public_outlined,
+                    color: visible ? scheme.primary : null,
                   ),
-          ),
-          // 往上翻过就出现这个按钮：不用一路滑回去。
-          if (!_pinned && state.messages.isNotEmpty)
-            Align(
-              alignment: Alignment.centerRight,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(0, 0, 14, 6),
-                child: GlassPill(
-                  icon: Icons.arrow_downward_rounded,
-                  label: state.isLoading ? '跟随最新' : '回到最新',
-                  color: scheme.primary,
-                  dense: true,
-                  onTap: () {
-                    setState(() => _pinned = true);
-                    _scrollToBottom();
-                  },
                 ),
               ),
-            ),
-          // 错误条只在"错误没能挂到某条消息上"时才出现（比如拉模型列表失败）。
-          // 发送失败已经在那条用户消息下面标红了，两处都画等于报两次错。
-          if (state.error != null &&
-              !(state.currentSession?.messages.any((m) => m.failedToSend) ??
-                  false))
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: scheme.errorContainer,
-                borderRadius: BorderRadius.circular(10),
+              IconButton(
+                tooltip: '会话列表',
+                onPressed: _showSessionManager,
+                icon: const Icon(Icons.forum_outlined),
               ),
-              child: Row(
-                children: [
-                  Icon(Icons.error_outline,
-                      size: 17, color: scheme.onErrorContainer),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      errorText(state.error!),
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        color: scheme.onErrorContainer,
-                      ),
-                      maxLines: 3,
+              IconButton(
+                tooltip: '审计记录',
+                onPressed: _showAudit,
+                icon: const Icon(Icons.receipt_long_outlined),
+              ),
+              PopupMenuButton<String>(
+                tooltip: '更多',
+                icon: const Icon(Icons.more_vert),
+                onSelected: (value) {
+                  switch (value) {
+                    case 'approval':
+                      AiControlSheets.showApproval(context);
+                    case 'context':
+                      AiControlSheets.showContext(context, ref);
+                    case 'skills':
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) => const SkillListPage()),
+                      );
+                    case 'mcp':
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) => const McpServerPage()),
+                      );
+                    case 'new':
+                      notifier.createSession();
+                    case 'clear':
+                      notifier.clear();
+                  }
+                },
+                itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: 'approval',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.verified_user_outlined),
+                      title: const Text('确认策略'),
+                      subtitle: Text(state.approvalMode.label),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'context',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.data_usage_outlined),
+                      title: Text('上下文与压缩'),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'skills',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.auto_stories_outlined),
+                      title: const Text('技能库'),
+                      subtitle: Text('$skillCount 个已启用'),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'mcp',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.extension_outlined),
+                      title: const Text('MCP 扩展'),
+                      subtitle: Text(mcpCount == 0 ? '未接入' : '$mcpCount 个工具'),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'new',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.add_comment_outlined),
+                      title: Text('新建会话'),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'clear',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.delete_sweep_outlined),
+                      title: Text('清空当前会话'),
                     ),
                   ),
                 ],
               ),
-            ),
-          // "AI 在等你回答"常驻条：提问卡在列表末尾，用户往上翻就看不见了，
-          // 而这时候不答任务就一直挂着。点一下跳到那张卡。
-          if (state.pendingQuestion != null && !_pinned)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(10),
-                onTap: () {
-                  setState(() => _pinned = true);
-                  _scrollToBottom();
-                },
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: scheme.primary.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: scheme.primary.withValues(alpha: 0.45),
+            ],
+            body: Column(
+              children: [
+                Expanded(
+                  child: state.messages.isEmpty
+                      ? _WelcomeView(
+                          onTap: (text) {
+                            // 走 _send 而不是直接 send：不然示例问句会把已挂的附件丢掉。
+                            _controller.text = text;
+                            _send();
+                          },
+                        )
+                      : Builder(
+                          builder: (context) {
+                            final hasLive = state.liveAgentEvents.isNotEmpty;
+                            final hasLivePlan = state.livePlan.isNotEmpty;
+                            // 请求已发出但一个字都还没回来时也占一格：那正是最需要
+                            // "它在动"这个信号的几秒钟。
+                            final hasStream = state.isLoading;
+                            final extraCount = (hasLivePlan ? 1 : 0) +
+                                (hasLive ? 1 : 0) +
+                                (hasStream ? 1 : 0) +
+                                1;
+                            return ListView.builder(
+                              key: _listKey,
+                              controller: _scrollController,
+                              padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                              itemCount: state.messages.length + extraCount,
+                              itemBuilder: (context, index) {
+                                if (index < state.messages.length) {
+                                  return RepaintBoundary(
+                                    key: _bubbleKeyAt(index),
+                                    child: _MessageBubble(
+                                      message: state.messages[index],
+                                      onResend: state.isLoading
+                                          ? null
+                                          : () => notifier.resendAt(index),
+                                      onRollback: state.isLoading
+                                          ? null
+                                          : () => _rollbackTo(index),
+                                    ),
+                                  );
+                                }
+                                var slot = index - state.messages.length;
+                                if (hasLivePlan) {
+                                  if (slot == 0) {
+                                    // 下面紧跟过程卡（它只有 bottom margin），
+                                    // 所以这里必须自己留下边距，否则两张卡贴在一起。
+                                    return TaskPlanCard(
+                                      plan: state.livePlan,
+                                      margin: const EdgeInsets.only(bottom: 8),
+                                    );
+                                  }
+                                  slot -= 1;
+                                }
+                                if (hasLive) {
+                                  if (slot == 0) {
+                                    return AgentProcessCard(
+                                      events: state.liveAgentEvents,
+                                      running: state.isLoading,
+                                      initiallyExpanded: state.isLoading,
+                                      totalTokens: state.lastTokens,
+                                    );
+                                  }
+                                  slot -= 1;
+                                }
+                                if (hasStream && slot == 0) {
+                                  return AgentStreamCard(
+                                    reasoning: state.liveReasoning,
+                                    content: state.liveContent,
+                                    reasoningChars: state.liveReasoningChars,
+                                    contentChars: state.liveContentChars,
+                                    tool: state.liveTool,
+                                  );
+                                }
+                                return _buildTail(context, state);
+                              },
+                            );
+                          },
+                        ),
+                ),
+                // 往上翻过就出现这个按钮：不用一路滑回去。
+                if (!_pinned && state.messages.isNotEmpty)
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(0, 0, 14, 6),
+                      child: GlassPill(
+                        icon: Icons.arrow_downward_rounded,
+                        label: state.isLoading ? '跟随最新' : '回到最新',
+                        color: scheme.primary,
+                        dense: true,
+                        onTap: () {
+                          setState(() => _pinned = true);
+                          _scrollToBottom();
+                        },
+                      ),
                     ),
                   ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.help_outline, size: 16, color: scheme.primary),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          'AI 在等你回答：${state.pendingQuestion!.question}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: scheme.primary,
+                // 错误条只在"错误没能挂到某条消息上"时才出现（比如拉模型列表失败）。
+                // 发送失败已经在那条用户消息下面标红了，两处都画等于报两次错。
+                if (state.error != null &&
+                    !(state.currentSession?.messages
+                            .any((m) => m.failedToSend) ??
+                        false))
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: scheme.errorContainer,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.error_outline,
+                            size: 17, color: scheme.onErrorContainer),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            errorText(state.error!),
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              color: scheme.onErrorContainer,
+                            ),
+                            maxLines: 3,
                           ),
                         ),
+                      ],
+                    ),
+                  ),
+                // "AI 在等你回答"常驻条：提问卡在列表末尾，用户往上翻就看不见了，
+                // 而这时候不答任务就一直挂着。点一下跳到那张卡。
+                if (state.pendingQuestion != null && !_pinned)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () {
+                        setState(() => _pinned = true);
+                        _scrollToBottom();
+                      },
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: scheme.primary.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: scheme.primary.withValues(alpha: 0.45),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.help_outline,
+                                size: 16, color: scheme.primary),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                'AI 在等你回答：${state.pendingQuestion!.question}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: scheme.primary,
+                                ),
+                              ),
+                            ),
+                            Icon(Icons.arrow_downward_rounded,
+                                size: 15, color: scheme.primary),
+                          ],
+                        ),
                       ),
-                      Icon(Icons.arrow_downward_rounded,
-                          size: 15, color: scheme.primary),
-                    ],
+                    ),
+                  ),
+                // 清单常驻在输入框上方：跑长任务时不用往上翻就知道到第几步。
+                if (state.livePlan.isNotEmpty)
+                  TaskPlanStrip(plan: state.livePlan, running: state.isLoading),
+                if (state.interruptedRun != null)
+                  ResumeStrip(
+                    run: state.interruptedRun!,
+                    onResume: notifier.resumeInterruptedRun,
+                    onDiscard: notifier.discardInterruptedRun,
+                  ),
+                QueueStrip(
+                  queue: state.queue,
+                  onReorder: notifier.reorderQueue,
+                  onRemove: notifier.dequeue,
+                  onInterruptSend: notifier.interruptAndSend,
+                ),
+                // 附件条。用的是悬浮窗那份 chips：两边共享同一个会话，
+                // 附件当然也得是同一份，否则在这里加的附件发出去不带上。
+                if (chips.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 0, 14, 4),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: [
+                          for (var i = 0; i < chips.length; i++)
+                            InputChip(
+                              visualDensity: VisualDensity.compact,
+                              avatar: Icon(
+                                chips[i].readOnly
+                                    ? Icons.visibility_outlined
+                                    : Icons.attachment,
+                                size: 14,
+                              ),
+                              label: Text(
+                                chips[i].label,
+                                style: const TextStyle(fontSize: 11.5),
+                              ),
+                              onDeleted: () => ref
+                                  .read(aiDockProvider.notifier)
+                                  .removeChip(i),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                // 不用 SafeArea：它会照系统小白条的完整高度（这台机 ~48px）
+                // 往上垫一整条，输入框下面就空出一条谁也用不上的带子。
+                // 手势条本身是半透明浮层，压在它上面并不影响操作，
+                // 所以只留它的 1/4 作为呼吸位。
+                Padding(
+                  padding: EdgeInsets.only(
+                    bottom: MediaQuery.paddingOf(context).bottom * 0.25,
+                  ),
+                  child: AiComposer(
+                    state: state,
+                    controller: _controller,
+                    onSend: _send,
+                    onStop: notifier.stopAgent,
+                    onModelTap: () => AiControlSheets.showModelPicker(context),
+                    onStrengthTap: () => AiControlSheets.showStrength(context),
+                    onContextTap: () =>
+                        AiControlSheets.showContext(context, ref),
+                    onApprovalTap: () => AiControlSheets.showApproval(context),
+                    onAttach: _pickFile,
                   ),
                 ),
-              ),
-            ),
-          // 清单常驻在输入框上方：跑长任务时不用往上翻就知道到第几步。
-          if (state.livePlan.isNotEmpty)
-            TaskPlanStrip(plan: state.livePlan, running: state.isLoading),
-          if (state.interruptedRun != null)
-            ResumeStrip(
-              run: state.interruptedRun!,
-              onResume: notifier.resumeInterruptedRun,
-              onDiscard: notifier.discardInterruptedRun,
-            ),
-          QueueStrip(
-            queue: state.queue,
-            onReorder: notifier.reorderQueue,
-            onRemove: notifier.dequeue,
-            onInterruptSend: notifier.interruptAndSend,
-          ),
-          // 附件条。用的是悬浮窗那份 chips：两边共享同一个会话，
-          // 附件当然也得是同一份，否则在这里加的附件发出去不带上。
-          if (chips.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 4),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    for (var i = 0; i < chips.length; i++)
-                      InputChip(
-                        visualDensity: VisualDensity.compact,
-                        avatar: Icon(
-                          chips[i].readOnly
-                              ? Icons.visibility_outlined
-                              : Icons.attachment,
-                          size: 14,
-                        ),
-                        label: Text(
-                          chips[i].label,
-                          style: const TextStyle(fontSize: 11.5),
-                        ),
-                        onDeleted: () =>
-                            ref.read(aiDockProvider.notifier).removeChip(i),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          // 不用 SafeArea：它会照系统小白条的完整高度（这台机 ~48px）
-          // 往上垫一整条，输入框下面就空出一条谁也用不上的带子。
-          // 手势条本身是半透明浮层，压在它上面并不影响操作，
-          // 所以只留它的 1/4 作为呼吸位。
-          Padding(
-            padding: EdgeInsets.only(
-              bottom: MediaQuery.paddingOf(context).bottom * 0.25,
-            ),
-            child: AiComposer(
-              state: state,
-              controller: _controller,
-              onSend: _send,
-              onStop: notifier.stopAgent,
-              onModelTap: () => AiControlSheets.showModelPicker(context),
-              onStrengthTap: () => AiControlSheets.showStrength(context),
-              onContextTap: () => AiControlSheets.showContext(context, ref),
-              onApprovalTap: () => AiControlSheets.showApproval(context),
-              onAttach: _pickFile,
+              ],
             ),
           ),
-        ],
+        ),
+        _buildFilePanel(),
+      ],
+    );
+  }
+
+  /// 左侧半屏文件管理面板：右滑出来、左滑/右上角收起。
+  /// 点击文本/代码文件时用悬浮编辑器打开，不离开 AI 页面。
+  Widget _buildFilePanel() {
+    final size = MediaQuery.sizeOf(context);
+    final scheme = Theme.of(context).colorScheme;
+    final panelWidth = size.width * 0.5;
+    return AnimatedPositioned(
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+      left: _filePanelOpen ? 0 : -panelWidth - 12,
+      top: 0,
+      bottom: 0,
+      width: panelWidth,
+      child: Material(
+        color: Colors.transparent,
+        child: ClipRRect(
+          borderRadius: const BorderRadius.horizontal(
+            right: Radius.circular(20),
+          ),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(
+                sigmaX: Glass.blurStrong, sigmaY: Glass.blurStrong),
+            child: Container(
+              color: scheme.surface.withValues(alpha: 0.96),
+              child: ShellFilesPage(
+                asSheet: true,
+                floatingEditor: true,
+                onClose: _closeFilePanel,
+                closeIcon: Icons.arrow_back_ios_new_rounded,
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
