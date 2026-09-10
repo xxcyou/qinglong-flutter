@@ -426,11 +426,21 @@ class _TimelineRowState extends State<_TimelineRow> {
     return text.isEmpty ? '（这一步没有更多内容）' : text;
   }
 
+  /// JSON 里字符串值常带 \n \t 转义，直接显示就是一排“\n”特别难看。
+  /// 这里只做**展示用**的还原：把转义换行/制表还原成真实换行/缩进，
+  /// 绝不改原始参数。`\r` 直接去掉，避免 Windows 换行产生多余空行。
+  static String _unescapeForDisplay(String text) => text
+      .replaceAll('\\n', '\n')
+      .replaceAll('\\t', '\t')
+      .replaceAll('\\r', '');
+
   static String _prettyJson(Map<String, dynamic> args) {
     try {
-      return const JsonEncoder.withIndent('  ').convert(args);
+      return _unescapeForDisplay(
+        const JsonEncoder.withIndent('  ').convert(args),
+      );
     } catch (_) {
-      return args.toString();
+      return _unescapeForDisplay(args.toString());
     }
   }
 
@@ -438,9 +448,11 @@ class _TimelineRowState extends State<_TimelineRow> {
     final trimmed = text.trim();
     if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return text;
     try {
-      return const JsonEncoder.withIndent('  ').convert(jsonDecode(trimmed));
+      return _unescapeForDisplay(
+        const JsonEncoder.withIndent('  ').convert(jsonDecode(trimmed)),
+      );
     } catch (_) {
-      return text;
+      return _unescapeForDisplay(text);
     }
   }
 

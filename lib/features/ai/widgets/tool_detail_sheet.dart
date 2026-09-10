@@ -118,11 +118,19 @@ class _ToolDetailSheetState extends State<ToolDetailSheet> {
         AgentEventKind.done => '收尾',
       };
 
+  /// 展示用：把 JSON 字符串里的 \n \t 转义还原成真实换行/缩进，\r 去掉。
+  static String _unescapeForDisplay(String text) => text
+      .replaceAll('\\n', '\n')
+      .replaceAll('\\t', '\t')
+      .replaceAll('\\r', '');
+
   static String _encode(Map<String, dynamic> args) {
     try {
-      return const JsonEncoder.withIndent('  ').convert(args);
+      return _unescapeForDisplay(
+        const JsonEncoder.withIndent('  ').convert(args),
+      );
     } catch (_) {
-      return args.toString();
+      return _unescapeForDisplay(args.toString());
     }
   }
 
@@ -131,9 +139,11 @@ class _ToolDetailSheetState extends State<ToolDetailSheet> {
     final trimmed = text.trim();
     if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return text;
     try {
-      return const JsonEncoder.withIndent('  ').convert(jsonDecode(trimmed));
+      return _unescapeForDisplay(
+        const JsonEncoder.withIndent('  ').convert(jsonDecode(trimmed)),
+      );
     } catch (_) {
-      return text;
+      return _unescapeForDisplay(text);
     }
   }
 
