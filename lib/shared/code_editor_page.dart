@@ -27,6 +27,7 @@ class CodeEditorPage extends ConsumerStatefulWidget {
     this.aiSource = 'file',
     this.subtitle,
     this.editorKind = EditorKind.shellFile,
+    this.showBack = true,
   });
 
   final String path;
@@ -44,6 +45,9 @@ class CodeEditorPage extends ConsumerStatefulWidget {
 
   /// 挂到编辑器总线上的身份。
   final EditorKind editorKind;
+
+  /// 悬浮窗里用：不画返回箭头。
+  final bool showBack;
 
   @override
   ConsumerState<CodeEditorPage> createState() => _CodeEditorPageState();
@@ -220,7 +224,7 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
         title: _fileName,
         subtitle: widget.subtitle ??
             '${languageNameForPath(widget.path)} · ${widget.path}',
-        showBack: true,
+        showBack: widget.showBack,
         actions: [
           if (_isHtml)
             IconButton(

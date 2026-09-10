@@ -9,6 +9,7 @@ import '../../../core/theme/glass.dart';
 import '../../../core/utils/formatter.dart';
 import '../../../shared/ask_ai.dart';
 import '../../../shared/code_editor_page.dart';
+import '../../../shared/floating_editor_window.dart';
 import '../../../shared/confirm_dialog.dart';
 import '../../../shared/file_kinds.dart';
 import '../../../shared/glass_scaffold.dart';
@@ -17,66 +18,6 @@ import '../../../shared/text_input_dialog.dart';
 import '../providers/shell_files_provider.dart';
 import '../widgets/file_action_sheet.dart';
 import '../../../shared/mono_text.dart';
-
-/// 在页面上方弹出一个悬浮编辑器（不离开当前页面）。
-Future<void> showFloatingCodeEditor(
-  BuildContext context, {
-  required String path,
-  required String initial,
-  String subtitle = '',
-  Future<bool> Function(String content)? onSave,
-  Future<bool> Function()? onDelete,
-}) {
-  final size = MediaQuery.sizeOf(context);
-  return showGeneralDialog<void>(
-    context: context,
-    barrierDismissible: true,
-    barrierLabel: '关闭编辑器',
-    barrierColor: Colors.black54,
-    transitionDuration: const Duration(milliseconds: 220),
-    pageBuilder: (context, animation, secondaryAnimation) => Align(
-      alignment: Alignment.center,
-      child: Material(
-        color: Colors.transparent,
-        child: Container(
-          width: size.width * 0.94,
-          height: size.height * 0.86,
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surface,
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x66000000),
-                blurRadius: 32,
-                offset: Offset(0, 12),
-              ),
-            ],
-          ),
-          child: CodeEditorPage(
-            path: path,
-            initial: initial,
-            subtitle: subtitle,
-            aiSource: 'file_manager',
-            onSave: onSave,
-            onDelete: onDelete,
-          ),
-        ),
-      ),
-    ),
-    transitionBuilder: (context, animation, secondaryAnimation, child) =>
-        FadeTransition(
-      opacity: animation,
-      child: ScaleTransition(
-        scale: CurvedAnimation(
-          parent: animation,
-          curve: Curves.easeOutBack,
-        ),
-        child: child,
-      ),
-    ),
-  );
-}
 
 /// 完整文件管理器：终端（PRoot guest，含 rootfs 根目录）与 APP 沙箱两套根，
 /// 支持新建/重命名/复制/剪切/粘贴/删除/权限/属性/搜索/排序/多选。
@@ -1085,61 +1026,65 @@ class _FileTile extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 3),
-                // 第二行：日期在前（最常看），然后大小/项目类型、权限。
-                Row(
-                  children: [
-                    Text(
-                      Formatter.dateTime(entry.modified),
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontFamily: kMonoFamily,
-                        fontFamilyFallback: kMonoFallback,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    if (sizeText != null)
+                // 第二行：日期/大小/权限。半屏侧滑面板窄，改横向滚动防黄条。
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
                       Text(
-                        sizeText,
+                        Formatter.dateTime(entry.modified),
                         style: TextStyle(
                           fontSize: 11,
                           fontFamily: kMonoFamily,
                           fontFamilyFallback: kMonoFallback,
-                          fontWeight: FontWeight.w600,
-                          color: scheme.onSurfaceVariant,
-                        ),
-                      )
-                    else
-                      Text(
-                        '文件夹',
-                        style: TextStyle(
-                          fontSize: 11,
                           color: scheme.onSurfaceVariant,
                         ),
                       ),
-                    const SizedBox(width: 8),
-                    Text(
-                      entry.modeText,
-                      style: TextStyle(
-                        fontSize: 10.5,
-                        fontFamily: kMonoFamily,
-                        fontFamilyFallback: kMonoFallback,
-                        color: scheme.onSurfaceVariant.withValues(alpha: 0.75),
-                      ),
-                    ),
-                    if (entry.matchedContent)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 6),
-                        child: Text(
-                          '内容命中',
+                      const SizedBox(width: 8),
+                      if (sizeText != null)
+                        Text(
+                          sizeText,
                           style: TextStyle(
-                            fontSize: 10.5,
+                            fontSize: 11,
+                            fontFamily: kMonoFamily,
+                            fontFamilyFallback: kMonoFallback,
                             fontWeight: FontWeight.w600,
-                            color: scheme.primary,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        )
+                      else
+                        Text(
+                          '文件夹',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: scheme.onSurfaceVariant,
                           ),
                         ),
+                      const SizedBox(width: 8),
+                      Text(
+                        entry.modeText,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontFamily: kMonoFamily,
+                          fontFamilyFallback: kMonoFallback,
+                          color:
+                              scheme.onSurfaceVariant.withValues(alpha: 0.75),
+                        ),
                       ),
-                  ],
+                      if (entry.matchedContent)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 6),
+                          child: Text(
+                            '内容命中',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                              color: scheme.primary,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
                 if (showPath)
                   Padding(

@@ -2,6 +2,7 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/glass.dart';
@@ -54,7 +55,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   /// AI 页左侧半屏文件面板。
   bool _filePanelOpen = false;
 
+  static const _filePanelFractionKey = 'ai_file_panel_fraction_v1';
+
   /// 面板宽度占屏幕比例，默认 2/3；可拖动右侧小白条在 0.4~0.95 间调整。
+  /// 调好后会记住，下次滑出来还是这个大小。
   double _filePanelFraction = 0.66;
 
   /// 开始滑动的位置：从屏幕最左边缘滑会留给系统返回手势，避免误触。
@@ -62,6 +66,27 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
 
   void _openFilePanel() => setState(() => _filePanelOpen = true);
   void _closeFilePanel() => setState(() => _filePanelOpen = false);
+
+  Future<void> _loadFilePanelFraction() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getDouble(_filePanelFractionKey);
+      if (saved != null && saved >= 0.4 && saved <= 0.95 && mounted) {
+        setState(() => _filePanelFraction = saved);
+      }
+    } catch (_) {
+      // 记不住宽度不影响功能，用默认值继续。
+    }
+  }
+
+  Future<void> _saveFilePanelFraction() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_filePanelFractionKey, _filePanelFraction);
+    } catch (_) {
+      // 忽略写入失败。
+    }
+  }
 
   /// 每条消息一个 RepaintBoundary key：撤回时按它抓图做消散。
   /// 用列表而不是 Map<int,GlobalKey>，因为索引就是消息在会话里的位置，
@@ -81,6 +106,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
+    _loadFilePanelFraction();
     Future.microtask(() async {
       await ref.read(chatProvider.notifier).loadSessions();
       // 会话读完再看有没有被打断的运行：恢复要切到原会话，顺序反了会切错。
@@ -759,6 +785,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                         },
                         onHorizontalDragEnd: (_) {
                           HapticFeedback.selectionClick();
+                          _saveFilePanelFraction();
                         },
                         child: Container(
                           width: 5,
