@@ -63,6 +63,7 @@ class _FloatingEditorWindowState extends State<_FloatingEditorWindow> {
   late double _width;
   late double _height;
   bool _geometryReady = false;
+  Size? _lastScreen;
 
   @override
   void initState() {
@@ -80,23 +81,54 @@ class _FloatingEditorWindowState extends State<_FloatingEditorWindow> {
     _height = size.height * 0.86;
     _left = (size.width - _width) / 2;
     _top = (size.height - _height) / 2;
+    _lastScreen = size;
     _geometryReady = true;
   }
 
-  void _clampPosition(Size screen) {
+  void _clampPosition(Size screen, EdgeInsets padding) {
     // 先收尺寸再算位置：旋转后新屏可能比旧窗口小，直接拿旧宽度算
     // screen.width - _width 会变成负数，clamp 上界小于下界就抛
     // Invalid argument(s): 0.0。
+    final topInset = padding.top;
+    final bottomInset = padding.bottom;
+    final maxHeight = screen.height - topInset - bottomInset;
     _width = _width.clamp(_minWidth, screen.width);
-    _height = _height.clamp(_minHeight, screen.height);
+    _height = _height.clamp(
+      _minHeight,
+      maxHeight > _minHeight ? maxHeight : _minHeight,
+    );
     _left = _left.clamp(0.0, screen.width - _width);
-    _top = _top.clamp(0.0, screen.height - _height);
+    // 顶部不得钻进状态栏，底部不得被导航条盖住。
+    _top = _top.clamp(
+      topInset,
+      screen.height - _height - bottomInset,
+    );
+  }
+
+  /// 屏幕尺寸变化（旋转/分屏）时按新旧比例缩放窗口，转回来能恢复原大小。
+  void _scaleToScreen(Size screen, EdgeInsets padding) {
+    final last = _lastScreen;
+    if (last == null ||
+        (last.width == screen.width && last.height == screen.height)) {
+      _lastScreen = screen;
+      return;
+    }
+    final sx = screen.width / last.width;
+    final sy = screen.height / last.height;
+    _left *= sx;
+    _top *= sy;
+    _width *= sx;
+    _height *= sy;
+    _lastScreen = screen;
+    _clampPosition(screen, padding);
   }
 
   @override
   Widget build(BuildContext context) {
     final screen = MediaQuery.sizeOf(context);
-    _clampPosition(screen);
+    final padding = MediaQuery.paddingOf(context);
+    _scaleToScreen(screen, padding);
+    _clampPosition(screen, padding);
     final scheme = Theme.of(context).colorScheme;
     final name = widget.path.split('/').last;
 
@@ -139,7 +171,7 @@ class _FloatingEditorWindowState extends State<_FloatingEditorWindow> {
                       setState(() {
                         _left += details.delta.dx;
                         _top += details.delta.dy;
-                        _clampPosition(screen);
+                        _clampPosition(screen, padding);
                       });
                     },
                     child: Container(
@@ -209,8 +241,7 @@ class _FloatingEditorWindowState extends State<_FloatingEditorWindow> {
               setState(() {
                 _width += details.delta.dx;
                 _height += details.delta.dy;
-                _width = _width.clamp(_minWidth, screen.width);
-                _height = _height.clamp(_minHeight, screen.height);
+                _clampPosition(screen, padding);
               });
             },
             child: const Icon(
