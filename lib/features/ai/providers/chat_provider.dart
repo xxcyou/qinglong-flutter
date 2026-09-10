@@ -574,10 +574,10 @@ class ChatNotifier extends Notifier<ChatState> {
   ///
   /// 这里**不放全文**：全文可以远超 token 预算，几百轮必炸。改成只留小摘要
   /// + 缓存 key，AI 需要完整内容时调 `tool_cache_read` 按 key 取，不重跑原工具。
-  static const _toolDigestBudget = 6000;
+  static const _toolDigestBudget = 12000;
 
   /// 单条工具结果在明细里保留的摘要长度。
-  static const _toolDigestPerCall = 220;
+  static const _toolDigestPerCall = 600;
 
   /// 所有 assistant 回复都带工具明细（摘要 + 缓存指针）；超预算由自动压缩从旧到新裁掉。
 
@@ -658,9 +658,24 @@ class ChatNotifier extends Notifier<ChatState> {
 
   /// 一条历史消息的正文：**只有模型/用户真正说过的话**。
   ///
-  /// assistant 消息还要把提问卡的排版剥掉，见 [stripQuestionCard]。
-  String _historyContent(AiChatMessage m) =>
-      m.role == 'assistant' ? stripQuestionCard(m.content) : m.content;
+  /// assistant 消息除了最终正文，还把执行过程中发过的“中途说明”
+  /// （AgentEventKind.answer）一起带上——以前上下文只有结尾正文，
+  /// 模型看不到中间那句“我先看一下日志”“这个报错是 xxx”让人前后接不上。
+  String _historyContent(AiChatMessage m) {
+    final base =
+        m.role == 'assistant' ? stripQuestionCard(m.content) : m.content;
+    if (m.role != 'assistant') return base;
+    final mids = <String>[];
+    for (final e in m.agentEvents) {
+      if (e.kind != AgentEventKind.answer) continue;
+      final text = e.message.trim();
+      if (text.isEmpty) continue;
+      if (text == m.content.trim()) continue; // 和最终正文相同的不重复
+      mids.add('（中途说明）$text');
+    }
+    if (mids.isEmpty) return base;
+    return [if (base.trim().isNotEmpty) base.trim(), ...mids].join('\n\n');
+  }
 
   /// 从 assistant 正文里剥掉"提问卡排版"，返回 (剩下的话, 那个问题)。
   ///
@@ -957,10 +972,12 @@ class ChatNotifier extends Notifier<ChatState> {
     final limit = state.contextLimit;
     if (limit <= 0 || history.length < 2) return history;
     final threshold = (limit * state.autoCompressThreshold).round();
-    // 最近 8 条一律保留完整工具明细（含缓存 key），只能动更早的。
-    const keepNewestWithDetails = 8;
+    // 最近 16 条一律保留完整工具明细（含缓存 key），只能动更早的。
+    // 用户要的是上下文别越来越“没内容”，所以允许多留几轮工具细节。
+    const keepNewestWithDetails = 16;
     var trimmed = _stripOldToolNotes(history, keepNewestWithDetails);
     var estimated = _estimateTokens(trimmed);
+    // 先剥老消息的系统记录（工具摘要），这个不丢人话。
     if (estimated <= threshold) {
       if (trimmed.length != history.length) {
         Logger.d('ai',
@@ -968,7 +985,9 @@ class ChatNotifier extends Notifier<ChatState> {
       }
       return trimmed;
     }
-    while (estimated > threshold && trimmed.length > 2) {
+    // 只裁到“不超硬上限”为止，不硬压到 threshold 以下。
+    // 以前一路裁到 80% 阈值导致越聊占用反而越低；现在保留到真正装不下为止。
+    while (estimated > limit && trimmed.length > 2) {
       trimmed = [trimmed.first, ...trimmed.sublist(2)];
       estimated = _estimateTokens(trimmed);
     }
@@ -1866,6 +1885,12 @@ class ChatNotifier extends Notifier<ChatState> {
       liveAgentEvents: const [],
       clearLiveText: true,
       clearError: true,
+      // 新话题是干净的，不能把上一个话题的上下文占用/用量统计带过来。
+      estimatedContextTokens: 0,
+      lastPromptTokens: 0,
+      lastCacheHitTokens: 0,
+      lastTurns: 0,
+      lastTokens: 0,
     );
     _persist();
   }
