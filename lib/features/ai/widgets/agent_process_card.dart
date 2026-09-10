@@ -357,15 +357,25 @@ class _TimelineRowState extends State<_TimelineRow> {
                   ),
                   Padding(
                     padding: const EdgeInsets.only(top: 2),
-                    // 展开时给全文并且可选中（复制一段思考去问别人很常见）；
-                    // 收起时还是两行预览，时间线保持紧凑。
+                    // 展开时用等宽字体 + 自动换行，参数/返回看起来是排版好的
+                    // JSON；同时可选中复制。收起时还是两行预览，时间线紧凑。
                     child: _expanded
-                        ? SelectableText(
-                            _full(event),
-                            style: TextStyle(
-                              fontSize: 11.5,
-                              height: 1.4,
-                              color: scheme.onSurfaceVariant,
+                        ? Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.22),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: SelectableText(
+                              _full(event),
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                height: 1.5,
+                                fontFamily: kMonoFamily,
+                                fontFamilyFallback: kMonoFallback,
+                                color: scheme.onSurfaceVariant,
+                              ),
                             ),
                           )
                         : Text(
@@ -391,7 +401,7 @@ class _TimelineRowState extends State<_TimelineRow> {
   static String _ms(int ms) =>
       ms >= 1000 ? '${(ms / 1000).toStringAsFixed(1)}s' : '${ms}ms';
 
-  /// 展开后要显示的全文：不折行、不压缩空白。
+  /// 展开后要显示的全文：保留换行/缩进，显示时自动换行。
   ///
   /// 工具调用展开后直接给「输入参数 + 输出/返回」两段；思考取 message。
   String _full(AgentEvent event) {
