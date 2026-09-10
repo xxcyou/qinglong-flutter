@@ -204,7 +204,11 @@ class HighlightingCodeController extends CodeController {
     return TextSpan(style: style, children: children);
   }
 
-  /// HTML 片段：用 xml 模式解析标签/属性/注释。
+  /// HTML 片段：优先用 xml 模式解析标签/属性/注释。
+  ///
+  /// highlight 的 xml 解析器遇到大型/复杂 HTML（尤其内嵌 CSS/JS 里大量
+  /// `{}`）时会整段退化成纯文本，所以解析结果一个颜色都没有时改用
+  /// 轻量 HTML 正则高亮兜底，保证标签至少有色。
   TextSpan _parseHtmlSegment(String segment) {
     final xmlMode = modeForLanguage('xml');
     if (xmlMode == null || segment.trim().isEmpty) {
@@ -213,9 +217,55 @@ class HighlightingCodeController extends CodeController {
     const id = 'ql_html_xml';
     _localHighlight.registerLanguage(id, xmlMode);
     final result = _localHighlight.parse(segment, language: id);
-    return TextSpan(children: [
+    final children = [
       for (final node in result.nodes ?? const <Node>[]) _buildNode(node),
-    ]);
+    ];
+    if (_countColored(TextSpan(children: children)) > 0) {
+      return TextSpan(children: children);
+    }
+    return TextSpan(children: _buildHtmlFallback(segment));
+  }
+
+  /// 轻量 HTML 正则高亮：注释、DOCTYPE、标签、引号字符串。
+  List<TextSpan> _buildHtmlFallback(String segment) {
+    final pattern = RegExp(
+      r'''(<!--[\s\S]*?-->|<!DOCTYPE[^>]*>|</?[a-zA-Z][^>]*>|"[^"]*"|'[^']*')''',
+      caseSensitive: false,
+    );
+    final children = <TextSpan>[];
+    var last = 0;
+    for (final match in pattern.allMatches(segment)) {
+      if (match.start > last) {
+        children.add(TextSpan(text: segment.substring(last, match.start)));
+      }
+      final token = match[0]!;
+      if (token.startsWith('<!--')) {
+        children.add(TextSpan(
+          text: token,
+          style: monokaiSublimeTheme['comment'],
+        ));
+      } else if (RegExp(r'^<!DOCTYPE', caseSensitive: false).hasMatch(token)) {
+        children.add(TextSpan(
+          text: token,
+          style: monokaiSublimeTheme['meta'],
+        ));
+      } else if (token.startsWith('<')) {
+        children.add(TextSpan(
+          text: token,
+          style: monokaiSublimeTheme['tag'] ?? monokaiSublimeTheme['keyword'],
+        ));
+      } else {
+        children.add(TextSpan(
+          text: token,
+          style: monokaiSublimeTheme['string'],
+        ));
+      }
+      last = match.end;
+    }
+    if (last < segment.length) {
+      children.add(TextSpan(text: segment.substring(last)));
+    }
+    return children;
   }
 
   /// highlight 解析失败时使用的轻量正则高亮。
