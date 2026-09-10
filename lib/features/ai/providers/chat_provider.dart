@@ -630,6 +630,23 @@ class ChatNotifier extends Notifier<ChatState> {
   static String _toolCacheKey(AgentEvent e) =>
       '${e.toolName ?? ''}|${_canonicalArgs(e.args)}';
 
+  /// 判断一次工具调用真正作用的“资源”，用来做更精确的缓存失效。
+  ///
+  /// 之前只要读过之后有任何写操作，tool_cache_read 就全部判失效，
+  /// 结果 shell_exec 顺手跑了个无关命令也会让缓存变废纸。这里只看
+  /// 读写是否针对同一个 path/url/name，不是同一个资源就不互相作废。
+  static String? _resourceTarget(AgentEvent e) {
+    final a = e.args;
+    if (a == null) return null;
+    final path = a['path']?.toString();
+    if (path != null && path.trim().isNotEmpty) return 'path:$path';
+    final url = a['url']?.toString();
+    if (url != null && url.trim().isNotEmpty) return 'url:$url';
+    final name = a['name']?.toString();
+    if (name != null && name.trim().isNotEmpty) return 'name:$name';
+    return null;
+  }
+
   static String _canonicalArgs(Map<String, dynamic>? args) {
     if (args == null || args.isEmpty) return '';
     final entries = args.entries.toList()
@@ -2427,17 +2444,28 @@ class ChatNotifier extends Notifier<ChatState> {
                 '${available.isEmpty ? '（无）' : available.join('\n')}';
           }
           final e = events[found];
-          // 写操作之后缓存作废：比如 AI 先读脚本→改脚本→再读缓存，
-          // 必须让 AI 知道这份是旧的，去用原工具拿最新内容，不能卡在循环里。
+          final target = _resourceTarget(e);
+          // 只对“针对同一资源”的写操作判失效：
+          // 比如 AI 先读脚本→shell_modify_range 改同一文件→再读缓存，必须让 AI 知道旧了；
+          // 但如果只是 shell_exec 跑了无关命令，缓存仍然可以放心复用。
+          final staleWrites = <String>[];
           for (var i = found + 1; i < events.length; i++) {
             if (!events[i].isWrite) continue;
-            return '缓存已失效：${e.toolName} 的结果发生在 ${events[i].toolName}'
-                '（写操作）之后就不再可信。'
+            if (target == null) continue;
+            if (_resourceTarget(events[i]) == target) {
+              staleWrites.add(events[i].toolName ?? 'write');
+            }
+          }
+          if (staleWrites.isNotEmpty) {
+            return '缓存已失效：${e.toolName} 的结果发生在 ${staleWrites.join('、')}'
+                '（针对同一资源的写操作）之后就不再可信。'
                 '请直接用原工具重新读取最新内容，不要使用这份旧缓存，也不要重复改写。';
           }
           final full = e.fullResult ?? e.result ?? '';
           if (full.trim().isEmpty) return '这个 key 对应的结果为空。';
-          return '${e.toolName} 完整返回（${full.length} 字，来自本会话缓存）：\n$full';
+          return '${e.toolName} 完整返回（${full.length} 字，来自本会话缓存）。'
+              '\n说明：期间没有检测到针对同一资源的写操作；如果内容仍可能变化，以原工具最新读取为准。'
+              '\n\n$full';
         },
       ),
     ];

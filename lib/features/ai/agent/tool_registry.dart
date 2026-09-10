@@ -657,6 +657,57 @@ class QlToolRegistry {
           isWrite: false,
         ),
         ToolDefinition(
+          name: 'shell_read_range',
+          description: '读取本地 Debian 文本文件的指定范围，按行或按字节。'
+              'start/end 都是 1-based 闭区间：byBytes=true 按字节，'
+              'false/缺省按行。适合只取日志/代码局部，避免整份文件截断。',
+          parameters: _obj([
+            'path',
+            'start',
+            'end'
+          ], {
+            'path': _stringProp,
+            'start': _intProp,
+            'end': _intProp,
+            'byBytes': {
+              'type': 'boolean',
+              'description': 'true 按字节读取；false/缺省按行读取',
+            },
+          }),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'shell_modify_range',
+          description: '在本地 Debian 文本文件里按行/字节范围修改：'
+              'action=overwrite 用 content 替换 start~end 闭区间；'
+              'action=insert 在 start 前插入 content；'
+              'action=delete 删除 start~end 闭区间（content 可空）。'
+              'byBytes=true 按字节，false/缺省按行。start/end 都是 1-based。',
+          parameters: _obj([
+            'path',
+            'action',
+            'start',
+            'end'
+          ], {
+            'path': _stringProp,
+            'action': {
+              'type': 'string',
+              'enum': ['overwrite', 'insert', 'delete'],
+              'description': 'overwrite / insert / delete',
+            },
+            'start': _intProp,
+            'end': _intProp,
+            'content': _stringProp,
+            'byBytes': {
+              'type': 'boolean',
+              'description': 'true 按字节；false/缺省按行',
+            },
+          }),
+          isWrite: true,
+          impact: '按范围修改本机 Debian 文件内容（覆盖/插入/删除）',
+          reversible: false,
+        ),
+        ToolDefinition(
           name: 'shell_write_file',
           description: '写入本地 Debian 文本文件（覆盖），终端和 APP 文件管理看到的是同一份',
           parameters: _obj([
@@ -723,6 +774,8 @@ class QlToolRegistry {
     'shell_script',
     'shell_list_files',
     'shell_read_file',
+    'shell_read_range',
+    'shell_modify_range',
     'shell_write_file',
     'shell_write_binary',
     'shell_read_binary',
@@ -1284,6 +1337,132 @@ class QlToolRegistry {
         return content.length > 20000
             ? '${content.substring(0, 20000)}\n…（内容过长已截断）'
             : content;
+
+      case 'shell_read_range':
+        final rPath = args['path']?.toString() ?? '';
+        if (rPath.isEmpty) return jsonEncode({'error': '缺少 path'});
+        final rStart = (args['start'] as num?)?.toInt() ?? 1;
+        final rEnd = (args['end'] as num?)?.toInt() ?? rStart;
+        final rByBytes = args['byBytes'] == true || args['byBytes'] == 'true';
+        const rScript = r'''
+import sys
+p, s, e, by = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4] == '1'
+if s < 1: s = 1
+if e < s: e = s
+if by:
+    with open(p, 'rb') as f:
+        f.seek(s - 1)
+        raw = f.read(e - s + 1)
+    sys.stdout.write(raw.decode('utf-8', errors='replace'))
+else:
+    with open(p, encoding='utf-8', errors='replace') as f:
+        lines = f.readlines()
+    if s > len(lines):
+        sys.stdout.write('')
+    else:
+        if e > len(lines): e = len(lines)
+        sys.stdout.write(''.join(lines[s - 1:e]))
+''';
+        final rRes = await ShellLock.run(
+          ShellLock.terminal,
+          () => _exec(
+            'python3',
+            args: [
+              '-c',
+              rScript,
+              rPath,
+              '$rStart',
+              '$rEnd',
+              rByBytes ? '1' : '0',
+            ],
+            timeoutSeconds: 120,
+          ),
+          label: 'shell_read_range:$rPath',
+          timeout: const Duration(seconds: 180),
+        );
+        if (rRes.exitCode != 0) {
+          return jsonEncode({'error': '读取范围失败', 'stderr': rRes.stderr});
+        }
+        return '读取 ${rByBytes ? '字节' : '行'} $rStart..$rEnd 结果（共 ${rRes.stdout.length} 字）：\n${rRes.stdout}';
+
+      case 'shell_modify_range':
+        final mPath = args['path']?.toString() ?? '';
+        final mAction = args['action']?.toString() ?? '';
+        if (mPath.isEmpty) return jsonEncode({'error': '缺少 path'});
+        if (!const {'overwrite', 'insert', 'delete'}.contains(mAction)) {
+          return jsonEncode({'error': 'action 必须是 overwrite/insert/delete'});
+        }
+        final mStart = (args['start'] as num?)?.toInt() ?? 1;
+        final mEnd = (args['end'] as num?)?.toInt() ?? mStart;
+        final mContent = args['content']?.toString() ?? '';
+        final mByBytes = args['byBytes'] == true || args['byBytes'] == 'true';
+        const mScript = r'''
+import sys
+p, act, s, e, content, by = (
+    sys.argv[1], sys.argv[2],
+    int(sys.argv[3]), int(sys.argv[4]),
+    sys.argv[5], sys.argv[6] == '1',
+)
+if s < 1: s = 1
+if e < s: e = s
+if by:
+    with open(p, 'rb') as f:
+        data = f.read()
+    head = data[:s - 1]
+    tail = data[e:]
+    if act == 'delete':
+        new = head + tail
+    elif act == 'overwrite':
+        new = head + content.encode('utf-8') + tail
+    elif act == 'insert':
+        new = head + content.encode('utf-8') + data[s - 1:]
+    else:
+        raise SystemExit('bad action')
+    with open(p, 'wb') as f:
+        f.write(new)
+    sys.stdout.write('bytes %d -> %d' % (len(data), len(new)))
+else:
+    with open(p, encoding='utf-8', errors='replace') as f:
+        lines = f.readlines()
+    if act == 'delete':
+        new = lines[:s - 1] + lines[e:]
+    elif act == 'overwrite':
+        new = lines[:s - 1] + [content] + lines[e:]
+    elif act == 'insert':
+        new = lines[:s - 1] + [content] + lines[s - 1:]
+    else:
+        raise SystemExit('bad action')
+    with open(p, 'w', encoding='utf-8') as f:
+        f.write(''.join(new))
+    sys.stdout.write('lines %d -> %d' % (len(lines), len(new)))
+''';
+        final mRes = await ShellLock.run(
+          ShellLock.file(mPath),
+          () => _exec(
+            'python3',
+            args: [
+              '-c',
+              mScript,
+              mPath,
+              mAction,
+              '$mStart',
+              '$mEnd',
+              mContent,
+              mByBytes ? '1' : '0',
+            ],
+            timeoutSeconds: 120,
+          ),
+          label: 'shell_modify_range:$mPath',
+          timeout: const Duration(seconds: 180),
+        );
+        if (mRes.exitCode != 0) {
+          return jsonEncode({'error': '修改范围失败', 'stderr': mRes.stderr});
+        }
+        return '已按${mByBytes ? '字节' : '行'}${switch (mAction) {
+          'overwrite' => '覆盖',
+          'insert' => '插入',
+          _ => '删除',
+        }} $mStart..$mEnd 于 $mPath（${mRes.stdout.trim()}）';
 
       case 'shell_write_file':
         final target = args['path']?.toString() ?? '';
