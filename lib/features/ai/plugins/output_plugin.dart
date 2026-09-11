@@ -69,11 +69,15 @@ class _LoadedOutputPlugin {
     required this.info,
     required this.runtime,
     required this.source,
+    required this.hasProcessResponse,
   });
 
   final OutputPluginInfo info;
   final JavascriptRuntime runtime;
   final String source;
+
+  /// 插件是否声明了 processResponse（哪怕执行失败也算“这一层归插件管”）。
+  final bool hasProcessResponse;
 }
 
 /// 输出整理插件服务（支持多个插件按顺序链式执行）。
@@ -111,6 +115,12 @@ class OutputPluginService {
       .where((d) => d.isNotEmpty)
       .join('；');
   String get loadedPath => _plugins.isEmpty ? '' : _plugins.first.info.path;
+
+  /// 当前已加载插件里有没有人声明 processResponse。
+  ///
+  /// 有的话，内置 ToolMarkupRecovery 不再兜底，让插件真正负责捞回/清理；
+  /// 这样插件坏了会直接暴露，而不是被内置兜底掩盖成“看起来生效了”。
+  bool get hasResponseHook => _plugins.any((p) => p.hasProcessResponse);
 
   /// 最近一次的 hook 调用记录（点击聊天里的插件状态钮时展示）。
   List<OutputPluginRunRecord> get runRecords => List.unmodifiable(_runRecords);
@@ -184,6 +194,7 @@ class OutputPluginService {
           errors.add('$trimmed：JS 执行失败 ${result.stringResult}');
           continue;
         }
+        final probe = runtime.evaluate('typeof processResponse === "function"');
         _plugins.add(
           _LoadedOutputPlugin(
             info: OutputPluginInfo(
@@ -193,6 +204,7 @@ class OutputPluginService {
             ),
             runtime: runtime,
             source: parsed.source,
+            hasProcessResponse: !probe.isError && probe.stringResult == 'true',
           ),
         );
       } catch (e) {
