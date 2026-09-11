@@ -227,6 +227,8 @@ class BrowserEngine {
       case 'log':
         _log(
             json['level']?.toString() ?? 'log', json['text']?.toString() ?? '');
+      case 'native_req':
+        unawaited(_handleNativeFetch(json));
       case 'eval':
         final id = (json['id'] as num?)?.toInt() ?? -1;
         final waiter = _evalWaiters.remove(id);
@@ -237,6 +239,76 @@ class BrowserEngine {
           waiter.completeError(StateError(json['e']?.toString() ?? '脚本出错'));
         }
     }
+  }
+
+  // ------------------------------------------------------------------ 原生 fetch 兜底
+
+  /// 浏览器 fetch 被 CORS/网络层拦下时，改走 Dart 侧原生 HTTP 再试一次。
+  ///
+  /// 这是给跨域公开接口的降级通道：不发浏览器 Cookie，但能绕过 CORS 拿到数据。
+  /// 需要登录态的接口仍然应该先 browser_open 到目标站，让浏览器原生 fetch 成功。
+  Future<void> _handleNativeFetch(Map<String, dynamic> json) async {
+    final id = json['id']?.toString() ?? '';
+    if (id.isEmpty) return;
+    final method = json['method']?.toString().toUpperCase() ?? 'GET';
+    final url = json['url']?.toString() ?? '';
+    final body = json['body']?.toString() ?? '';
+    final headers = json['headers'];
+    final ua = json['ua']?.toString() ?? '';
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 20);
+    try {
+      final request = await client.openUrl(method, Uri.parse(url));
+      if (headers is Map) {
+        headers.forEach((k, v) {
+          if (k is String && v != null) request.headers.set(k, v.toString());
+        });
+      }
+      if (ua.isNotEmpty &&
+          request.headers.value(HttpHeaders.userAgentHeader) == null) {
+        request.headers.set(HttpHeaders.userAgentHeader, ua);
+      }
+      if (body.isNotEmpty) request.write(body);
+      final response = await request.close();
+      final data = await response.fold<List<int>>(
+        <int>[],
+        (prev, chunk) => prev..addAll(chunk),
+      );
+      final responseHeaders = <String, String>{};
+      response.headers.forEach((name, values) {
+        responseHeaders[name] = values.join(',');
+      });
+      await _postNativeFetchResult(
+        id,
+        status: response.statusCode,
+        headers: responseHeaders,
+        body: utf8.decode(data, allowMalformed: true),
+      );
+    } catch (e) {
+      Logger.d('browser', 'native fetch fallback failed for $url: $e');
+      await _postNativeFetchResult(id, error: '$e');
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<void> _postNativeFetchResult(
+    String id, {
+    int? status,
+    Map<String, String> headers = const {},
+    String body = '',
+    String? error,
+  }) async {
+    final payload = <String, dynamic>{
+      'id': id,
+      if (status != null) 'status': status,
+      'headers': headers,
+      'body': body,
+      if (error != null) 'error': error,
+    };
+    await _controller?.runJavaScript(
+      'window.__qlNativeCallback(${jsonEncode(id)}, ${jsonEncode(payload)});',
+    );
   }
 
   /// 单条抓包内容上限：整页 HTML 动辄几百 KB，全留会把内存吃光。

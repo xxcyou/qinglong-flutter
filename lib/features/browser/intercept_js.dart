@@ -43,7 +43,42 @@ const String interceptJs = r'''
 (function(){
   if (window.__qlHooked) return; window.__qlHooked = true;
   var seq = 0;
+  var nseq = 100000;
   var scripts = [];
+  var nativeFetches = {};
+  window.__qlNativeCallback = function(nid, data){
+    var p = nativeFetches[nid];
+    if (!p) return;
+    delete nativeFetches[nid];
+    if (data && data.error) p.reject(new Error(data.error));
+    else p.resolve(data || {});
+  };
+  function nativeFetch(ctx){
+    return new Promise(function(resolve, reject){
+      var nid = 'nf' + (++nseq);
+      nativeFetches[nid] = {resolve: resolve, reject: reject};
+      send({t:'native_req', id:nid, method:ctx.method, url:ctx.url,
+            headers:ctx.headers||{}, body:s(ctx.body), ua:navigator.userAgent});
+      setTimeout(function(){
+        var p = nativeFetches[nid];
+        if (!p) return;
+        delete nativeFetches[nid];
+        reject(new TypeError('Failed to fetch (native timeout)'));
+      }, 60000);
+    });
+  }
+  function fmtHdrs(h){
+    var a = [];
+    if (!h) return '';
+    try {
+      if (typeof h.forEach === 'function' && !Array.isArray(h)) {
+        h.forEach(function(v, k){ a.push(s(k) + ': ' + s(v)); });
+      } else {
+        for (var k in h) { if (Object.prototype.hasOwnProperty.call(h, k)) a.push(s(k) + ': ' + s(h[k])); }
+      }
+    } catch(e){}
+    return a.join('\n').slice(0, 8000);
+  }
 
   function send(o){ try { QLBridge.postMessage(JSON.stringify(o)); } catch(e){} }
   function s(v){ return v == null ? '' : String(v); }
@@ -330,8 +365,21 @@ const String interceptJs = r'''
         res = await of(ctx.url, fin);
       }
     } catch(e) {
-      send({t:'res', id:id, status:0, ok:false, ms:Date.now()-t0, err:String(e)});
-      throw e;
+      // 浏览器原生 fetch 失败：最常见是跨域 CORS / 网络层 / 证书策略。
+      // 这里降级到 Dart 侧原生 HTTP 再试一次，能绕过浏览器 CORS 拿到公开接口。
+      // 代价是不再带当前页面的 Cookie；需要登录态时仍应先把浏览器开到目标站。
+      try {
+        var nres = await nativeFetch(ctx);
+        var nbody = nres.body == null ? '' : s(nres.body);
+        var nh = nres.headers || {};
+        send({t:'res', id:id, status:Number(nres.status), ok:nres.status>=200&&nres.status<400,
+              ms:Date.now()-t0, ct:(nh['content-type']||nh['Content-Type']||''),
+              body:nbody.slice(0,200000), rh:reqHdr(ctx.headers), sh:fmtHdrs(nh), mut:'native-fallback'});
+        return new Response(nbody, {status: Number(nres.status), headers: new Headers(nh)});
+      } catch(e2) {
+        send({t:'res', id:id, status:0, ok:false, ms:Date.now()-t0, err:String(e), mut:'native-fallback-failed'});
+        throw e;
+      }
     }
 
     // clone 后再读，别把页面自己的 body 消费掉。
