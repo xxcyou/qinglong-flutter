@@ -295,13 +295,14 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                       style: const TextStyle(fontSize: 13),
                       decoration: const InputDecoration(
                         // 边输边过滤当前目录；回车才递归搜索子目录。
-                        hintText: '正则/关键字；回车递归搜索',
+                        hintText: '正则/关键字；回车递归搜索（含内容）',
                         border: InputBorder.none,
                         isDense: true,
                         filled: false,
                       ),
                       onChanged: _notifier.setKeyword,
-                      onSubmitted: (v) => _notifier.search(v),
+                      onSubmitted: (v) =>
+                          _notifier.search(v, matchContent: true),
                     ),
                   ),
                   if (state.searching)

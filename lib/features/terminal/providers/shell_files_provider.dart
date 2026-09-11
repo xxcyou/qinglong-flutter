@@ -93,7 +93,8 @@ class ShellFilesState {
     final filtered = [
       for (final e in source)
         if ((showHidden || !e.hidden) &&
-            (keyword.isEmpty ||
+            (isSearchMode ||
+                keyword.isEmpty ||
                 e.name.toLowerCase().contains(keyword.toLowerCase())))
           e,
     ];
