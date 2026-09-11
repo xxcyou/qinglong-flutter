@@ -361,7 +361,10 @@ class OutputPluginService {
 
   String? _cleanOn(_LoadedOutputPlugin p, String text) {
     final literal = jsonEncode(text);
-    final js = 'try {'
+    // 每次调用前把插件源码重新放进同一个 JS 上下文执行：
+    // 不依赖 globalThis 在多次 evaluate 之间是否保持，函数一定在当前作用域里。
+    final js = '${p.source}\n'
+        'try {'
         '  const __f = (typeof process !== "undefined" && typeof process === "function")'
         '    ? process : (typeof transform !== "undefined" ? transform : null);'
         '  if (!__f) throw new Error("no process/transform");'
@@ -386,7 +389,8 @@ class OutputPluginService {
     _LoadedOutputPlugin p,
     List<LlmMessage> messages,
   ) {
-    final js = 'try {'
+    final js = '${p.source}\n'
+        'try {'
         '  const __f = (typeof beforeSend !== "undefined" && typeof beforeSend === "function")'
         '    ? beforeSend : null;'
         '  if (!__f) return null;'
@@ -430,7 +434,8 @@ class OutputPluginService {
           {'id': t.id, 'name': t.name, 'arguments': t.arguments},
       ],
     };
-    final js = 'try {'
+    final js = '${p.source}\n'
+        'try {'
         '  const __f = (typeof processResponse !== "undefined" && typeof processResponse === "function")'
         '    ? processResponse : null;'
         '  if (!__f) return null;'
