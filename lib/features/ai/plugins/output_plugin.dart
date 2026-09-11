@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_js/flutter_js.dart';
 
 import '../../../core/llm/llm_client.dart';
+import '../../../core/utils/logger.dart';
 import '../../../core/local_shell/proot_bridge.dart';
 
 /// 对外暴露的插件信息（不携带 JS 运行时，UI 只读展示用）。
@@ -208,6 +209,8 @@ class OutputPluginService {
           continue;
         }
         final probe = runtime.evaluate('typeof processResponse === "function"');
+        final hasProcessResponse =
+            !probe.isError && probe.stringResult == 'true';
         _plugins.add(
           _LoadedOutputPlugin(
             info: OutputPluginInfo(
@@ -217,15 +220,24 @@ class OutputPluginService {
             ),
             runtime: runtime,
             source: parsed.source,
-            hasProcessResponse: !probe.isError && probe.stringResult == 'true',
+            hasProcessResponse: hasProcessResponse,
           ),
         );
+        Logger.d(
+            'output_plugin',
+            'loaded ${parsed.name.isEmpty ? trimmed : parsed.name} '
+                'hasProcessResponse=$hasProcessResponse');
       } catch (e) {
         errors.add('$trimmed：$e');
       }
     }
 
-    if (errors.isNotEmpty) _lastError = errors.join('\n');
+    if (errors.isNotEmpty) {
+      _lastError = errors.join('\n');
+      Logger.e('output_plugin', 'loadAll failed: $_lastError');
+    }
+    Logger.d('output_plugin',
+        'loadAll done: paths=$paths loaded=${_plugins.length}');
     return _plugins.isNotEmpty;
   }
 
@@ -359,6 +371,10 @@ class OutputPluginService {
       final result = p.runtime.evaluate(js);
       if (result.isError) return null;
       final decoded = jsonDecode(result.stringResult);
+      if (decoded is String && decoded != text) {
+        Logger.d('output_plugin',
+            'clean ${p.info.name}: ${text.length}->${decoded.length}');
+      }
       return decoded is String ? decoded : null;
     } catch (_) {
       _record(p.info, 'process', 'error', '执行异常', original: text);
@@ -435,6 +451,14 @@ class OutputPluginService {
         usage: response.usage,
         recoveredToolCalls: response.recoveredToolCalls,
         brokenToolMarkup: response.brokenToolMarkup,
+      );
+      Logger.d(
+        'output_plugin',
+        'processResponse ${p.info.name}: '
+            'content ${response.content.length}->${transformed.content.length}, '
+            'reasoning ${response.reasoningContent.length}->'
+            '${transformed.reasoningContent.length}, '
+            'tools ${response.toolCalls.length}->${transformed.toolCalls.length}',
       );
       return transformed;
     } catch (_) {

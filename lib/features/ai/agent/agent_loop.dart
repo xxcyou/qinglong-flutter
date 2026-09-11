@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import '../../../core/utils/logger.dart';
 
 import 'package:dio/dio.dart';
 
@@ -908,7 +909,22 @@ class AgentLoop {
         }
         // 最后一道防线：不管 JS 插件有没有生效，只要正文里还残留
         // <｜tool｜ calls> 这种标签，就在这里捞回 toolCalls / 删干净。
+        final beforeFallback = response;
         response = ToolMarkupRecovery.apply(response);
+        final fallbackChanged = response.content != beforeFallback.content ||
+            response.reasoningContent != beforeFallback.reasoningContent ||
+            response.toolCalls.length != beforeFallback.toolCalls.length ||
+            response.brokenToolMarkup != beforeFallback.brokenToolMarkup;
+        if (fallbackChanged) {
+          Logger.d(
+            'output_plugin',
+            'builtin fallback modified turn: '
+                'pluginRan=${responsePlugin != null}, '
+                'content ${beforeFallback.content.length}->${response.content.length}, '
+                'tools ${beforeFallback.toolCalls.length}->${response.toolCalls.length}, '
+                'broken=${beforeFallback.brokenToolMarkup}->${response.brokenToolMarkup}',
+          );
+        }
         // 请求刚回来就先看一眼有没有被取消：省掉后面一整轮工具执行。
         checkCancelled();
         // 这一轮的流式文字到此为止：下面会把思考落成事件、正文落进 content，
