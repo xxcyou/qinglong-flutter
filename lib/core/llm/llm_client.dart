@@ -219,15 +219,21 @@ class LlmResponse {
   /// 这种轮次绝不能当成"模型答完了"，否则会拿着幻觉输出收工。
   final bool brokenToolMarkup;
 
-  LlmResponse copyWith({String? content, String? reasoningContent}) =>
+  LlmResponse copyWith({
+    String? content,
+    String? reasoningContent,
+    List<LlmToolCall>? toolCalls,
+    bool? recoveredToolCalls,
+    bool? brokenToolMarkup,
+  }) =>
       LlmResponse(
         content: content ?? this.content,
         reasoningContent: reasoningContent ?? this.reasoningContent,
-        toolCalls: toolCalls,
+        toolCalls: toolCalls ?? this.toolCalls,
         finishReason: finishReason,
         usage: usage,
-        recoveredToolCalls: recoveredToolCalls,
-        brokenToolMarkup: brokenToolMarkup,
+        recoveredToolCalls: recoveredToolCalls ?? this.recoveredToolCalls,
+        brokenToolMarkup: brokenToolMarkup ?? this.brokenToolMarkup,
       );
 }
 

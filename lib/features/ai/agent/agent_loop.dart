@@ -12,6 +12,7 @@ import '../models/approval_mode.dart';
 import '../models/ai_plan.dart';
 import '../models/tool_call_record.dart';
 import 'external_tool.dart';
+import 'tool_markup_recovery.dart';
 import 'tool_registry.dart';
 
 /// 用户可以随时中断正在跑的 Agent。
@@ -905,6 +906,9 @@ class AgentLoop {
           final transformed = responsePlugin(response);
           if (transformed != null) response = transformed;
         }
+        // 最后一道防线：不管 JS 插件有没有生效，只要正文里还残留
+        // <｜tool｜ calls> 这种标签，就在这里捞回 toolCalls / 删干净。
+        response = ToolMarkupRecovery.apply(response);
         // 请求刚回来就先看一眼有没有被取消：省掉后面一整轮工具执行。
         checkCancelled();
         // 这一轮的流式文字到此为止：下面会把思考落成事件、正文落进 content，
