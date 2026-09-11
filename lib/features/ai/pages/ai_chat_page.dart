@@ -716,9 +716,16 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                 icon: const Icon(Icons.forum_outlined),
               ),
               IconButton(
-                tooltip: '输出插件状态',
+                tooltip: OutputPluginService.instance.lastError == null
+                    ? '输出插件状态'
+                    : '输出插件加载失败，点开看详情',
                 onPressed: _showPluginFeedback,
-                icon: const Icon(Icons.auto_fix_high_outlined),
+                icon: Icon(
+                  Icons.auto_fix_high_outlined,
+                  color: OutputPluginService.instance.lastError == null
+                      ? null
+                      : Theme.of(context).colorScheme.error,
+                ),
               ),
               IconButton(
                 tooltip: '审计记录',

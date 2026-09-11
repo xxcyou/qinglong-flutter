@@ -170,8 +170,21 @@ class OutputPluginService {
       final trimmed = path.trim();
       if (trimmed.isEmpty) continue;
       try {
+        // 插件可能建在 PRoot 的 /workspace（shell 作用域），也可能建在
+        // App 自己的文件区（app 作用域）。文件选择器两个作用域都能进，
+        // 所以这里两个都试：先 shell，再 app，避免“路径能选中但加载不到”。
         final bridge = ProotBridge();
-        final raw = await bridge.readFile(path: trimmed, scope: 'shell');
+        String raw;
+        try {
+          raw = await bridge.readFile(path: trimmed, scope: 'shell');
+        } catch (shellError) {
+          try {
+            raw = await bridge.readFile(path: trimmed, scope: 'app');
+          } catch (appError) {
+            errors.add('$trimmed：读取失败（shell: $shellError；app: $appError）');
+            continue;
+          }
+        }
         final parsed = OutputPluginService.parsePlugin(raw, trimmed);
         if (!parsed.valid) {
           errors.add('$trimmed：不是有效的 QingLong 插件文件'
@@ -486,9 +499,11 @@ class OutputPluginService {
     final recognized = head.contains('@qinglong-plugin') ||
         head.contains('@ql-plugin') ||
         head.toLowerCase().contains('qinglong plugin');
-    final hasFunction = source.contains(RegExp(
-      r'function\s+(processResponse|beforeSend|process|transform)\s*\(',
-    ));
+    final hasFunction = RegExp(
+      r'(function\s+(processResponse|beforeSend|process|transform)\b)'
+      r'|((?:const|let|var)\s+(processResponse|beforeSend|process|transform)\s*=)'
+      r'|((processResponse|beforeSend|process|transform)\s*[:=]\s*(?:async\s*)?(?:function|\())',
+    ).hasMatch(source);
     if (!recognized || !hasFunction) {
       return ParsedOutputPlugin(
         valid: false,
