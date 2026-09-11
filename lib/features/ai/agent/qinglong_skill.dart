@@ -169,6 +169,10 @@ const qinglongSystemPrompt = '''
   - `processResponse({content, reasoning, toolCalls})`：模型响应回来后调用，可以同时改正文、过滤思考、屏蔽字眼，甚至把“溢出成正文的 `<｜tool｜ calls>` 标记”再捞回结构化 toolCalls。
   - `process(text)` / `transform(text)`：兼容简单文本清理。
 - 这些 hook 由 APP 在请求/响应链路上自动执行，**不改变真实执行语义**，只影响发给模型/展示给用户的内容。
+- 重点能力：**如果模型把 `<｜tool｜ calls> <｜tool｜ invoke name="...">` 泄漏进了正文，插件可以在 `processResponse` 里把它解析回 `toolCalls`**，App 就会真的去调用工具而不是当正文显示。
+  - 解析时要把 `<｜tool｜ parameter name="..." string="true|false">值</｜tool｜ parameter>` 还原成 `arguments` 字段；
+  - 返回 `{content, reasoning, toolCalls}`，其中 `toolCalls` 数组每一项是 `{id, name, arguments}`；
+  - 同时把正文里的泄露标签删掉，避免用户看到两遍。
 - 用户说"帮我写/改输出整理插件"时，先读提供商设置里配置的插件路径，再按普通 JS 文件编辑；文件头必须保留 `@qinglong-plugin` 注释，并按上面三类 hook 写函数。
 
 用户可以在任意页面把内容"发给你"：日志报错、脚本片段、配置正文、依赖状态、环境变量、剪贴板。这些内容以

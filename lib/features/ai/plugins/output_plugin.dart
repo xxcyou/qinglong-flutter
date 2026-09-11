@@ -276,24 +276,47 @@ function beforeSend(messages) {
 }
 
 // 2) 响应后 hook：同时处理正文、思考和工具调用。
-//    这是“标签溢出变成正文”的真正修复点：可以在这里把泄露的
-//    <｜tool｜ calls> 标记捞成结构化 toolCalls，也可以过滤思考/屏蔽正文。
+//    这是“标签溢出变成正文”的真正修复点：把泄露的 <｜tool｜ calls>
+//    标签重新解析成结构化 toolCalls，让 APP 真的去调用工具。
 function processResponse({content, reasoning, toolCalls}) {
-  // —— 把“溢出成正文”的工具调用标记重新抓实 ——
-  // 这里示意：从正文里匹配 <｜tool｜ invoke name="...">...</｜tool｜ invoke>
-  // 并转成 toolCalls。实际正则可按泄露格式自己写。
-  const leaked = /<｜tool｜ invoke name=\"([^\"]+)\"[\s\S]*?<\/｜tool｜ invoke>/g;
+  // —— 从正文里捞回“溢出成正文”的工具调用 ——
+  // 匹配格式：
+  // <｜tool｜ invoke name="shell_exec">
+  //   <｜tool｜ parameter name="command" string="true">ls</｜tool｜ parameter>
+  //   <｜tool｜ parameter name="timeoutSeconds" string="false">20</｜tool｜ parameter>
+  // </｜tool｜ invoke>
+  const invokeRe = /<｜tool｜ invoke name="([^"]+)">([\s\S]*?)<\/｜tool｜ invoke>/g;
+  const paramRe = /<｜tool｜ parameter name="([^"]+)" string="(true|false)">([\s\S]*?)<\/｜tool｜ parameter>/g;
   let m;
-  while ((m = leaked.exec(content)) !== null) {
-    try {
-      toolCalls.push({
-        id: 'plugin_' + Date.now() + '_' + toolCalls.length,
-        name: m[1],
-        arguments: {}
-      });
-    } catch (e) {}
+  while ((m = invokeRe.exec(content)) !== null) {
+    const name = m[1];
+    const body = m[2];
+    const args = {};
+    let p;
+    while ((p = paramRe.exec(body)) !== null) {
+      const key = p[1];
+      const isString = p[2] === 'true';
+      const raw = p[3].trim();
+      try {
+        args[key] = isString ? raw : (
+          raw === 'true' ? true : raw === 'false' ? false : Number(raw)
+        );
+      } catch (e) {
+        args[key] = raw;
+      }
+      // 重置 lastIndex，避免多条 parameter 之间互相跳过。
+      // （上面 while 用同一个 regex，exec 会推进；这里其实已经推进，
+      //   但要小心 invoke 外层复用 paramRe 时 lastIndex 不会串。）
+    }
+    paramRe.lastIndex = 0;
+    toolCalls.push({
+      id: 'plugin_' + Date.now() + '_' + toolCalls.length,
+      name: name,
+      arguments: args
+    });
   }
-  // 去掉正文里残留的工具调用标签
+
+  // 去掉正文里残留的工具调用标签，避免“又显示一遍”。
   content = content
     .replace(/<｜tool｜ calls>[\s\S]*?<\/｜tool｜ calls>/g, '')
     .replace(/<｜tool｜ invoke[\s\S]*?<\/｜tool｜ invoke>/g, '')
