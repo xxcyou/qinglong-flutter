@@ -160,7 +160,8 @@ class AgentLoop {
     this.maxTurns = 200,
     this.cancelToken,
     this.onUsage,
-    this.outputCleaner,
+    this.requestTransformer,
+    this.responseTransformer,
   });
 
   final LlmConfig config;
@@ -179,9 +180,11 @@ class AgentLoop {
   final void Function(int totalTokens, int promptTokens, int cacheHitTokens)?
       onUsage;
 
-  /// 输出整理插件：把模型原始输出（正文/思考）清理成展示文本。
-  /// 返回 null 表示插件未生效，保留原文本。
-  final String? Function(String)? outputCleaner;
+  /// 提交前 hook：插件可改写要发给模型的 messages。返回 null 表示不改。
+  final List<LlmMessage>? Function(List<LlmMessage>)? requestTransformer;
+
+  /// 响应后 hook：插件可同时改写正文/思考/工具调用。返回 null 表示不改。
+  final LlmResponse? Function(LlmResponse)? responseTransformer;
 
   static const _maxToolResultChars = 30000;
 
@@ -753,7 +756,7 @@ class AgentLoop {
     /// 关掉某个画布窗口（`*` = 全部）。
     void Function(String window)? onCanvasClose,
   }) async {
-    final messages = List<LlmMessage>.from(history);
+    var messages = List<LlmMessage>.from(history);
     final records = <ToolCallRecord>[];
     final pending = <AiPlanAction>[];
     final readCache = <String, String>{};
@@ -849,6 +852,11 @@ class AgentLoop {
         // 变成时间线上的一条事件了，留着就是同一段话显示两遍。
         pipe(const LlmDelta(reset: true));
         LlmResponse response;
+        final transformer = requestTransformer;
+        if (transformer != null) {
+          final transformed = transformer(messages);
+          if (transformed != null) messages = transformed;
+        }
         try {
           response = await LlmClient.complete(
             config: config,
@@ -885,18 +893,12 @@ class AgentLoop {
         } finally {
           cancelToken?.httpToken = null;
         }
-        // 输出整理插件：模型输出可能泄露 `<｜tool｜ calls>` 这类内部调用标记，
-        // 在进入展示/历史前先按插件规则清理一遍。
-        final cleaner = outputCleaner;
-        if (cleaner != null) {
-          final cleanContent = cleaner(response.content);
-          final cleanReasoning = cleaner(response.reasoningContent);
-          if (cleanContent != null || cleanReasoning != null) {
-            response = response.copyWith(
-              content: cleanContent ?? response.content,
-              reasoningContent: cleanReasoning ?? response.reasoningContent,
-            );
-          }
+        // 响应后 hook：插件可以同时改正文、思考、工具调用，甚至把
+        // “溢出成正文的 <｜tool｜ calls> 标记”重新捞成结构化 toolCalls。
+        final responsePlugin = responseTransformer;
+        if (responsePlugin != null) {
+          final transformed = responsePlugin(response);
+          if (transformed != null) response = transformed;
         }
         // 请求刚回来就先看一眼有没有被取消：省掉后面一整轮工具执行。
         checkCancelled();

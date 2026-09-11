@@ -37,6 +37,7 @@ import '../models/ai_plan.dart';
 import '../models/audit_log.dart';
 import '../models/chat_runtime.dart';
 import '../models/tool_call_record.dart';
+import '../plugins/output_plugin.dart';
 import '../../browser/browser_engine.dart';
 import '../floating/ai_dock_provider.dart';
 import '../../home/home_navigation_provider.dart';
@@ -2336,6 +2337,35 @@ class ChatNotifier extends Notifier<ChatState> {
     return text;
   }
 
+  /// 确保当前提供商的输出整理插件已加载到 JS 引擎。
+  Future<void> _ensureOutputPlugin(String providerId) async {
+    final provider = ref.read(llmRegistryProvider).byId(providerId);
+    final path = provider?.outputPluginPath.trim() ?? '';
+    if (path.isEmpty) return;
+    if (OutputPluginService.instance.loadedPath == path) return;
+    await OutputPluginService.instance.load(path);
+  }
+
+  /// 提交前 hook：只有与已加载插件路径一致时才启用。
+  List<LlmMessage>? Function(List<LlmMessage>)? _requestTransformerFor(
+      String providerId) {
+    final provider = ref.read(llmRegistryProvider).byId(providerId);
+    final path = provider?.outputPluginPath.trim() ?? '';
+    if (path.isEmpty) return null;
+    if (OutputPluginService.instance.loadedPath != path) return null;
+    return OutputPluginService.instance.transformMessages;
+  }
+
+  /// 响应后 hook：只有与已加载插件路径一致时才启用。
+  LlmResponse? Function(LlmResponse)? _responseTransformerFor(
+      String providerId) {
+    final provider = ref.read(llmRegistryProvider).byId(providerId);
+    final path = provider?.outputPluginPath.trim() ?? '';
+    if (path.isEmpty) return null;
+    if (OutputPluginService.instance.loadedPath != path) return null;
+    return OutputPluginService.instance.transformResponse;
+  }
+
   Future<AgentResult> _runAgent(
     Set<String> confirmedKeys, {
     void Function(AgentEvent event)? onEvent,
@@ -2349,6 +2379,8 @@ class ChatNotifier extends Notifier<ChatState> {
       run.livePlan = const AgentTaskPlan();
     }
     final config = await ref.read(llmConfigProvider.future);
+    final activeProviderId = ref.read(llmRegistryProvider).active.id;
+    await _ensureOutputPlugin(activeProviderId);
     final registry = QlToolRegistry(
       panelGetter: () => ref.read(currentPanelProvider),
     );
@@ -2383,6 +2415,12 @@ class ChatNotifier extends Notifier<ChatState> {
             approvalMode: state.approvalMode,
             maxTurns: plan.maxTurns,
             cancelToken: token,
+            requestTransformer: _requestTransformerFor(
+              plan.overridesModel ? plan.providerId : activeProviderId,
+            ),
+            responseTransformer: _responseTransformerFor(
+              plan.overridesModel ? plan.providerId : activeProviderId,
+            ),
           );
       return await AgentLoop(
         config: llmConfig,
@@ -2406,6 +2444,8 @@ class ChatNotifier extends Notifier<ChatState> {
         approvalMode: state.approvalMode,
         maxTurns: ref.read(llmRegistryProvider).mainMaxTurns,
         cancelToken: token,
+        requestTransformer: _requestTransformerFor(activeProviderId),
+        responseTransformer: _responseTransformerFor(activeProviderId),
         // 每轮 LLM 请求一回来就刷新顶部上下文/token，不用等整轮跑完。
         onUsage: (total, prompt, cache) {
           if (_cancelToken != token) return;
