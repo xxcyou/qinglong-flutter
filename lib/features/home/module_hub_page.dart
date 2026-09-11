@@ -3,8 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/glass.dart';
 import '../../shared/glass_scaffold.dart';
+import '../ai/knowledge/knowledge_provider.dart';
 import '../ai/mcp/mcp_provider.dart';
 import '../ai/memory/memory_provider.dart';
+import '../ai/pages/knowledge_page.dart';
 import '../ai/pages/mcp_server_page.dart';
 import '../ai/pages/memory_page.dart';
 import '../ai/pages/skill_list_page.dart';
@@ -34,6 +36,7 @@ class ModuleHubPage extends ConsumerWidget {
     final skills = ref.watch(skillProvider);
     final mcp = ref.watch(mcpProvider);
     final memory = ref.watch(memoryProvider);
+    final knowledge = ref.watch(knowledgeProvider);
 
     const panelModules = <_Module>[
       _Module(
@@ -103,6 +106,13 @@ class ModuleHubPage extends ConsumerWidget {
         const Color(0xFF9A6FD8),
         badge: memory.items.isEmpty ? null : '${memory.items.length} 条',
       ),
+      _Module(
+        '知识库',
+        'AI 按需检索的经验库',
+        Icons.menu_book_outlined,
+        const Color(0xFFD1725B),
+        badge: knowledge.docs.isEmpty ? null : '${knowledge.docs.length} 篇',
+      ),
     ];
 
     return GlassScaffold(
@@ -122,7 +132,9 @@ class ModuleHubPage extends ConsumerWidget {
           SectionLabel(
             'AI 扩展',
             trailing: Text(
-              mcp.servers.isEmpty ? '未接入 MCP' : '${mcp.servers.length} 个 MCP 服务器',
+              mcp.servers.isEmpty
+                  ? '未接入 MCP'
+                  : '${mcp.servers.length} 个 MCP 服务器',
               style: TextStyle(
                 fontSize: 11.5,
                 color: scheme.onSurfaceVariant.withValues(alpha: 0.8),
@@ -166,6 +178,7 @@ class ModuleHubPage extends ConsumerWidget {
       '技能库' => (BuildContext _) => const SkillListPage(),
       'MCP 扩展' => (BuildContext _) => const McpServerPage(),
       'AI 记忆' => (BuildContext _) => const MemoryPage(),
+      '知识库' => (BuildContext _) => const KnowledgePage(),
       _ => null,
     };
     if (builder == null) return;

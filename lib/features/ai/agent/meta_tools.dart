@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import '../knowledge/knowledge_store.dart';
 import '../mcp/mcp_models.dart';
 import '../mcp/mcp_provider.dart';
 import '../memory/memory_models.dart';
@@ -28,6 +29,7 @@ class MetaTools {
       ..._memoryTools(memory),
       ..._skillTools(skills, skillList),
       ..._mcpTools(mcp, mcpState),
+      ..._knowledgeTools(),
       _webFetchTool(),
     ];
   }
@@ -131,6 +133,158 @@ class MetaTools {
           final id = args['id']?.toString().trim() ?? '';
           final ok = await memory.remove(id);
           return ok ? '已删除记忆 $id。' : '没有 id 为 $id 的记忆。';
+        },
+      ),
+    ];
+  }
+
+  // ---------------------------------------------------------------- 知识库
+
+  static List<ExternalTool> _knowledgeTools() {
+    final store = KnowledgeStore();
+    return [
+      ExternalTool(
+        name: 'kb_search',
+        description: '检索知识库（标题+标签+正文的关键词全文匹配，不做向量嵌入）。'
+            '知识库不会自动注入上下文，只有主动调 kb_search / kb_read 才看得到内容。'
+            '遇到用户问题涉及历史经验、踩坑记录、方案模板之前，先搜知识库；'
+            '搜到匹配项后用 kb_read 读完整内容。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'query': {'type': 'string', 'description': '检索词，多个词用空格分隔'},
+            'limit': {'type': 'integer', 'description': '返回条数，默认 10'},
+          },
+        },
+        origin: '知识库',
+        invoke: (args) async {
+          final query = args['query']?.toString() ?? '';
+          final limit = (args['limit'] as num?)?.toInt() ?? 10;
+          final hits = await store.search(query, limit: limit);
+          if (hits.isEmpty) return '知识库没有匹配「$query」的条目。';
+          return [
+            '知识库命中 ${hits.length} 条（需要详细内容用 kb_read 读全文）：',
+            for (final d in hits)
+              '- ${d.title}\n'
+                  '  路径：${d.path}\n'
+                  '  标签：${d.tags.isEmpty ? '（无）' : d.tags.join(' / ')}\n'
+                  '  摘要：${d.snippet}',
+          ].join('\n');
+        },
+      ),
+      ExternalTool(
+        name: 'kb_read',
+        description: '读取知识库某一条的完整内容。参数 path 从 kb_search 或'
+            'kb_list 的结果里拿。知识库不塞进上下文，这条读取结果只看本轮。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'path': {
+              'type': 'string',
+              'description': '知识文档路径，如 /workspace/.knowledge/xxx.md'
+            },
+          },
+          'required': ['path'],
+        },
+        origin: '知识库',
+        invoke: (args) async {
+          final path = args['path']?.toString().trim() ?? '';
+          if (path.isEmpty) return '缺少 path。';
+          try {
+            final doc = await store.read(path);
+            return '标题：${doc.title}\n标签：'
+                '${doc.tags.isEmpty ? '（无）' : doc.tags.join(' / ')}\n'
+                '路径：${doc.path}\n\n${doc.content}';
+          } catch (e) {
+            return '读取失败：$e';
+          }
+        },
+      ),
+      ExternalTool(
+        name: 'kb_write',
+        description: '写入/覆盖一条知识。这是给 AI 沉淀可复用经验的入口：'
+            '当一轮里踩坑后查清了方案、发现了稳定的做法、写了一个可复用的模板/API 流程，'
+            '就主动 kb_write 存进知识库，下次同类问题直接搜得到。'
+            '与 memory_write 的区别：memory 是个人化短期结论（会自动注入相关度最高的），'
+            '知识库是偏结构化、可检索的经验/资料，绝不自动注入。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'title': {'type': 'string', 'description': '标题，尽量一句话说清主题'},
+            'content': {
+              'type': 'string',
+              'description': '正文：方案/步骤/代码/注意事项，写成以后能照着用的程度'
+            },
+            'tags': {
+              'type': 'array',
+              'items': {'type': 'string'},
+              'description': '检索标签，如 青龙、登录、JS插件',
+            },
+            'existingPath': {
+              'type': 'string',
+              'description': '更新已有条目时传它的 path；新建不用传',
+            },
+          },
+          'required': ['title', 'content'],
+        },
+        origin: '知识库',
+        isWrite: true,
+        invoke: (args) async {
+          try {
+            final doc = await store.write(
+              title: args['title']?.toString() ?? '',
+              content: args['content']?.toString() ?? '',
+              tags: [
+                for (final t in (args['tags'] as List? ?? const []))
+                  t.toString().trim(),
+              ].where((t) => t.isNotEmpty).toList(),
+              existingPath: args['existingPath']?.toString(),
+            );
+            return '已保存知识「${doc.title}」→ ${doc.path}';
+          } catch (e) {
+            return '保存知识失败：$e';
+          }
+        },
+      ),
+      ExternalTool(
+        name: 'kb_delete',
+        description: '删除一条过时/错误的知识。发现知识库里有不再成立或写错的条目时主动清理。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'path': {'type': 'string', 'description': '知识文档路径'},
+          },
+          'required': ['path'],
+        },
+        origin: '知识库',
+        isWrite: true,
+        invoke: (args) async {
+          final path = args['path']?.toString().trim() ?? '';
+          final ok = await store.delete(path);
+          return ok ? '已删除知识 $path' : '删除失败或路径不在知识库内：$path';
+        },
+      ),
+      ExternalTool(
+        name: 'kb_list',
+        description: '列出知识库全部条目（标题/标签/摘要）。需要知道有什么知识、或找不着准确关键词时用。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'limit': {'type': 'integer', 'description': '返回条数，默认 30'},
+          },
+        },
+        origin: '知识库',
+        invoke: (args) async {
+          final limit = (args['limit'] as num?)?.toInt() ?? 30;
+          final docs = await store.list();
+          if (docs.isEmpty) return '知识库还是空的。可以主动 kb_write 写入第一条经验。';
+          final shown = docs.take(limit).toList();
+          return [
+            '知识库共 ${docs.length} 条，显示前 ${shown.length} 条：',
+            for (final d in shown)
+              '- ${d.title}｜${d.tags.isEmpty ? '（无标签）' : d.tags.join('/')}｜${d.snippet}',
+            '需要全文用 kb_read，路径见 kb_search / kb_list。',
+          ].join('\n');
         },
       ),
     ];
@@ -471,6 +625,9 @@ class MetaTools {
       '- 记忆：memory_write / memory_search / memory_delete。当前 $memoryCount 条。'
           '每次学到跨会话有用的结论（用户偏好、环境事实、踩坑教训）就立刻 memory_write，'
           '别指望下次还记得；发现记忆过时就删掉重写。',
+      '- 知识库：kb_search / kb_read / kb_write / kb_delete / kb_list。'
+          '知识库**不会自动注入上下文**，只有主动调 kb_search 命中后再 kb_read 才看到；'
+          '解决过有复用价值的方案/踩坑/模板，除 memory_write 外也要主动 kb_write 存成条目。',
       '- 技能：skill_list / skill_read / skill_install / skill_run / skill_create / skill_delete / skill_toggle。当前 $skillCount 个。'
           '用户要给市面上的技能仓库（含 SKILL.md 和 scripts 代码）时，直接用 skill_install 完整导入，'
           '不要 web_fetch 抓个 README 再魔改成简化版；带脚本的技能用 skill_run 在终端/青龙跑。'
