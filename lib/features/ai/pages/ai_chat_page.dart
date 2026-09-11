@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -502,10 +503,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                 ],
               ),
               const SizedBox(height: 10),
-              _rawSection('原始内容（插件看到的内容）', r.original, scheme),
+              _pluginResponseView('原始内容（插件看到的内容）', r.original, scheme),
               if (r.result != null) ...[
                 const SizedBox(height: 12),
-                _rawSection('插件输出 / 工具调用结果', r.result!, scheme),
+                _pluginResponseView('插件输出 / 工具调用结果', r.result!, scheme),
               ] else ...[
                 const SizedBox(height: 10),
                 Text(
@@ -529,6 +530,77 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// 插件 processResponse 记录详情：把 content / reasoning / toolCalls 分开显示，
+  /// 避免“正文是空的、只有思考内容”时看不出插件到底处理了什么。
+  Widget _pluginResponseView(String title, String text, ColorScheme scheme) {
+    Object? decoded;
+    try {
+      decoded = jsonDecode(text);
+    } catch (_) {}
+    if (decoded is! Map<String, dynamic>) {
+      return _rawSection(title, text, scheme);
+    }
+    final map = decoded;
+    final content = map['content']?.toString() ?? '';
+    final reasoning = map['reasoning']?.toString() ?? '';
+    final tools = map['toolCalls'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 6),
+        _kvSection('正文 content', content, scheme),
+        const SizedBox(height: 8),
+        _kvSection('思考 reasoning', reasoning, scheme),
+        const SizedBox(height: 8),
+        _kvSection(
+          '工具调用 toolCalls',
+          tools == null
+              ? '（无）'
+              : const JsonEncoder.withIndent('  ').convert(tools),
+          scheme,
+        ),
+      ],
+    );
+  }
+
+  Widget _kvSection(String label, String text, ColorScheme scheme) {
+    final display = text.trim().isEmpty ? '（空）' : text;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 4),
+          SelectableText(
+            display,
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 11.5,
+              height: 1.35,
+            ),
+          ),
+        ],
       ),
     );
   }
