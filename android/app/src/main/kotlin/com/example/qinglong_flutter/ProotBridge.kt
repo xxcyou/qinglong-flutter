@@ -92,6 +92,7 @@ class ProotBridge(private val context: Context) {
                 "listFiles" -> handleListFiles(call, result)
                 "readFile" -> handleReadFile(call, result)
                 "writeFile" -> handleWriteFile(call, result)
+                "appendFile" -> handleAppendFile(call, result)
                 "deletePath" -> handleDeletePath(call, result)
                 "makeDirectory" -> handleMakeDirectory(call, result)
                 "movePath" -> handleMovePath(call, result)
@@ -933,6 +934,22 @@ class ProotBridge(private val context: Context) {
                 result.success(entryOf(file, scope))
             } catch (e: Exception) {
                 result.error("write_failed", e.message ?: e.toString(), null)
+            }
+        }
+    }
+
+    private fun handleAppendFile(call: MethodCall, result: MethodChannel.Result) {
+        executor.execute {
+            try {
+                val scope = call.argument<String>("scope")
+                val file = resolveScoped(call.argument<String>("path") ?: "", scope)
+                val content = call.argument<String>("content") ?: ""
+                file.parentFile?.mkdirs()
+                // 追加大文件的分块写入：不经过 shell 命令，不会撞“命令过长”。
+                file.appendText(content, Charsets.UTF_8)
+                result.success(entryOf(file, scope))
+            } catch (e: Exception) {
+                result.error("append_failed", e.message ?: e.toString(), null)
             }
         }
     }

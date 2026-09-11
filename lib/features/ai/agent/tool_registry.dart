@@ -732,14 +732,20 @@ class QlToolRegistry {
         ),
         ToolDefinition(
           name: 'shell_write_file',
-          description:
-              '写入本地 Debian 文本文件（覆盖），终端和 APP 文件管理看到的是同一份。注意：content 只适合中小文件（建议 6KB 以内）；大文件不要塞进这个参数，输出中途很容易截断导致文件坏掉。大文件改用 shell_script 生成，或 shell_exec 用 heredoc/分块追加。',
+          description: '写入/追加本地 Debian 文本文件，终端和 APP 文件管理看到的是同一份。'
+              '写超大文件（几 KB 以上）的正确姿势：第一次调用不传 append（覆盖），'
+              '之后每次传 append:true 分块追加，内容走原生文件 IO，不会出现“命令过长”。'
+              '不要把整份大文件塞进 shell_exec 的 command，也不要用 heredoc 一次写超大内容。',
           parameters: _obj([
             'path',
             'content'
           ], {
             'path': _stringProp,
             'content': _stringProp,
+            'append': {
+              'type': 'boolean',
+              'description': 'true=追加到文件末尾；省略/ false=覆盖写入',
+            },
           }),
           isWrite: true,
           impact: '覆盖本机 Debian 里的文件内容，旧内容不保留',
@@ -1623,10 +1629,14 @@ else:
         // 排队至少保证每一次写是完整的（谁最后写谁生效，而不是内容交错）。
         final entry = await ShellLock.run(
           ShellLock.file(target),
-          () => ProotBridge().writeFile(
-            path: target,
-            content: args['content']?.toString() ?? '',
-          ),
+          () {
+            final content = args['content']?.toString() ?? '';
+            final bridge = ProotBridge();
+            if (args['append'] == true) {
+              return bridge.appendFile(path: target, content: content);
+            }
+            return bridge.writeFile(path: target, content: content);
+          },
           label: 'shell_write_file',
           timeout: const Duration(seconds: 60),
         );

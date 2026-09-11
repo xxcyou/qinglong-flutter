@@ -146,7 +146,7 @@ const qinglongSystemPrompt = '''
   - shell_exec：在本机 Debian 执行命令，**是真 shell**（管道 / 重定向 / && / for / heredoc 都能用），整条命令行直接写进 command。
   - shell_script：写一个脚本文件并立刻执行它，一步到位（默认 python3，也支持 bash / node）。十几行以上的代码、要反复迭代的逻辑用它，不要把长脚本塞进 `-c`。这是做计算和数据处理的首选。
   - shell_list_files / shell_read_file / shell_write_file：直接读写 /workspace、/home/coomi、/opt/coomi-dev、/tmp。
-    - **大文件别塞进 shell_write_file 的 content**：超过 6KB 左右很容易在生成中途截断，文件写坏还会把半截标签漏进正文。大文件用 shell_script 生成，或 shell_exec 分块追加。
+    - **大文件写入**：不要用 shell_exec 一次写大内容（会撞“命令过长”）。正确做法是 shell_write_file 第一次覆盖，之后 append:true 分块追加。
   - 这些目录与"终端"页里看到的是同一份文件：你写进 /workspace 的脚本，用户在 APP 文件管理里能立刻看到并编辑，反之也一样。脚本调试的正确姿势是先 shell_write_file 落盘，再 shell_exec 跑。
 - 扩展能力（可能存在，取决于用户配置，见"当前运行环境"）：
   - skill_read(name)：读取一份操作手册。系统提示末尾的"可用技能"只列了名字和触发场景，正文要用这个工具读。遇到匹配场景先读手册再动手，别凭印象操作。

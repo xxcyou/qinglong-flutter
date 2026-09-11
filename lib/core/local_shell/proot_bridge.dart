@@ -351,6 +351,25 @@ class ProotBridge {
     throw StateError('写文件返回异常');
   }
 
+  /// 追加文本到文件末尾。
+  ///
+  /// 专门给“AI 写超大文件”用的：内容不经过 shell 命令，直接走原生文件 IO，
+  /// 不会出现 `Invalid argument(s): 命令过长`。配合 [writeFile] 首次覆盖 +
+  /// 多次 [appendFile] 分块追加。
+  Future<ShellFileEntry> appendFile({
+    required String path,
+    required String content,
+    String scope = 'shell',
+  }) async {
+    final result = await _channel.invokeMethod<dynamic>('appendFile', {
+      'path': path,
+      'content': content,
+      'scope': scope,
+    });
+    if (result is Map) return ShellFileEntry.fromMap(result);
+    throw StateError('追加文件返回异常');
+  }
+
   /// guest 路径 → 宿主真实路径。
   ///
   /// 图片查看器（Image.file）和系统 Intent 都只认宿主路径，
