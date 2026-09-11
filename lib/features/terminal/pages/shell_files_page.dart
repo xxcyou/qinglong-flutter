@@ -295,7 +295,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                       style: const TextStyle(fontSize: 13),
                       decoration: const InputDecoration(
                         // 边输边过滤当前目录；回车才递归搜索子目录。
-                        hintText: '过滤当前目录；回车递归搜索',
+                        hintText: '正则/关键字；回车递归搜索',
                         border: InputBorder.none,
                         isDense: true,
                         filled: false,
@@ -312,7 +312,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                     )
                   else
                     IconButton(
-                      tooltip: '连内容一起搜',
+                      tooltip: '正则 + 内容一起搜',
                       visualDensity: VisualDensity.compact,
                       onPressed: () => _notifier.search(
                         _searchController.text,

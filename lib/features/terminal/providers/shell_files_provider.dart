@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/local_shell/proot_bridge.dart';
@@ -244,16 +246,147 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
     }
     state = state.copyWith(searching: true, clearError: true);
     try {
-      final hits = await _bridge.search(
-        scope: _scope,
-        path: state.path,
-        keyword: text,
-        matchContent: matchContent,
-      );
+      final hits = await _searchPython(text, matchContent: matchContent);
       state = state.copyWith(searchResults: hits, searching: false);
     } catch (e) {
       state = state.copyWith(searching: false, error: _message(e));
     }
+  }
+
+  /// 用 PRoot 里的 Python 做正则递归搜索。
+  ///
+  /// 原生的 searchFiles 只能做普通关键字、且内容只解 UTF-8；这里换成
+  /// Python re + 多编码解码，就能支持「正则 + 内容命中」，和 AI 的
+  /// shell_search_code 同一套能力。
+  Future<List<ShellFileEntry>> _searchPython(
+    String pattern, {
+    required bool matchContent,
+    int limit = 200,
+  }) async {
+    const script = r'''
+import os, re, sys, json, time
+root, pattern_raw, limit_raw, match_content = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == '1'
+limit = int(limit_raw)
+try:
+    rx = re.compile(pattern_raw)
+except re.error:
+    rx = re.compile(re.escape(pattern_raw))
+
+def decode_text(data):
+    if data.startswith(b'\xff\xfe') or data.startswith(b'\xfe\xff'):
+        try:
+            return data.decode('utf-16')
+        except Exception:
+            pass
+    if data.count(0) > 0:
+        for enc in ('utf-16-le', 'utf-16-be'):
+            try:
+                return data.decode(enc)
+            except Exception:
+                pass
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        try:
+            return data.decode('gbk')
+        except Exception:
+            return data.decode('latin-1', errors='replace')
+
+def entry(p, is_dir, matched=False):
+    try:
+        st = os.stat(p)
+    except Exception:
+        return None
+    base = os.path.basename(p) if p != root else (root.rstrip('/').split('/')[-1] or root)
+    return {
+        'name': base,
+        'path': p,
+        'isDirectory': is_dir,
+        'size': 0 if is_dir else st.st_size,
+        'modified': int(st.st_mtime * 1000),
+        'readable': True,
+        'writable': True,
+        'executable': os.access(p, os.X_OK),
+        'hidden': base.startswith('.'),
+        'matchedContent': matched,
+    }
+
+def file_content_hit(f):
+    if not match_content:
+        return False
+    if os.path.getsize(f) > 4 * 1024 * 1024:
+        return False
+    try:
+        with open(f, 'rb') as fh:
+            data = fh.read()
+        return bool(rx.search(decode_text(data)))
+    except Exception:
+        return False
+
+if not os.path.exists(root):
+    print(json.dumps({'error': '路径不存在', 'path': root}, ensure_ascii=False))
+    sys.exit(0)
+
+hits = []
+if os.path.isdir(root):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        dirnames[:] = [d for d in dirnames if d not in ('.git', '.dart_tool', 'build', 'node_modules')]
+        for d in dirnames:
+            if len(hits) >= limit:
+                break
+            p = os.path.join(dirpath, d)
+            if rx.search(d):
+                e = entry(p, True)
+                if e is not None:
+                    hits.append(e)
+        for fn in filenames:
+            if len(hits) >= limit:
+                break
+            p = os.path.join(dirpath, fn)
+            matched = rx.search(fn) is not None
+            if matched or file_content_hit(p):
+                e = entry(p, False, matched)
+                if e is not None:
+                    hits.append(e)
+        if len(hits) >= limit:
+            break
+else:
+    base = os.path.basename(root)
+    matched = rx.search(base) is not None
+    if matched or file_content_hit(root):
+        e = entry(root, False, matched)
+        if e is not None:
+            hits.append(e)
+
+print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}, ensure_ascii=False))
+''';
+    final result = await _bridge.exec(
+      command: 'python3',
+      args: [
+        '-c',
+        script,
+        state.path,
+        pattern,
+        '$limit',
+        matchContent ? '1' : '0',
+      ],
+      timeoutSeconds: 120,
+    );
+    if (result.exitCode != 0) {
+      final stderr = result.stderr.trim();
+      if (stderr.isNotEmpty) throw Exception(stderr);
+      throw Exception('搜索进程失败');
+    }
+    final output = result.stdout.trim();
+    if (output.isEmpty) return const [];
+    final decoded = jsonDecode(output);
+    if (decoded is! Map) throw const FormatException('搜索结果格式异常');
+    final rawMatches = decoded['matches'];
+    if (rawMatches is! List) return const [];
+    return [
+      for (final m in rawMatches)
+        if (m is Map) ShellFileEntry.fromMap(m),
+    ];
   }
 
   void exitSearch() => state = state.copyWith(clearSearch: true);
