@@ -27,17 +27,25 @@ class OutputPluginRunRecord {
     required this.status,
     required this.detail,
     required this.at,
+    required this.original,
+    this.result,
   });
 
-  /// hook 名：beforeSend / processResponse / process / 加载
+  /// hook 名：beforeSend / processResponse / process
   final String hook;
 
-  /// ran=执行并返回结果；skipped=没定义该 hook；error=执行失败；loaded=已加载
+  /// ran=执行并返回结果；skipped=没定义该 hook；error=执行失败
   final String status;
   final String detail;
   final DateTime at;
   final String path;
   final String name;
+
+  /// 传给该 hook 的原始内容（已按展示上限截断）。
+  final String original;
+
+  /// 该 hook 返回的结果；skipped/error 时为 null（点开看原始内容即可）。
+  final String? result;
 }
 
 /// 解析结果：JS 插件源码和元信息。
@@ -87,6 +95,9 @@ class OutputPluginService {
 
   static final OutputPluginService instance = OutputPluginService._();
 
+  /// 单次运行最多保留的记录条数；超出后丢最早的，避免长任务把内存撑爆。
+  static const maxRunRecords = 600;
+
   final List<_LoadedOutputPlugin> _plugins = [];
   final List<OutputPluginRunRecord> _runRecords = [];
   String? _lastError;
@@ -112,8 +123,10 @@ class OutputPluginService {
     OutputPluginInfo info,
     String hook,
     String status,
-    String detail,
-  ) {
+    String detail, {
+    required String original,
+    String? result,
+  }) {
     _runRecords.add(OutputPluginRunRecord(
       path: info.path,
       name: info.name,
@@ -121,7 +134,17 @@ class OutputPluginService {
       status: status,
       detail: detail,
       at: DateTime.now(),
+      original: _clipSnapshot(original),
+      result: result == null ? null : _clipSnapshot(result),
     ));
+    if (_runRecords.length > maxRunRecords) {
+      _runRecords.removeRange(0, _runRecords.length - maxRunRecords);
+    }
+  }
+
+  static String _clipSnapshot(String text, {int max = 30000}) {
+    if (text.length <= max) return text;
+    return '${text.substring(0, max)}\n…（快照已截断，原始长度 ${text.length} 字符）';
   }
 
   /// 兼容旧单插件入口。
@@ -192,9 +215,22 @@ class OutputPluginService {
       if (out != null) {
         current = out;
         changed = true;
-        _record(p.info, 'process', 'ran', '已执行文本清理');
+        _record(
+          p.info,
+          'process',
+          'ran',
+          '已执行文本清理',
+          original: text,
+          result: out,
+        );
       } else {
-        _record(p.info, 'process', 'skipped', '未定义 process/transform，跳过');
+        _record(
+          p.info,
+          'process',
+          'skipped',
+          '未定义 process/transform，跳过',
+          original: text,
+        );
       }
     }
     return changed ? current : null;
@@ -215,9 +251,17 @@ class OutputPluginService {
           'beforeSend',
           'ran',
           '返回 ${out.length} 条 messages',
+          original: _messagesJson(messages),
+          result: _messagesJson(out),
         );
       } else {
-        _record(p.info, 'beforeSend', 'skipped', '未定义 beforeSend，跳过');
+        _record(
+          p.info,
+          'beforeSend',
+          'skipped',
+          '未定义 beforeSend，跳过',
+          original: _messagesJson(current),
+        );
       }
     }
     return changed ? current : null;
@@ -238,9 +282,17 @@ class OutputPluginService {
           'processResponse',
           'ran',
           '已改写 content/reasoning/toolCalls',
+          original: _responseJson(response),
+          result: _responseJson(out),
         );
       } else {
-        _record(p.info, 'processResponse', 'skipped', '未定义 processResponse，跳过');
+        _record(
+          p.info,
+          'processResponse',
+          'skipped',
+          '未定义 processResponse，跳过',
+          original: _responseJson(current),
+        );
       }
     }
     // 兜底清理：即使某个插件只处理了正文、忘了过滤思考，也不能让
@@ -256,6 +308,20 @@ class OutputPluginService {
     return changed ? current : null;
   }
 
+  static String _messagesJson(List<LlmMessage> messages) =>
+      const JsonEncoder.withIndent('  ')
+          .convert([for (final m in messages) m.toJson()]);
+
+  static String _responseJson(LlmResponse r) =>
+      const JsonEncoder.withIndent('  ').convert({
+        'content': r.content,
+        'reasoning': r.reasoningContent,
+        'toolCalls': [
+          for (final t in r.toolCalls)
+            {'id': t.id, 'name': t.name, 'arguments': t.arguments},
+        ],
+      });
+
   String? _cleanOn(_LoadedOutputPlugin p, String text) {
     final literal = jsonEncode(text);
     final js = 'try {'
@@ -270,7 +336,7 @@ class OutputPluginService {
       final decoded = jsonDecode(result.stringResult);
       return decoded is String ? decoded : null;
     } catch (_) {
-      _record(p.info, 'process', 'error', '执行异常');
+      _record(p.info, 'process', 'error', '执行异常', original: text);
       return null;
     }
   }
@@ -300,7 +366,13 @@ class OutputPluginService {
             _messageFromJson(item.cast<String, dynamic>()),
       ];
     } catch (_) {
-      _record(p.info, 'beforeSend', 'error', '执行异常');
+      _record(
+        p.info,
+        'beforeSend',
+        'error',
+        '执行异常',
+        original: _messagesJson(messages),
+      );
       return null;
     }
   }
@@ -341,7 +413,13 @@ class OutputPluginService {
       );
       return transformed;
     } catch (_) {
-      _record(p.info, 'processResponse', 'error', '执行异常');
+      _record(
+        p.info,
+        'processResponse',
+        'error',
+        '执行异常',
+        original: _responseJson(response),
+      );
       return null;
     }
   }
