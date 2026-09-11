@@ -2345,32 +2345,38 @@ class ChatNotifier extends Notifier<ChatState> {
     return text;
   }
 
-  /// 确保当前提供商的输出整理插件已加载到 JS 引擎。
+  /// 确保当前提供商的多个输出整理插件已按顺序加载到 JS 引擎。
   Future<void> _ensureOutputPlugin(String providerId) async {
     final provider = ref.read(llmRegistryProvider).byId(providerId);
-    final path = provider?.outputPluginPath.trim() ?? '';
-    if (path.isEmpty) return;
-    if (OutputPluginService.instance.loadedPath == path) return;
-    await OutputPluginService.instance.load(path);
+    final paths = provider?.effectiveOutputPlugins ?? const [];
+    if (paths.isEmpty) return;
+    if (_pluginsLoadedFor(providerId)) return;
+    await OutputPluginService.instance.loadAll(paths);
   }
 
-  /// 提交前 hook：只有与已加载插件路径一致时才启用。
+  bool _pluginsLoadedFor(String providerId) {
+    final provider = ref.read(llmRegistryProvider).byId(providerId);
+    final paths = provider?.effectiveOutputPlugins ?? const [];
+    if (paths.isEmpty) return false;
+    final loaded = OutputPluginService.instance.loadedPaths;
+    if (loaded.length != paths.length) return false;
+    for (var i = 0; i < paths.length; i++) {
+      if (loaded[i] != paths[i].trim()) return false;
+    }
+    return true;
+  }
+
+  /// 提交前 hook：只有与已加载插件列表一致时才启用。
   List<LlmMessage>? Function(List<LlmMessage>)? _requestTransformerFor(
       String providerId) {
-    final provider = ref.read(llmRegistryProvider).byId(providerId);
-    final path = provider?.outputPluginPath.trim() ?? '';
-    if (path.isEmpty) return null;
-    if (OutputPluginService.instance.loadedPath != path) return null;
+    if (!_pluginsLoadedFor(providerId)) return null;
     return OutputPluginService.instance.transformMessages;
   }
 
-  /// 响应后 hook：只有与已加载插件路径一致时才启用。
+  /// 响应后 hook：只有与已加载插件列表一致时才启用。
   LlmResponse? Function(LlmResponse)? _responseTransformerFor(
       String providerId) {
-    final provider = ref.read(llmRegistryProvider).byId(providerId);
-    final path = provider?.outputPluginPath.trim() ?? '';
-    if (path.isEmpty) return null;
-    if (OutputPluginService.instance.loadedPath != path) return null;
+    if (!_pluginsLoadedFor(providerId)) return null;
     return OutputPluginService.instance.transformResponse;
   }
 
@@ -2388,6 +2394,7 @@ class ChatNotifier extends Notifier<ChatState> {
     }
     final config = await ref.read(llmConfigProvider.future);
     final activeProviderId = ref.read(llmRegistryProvider).active.id;
+    OutputPluginService.instance.beginRun();
     await _ensureOutputPlugin(activeProviderId);
     final registry = QlToolRegistry(
       panelGetter: () => ref.read(currentPanelProvider),

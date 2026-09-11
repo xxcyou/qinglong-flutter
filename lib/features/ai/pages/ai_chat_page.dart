@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/llm/llm_config_provider.dart';
 import '../../../core/theme/glass.dart';
 import '../../../core/utils/formatter.dart';
 import '../../../core/utils/error_text.dart';
@@ -16,6 +17,7 @@ import '../providers/audit_provider.dart';
 import '../../../shared/glass_scaffold.dart';
 import '../../../shared/local_file_picker.dart';
 import '../floating/ai_dock_provider.dart';
+import '../plugins/output_plugin.dart';
 import '../mcp/mcp_provider.dart';
 import '../skills/skill_provider.dart';
 import '../widgets/agent_process_card.dart';
@@ -253,6 +255,173 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
 
   void _showSessionManager() => AiSessionList.showSheet(context);
 
+  /// 输出插件状态底表：配置了哪些插件、顺序、本轮每个 hook 的调用反馈。
+  void _showPluginFeedback() {
+    final registry = ref.read(llmRegistryProvider);
+    final paths = registry.active.effectiveOutputPlugins;
+    final service = OutputPluginService.instance;
+    final loadedPaths = service.loadedPaths;
+    final records = service.runRecords;
+    final scheme = Theme.of(context).colorScheme;
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.72,
+        maxChildSize: 0.92,
+        minChildSize: 0.4,
+        builder: (context, scrollController) => Container(
+          decoration: BoxDecoration(
+            color: scheme.surface,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          child: ListView(
+            controller: scrollController,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '输出插件状态',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(sheetContext),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              Text(
+                '已配置 ${paths.length} 个插件 · 按顺序执行',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 10),
+              if (paths.isEmpty)
+                const Text('未配置输出整理插件')
+              else
+                for (var i = 0; i < paths.length; i++) ...[
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      width: 26,
+                      height: 26,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: scheme.primary.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '${i + 1}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: scheme.primary,
+                        ),
+                      ),
+                    ),
+                    title: Text(
+                      _pluginTitleFor(paths[i]),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      paths[i],
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: Icon(
+                      loadedPaths.contains(paths[i])
+                          ? Icons.check_circle
+                          : Icons.error_outline,
+                      size: 18,
+                      color: loadedPaths.contains(paths[i])
+                          ? scheme.primary
+                          : scheme.error,
+                    ),
+                  ),
+                ],
+              const Divider(height: 24),
+              Text(
+                '本轮调用反馈',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: scheme.primary,
+                ),
+              ),
+              const SizedBox(height: 6),
+              if (records.isEmpty)
+                Text(
+                  '本轮还没有插件调用记录（插件只在 LLM 请求/响应链路里触发）。',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                )
+              else
+                for (final r in records.reversed)
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(
+                      switch (r.status) {
+                        'ran' => Icons.play_circle_fill,
+                        'skipped' => Icons.skip_next,
+                        'error' => Icons.error_outline,
+                        _ => Icons.info_outline,
+                      },
+                      size: 18,
+                      color: switch (r.status) {
+                        'ran' => scheme.primary,
+                        'skipped' => scheme.onSurfaceVariant,
+                        'error' => scheme.error,
+                        _ => scheme.onSurfaceVariant,
+                      },
+                    ),
+                    title: Text(
+                      '${r.name} · ${r.hook}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      '${r.status}：${r.detail}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              if (service.lastError != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  '加载错误：${service.lastError}',
+                  style: TextStyle(fontSize: 12, color: scheme.error),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _pluginTitleFor(String path) {
+    for (final p in OutputPluginService.instance.plugins) {
+      if (p.path == path && p.name.isNotEmpty) return p.name;
+    }
+    return path.split('/').last;
+  }
+
   void _showAudit() {
     ref.read(auditProvider.notifier).load();
     showModalBottomSheet<void>(
@@ -384,6 +553,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                 tooltip: '会话列表',
                 onPressed: _showSessionManager,
                 icon: const Icon(Icons.forum_outlined),
+              ),
+              IconButton(
+                tooltip: '输出插件状态',
+                onPressed: _showPluginFeedback,
+                icon: const Icon(Icons.auto_fix_high_outlined),
               ),
               IconButton(
                 tooltip: '审计记录',

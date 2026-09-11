@@ -510,45 +510,84 @@ class _LlmProviderEditPageState extends ConsumerState<LlmProviderEditPage> {
           const SectionLabel('模型'),
           _ProviderModels(providerId: provider.id),
           const SectionLabel('输出整理插件'),
-          _PickRow(
-            icon: Icons.auto_fix_high,
-            title: 'JS 输出整理插件',
-            value: provider.outputPluginPath.isEmpty
-                ? '未选择'
-                : provider.outputPluginPath,
-            onTap: () async {
-              final picked = await LocalFilePicker.pick(
-                context,
-                maxChars: 200000,
-              );
-              if (picked == null) return;
-              if (!picked.path.toLowerCase().endsWith('.js')) {
-                _toast('请选择 .js 插件文件');
-                return;
-              }
-              final ok = await OutputPluginService.instance.load(picked.path);
-              if (!ok) {
-                _toast('插件加载失败：${OutputPluginService.instance.lastError}');
-                return;
-              }
-              await _save(provider.copyWith(outputPluginPath: picked.path));
-              _toast('已启用输出整理插件：${OutputPluginService.instance.name}');
-            },
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    '多个插件按顺序执行，可拖排序',
+                    style: TextStyle(fontSize: 12.5),
+                  ),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: () async {
+                    final picked = await LocalFilePicker.pick(
+                      context,
+                      maxChars: 200000,
+                    );
+                    if (picked == null || !context.mounted) return;
+                    if (!picked.path.toLowerCase().endsWith('.js')) {
+                      _toast('请选择 .js 插件文件');
+                      return;
+                    }
+                    final next = [
+                      ...provider.effectiveOutputPlugins,
+                      picked.path,
+                    ];
+                    final ok = await OutputPluginService.instance.loadAll(next);
+                    await _save(provider.copyWith(outputPluginPaths: next));
+                    if (ok) {
+                      _toast('已添加输出整理插件：${picked.name}');
+                    } else {
+                      _toast(
+                        '已添加，但有插件加载失败：'
+                        '${OutputPluginService.instance.lastError}',
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('添加插件'),
+                ),
+              ],
+            ),
           ),
-          if (provider.outputPluginPath.isNotEmpty)
+          if (provider.effectiveOutputPlugins.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: GlassPanel(
+                radius: 16,
+                blur: 14,
+                padding: EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                child: Text('未启用输出整理插件', style: TextStyle(fontSize: 13)),
+              ),
+            )
+          else
+            for (var i = 0;
+                i < provider.effectiveOutputPlugins.length;
+                i++) ...[
+              _buildPluginTile(
+                context,
+                provider,
+                i,
+                OutputPluginService.instance,
+              ),
+            ],
+          if (provider.effectiveOutputPlugins.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: GlassCard(
                 onTap: () async {
-                  await _save(provider.copyWith(outputPluginPath: ''));
-                  _toast('已关闭输出整理插件');
+                  await OutputPluginService.instance.loadAll(const []);
+                  await _save(provider.copyWith(outputPluginPaths: const []));
+                  _toast('已关闭全部输出整理插件');
                 },
                 child: Row(
                   children: [
                     Icon(Icons.block_outlined, color: scheme.error),
                     const SizedBox(width: 12),
                     Text(
-                      '关闭输出整理插件',
+                      '关闭全部输出整理插件',
                       style: TextStyle(
                         fontWeight: FontWeight.w600,
                         color: scheme.error,
@@ -663,6 +702,123 @@ class _LlmProviderEditPageState extends ConsumerState<LlmProviderEditPage> {
     // 状态回到空表、`load()` 也不会自动再跑一次，界面上提供商会全部消失。
     ref.invalidate(llmConfigProvider);
     await _refreshKeyState();
+  }
+
+  /// 多插件列表里的一行：序号 + 名字/路径 + 上移/下移/删除。
+  Widget _buildPluginTile(
+    BuildContext context,
+    dynamic provider,
+    int index,
+    OutputPluginService service,
+  ) {
+    final scheme = Theme.of(context).colorScheme;
+    final paths = List<String>.from(provider.effectiveOutputPlugins);
+    final path = paths[index];
+    String title = path.split('/').last;
+    String? loadedName;
+    for (final p in service.plugins) {
+      if (p.path == path) {
+        loadedName = p.name;
+        break;
+      }
+    }
+    if (loadedName != null && loadedName.isNotEmpty) title = loadedName;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: GlassPanel(
+        radius: 16,
+        blur: 14,
+        padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+        child: Row(
+          children: [
+            Container(
+              width: 26,
+              height: 26,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: scheme.primary.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                '${index + 1}',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: scheme.primary,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    path,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: '上移',
+              visualDensity: VisualDensity.compact,
+              onPressed: index == 0
+                  ? null
+                  : () async {
+                      final next = [...paths];
+                      final tmp = next[index - 1];
+                      next[index - 1] = next[index];
+                      next[index] = tmp;
+                      await service.loadAll(next);
+                      await _save(provider.copyWith(outputPluginPaths: next));
+                    },
+              icon: const Icon(Icons.arrow_upward, size: 18),
+            ),
+            IconButton(
+              tooltip: '下移',
+              visualDensity: VisualDensity.compact,
+              onPressed: index == paths.length - 1
+                  ? null
+                  : () async {
+                      final next = [...paths];
+                      final tmp = next[index + 1];
+                      next[index + 1] = next[index];
+                      next[index] = tmp;
+                      await service.loadAll(next);
+                      await _save(provider.copyWith(outputPluginPaths: next));
+                    },
+              icon: const Icon(Icons.arrow_downward, size: 18),
+            ),
+            IconButton(
+              tooltip: '移除',
+              visualDensity: VisualDensity.compact,
+              onPressed: () async {
+                final next = [...paths]..removeAt(index);
+                await service.loadAll(next);
+                await _save(provider.copyWith(outputPluginPaths: next));
+              },
+              icon: Icon(Icons.delete_outline, size: 18, color: scheme.error),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _editJson({

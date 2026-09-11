@@ -3,8 +3,42 @@ import 'dart:convert';
 import 'package:flutter_js/flutter_js.dart';
 
 import '../../../core/llm/llm_client.dart';
-
 import '../../../core/local_shell/proot_bridge.dart';
+
+/// 对外暴露的插件信息（不携带 JS 运行时，UI 只读展示用）。
+class OutputPluginInfo {
+  const OutputPluginInfo({
+    required this.path,
+    required this.name,
+    required this.description,
+  });
+
+  final String path;
+  final String name;
+  final String description;
+}
+
+/// 一次插件 hook 调用的反馈记录。
+class OutputPluginRunRecord {
+  const OutputPluginRunRecord({
+    required this.path,
+    required this.name,
+    required this.hook,
+    required this.status,
+    required this.detail,
+    required this.at,
+  });
+
+  /// hook 名：beforeSend / processResponse / process / 加载
+  final String hook;
+
+  /// ran=执行并返回结果；skipped=没定义该 hook；error=执行失败；loaded=已加载
+  final String status;
+  final String detail;
+  final DateTime at;
+  final String path;
+  final String name;
+}
 
 /// 解析结果：JS 插件源码和元信息。
 class ParsedOutputPlugin {
@@ -21,83 +55,208 @@ class ParsedOutputPlugin {
   final String source;
 }
 
-/// 输出整理插件服务。
+/// 内部已加载的插件实例：每个插件用独立 QuickJS 运行时，函数互不串味。
+class _LoadedOutputPlugin {
+  _LoadedOutputPlugin({
+    required this.info,
+    required this.runtime,
+    required this.source,
+  });
+
+  final OutputPluginInfo info;
+  final JavascriptRuntime runtime;
+  final String source;
+}
+
+/// 输出整理插件服务（支持多个插件按顺序链式执行）。
 ///
 /// 插件是文件管理里用户自己新建的 `.js` 文件，必须带识别注释：
 /// ```js
 /// // @qinglong-plugin
 /// // name: 输出整理
 /// // description: 清理模型输出泄露的工具调用标记
-/// function process(text) {
-///   return text.replace(/<｜tool｜ calls>[\s\S]*?<\/｜tool｜ calls>/g, '');
-/// }
+/// function process(text) { ... }
 /// ```
 ///
-/// 选择后由 [load] 读取并用内置 QuickJS 引擎执行。`process` 或 `transform`
-/// 函数负责把输入文本整理成最终展示文本。
+/// 支持 hook：
+/// - `beforeSend(messages)`：提交前改写 messages
+/// - `processResponse({content, reasoning, toolCalls})`：响应后同时改正文/思考/工具调用
+/// - `process(text)` / `transform(text)`：文本清理，作为 processResponse 的兜底
 class OutputPluginService {
   OutputPluginService._();
 
   static final OutputPluginService instance = OutputPluginService._();
 
-  JavascriptRuntime? _runtime;
-  String _loadedPath = '';
-  String _name = '';
-  String _description = '';
-  bool _loaded = false;
+  final List<_LoadedOutputPlugin> _plugins = [];
+  final List<OutputPluginRunRecord> _runRecords = [];
   String? _lastError;
 
-  bool get isLoaded => _loaded;
-  String get loadedPath => _loadedPath;
-  String get name => _name;
-  String get description => _description;
+  bool get isLoaded => _plugins.isNotEmpty;
+  List<OutputPluginInfo> get plugins => [for (final p in _plugins) p.info];
+  List<String> get loadedPaths => [for (final p in _plugins) p.info.path];
+  String get name => _plugins.map((p) => p.info.name).join('、');
+  String get description => _plugins
+      .map((p) => p.info.description)
+      .where((d) => d.isNotEmpty)
+      .join('；');
+  String get loadedPath => _plugins.isEmpty ? '' : _plugins.first.info.path;
+
+  /// 最近一次的 hook 调用记录（点击聊天里的插件状态钮时展示）。
+  List<OutputPluginRunRecord> get runRecords => List.unmodifiable(_runRecords);
   String? get lastError => _lastError;
 
-  /// 从 PRoot 文件路径加载插件。失败会记录错误并返回 false。
-  Future<bool> load(String path) async {
-    _lastError = null;
-    try {
-      final bridge = ProotBridge();
-      final raw = await bridge.readFile(path: path, scope: 'shell');
-      final parsed = parsePlugin(raw, path);
-      if (!parsed.valid) {
-        _lastError =
-            '不是有效的 QingLong 插件文件（缺 @qinglong-plugin 标记或 process/transform 函数）';
-        return false;
-      }
-      final runtime = _runtime ??= getJavascriptRuntime(
-        xhr: false,
-        forceJavascriptCoreOnAndroid: false,
-      );
-      // 用 IIFE 加载，再显式把几个钩子挂到 globalThis：不同 QuickJS
-      // 版本对“顶层 function 是否成为全局变量”行为不完全一致，显式挂载
-      // 才能保证后面 clean / transformMessages / transformResponse 稳定找到。
-      final wrapped = '(function() {\n'
-          '${parsed.source}\n'
-          '  if (typeof process === "function") globalThis.process = process;\n'
-          '  if (typeof transform === "function") globalThis.transform = transform;\n'
-          '  if (typeof processResponse === "function") globalThis.processResponse = processResponse;\n'
-          '  if (typeof beforeSend === "function") globalThis.beforeSend = beforeSend;\n'
-          '})();';
-      final result = runtime.evaluate(wrapped);
-      if (result.isError) {
-        _lastError = 'JS 执行失败：${result.stringResult}';
-        return false;
-      }
-      _loadedPath = path;
-      _name = parsed.name;
-      _description = parsed.description;
-      _loaded = true;
-      return true;
-    } catch (e) {
-      _lastError = e.toString();
-      return false;
-    }
+  /// 开始一轮新运行前调用：清空上一轮的 hook 反馈。
+  void beginRun() => _runRecords.clear();
+
+  void _record(
+    OutputPluginInfo info,
+    String hook,
+    String status,
+    String detail,
+  ) {
+    _runRecords.add(OutputPluginRunRecord(
+      path: info.path,
+      name: info.name,
+      hook: hook,
+      status: status,
+      detail: detail,
+      at: DateTime.now(),
+    ));
   }
 
-  /// 执行已加载插件的 `process(text)`。未加载/执行失败返回 null（上层继续用原文本）。
+  /// 兼容旧单插件入口。
+  Future<bool> load(String path) => loadAll([path]);
+
+  /// 按给定顺序加载多个插件。某个插件坏了跳过并记错误，不拖垮后面的。
+  Future<bool> loadAll(List<String> paths) async {
+    _plugins.clear();
+    _lastError = null;
+    final errors = <String>[];
+
+    for (final path in paths) {
+      final trimmed = path.trim();
+      if (trimmed.isEmpty) continue;
+      try {
+        final bridge = ProotBridge();
+        final raw = await bridge.readFile(path: trimmed, scope: 'shell');
+        final parsed = OutputPluginService.parsePlugin(raw, trimmed);
+        if (!parsed.valid) {
+          errors.add('$trimmed：不是有效的 QingLong 插件文件'
+              '（缺 @qinglong-plugin 或 process/transform/processResponse/beforeSend 函数）');
+          continue;
+        }
+        final runtime = getJavascriptRuntime(
+          xhr: false,
+          forceJavascriptCoreOnAndroid: false,
+        );
+        final wrapped = '(function() {\n'
+            '${parsed.source}\n'
+            '  if (typeof process === "function") globalThis.process = process;\n'
+            '  if (typeof transform === "function") globalThis.transform = transform;\n'
+            '  if (typeof processResponse === "function") globalThis.processResponse = processResponse;\n'
+            '  if (typeof beforeSend === "function") globalThis.beforeSend = beforeSend;\n'
+            '})();';
+        final result = runtime.evaluate(wrapped);
+        if (result.isError) {
+          errors.add('$trimmed：JS 执行失败 ${result.stringResult}');
+          continue;
+        }
+        _plugins.add(
+          _LoadedOutputPlugin(
+            info: OutputPluginInfo(
+              path: trimmed,
+              name: parsed.name,
+              description: parsed.description,
+            ),
+            runtime: runtime,
+            source: parsed.source,
+          ),
+        );
+      } catch (e) {
+        errors.add('$trimmed：$e');
+      }
+    }
+
+    if (errors.isNotEmpty) _lastError = errors.join('\n');
+    return _plugins.isNotEmpty;
+  }
+
+  /// 执行所有插件的 `process(text)`，串联处理。
+  /// 没有任何插件实际处理时返回 null。
   String? clean(String text) {
-    if (!_loaded || _runtime == null) return null;
+    if (_plugins.isEmpty) return null;
+    var current = text;
+    var changed = false;
+    for (final p in _plugins) {
+      final out = _cleanOn(p, current);
+      if (out != null) {
+        current = out;
+        changed = true;
+        _record(p.info, 'process', 'ran', '已执行文本清理');
+      } else {
+        _record(p.info, 'process', 'skipped', '未定义 process/transform，跳过');
+      }
+    }
+    return changed ? current : null;
+  }
+
+  /// 提交前 hook：多插件按顺序链式执行。
+  List<LlmMessage>? transformMessages(List<LlmMessage> messages) {
+    if (_plugins.isEmpty) return null;
+    var current = messages;
+    var changed = false;
+    for (final p in _plugins) {
+      final out = _transformMessagesOn(p, current);
+      if (out != null) {
+        current = out;
+        changed = true;
+        _record(
+          p.info,
+          'beforeSend',
+          'ran',
+          '返回 ${out.length} 条 messages',
+        );
+      } else {
+        _record(p.info, 'beforeSend', 'skipped', '未定义 beforeSend，跳过');
+      }
+    }
+    return changed ? current : null;
+  }
+
+  /// 响应后 hook：多插件按顺序链式执行，后一个拿到前一个的结果。
+  LlmResponse? transformResponse(LlmResponse response) {
+    if (_plugins.isEmpty) return null;
+    var current = response;
+    var changed = false;
+    for (final p in _plugins) {
+      final out = _transformResponseOn(p, current);
+      if (out != null) {
+        current = out;
+        changed = true;
+        _record(
+          p.info,
+          'processResponse',
+          'ran',
+          '已改写 content/reasoning/toolCalls',
+        );
+      } else {
+        _record(p.info, 'processResponse', 'skipped', '未定义 processResponse，跳过');
+      }
+    }
+    // 兜底清理：即使某个插件只处理了正文、忘了过滤思考，也不能让
+    // <｜tool｜ calls> 这类泄漏标签继续显示在思考/正文里。
+    final cleanedContent = clean(current.content);
+    if (cleanedContent != null) {
+      current = current.copyWith(content: cleanedContent);
+    }
+    final cleanedReasoning = clean(current.reasoningContent);
+    if (cleanedReasoning != null) {
+      current = current.copyWith(reasoningContent: cleanedReasoning);
+    }
+    return changed ? current : null;
+  }
+
+  String? _cleanOn(_LoadedOutputPlugin p, String text) {
     final literal = jsonEncode(text);
     final js = 'try {'
         '  const __f = (typeof process !== "undefined" && typeof process === "function")'
@@ -106,20 +265,20 @@ class OutputPluginService {
         '  JSON.stringify(__f($literal));'
         '} catch (e) { JSON.stringify(null); }';
     try {
-      final result = _runtime!.evaluate(js);
+      final result = p.runtime.evaluate(js);
       if (result.isError) return null;
       final decoded = jsonDecode(result.stringResult);
       return decoded is String ? decoded : null;
     } catch (_) {
+      _record(p.info, 'process', 'error', '执行异常');
       return null;
     }
   }
 
-  /// 提交前 hook：插件 `beforeSend(messages)` 可以增删/改写要发给模型的 messages。
-  ///
-  /// 返回 null 表示插件没定义这个 hook 或执行失败，上层继续用原 messages。
-  List<LlmMessage>? transformMessages(List<LlmMessage> messages) {
-    if (!_loaded || _runtime == null) return null;
+  List<LlmMessage>? _transformMessagesOn(
+    _LoadedOutputPlugin p,
+    List<LlmMessage> messages,
+  ) {
     final js = 'try {'
         '  const __f = (typeof beforeSend !== "undefined" && typeof beforeSend === "function")'
         '    ? beforeSend : null;'
@@ -129,7 +288,7 @@ class OutputPluginService {
         ])}));'
         '} catch (e) { JSON.stringify(null); }';
     try {
-      final result = _runtime!.evaluate(js);
+      final result = p.runtime.evaluate(js);
       if (result.isError) return null;
       final decoded = jsonDecode(result.stringResult);
       if (decoded is! List) return null;
@@ -141,16 +300,15 @@ class OutputPluginService {
             _messageFromJson(item.cast<String, dynamic>()),
       ];
     } catch (_) {
+      _record(p.info, 'beforeSend', 'error', '执行异常');
       return null;
     }
   }
 
-  /// 响应后 hook：插件 `processResponse({content, reasoning, toolCalls})`
-  /// 可以同时改写正文、思考、甚至把“溢出成正文的工具调用”捞回结构化 toolCalls。
-  ///
-  /// 返回 null 表示插件没定义这个 hook 或执行失败，上层继续用原 response。
-  LlmResponse? transformResponse(LlmResponse response) {
-    if (!_loaded || _runtime == null) return null;
+  LlmResponse? _transformResponseOn(
+    _LoadedOutputPlugin p,
+    LlmResponse response,
+  ) {
     final data = {
       'content': response.content,
       'reasoning': response.reasoningContent,
@@ -166,7 +324,7 @@ class OutputPluginService {
         '  JSON.stringify(__f(${jsonEncode(data)}));'
         '} catch (e) { JSON.stringify(null); }';
     try {
-      final result = _runtime!.evaluate(js);
+      final result = p.runtime.evaluate(js);
       if (result.isError) return null;
       final decoded = jsonDecode(result.stringResult);
       if (decoded is! Map) return null;
@@ -181,18 +339,9 @@ class OutputPluginService {
         recoveredToolCalls: response.recoveredToolCalls,
         brokenToolMarkup: response.brokenToolMarkup,
       );
-      // 兜底清理：即使插件只处理了正文、忘了过滤思考，也不能让
-      // <｜tool｜ calls> 这类泄漏标签继续显示在思考/正文里。
-      final cleanedContent = clean(transformed.content);
-      if (cleanedContent != null) {
-        transformed = transformed.copyWith(content: cleanedContent);
-      }
-      final cleanedReasoning = clean(transformed.reasoningContent);
-      if (cleanedReasoning != null) {
-        transformed = transformed.copyWith(reasoningContent: cleanedReasoning);
-      }
       return transformed;
     } catch (_) {
+      _record(p.info, 'processResponse', 'error', '执行异常');
       return null;
     }
   }
@@ -242,8 +391,6 @@ class OutputPluginService {
   }
 
   /// 解析插件文件：识别注释 + 基本元信息。
-  ///
-  /// [source] 整份源码直接交给 QuickJS 执行，函数名按约定 `process` / `transform`。
   static ParsedOutputPlugin parsePlugin(String source, String path) {
     final head = source.length > 800 ? source.substring(0, 800) : source;
     final recognized = head.contains('@qinglong-plugin') ||
@@ -281,86 +428,4 @@ class OutputPluginService {
       source: source,
     );
   }
-
-  /// 生成一个最常用的输出整理插件模板，方便用户照着改。
-  static String template() => r'''
-// @qinglong-plugin 输出整理插件
-// name: 全面输出插件
-// description: 底层 hook：清理泄露标记、过滤思考/正文、提交前注入提示词
-
-// 1) 提交前 hook：可以增删/改写要发给模型的 messages。
-//    messages 是 [{role, content, tool_calls?}] 数组。
-function beforeSend(messages) {
-  // 示例：在系统提示后注入一段自定义提示词
-  // messages.unshift({role: 'system', content: '额外要求：回答用中文。'});
-  return messages;
-}
-
-// 2) 响应后 hook：同时处理正文、思考和工具调用。
-//    这是“标签溢出变成正文”的真正修复点：把泄露的 <｜tool｜ calls>
-//    标签重新解析成结构化 toolCalls，让 APP 真的去调用工具。
-function processResponse({content, reasoning, toolCalls}) {
-  // —— 从正文里捞回“溢出成正文”的工具调用 ——
-  // 匹配格式：
-  // <｜tool｜ invoke name="shell_exec">
-  //   <｜tool｜ parameter name="command" string="true">ls</｜tool｜ parameter>
-  //   <｜tool｜ parameter name="timeoutSeconds" string="false">20</｜tool｜ parameter>
-  // </｜tool｜ invoke>
-  const invokeRe = /<｜tool｜ invoke name="([^"]+)">([\s\S]*?)<\/｜tool｜ invoke>/g;
-  const paramRe = /<｜tool｜ parameter name="([^"]+)" string="(true|false)">([\s\S]*?)<\/｜tool｜ parameter>/g;
-  let m;
-  while ((m = invokeRe.exec(content)) !== null) {
-    const name = m[1];
-    const body = m[2];
-    const args = {};
-    let p;
-    while ((p = paramRe.exec(body)) !== null) {
-      const key = p[1];
-      const isString = p[2] === 'true';
-      const raw = p[3].trim();
-      try {
-        args[key] = isString ? raw : (
-          raw === 'true' ? true : raw === 'false' ? false : Number(raw)
-        );
-      } catch (e) {
-        args[key] = raw;
-      }
-      // 重置 lastIndex，避免多条 parameter 之间互相跳过。
-      // （上面 while 用同一个 regex，exec 会推进；这里其实已经推进，
-      //   但要小心 invoke 外层复用 paramRe 时 lastIndex 不会串。）
-    }
-    paramRe.lastIndex = 0;
-    toolCalls.push({
-      id: 'plugin_' + Date.now() + '_' + toolCalls.length,
-      name: name,
-      arguments: args
-    });
-  }
-
-  // 去掉正文里残留的工具调用标签，避免“又显示一遍”。
-  content = content
-    .replace(/<｜tool｜ calls>[\s\S]*?<\/｜tool｜ calls>/g, '')
-    .replace(/<｜tool｜ invoke[\s\S]*?<\/｜tool｜ invoke>/g, '')
-    .replace(/<\/｜tool｜ (calls|invoke|parameter)>/g, '');
-
-  // —— 过滤思考里多余的内容 ——
-  // if (reasoning.includes('某段不想显示的思考')) reasoning = '';
-
-  // —— 正文屏蔽 ——
-  // content = content.replace(/不允许出现的词/g, '***');
-
-  // 思考里的泄漏标签也要一起清掉，不能只清正文。
-  if (typeof reasoning === 'string') reasoning = _cleanText(reasoning);
-
-  return {content, reasoning, toolCalls};
-}
-
-// 3) 简单文本处理（兼容旧插件）：只有 process/transform 时也会自动生效。
-function process(text) {
-  return text
-    .replace(/<｜tool｜ calls>[\s\S]*?<\/｜tool｜ calls>/g, '')
-    .replace(/<｜tool｜ invoke[\s\S]*?<\/｜tool｜ invoke>/g, '')
-    .replace(/<\/｜tool｜ (calls|invoke|parameter)>/g, '');
-}
-''';
 }

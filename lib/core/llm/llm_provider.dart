@@ -30,6 +30,7 @@ class LlmProviderConfig {
     this.extraBody = '',
     this.modelsFetchedAt,
     this.outputPluginPath = '',
+    this.outputPluginPaths = const [],
   });
 
   /// 稳定 id。子代理配置、活动提供商都按 id 引用，改名字不会失联。
@@ -68,11 +69,21 @@ class LlmProviderConfig {
   /// 上次拉模型列表的时间，界面上显示"缓存于 …"。
   final DateTime? modelsFetchedAt;
 
-  /// 输出整理插件 .js 文件的 PRoot 路径。
+  /// 输出整理插件 .js 文件的 PRoot 路径（旧的单插件字段，兼容老数据）。
+  final String outputPluginPath;
+
+  /// 多个输出整理插件，按数组顺序依次执行。
   ///
   /// 用户在文件管理里写的 JS 插件，负责把模型原始输出整理成展示文本
-  /// （例如清理泄露的 `<｜tool｜ calls>` 内部调用标记）。留空 = 不启用。
-  final String outputPluginPath;
+  /// （例如清理泄露的 `<｜tool｜ calls>` 内部调用标记）。空 = 不启用。
+  final List<String> outputPluginPaths;
+
+  /// 实际生效的插件路径：优先新字段，老数据回落单插件。
+  List<String> get effectiveOutputPlugins {
+    if (outputPluginPaths.isNotEmpty) return outputPluginPaths;
+    if (outputPluginPath.trim().isNotEmpty) return [outputPluginPath];
+    return const [];
+  }
 
   /// 界面上显示用的名字。
   String get label {
@@ -102,6 +113,7 @@ class LlmProviderConfig {
     String? extraBody,
     DateTime? modelsFetchedAt,
     String? outputPluginPath,
+    List<String>? outputPluginPaths,
   }) {
     return LlmProviderConfig(
       id: id,
@@ -116,6 +128,7 @@ class LlmProviderConfig {
       extraBody: extraBody ?? this.extraBody,
       modelsFetchedAt: modelsFetchedAt ?? this.modelsFetchedAt,
       outputPluginPath: outputPluginPath ?? this.outputPluginPath,
+      outputPluginPaths: outputPluginPaths ?? this.outputPluginPaths,
     );
   }
 
@@ -132,6 +145,7 @@ class LlmProviderConfig {
         'extraBody': extraBody,
         'modelsFetchedAt': modelsFetchedAt?.toIso8601String(),
         'outputPluginPath': outputPluginPath,
+        'outputPluginPaths': outputPluginPaths,
       };
 
   static LlmProviderConfig fromJson(Map<String, dynamic> json) {
@@ -160,6 +174,10 @@ class LlmProviderConfig {
       modelsFetchedAt:
           DateTime.tryParse(json['modelsFetchedAt']?.toString() ?? ''),
       outputPluginPath: json['outputPluginPath']?.toString() ?? '',
+      outputPluginPaths: [
+        for (final p in (json['outputPluginPaths'] as List? ?? const []))
+          p.toString(),
+      ],
     );
   }
 }
