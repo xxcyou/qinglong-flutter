@@ -277,143 +277,199 @@ class _MemoryPageState extends ConsumerState<MemoryPage> {
 
   /// 新增/编辑一条记忆。传 null 表示新增。
   Future<void> _edit(AiMemory? memory) async {
-    final controller = TextEditingController(text: memory?.content ?? '');
-    final tagController =
-        TextEditingController(text: memory?.tags.join(' ') ?? '');
-    var kind = memory?.kind ?? MemoryKind.fact;
-    var importance = memory?.importance ?? 3;
-    var pinned = memory?.pinned ?? false;
-
-    final saved = await showModalBottomSheet<bool>(
+    // 控制器交给 _MemoryEditSheet 自己管理：等底部面板真正卸载后再 dispose，
+    // 避免 pop 动画还没结束就销毁 TextEditingController，触发框架断言。
+    final draft = await showModalBottomSheet<_MemoryDraft>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheetState) => Padding(
-          padding: EdgeInsets.only(
-            left: 16,
-            right: 16,
-            top: 16,
-            bottom: MediaQuery.viewInsetsOf(context).bottom + 16,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                memory == null ? '添加记忆' : '编辑记忆',
-                style:
-                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: controller,
-                minLines: 2,
-                maxLines: 5,
-                decoration: const InputDecoration(
-                  labelText: '内容',
-                  hintText: '一句话结论，例如：通知走 Bark，不要用邮件',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: tagController,
-                decoration: const InputDecoration(
-                  isDense: true,
-                  labelText: '标签（空格分隔）',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  for (final k in MemoryKind.values)
-                    ChoiceChip(
-                      label: Text(k.label),
-                      selected: kind == k,
-                      onSelected: (_) => setSheetState(() => kind = k),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Text('重要度', style: TextStyle(fontSize: 13)),
-                  Expanded(
-                    child: Slider(
-                      value: importance.toDouble(),
-                      min: 1,
-                      max: 5,
-                      divisions: 4,
-                      label: '$importance',
-                      onChanged: (v) =>
-                          setSheetState(() => importance = v.round()),
-                    ),
-                  ),
-                  Text('$importance'),
-                ],
-              ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                dense: true,
-                value: pinned,
-                onChanged: (v) => setSheetState(() => pinned = v),
-                title: const Text('置顶', style: TextStyle(fontSize: 14)),
-                subtitle: const Text(
-                  '每轮对话都注入，给真正的长期约束用',
-                  style: TextStyle(fontSize: 11.5),
-                ),
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () => Navigator.of(context).pop(false),
-                    child: const Text('取消'),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    onPressed: () => Navigator.of(context).pop(true),
-                    child: const Text('保存'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
+      builder: (_) => _MemoryEditSheet(memory: memory),
     );
 
-    final content = controller.text.trim();
-    controller.dispose();
-    final tags = tagController.text
-        .split(RegExp(r'\s+'))
-        .map((t) => t.trim())
-        .where((t) => t.isNotEmpty)
-        .toList();
-    tagController.dispose();
-    if (saved != true || content.isEmpty) return;
+    if (draft == null || draft.content.trim().isEmpty) return;
 
     final notifier = ref.read(memoryProvider.notifier);
     if (memory == null) {
       await notifier.write(
-        content: content,
-        kind: kind,
-        tags: tags,
-        importance: importance,
-        pinned: pinned,
+        content: draft.content,
+        kind: draft.kind,
+        tags: draft.tags,
+        importance: draft.importance,
+        pinned: draft.pinned,
       );
     } else {
       await notifier.update(
         memory.id,
-        content: content,
-        importance: importance,
-        pinned: pinned,
-        tags: tags,
+        content: draft.content,
+        importance: draft.importance,
+        pinned: draft.pinned,
+        tags: draft.tags,
       );
     }
+  }
+}
+
+/// 底部编辑框返回的草稿；字段在底部面板内部收集好，外部不再依赖控制器。
+class _MemoryDraft {
+  const _MemoryDraft({
+    required this.content,
+    required this.kind,
+    required this.importance,
+    required this.pinned,
+    required this.tags,
+  });
+
+  final String content;
+  final MemoryKind kind;
+  final int importance;
+  final bool pinned;
+  final List<String> tags;
+}
+
+/// 记忆新增/编辑底部面板，自己持有并释放 TextEditingController。
+class _MemoryEditSheet extends StatefulWidget {
+  const _MemoryEditSheet({this.memory});
+
+  final AiMemory? memory;
+
+  @override
+  State<_MemoryEditSheet> createState() => _MemoryEditSheetState();
+}
+
+class _MemoryEditSheetState extends State<_MemoryEditSheet> {
+  late final TextEditingController _controller;
+  late final TextEditingController _tagController;
+  late MemoryKind _kind;
+  late int _importance;
+  late bool _pinned;
+
+  @override
+  void initState() {
+    super.initState();
+    final memory = widget.memory;
+    _controller = TextEditingController(text: memory?.content ?? '');
+    _tagController = TextEditingController(text: memory?.tags.join(' ') ?? '');
+    _kind = memory?.kind ?? MemoryKind.fact;
+    _importance = memory?.importance ?? 3;
+    _pinned = memory?.pinned ?? false;
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _tagController.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final tags = _tagController.text
+        .split(RegExp(r'\s+'))
+        .map((t) => t.trim())
+        .where((t) => t.isNotEmpty)
+        .toList();
+    Navigator.of(context).pop(_MemoryDraft(
+      content: _controller.text.trim(),
+      kind: _kind,
+      importance: _importance,
+      pinned: _pinned,
+      tags: tags,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 16,
+        right: 16,
+        top: 16,
+        bottom: MediaQuery.viewInsetsOf(context).bottom + 16,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            widget.memory == null ? '添加记忆' : '编辑记忆',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _controller,
+            minLines: 2,
+            maxLines: 5,
+            decoration: const InputDecoration(
+              labelText: '内容',
+              hintText: '一句话结论，例如：通知走 Bark，不要用邮件',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _tagController,
+            decoration: const InputDecoration(
+              isDense: true,
+              labelText: '标签（空格分隔）',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final k in MemoryKind.values)
+                ChoiceChip(
+                  label: Text(k.label),
+                  selected: _kind == k,
+                  onSelected: (_) => setState(() => _kind = k),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const Text('重要度', style: TextStyle(fontSize: 13)),
+              Expanded(
+                child: Slider(
+                  value: _importance.toDouble(),
+                  min: 1,
+                  max: 5,
+                  divisions: 4,
+                  label: '$_importance',
+                  onChanged: (v) => setState(() => _importance = v.round()),
+                ),
+              ),
+              Text('$_importance'),
+            ],
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            value: _pinned,
+            onChanged: (v) => setState(() => _pinned = v),
+            title: const Text('置顶', style: TextStyle(fontSize: 14)),
+            subtitle: const Text(
+              '每轮对话都注入，给真正的长期约束用',
+              style: TextStyle(fontSize: 11.5),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              const Spacer(),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('取消'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _save,
+                child: const Text('保存'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
