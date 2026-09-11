@@ -218,6 +218,17 @@ class LlmResponse {
   /// 正文里有工具调用标记，但一个也没解析出来——格式坏得连兜底都救不回。
   /// 这种轮次绝不能当成"模型答完了"，否则会拿着幻觉输出收工。
   final bool brokenToolMarkup;
+
+  LlmResponse copyWith({String? content, String? reasoningContent}) =>
+      LlmResponse(
+        content: content ?? this.content,
+        reasoningContent: reasoningContent ?? this.reasoningContent,
+        toolCalls: toolCalls,
+        finishReason: finishReason,
+        usage: usage,
+        recoveredToolCalls: recoveredToolCalls,
+        brokenToolMarkup: brokenToolMarkup,
+      );
 }
 
 /// 流式增量：一次 SSE 片段带来的新内容。

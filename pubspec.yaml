@@ -37,6 +37,7 @@ dependencies:
   # 直接依赖 Android 实现：第三方 Cookie 开关、控制台回调这些"像真浏览器"
   # 必需的能力只在平台实现里，公共接口没暴露。
   webview_flutter_android: ^4.12.0
+  flutter_js: ^0.8.7
 
 dev_dependencies:
   flutter_test:

@@ -160,6 +160,7 @@ class AgentLoop {
     this.maxTurns = 200,
     this.cancelToken,
     this.onUsage,
+    this.outputCleaner,
   });
 
   final LlmConfig config;
@@ -177,6 +178,10 @@ class AgentLoop {
   /// 每完成一轮 LLM 请求就回调一次最新用量，界面据此实时刷新上下文/token。
   final void Function(int totalTokens, int promptTokens, int cacheHitTokens)?
       onUsage;
+
+  /// 输出整理插件：把模型原始输出（正文/思考）清理成展示文本。
+  /// 返回 null 表示插件未生效，保留原文本。
+  final String? Function(String)? outputCleaner;
 
   static const _maxToolResultChars = 30000;
 
@@ -843,7 +848,7 @@ class AgentLoop {
         // 新一轮开始：把上一轮残留的流式文字清掉。上一轮的思考此刻已经
         // 变成时间线上的一条事件了，留着就是同一段话显示两遍。
         pipe(const LlmDelta(reset: true));
-        final LlmResponse response;
+        LlmResponse response;
         try {
           response = await LlmClient.complete(
             config: config,
@@ -879,6 +884,19 @@ class AgentLoop {
           rethrow;
         } finally {
           cancelToken?.httpToken = null;
+        }
+        // 输出整理插件：模型输出可能泄露 `<｜tool｜ calls>` 这类内部调用标记，
+        // 在进入展示/历史前先按插件规则清理一遍。
+        final cleaner = outputCleaner;
+        if (cleaner != null) {
+          final cleanContent = cleaner(response.content);
+          final cleanReasoning = cleaner(response.reasoningContent);
+          if (cleanContent != null || cleanReasoning != null) {
+            response = response.copyWith(
+              content: cleanContent ?? response.content,
+              reasoningContent: cleanReasoning ?? response.reasoningContent,
+            );
+          }
         }
         // 请求刚回来就先看一眼有没有被取消：省掉后面一整轮工具执行。
         checkCancelled();

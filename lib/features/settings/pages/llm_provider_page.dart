@@ -10,7 +10,9 @@ import '../../../core/theme/glass.dart';
 import '../../../core/utils/formatter.dart';
 import '../../../shared/confirm_dialog.dart';
 import '../../../shared/glass_scaffold.dart';
+import '../../../shared/local_file_picker.dart';
 import '../../../shared/text_input_dialog.dart';
+import '../../ai/plugins/output_plugin.dart';
 import '../../ai/providers/chat_provider.dart';
 
 /// 提供商管理：一家一条连接配置，外加子代理编队。
@@ -507,6 +509,55 @@ class _LlmProviderEditPageState extends ConsumerState<LlmProviderEditPage> {
             ),
           const SectionLabel('模型'),
           _ProviderModels(providerId: provider.id),
+          const SectionLabel('输出整理插件'),
+          _PickRow(
+            icon: Icons.auto_fix_high,
+            title: 'JS 输出整理插件',
+            value: provider.outputPluginPath.isEmpty
+                ? '未选择'
+                : provider.outputPluginPath,
+            onTap: () async {
+              final picked = await LocalFilePicker.pick(
+                context,
+                maxChars: 200000,
+              );
+              if (picked == null) return;
+              if (!picked.path.toLowerCase().endsWith('.js')) {
+                _toast('请选择 .js 插件文件');
+                return;
+              }
+              final ok = await OutputPluginService.instance.load(picked.path);
+              if (!ok) {
+                _toast('插件加载失败：${OutputPluginService.instance.lastError}');
+                return;
+              }
+              await _save(provider.copyWith(outputPluginPath: picked.path));
+              _toast('已启用输出整理插件：${OutputPluginService.instance.name}');
+            },
+          ),
+          if (provider.outputPluginPath.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: GlassCard(
+                onTap: () async {
+                  await _save(provider.copyWith(outputPluginPath: ''));
+                  _toast('已关闭输出整理插件');
+                },
+                child: Row(
+                  children: [
+                    Icon(Icons.block_outlined, color: scheme.error),
+                    const SizedBox(width: 12),
+                    Text(
+                      '关闭输出整理插件',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: scheme.error,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           const SectionLabel('高级透传'),
           _PickRow(
             icon: Icons.data_object,

@@ -29,6 +29,7 @@ class LlmProviderConfig {
     this.extraHeaders = '',
     this.extraBody = '',
     this.modelsFetchedAt,
+    this.outputPluginPath = '',
   });
 
   /// 稳定 id。子代理配置、活动提供商都按 id 引用，改名字不会失联。
@@ -67,6 +68,12 @@ class LlmProviderConfig {
   /// 上次拉模型列表的时间，界面上显示"缓存于 …"。
   final DateTime? modelsFetchedAt;
 
+  /// 输出整理插件 .js 文件的 PRoot 路径。
+  ///
+  /// 用户在文件管理里写的 JS 插件，负责把模型原始输出整理成展示文本
+  /// （例如清理泄露的 `<｜tool｜ calls>` 内部调用标记）。留空 = 不启用。
+  final String outputPluginPath;
+
   /// 界面上显示用的名字。
   String get label {
     if (name.trim().isNotEmpty) return name.trim();
@@ -94,6 +101,7 @@ class LlmProviderConfig {
     String? extraHeaders,
     String? extraBody,
     DateTime? modelsFetchedAt,
+    String? outputPluginPath,
   }) {
     return LlmProviderConfig(
       id: id,
@@ -107,6 +115,7 @@ class LlmProviderConfig {
       extraHeaders: extraHeaders ?? this.extraHeaders,
       extraBody: extraBody ?? this.extraBody,
       modelsFetchedAt: modelsFetchedAt ?? this.modelsFetchedAt,
+      outputPluginPath: outputPluginPath ?? this.outputPluginPath,
     );
   }
 
@@ -122,6 +131,7 @@ class LlmProviderConfig {
         'extraHeaders': extraHeaders,
         'extraBody': extraBody,
         'modelsFetchedAt': modelsFetchedAt?.toIso8601String(),
+        'outputPluginPath': outputPluginPath,
       };
 
   static LlmProviderConfig fromJson(Map<String, dynamic> json) {
@@ -149,6 +159,7 @@ class LlmProviderConfig {
       extraBody: json['extraBody']?.toString() ?? '',
       modelsFetchedAt:
           DateTime.tryParse(json['modelsFetchedAt']?.toString() ?? ''),
+      outputPluginPath: json['outputPluginPath']?.toString() ?? '',
     );
   }
 }
