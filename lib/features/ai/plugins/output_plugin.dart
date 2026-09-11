@@ -69,7 +69,17 @@ class OutputPluginService {
         xhr: false,
         forceJavascriptCoreOnAndroid: false,
       );
-      final result = runtime.evaluate(parsed.source);
+      // 用 IIFE 加载，再显式把几个钩子挂到 globalThis：不同 QuickJS
+      // 版本对“顶层 function 是否成为全局变量”行为不完全一致，显式挂载
+      // 才能保证后面 clean / transformMessages / transformResponse 稳定找到。
+      final wrapped = '(function() {\n'
+          '${parsed.source}\n'
+          '  if (typeof process === "function") globalThis.process = process;\n'
+          '  if (typeof transform === "function") globalThis.transform = transform;\n'
+          '  if (typeof processResponse === "function") globalThis.processResponse = processResponse;\n'
+          '  if (typeof beforeSend === "function") globalThis.beforeSend = beforeSend;\n'
+          '})();';
+      final result = runtime.evaluate(wrapped);
       if (result.isError) {
         _lastError = 'JS 执行失败：${result.stringResult}';
         return false;
@@ -161,7 +171,7 @@ class OutputPluginService {
       final decoded = jsonDecode(result.stringResult);
       if (decoded is! Map) return null;
       final map = decoded.cast<String, dynamic>();
-      return LlmResponse(
+      var transformed = LlmResponse(
         content: map['content']?.toString() ?? response.content,
         reasoningContent:
             map['reasoning']?.toString() ?? response.reasoningContent,
@@ -171,6 +181,17 @@ class OutputPluginService {
         recoveredToolCalls: response.recoveredToolCalls,
         brokenToolMarkup: response.brokenToolMarkup,
       );
+      // 兜底清理：即使插件只处理了正文、忘了过滤思考，也不能让
+      // <｜tool｜ calls> 这类泄漏标签继续显示在思考/正文里。
+      final cleanedContent = clean(transformed.content);
+      if (cleanedContent != null) {
+        transformed = transformed.copyWith(content: cleanedContent);
+      }
+      final cleanedReasoning = clean(transformed.reasoningContent);
+      if (cleanedReasoning != null) {
+        transformed = transformed.copyWith(reasoningContent: cleanedReasoning);
+      }
+      return transformed;
     } catch (_) {
       return null;
     }
@@ -327,6 +348,9 @@ function processResponse({content, reasoning, toolCalls}) {
 
   // —— 正文屏蔽 ——
   // content = content.replace(/不允许出现的词/g, '***');
+
+  // 思考里的泄漏标签也要一起清掉，不能只清正文。
+  if (typeof reasoning === 'string') reasoning = _cleanText(reasoning);
 
   return {content, reasoning, toolCalls};
 }
