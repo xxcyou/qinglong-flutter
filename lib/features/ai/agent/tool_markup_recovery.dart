@@ -26,7 +26,7 @@ class ToolMarkupRecovery {
       calls = [...calls, ...contentRecovered.calls];
     }
 
-    if (reasoning.isNotEmpty) {
+    if (reasoning.isNotEmpty && _looksLikeLeak(reasoning)) {
       final reasoningCleaned = _stripTags(reasoning);
       if (reasoningCleaned != reasoning) reasoning = reasoningCleaned;
     }
@@ -44,7 +44,22 @@ class ToolMarkupRecovery {
     );
   }
 
+  /// 是否像“工具调用标记泄漏”：必须有 calls 外壳 + 至少一个 invoke，
+  /// 避免把用户/AI 正常讨论标签的文本也误删成工具调用。
+  static bool _looksLikeLeak(String text) {
+    final hasCallsWrapper = RegExp(
+      r'<[^>]*?calls[^>]*>',
+      caseSensitive: false,
+    ).hasMatch(text);
+    final hasInvoke = RegExp(
+      r'<[^>]*?invoke\s+name=',
+      caseSensitive: false,
+    ).hasMatch(text);
+    return hasCallsWrapper && hasInvoke;
+  }
+
   static _Recovered? _recoverFromText(String text) {
+    if (!_looksLikeLeak(text)) return null;
     final spans = <(int, int)>[];
     final calls = <LlmToolCall>[];
     final invokeRe = RegExp(
