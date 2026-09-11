@@ -732,7 +732,8 @@ class QlToolRegistry {
         ),
         ToolDefinition(
           name: 'shell_write_file',
-          description: '写入本地 Debian 文本文件（覆盖），终端和 APP 文件管理看到的是同一份',
+          description:
+              '写入本地 Debian 文本文件（覆盖），终端和 APP 文件管理看到的是同一份。注意：content 只适合中小文件（建议 6KB 以内）；大文件不要塞进这个参数，输出中途很容易截断导致文件坏掉。大文件改用 shell_script 生成，或 shell_exec 用 heredoc/分块追加。',
           parameters: _obj([
             'path',
             'content'

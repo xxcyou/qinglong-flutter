@@ -21,19 +21,30 @@ class ToolMarkupRecovery {
     var reasoning = response.reasoningContent;
 
     final contentRecovered = _recoverFromText(content);
+    var broken = false;
     if (contentRecovered != null) {
       content = contentRecovered.clean;
       calls = [...calls, ...contentRecovered.calls];
+    } else if (_hasIncompleteLeak(content)) {
+      // 只看见开标签、没有闭标签：通常是模型把大段参数写太长，输出被截断。
+      // 这时没法恢复完整调用，至少把半截标签从展示里删掉，并标记 broken，
+      // 让上层要求模型用标准 function call 重发。
+      content = _stripIncompleteLeak(content);
+      broken = true;
     }
 
     if (reasoning.isNotEmpty && _looksLikeLeak(reasoning)) {
       final reasoningCleaned = _stripTags(reasoning);
       if (reasoningCleaned != reasoning) reasoning = reasoningCleaned;
+    } else if (reasoning.isNotEmpty && _hasIncompleteLeak(reasoning)) {
+      reasoning = _stripIncompleteLeak(reasoning);
+      broken = true;
     }
 
     if (content == response.content &&
         reasoning == response.reasoningContent &&
-        calls.length == response.toolCalls.length) {
+        calls.length == response.toolCalls.length &&
+        !broken) {
       return response;
     }
 
@@ -41,6 +52,7 @@ class ToolMarkupRecovery {
       content: content,
       reasoningContent: reasoning,
       toolCalls: calls,
+      brokenToolMarkup: broken,
     );
   }
 
@@ -56,6 +68,39 @@ class ToolMarkupRecovery {
       caseSensitive: false,
     ).hasMatch(text);
     return hasCallsWrapper && hasInvoke;
+  }
+
+  /// 只看到 `<...invoke name=...>` 开标签、没看到闭标签，而且后面跟着参数标签：
+  /// 几乎可以断定是长参数写了一半被截断。删掉半截残块，避免用户看到一堆乱码。
+  static bool _hasIncompleteLeak(String text) {
+    final open = RegExp(
+      r'<[^>]*?invoke\s+name=',
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (open == null) return false;
+    final close = RegExp(
+      r'</[^>]*?invoke[^>]*>',
+      caseSensitive: false,
+    ).firstMatch(text.substring(open.end));
+    if (close != null) return false;
+    return RegExp(
+      r'<[^>]*?parameter\s+name=',
+      caseSensitive: false,
+    ).hasMatch(text.substring(open.end));
+  }
+
+  static String _stripIncompleteLeak(String text) {
+    final open = RegExp(
+      r'<[^>]*?invoke\s+name=',
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (open == null) return text;
+    final close = RegExp(
+      r'</[^>]*?invoke[^>]*>',
+      caseSensitive: false,
+    ).firstMatch(text.substring(open.end));
+    if (close != null) return text;
+    return text.substring(0, open.start);
   }
 
   static _Recovered? _recoverFromText(String text) {
