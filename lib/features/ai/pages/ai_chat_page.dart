@@ -665,7 +665,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                     onDiscard: notifier.discardInterruptedRun,
                   ),
                 QueueStrip(
-                  queue: state.queue,
+                  queue: [
+                    for (final q in state.queue)
+                      if (q.sessionId == state.currentSessionId) q,
+                  ],
                   onReorder: notifier.reorderQueue,
                   onRemove: notifier.dequeue,
                   onInterruptSend: notifier.interruptAndSend,

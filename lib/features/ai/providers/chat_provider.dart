@@ -1927,6 +1927,11 @@ class ChatNotifier extends Notifier<ChatState> {
       pendingPlan: const [],
       liveAgentEvents: const [],
       clearLiveText: true,
+      // 新会话不能带着旧会话的任务清单、排队消息、提问卡片。
+      livePlan: const AgentTaskPlan(),
+      pendingQuestion: null,
+      clearPendingQuestion: true,
+      isLoading: false,
       clearError: true,
       // 新话题是干净的，不能把上一个话题的上下文占用/用量统计带过来。
       estimatedContextTokens: 0,
