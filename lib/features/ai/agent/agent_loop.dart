@@ -214,7 +214,12 @@ class AgentLoop {
   /// 用 75 秒去卡它们只会把正常任务打断。
   static const _slowToolTimeout = Duration(seconds: 300);
 
+  static const _subagentToolTimeout = Duration(minutes: 30);
+
   static Duration _timeoutFor(String name) {
+    if (name == 'task_worker' || name == 'parallel_agents') {
+      return _subagentToolTimeout;
+    }
     const slow = [
       'shell_exec',
       'shell_script',

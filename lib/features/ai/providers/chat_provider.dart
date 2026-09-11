@@ -17,6 +17,7 @@ import '../../panels/providers/panel_list_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../agent/agent_loop.dart';
 import '../agent/agent_team.dart';
+import '../agent/web_search.dart';
 import '../agent/external_tool.dart';
 import '../agent/mcp_gateway.dart';
 import '../../browser/browser_tools.dart';
@@ -930,7 +931,9 @@ class ChatNotifier extends Notifier<ChatState> {
           '拿到真实输出再下结论。',
       '4. 干完直接给结论：做了什么、结果是什么、有什么异常。'
           '不要复述过程细节，主代理只需要结论。',
-      '5. 终端和浏览器是全机共用的，可能要排队等一会儿，这是正常的，别反复重试。',
+      '5. 终端和浏览器是全机共用的，可能要排队等一会儿，这是正常的，别反复重试。'
+          '查公开网页/文档优先用 web_search / collect_info / web_fetch，多个工人别同时操作共享浏览器；'
+          '只有必须登录/过验证/动态渲染时才用 browser_open。',
       '',
       panel == null
           ? '- 青龙面板：未选择，需要面板的工具会失败。'
@@ -2584,6 +2587,9 @@ class ChatNotifier extends Notifier<ChatState> {
         },
       ),
     ];
+
+    // 轻量网络搜索/信息收集：直连 HTTP，不占共享浏览器。
+    tools.addAll(WebSearchTools.build());
 
     // 浏览器内核：过 CF 验证 / 抓包 / 注入脚本都在这一组里。
     tools.addAll(BrowserTools.build());
