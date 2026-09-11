@@ -229,7 +229,7 @@ class OutputPluginService {
         head.contains('@ql-plugin') ||
         head.toLowerCase().contains('qinglong plugin');
     final hasFunction = source.contains(RegExp(
-      r'function\s+(process|transform)\s*\(',
+      r'function\s+(processResponse|beforeSend|process|transform)\s*\(',
     ));
     if (!recognized || !hasFunction) {
       return ParsedOutputPlugin(
@@ -241,14 +241,14 @@ class OutputPluginService {
     }
     String name = path.split('/').last;
     final nameMatch = RegExp(
-      r'^.*?(?:name|插件名)\s*[:：]\s*(.+?)\s*$',
+      r'^\s*(?://|/\*|\*|#)\s*(?:name|插件名)\s*[:：]\s*(.+?)\s*$',
       multiLine: true,
     ).firstMatch(source);
     if (nameMatch != null) name = nameMatch.group(1)!.trim();
 
     String description = '';
     final descMatch = RegExp(
-      r'^.*?(?:description|描述)\s*[:：]\s*(.+?)\s*$',
+      r'^\s*(?://|/\*|\*|#)\s*(?:description|描述)\s*[:：]\s*(.+?)\s*$',
       multiLine: true,
     ).firstMatch(source);
     if (descMatch != null) description = descMatch.group(1)!.trim();
