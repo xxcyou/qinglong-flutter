@@ -14,6 +14,7 @@ class AiContextChip {
   const AiContextChip({
     required this.label,
     required this.content,
+    this.path,
     this.source = '',
     this.language,
     this.key,
@@ -25,8 +26,12 @@ class AiContextChip {
   /// 展示在输入框上方的短标签，例如「日志 · 任务3」。
   final String label;
 
-  /// 真正拼进提问里的正文。
+  /// 真正拼进提问里的正文。仅在附件没有本地路径时才会把内容塞进上下文。
   final String content;
+
+  /// 附件在本地 Debian 里的路径。非空时上下文只给路径，AI 自己调
+  /// shell_read_file / shell_read_range 读完整文件，不再把内容塞进 prompt。
+  final String? path;
 
   /// 来源模块，写进提示词让 AI 知道用户当时在看什么。
   final String source;
@@ -66,6 +71,11 @@ class AiContextChip {
   /// 拼成提示词里的一段。
   String toPromptBlock() {
     final head = source.isEmpty ? label : '$label（来自$source）';
+    if (path != null && path!.trim().isNotEmpty) {
+      return '--- $head ---\n'
+          '附件路径：$path\n'
+          '（内容未嵌入上下文，请先用 shell_read_file 或 shell_read_range 读取完整附件，再基于内容回答）';
+    }
     final fence = language == null || language!.isEmpty ? '' : language!;
     final note = readOnly ? '\n（只读：用户此刻正在看的内容，只用来分析，不要尝试改写它）' : '';
     return '--- $head ---$note\n```$fence\n${_clip(effectiveContent)}\n```';
@@ -772,20 +782,21 @@ class AiDockNotifier extends Notifier<AiDockState> {
     bool truncated = false,
     bool open = true,
   }) {
-    final label = truncated ? '$name（已截断）' : name;
+    // 附件只给路径，不再把正文塞进上下文（也永远不会“截断”）。
+    // AI 需要内容时会自己 shell_read_file 读完整文件。
     push(
       AiContextChip(
-        label: label,
-        content: content,
-        source: '本地文件 $path',
-        language: language,
+        label: name,
+        content: '',
+        path: path,
+        source: '本地文件',
         key: 'file:$path',
       ),
       // 在 AI 页加附件时 open=false：那里本来就在聊天界面，
       // 把悬浮窗也弹出来只会挡住它自己。
       open: open,
     );
-    return label;
+    return name;
   }
 
   /// 读剪贴板作为上下文。返回是否成功。
