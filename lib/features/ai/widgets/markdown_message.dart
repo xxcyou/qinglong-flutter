@@ -1,7 +1,13 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+
+import '../../../shared/image_preview_overlay.dart';
 import '../../../shared/mono_text.dart';
+import '../models/ai_message.dart';
 
 /// AI 回复的 Markdown 渲染：表格、代码块、列表都能正常显示，
 /// 代码块可长按复制。用户消息仍用纯文本，避免把用户输入当标记解析。
@@ -25,6 +31,7 @@ class MarkdownMessage extends StatelessWidget {
     return MarkdownBody(
       data: text,
       selectable: true,
+      imageBuilder: (uri, title, alt) => _MarkdownImage(uri: uri, alt: alt),
       onTapLink: (_, href, __) {
         if (href != null) Clipboard.setData(ClipboardData(text: href));
       },
@@ -68,6 +75,112 @@ class MarkdownMessage extends StatelessWidget {
         horizontalRuleDecoration: BoxDecoration(
           border: Border(top: BorderSide(color: scheme.outlineVariant)),
         ),
+      ),
+    );
+  }
+}
+
+class _MarkdownImage extends StatefulWidget {
+  const _MarkdownImage({required this.uri, this.alt});
+
+  final Uri uri;
+  final String? alt;
+
+  @override
+  State<_MarkdownImage> createState() => _MarkdownImageState();
+}
+
+class _MarkdownImageState extends State<_MarkdownImage> {
+  bool _loading = false;
+
+  Future<String> _dataUriForRemote() async {
+    final client = HttpClient();
+    try {
+      final req =
+          await client.getUrl(widget.uri).timeout(const Duration(seconds: 15));
+      final res = await req.close().timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200) {
+        throw HttpException('HTTP ${res.statusCode}');
+      }
+      final bytes = await res.fold<List<int>>(
+        <int>[],
+        (all, chunk) => all..addAll(chunk),
+      );
+      final ct = res.headers.contentType?.mimeType ?? _mimeFor(widget.uri);
+      return 'data:$ct;base64,${base64Encode(bytes)}';
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  static String _mimeFor(Uri uri) {
+    final path = uri.path.toLowerCase();
+    if (path.endsWith('.png') || path.endsWith('.apng')) return 'image/png';
+    if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return 'image/jpeg';
+    if (path.endsWith('.webp')) return 'image/webp';
+    if (path.endsWith('.gif')) return 'image/gif';
+    if (path.endsWith('.bmp')) return 'image/bmp';
+    return 'image/png';
+  }
+
+  Widget _display() {
+    final uri = widget.uri.toString();
+    if (widget.uri.scheme == 'data') {
+      return Image.memory(
+        base64Decode(
+            uri.contains(',') ? uri.substring(uri.indexOf(',') + 1) : uri),
+        fit: BoxFit.contain,
+        errorBuilder: (_, e, __) => const Icon(Icons.broken_image_outlined),
+      );
+    }
+    return Image.network(
+      uri,
+      fit: BoxFit.contain,
+      errorBuilder: (_, e, __) => const Icon(Icons.broken_image_outlined),
+    );
+  }
+
+  Future<void> _openPreview() async {
+    try {
+      final dataUri = widget.uri.scheme == 'data'
+          ? widget.uri.toString()
+          : (_loading ? null : await _dataUriForRemote());
+      if (!mounted) return;
+      if (dataUri == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('图片加载中，稍等一下再点')),
+        );
+        return;
+      }
+      await ImagePreviewOverlay.show(
+        context,
+        AiImageAttachment(
+          name: widget.alt ?? 'markdown_image',
+          mime: _mimeFor(widget.uri),
+          dataUri: dataUri,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('图片预览失败：$e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        if (_loading) return;
+        setState(() => _loading = true);
+        _openPreview().whenComplete(() {
+          if (mounted) setState(() => _loading = false);
+        });
+      },
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 260, maxHeight: 260),
+        child: _display(),
       ),
     );
   }

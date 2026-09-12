@@ -738,6 +738,66 @@ class BrowserTools {
         },
       ),
       ExternalTool(
+        name: 'browser_jumps',
+        description: '查看当前被拦截、等待用户/AI 决定的外部跳转请求。'
+            '网页试图跳到微信/QQ/支付宝/intent:// 等外部应用时会被拦下，'
+            '不会直接打开。用户可以弹窗确认；AI 看到有请求且用户要求时，'
+            '可用 browser_jump 允许或拒绝。',
+        parameters: obj([], {}),
+        origin: origin,
+        invoke: (args) async {
+          final list = engine.pendingExternalJumps.value;
+          if (list.isEmpty) {
+            return '当前没有待处理的外部跳转请求。';
+          }
+          return [
+            '共 ${list.length} 个待处理外部跳转：',
+            for (final r in list)
+              '${r.id} | ${r.url}'
+                  '${(r.sourceUrl ?? '').isEmpty ? '' : '（来自 ${r.sourceUrl}）'}'
+                  ' | ${r.createdAt.toIso8601String()}',
+            '',
+            '用 browser_jump 传 id 和 action=allow/deny 决定。',
+          ].join('\n');
+        },
+      ),
+      ExternalTool(
+        name: 'browser_jump',
+        description: '允许或拒绝一条被拦截的外部跳转请求。'
+            '第三方登录（QQ/微信/支付宝授权）通常应该 allow；'
+            '来历不明的下载页/打开其它 App 的流氓跳转应该 deny。',
+        parameters: obj([
+          'id',
+          'action'
+        ], {
+          'id': {
+            'type': 'string',
+            'description': '外部跳转请求 id，从 browser_jumps 里拿',
+          },
+          'action': {
+            'type': 'string',
+            'enum': ['allow', 'deny'],
+            'description': 'allow=允许系统打开该外部链接；deny=取消这次跳转',
+          },
+        }),
+        origin: origin,
+        invoke: (args) async {
+          final id = args['id']?.toString().trim() ?? '';
+          final action = args['action']?.toString().trim() ?? '';
+          if (id.isEmpty || (action != 'allow' && action != 'deny')) {
+            return '参数不对：需要 id（browser_jumps 里看）和 action=allow/deny。';
+          }
+          final ok = await engine.resolveExternalJump(
+            id,
+            allow: action == 'allow',
+          );
+          if (!ok) return '没有找到 id=$id 的待处理跳转（可能已被处理）。';
+          return action == 'allow'
+              ? '已允许跳转：$id，尝试交给系统打开。'
+              : '已拒绝跳转：$id，网页不会被拉起。';
+        },
+      ),
+      ExternalTool(
         name: 'browser_wait_user',
         description: '把浏览器亮给用户，等他手动处理完再继续——遇到 Cloudflare 人机验证、'
             '滑块、扫码登录、短信验证码时用它。调用后会挂起，直到用户点"我处理好了"。'
@@ -790,6 +850,9 @@ class BrowserTools {
           '所以他点完验证你立刻就能用上那张票。AI 页右上角的地球图标也能打开它。',
       '- 遇到登录墙 / Cloudflare / 滑块 / 短信码：不要试图自己破。'
           '调 browser_wait_user 亮出窗口请用户点一下就行——那只是个网页，没有专门的验证组件。',
+      '- 网页要跳到外部 App（微信/QQ/支付宝/下载 App 等）会被拦下并弹确认框。'
+          '这是第三方登录时用 browser_jumps 看请求，再用 browser_jump 传 '
+          'id 和 action=allow 放行；不确定或像流氓下载就 action=deny 拒绝。',
       '- 典型流程：browser_open 打开 → 要登录/过验证就 browser_wait_user 请用户操作 '
           '→ 回来 browser_read 读正文、browser_capture 看页面调了哪些接口 '
           '→ browser_fetch 直接调接口拿 JSON（Cookie 自动带，含 HttpOnly 的票）。',

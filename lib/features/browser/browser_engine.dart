@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
@@ -34,6 +35,21 @@ import '../../shared/float_stack.dart';
 ///
 /// 生命周期：整个 APP 一个实例（单例）。WebView 部件常驻挂在全局浏览器宿主
 /// 里，隐藏时挪到屏幕外而不是卸载——卸载会丢掉登录态和 CF 票，那就白验证了。
+/// 一次被拦截的外部跳转请求（微信/QQ/支付宝/intent:// 等）。
+class ExternalJumpRequest {
+  ExternalJumpRequest({
+    required this.id,
+    required this.url,
+    this.sourceUrl,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String url;
+  final String? sourceUrl;
+  final DateTime createdAt;
+}
+
 class BrowserEngine {
   BrowserEngine._();
 
@@ -56,6 +72,17 @@ class BrowserEngine {
 
   /// AI 请用户接手时的提示语（例如"请完成人机验证"）。空 = 没在等。
   final ValueNotifier<String> waitingHint = ValueNotifier('');
+
+  /// 被拦截在 WebView 里的外部跳转请求（微信/QQ/支付宝/intent://…）。
+  /// 有请求时会弹确认框；AI 也可以经 browser_jump 工具允许/拒绝。
+  final ValueNotifier<List<ExternalJumpRequest>> pendingExternalJumps =
+      ValueNotifier([]);
+
+  /// 宿主注册的“外部跳转确认框”回调，返回是否允许。
+  Future<bool> Function(ExternalJumpRequest request)? externalJumpPrompt;
+
+  bool _promptingJump = false;
+  int _jumpSeq = 0;
 
   /// 有没有上一页：界面上的返回键靠它决定灰不灰。
   final ValueNotifier<bool> canGoBack = ValueNotifier(false);
@@ -87,6 +114,27 @@ class BrowserEngine {
       ..addJavaScriptChannel('QLBridge', onMessageReceived: _onBridge)
       ..setNavigationDelegate(
         NavigationDelegate(
+          onNavigationRequest: (request) async {
+            if (!request.isMainFrame) return NavigationDecision.navigate;
+            final uri = Uri.tryParse(request.url);
+            if (uri == null) return NavigationDecision.prevent;
+            final scheme = uri.scheme.toLowerCase();
+            // 普通网页/本地文件照常放行；外部协议（微信/QQ/支付宝/intent/market…）
+            // 全部拦下来，先经过确认框，防止网页偷偷拉起其它 App 或下载。
+            if (scheme == 'http' ||
+                scheme == 'https' ||
+                scheme == 'about' ||
+                scheme == 'data' ||
+                scheme == 'javascript' ||
+                scheme == 'file' ||
+                scheme == 'blob') {
+              return NavigationDecision.navigate;
+            }
+            return interceptExternalJump(
+              request.url,
+              sourceUrl: currentUrl.value,
+            );
+          },
           onPageStarted: (url) {
             loading.value = true;
             currentUrl.value = url;
@@ -1169,6 +1217,86 @@ return JSON.stringify({
     waitingHint.value = '';
     if (completer != null && !completer.isCompleted) {
       completer.complete(note.isEmpty ? '用户已确认处理完毕。' : note);
+    }
+  }
+
+  // ------------------------------------------------------------ 外部跳转拦截
+
+  /// 拦截一次外部跳转（非 http/https，或明确的外部协议）。
+  ///
+  /// 返回 prevent：网页本身不再加载这个地址，先等用户/AI 决定是否放行。
+  Future<NavigationDecision> interceptExternalJump(
+    String url, {
+    String? sourceUrl,
+  }) async {
+    if (url.isEmpty) return NavigationDecision.prevent;
+    final req = ExternalJumpRequest(
+      id: 'jump${++_jumpSeq}',
+      url: url,
+      sourceUrl: sourceUrl ?? currentUrl.value,
+      createdAt: DateTime.now(),
+    );
+    pendingExternalJumps.value = [...pendingExternalJumps.value, req];
+    _pumpExternalJumpPrompt();
+    return NavigationDecision.prevent;
+  }
+
+  /// AI/用户决定允许还是拒绝一次外部跳转。
+  ///
+  /// 返回是否处理到了（id 存在）。允许时会尝试用系统能力打开该外部链接。
+  Future<bool> resolveExternalJump(
+    String id, {
+    required bool allow,
+  }) async {
+    final list = pendingExternalJumps.value;
+    final index = list.indexWhere((r) => r.id == id);
+    if (index < 0) return false;
+    final req = list[index];
+    pendingExternalJumps.value = [
+      for (var i = 0; i < list.length; i++)
+        if (i != index) list[i],
+    ];
+    if (allow) {
+      final uri = Uri.tryParse(req.url);
+      bool opened = false;
+      if (uri != null) {
+        try {
+          final can = await canLaunchUrl(uri);
+          if (can) {
+            opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+          }
+        } catch (_) {
+          opened = false;
+        }
+      }
+      if (!opened) {
+        // 打不开也把这条从队列里清了：反复弹没意义。
+        return true;
+      }
+    }
+    return true;
+  }
+
+  Future<void> _pumpExternalJumpPrompt() async {
+    if (_promptingJump || pendingExternalJumps.value.isEmpty) return;
+    _promptingJump = true;
+    try {
+      final req = pendingExternalJumps.value.first;
+      final list = pendingExternalJumps.value;
+      // AI 可能已经先把这条处理掉了（browser_jump 工具），就不弹第二次。
+      if (!list.any((r) => r.id == req.id)) return;
+      final prompt = externalJumpPrompt;
+      final allow = prompt == null ? false : await prompt(req);
+      if (pendingExternalJumps.value.any((r) => r.id == req.id)) {
+        await resolveExternalJump(req.id, allow: allow);
+      } else {
+        // AI 已经在弹窗期间处理过了，什么都不做。
+      }
+    } finally {
+      _promptingJump = false;
+      if (pendingExternalJumps.value.isNotEmpty) {
+        unawaited(_pumpExternalJumpPrompt());
+      }
     }
   }
 

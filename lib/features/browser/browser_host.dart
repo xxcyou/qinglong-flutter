@@ -89,6 +89,7 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
       language: languageForPath('hook.js'),
       languageName: languageNameForPath('hook.js'),
     );
+    _engine.externalJumpPrompt = _promptExternalJump;
     // 接管系统返回键。
     //
     // 浏览器窗口挂在路由 Navigator **之上**，不属于任何 route，所以 PopScope
@@ -100,6 +101,7 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _engine.externalJumpPrompt = null;
     WidgetsBinding.instance.removeObserver(this);
     _detachBus();
     _urlController.dispose();
@@ -138,6 +140,59 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     await _engine.persist();
     _engine.hide();
     return true;
+  }
+
+  Future<bool> _promptExternalJump(ExternalJumpRequest req) async {
+    final ctx = appNavigatorKey.currentContext;
+    if (ctx == null) return false;
+    final allow = await showDialog<bool>(
+      context: ctx,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('外部跳转确认'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('网页想跳到外部链接：'),
+              const SizedBox(height: 8),
+              SelectableText(
+                req.url,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontFamily: 'monospace',
+                  color: Colors.black87,
+                ),
+              ),
+              if ((req.sourceUrl ?? '').isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  '来源页面：${req.sourceUrl}',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
+              const SizedBox(height: 10),
+              const Text(
+                '可能是第三方登录（QQ/微信/支付宝），也可能是流氓下载/拉起其它 App。'
+                '确认是你要的操作再允许。',
+                style: TextStyle(fontSize: 12.5),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('允许跳转'),
+          ),
+        ],
+      ),
+    );
+    return allow ?? false;
   }
 
   @override
