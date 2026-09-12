@@ -363,7 +363,7 @@ DSHTheme.clear();
 ```
 
 ## 常用字段
-- id/imagePath/icon/text/x/y/width/height/color/animation/fontSize/speechTail。
+- id/imagePath/icon/text/x/y/width/height/color/animation/fit/fontSize/speechTail。
 - 图片路径不要写死包 id，用 `window.DSH_PACKAGE_ROOT + '/image/elements/x.png'`。
 
 ## 标准套路

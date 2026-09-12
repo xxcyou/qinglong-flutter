@@ -77,6 +77,7 @@ class ThemeEffect {
     this.height = 80,
     this.color = const Color(0xFFFF9EC4),
     this.animation = 'none',
+    this.fit = 'contain',
     this.fontSize = 14,
     this.speechTail = false,
   });
@@ -98,6 +99,9 @@ class ThemeEffect {
 
   /// none / float / bounce / spin
   final String animation;
+
+  /// contain / fill / cover
+  final String fit;
   final double fontSize;
   final bool speechTail;
 
@@ -112,6 +116,7 @@ class ThemeEffect {
         'height': height,
         'color': color.toARGB32(),
         'animation': animation,
+        'fit': fit,
         'fontSize': fontSize,
         'speechTail': speechTail,
       };
@@ -127,6 +132,10 @@ class ThemeEffectsController extends ChangeNotifier {
   /// 当前激活主题包 id，导入后实际包目录会变成 pkgxxxx。
   /// 用于把主题包里写死的旧包路径修正到当前包，以及解析相对图片路径。
   String? currentPackageId;
+
+  /// 根 Overlay 自己的全局原点。如果 Overlay 和组件锚点不在同一个坐标原点，
+  /// 渲染时把特效坐标减去这个偏移量，保证位置对齐。
+  Offset overlayOffset = Offset.zero;
 
   final Map<String, ThemeEffect> _effects = {};
 
@@ -172,6 +181,12 @@ class ThemeEffectsController extends ChangeNotifier {
       }
     }
     return direct;
+  }
+
+  void updateOverlayOffset(Offset offset) {
+    if (overlayOffset == offset) return;
+    overlayOffset = offset;
+    notifyListeners();
   }
 
   void upsert(ThemeEffect effect) {
@@ -224,6 +239,7 @@ class ThemeEffectBridge {
       height: (map['height'] as num?)?.toDouble() ?? 80,
       color: _color(map['color']?.toString()) ?? const Color(0xFFFF9EC4),
       animation: map['animation']?.toString() ?? 'none',
+      fit: map['fit']?.toString() ?? 'contain',
       fontSize: (map['fontSize'] as num?)?.toDouble() ?? 14,
       speechTail: map['speechTail'] == true,
     );
@@ -293,7 +309,29 @@ class _ThemeEffectsOverlayState extends State<ThemeEffectsOverlay> {
   Widget build(BuildContext context) => const SizedBox.shrink();
 }
 
-class _ThemeOverlayContent extends StatelessWidget {
+class _ThemeOverlayContent extends StatefulWidget {
+  @override
+  State<_ThemeOverlayContent> createState() => _ThemeOverlayContentState();
+}
+
+class _ThemeOverlayContentState extends State<_ThemeOverlayContent> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _measureOrigin());
+  }
+
+  void _measureOrigin() {
+    if (!mounted) return;
+    final render = context.findRenderObject();
+    if (render is RenderBox && render.attached) {
+      final origin = render.localToGlobal(Offset.zero);
+      if (origin != ThemeEffectsController.instance.overlayOffset) {
+        ThemeEffectsController.instance.updateOverlayOffset(origin);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -301,13 +339,14 @@ class _ThemeOverlayContent extends StatelessWidget {
       builder: (context, _) {
         final effects = ThemeEffectsController.instance.effects;
         if (effects.isEmpty) return const SizedBox.expand();
+        final origin = ThemeEffectsController.instance.overlayOffset;
         return Stack(
           clipBehavior: Clip.none,
           children: [
             for (final e in effects)
               Positioned(
-                left: e.x,
-                top: e.y,
+                left: e.x - origin.dx,
+                top: e.y - origin.dy,
                 width: e.width,
                 height: e.height,
                 child: _EffectWidget(effect: e),
@@ -362,7 +401,11 @@ class _EffectWidgetState extends State<_EffectWidget>
           if (host.isNotEmpty) {
             return Image.file(
               File(host),
-              fit: BoxFit.contain,
+              fit: e.fit == 'fill'
+                  ? BoxFit.fill
+                  : e.fit == 'cover'
+                      ? BoxFit.cover
+                      : BoxFit.contain,
               errorBuilder: (_, __, ___) => _iconOrText(e),
             );
           }
