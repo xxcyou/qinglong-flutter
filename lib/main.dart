@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app.dart';
+import 'core/cache/cache_cleaner.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,6 +23,8 @@ Future<void> main() async {
       systemNavigationBarContrastEnforced: false,
     ),
   );
+  // 缓存专用目录保洁：清 >30 天旧文件，超限按旧数据优先清理。
+  unawaited(CacheCleaner.run());
   // P0: 设置与面板列表在 QingLongApp.initState 中异步加载，避免阻塞首帧。
   runApp(const ProviderScope(child: QingLongApp()));
 }

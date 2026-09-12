@@ -779,6 +779,7 @@ class ProotBridge(private val context: Context) {
             "/workspace" to { workspaceDir() },
             "/home/coomi" to { homeDir() },
             "/opt/coomi-dev" to { buildKitDir() },
+            "/cache" to { context.cacheDir.apply { mkdirs() } },
             "/tmp" to { tmpDir() },
             // rootfs 根：装好 Runtime 后可以一路浏览到 /etc、/usr、/var，
             // 用户要"管理到根目录级别"就是这个。没装则不暴露。

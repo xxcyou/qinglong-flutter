@@ -32,7 +32,13 @@ class ShellFilesState {
   const ShellFilesState({
     this.scope = FileScope.shell,
     this.path = '/workspace',
-    this.roots = const ['/workspace', '/home/coomi', '/opt/coomi-dev', '/tmp'],
+    this.roots = const [
+      '/workspace',
+      '/home/coomi',
+      '/opt/coomi-dev',
+      '/cache',
+      '/tmp'
+    ],
     this.rootLabels = const [],
     this.entries = const [],
     this.loading = false,

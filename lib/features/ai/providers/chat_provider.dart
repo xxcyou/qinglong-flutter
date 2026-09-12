@@ -2744,12 +2744,12 @@ class ChatNotifier extends Notifier<ChatState> {
     final serial = args['serial']?.toString().trim() ?? '';
     final bridge = ProotBridge();
     final stamp = DateTime.now().millisecondsSinceEpoch;
-    final out = '/workspace/.ai_screenshots/shot_$stamp.png';
+    final out = '/cache/ai_screenshots/shot_$stamp.png';
     final adb = serial.isNotEmpty
         ? 'adb -s ${_quote(serial)} exec-out screencap -p'
         : 'adb exec-out screencap -p';
     final result = await bridge.exec(
-      command: 'mkdir -p /workspace/.ai_screenshots && $adb > ${_quote(out)}',
+      command: 'mkdir -p /cache/ai_screenshots && $adb > ${_quote(out)}',
       timeoutSeconds: 60,
     );
     if (result.exitCode != 0) {
