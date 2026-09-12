@@ -938,9 +938,10 @@ class ChatNotifier extends Notifier<ChatState> {
         '- 图片：用户发来图片时不会直接把图像发给你，而是带着“用户发来图片：路径”标注；'
         '你需要调用 image_recognize 工具（传 path/scope，可带 question/focus）来识别图片内容，'
         '然后把识别结果作为回答依据。'
-        '需要截图时用 browser_screenshot（内置浏览器）或 shell/adb 命令生成图片文件；'
-        '截图工具只返回 path/scope。要显示到聊天给用户看，调用 show_image 传 path/scope；'
-        '支持图片的主模型会直接看到图片，不支持时用 image_recognize 识别。',
+        '需要截图时用 browser_screenshot（内置浏览器）或 shell/adb 命令生成图片；'
+        '得到文件路径就传 path/scope，得到 base64 编码图片就直接传 base64。'
+        '要显示到聊天给用户看，调用 show_image 传 path 或 base64；'
+        '支持图片的主模型会直接看到图片，不支持时用 image_recognize 传同样的 path/base64 识别。',
       );
     // 用户开着哪个代码编辑器：直接决定 editor_* 该往哪写，必须实时。
     final editorState = EditorTools.promptState();
@@ -2662,14 +2663,37 @@ class ChatNotifier extends Notifier<ChatState> {
     final scope = args['scope']?.toString().trim() == 'app' ? 'app' : 'shell';
     final question = args['question']?.toString().trim() ?? '';
     final focus = args['focus']?.toString().trim() ?? '';
-    if (path.isEmpty) {
-      return '缺少图片路径。请从用户消息里的“用户发来图片：…”取 path。';
-    }
+    final rawBase64 = (args['base64'] ?? args['data'] ?? '').toString().trim();
+    late List<int> bytes;
+    late String mime;
     try {
-      final bridge = ProotBridge();
-      final host = await bridge.hostPath(path: path, scope: scope);
-      final bytes = await File(host).readAsBytes();
-      if (bytes.isEmpty) return '图片文件为空：$path';
+      if (path.isNotEmpty) {
+        final bridge = ProotBridge();
+        final host = await bridge.hostPath(path: path, scope: scope);
+        bytes = await File(host).readAsBytes();
+        if (bytes.isEmpty) return '图片文件为空：$path';
+        mime = _guessImageMime(path);
+      } else if (rawBase64.isNotEmpty) {
+        String data = rawBase64;
+        mime = 'image/png';
+        if (data.startsWith('data:') && data.contains(',')) {
+          final header = data.substring(0, data.indexOf(','));
+          final comma = header.indexOf(';');
+          if (comma > 5) {
+            final m = header.substring(5, comma).trim();
+            if (m.isNotEmpty) mime = m;
+          }
+          data = data.substring(data.indexOf(',') + 1);
+        }
+        try {
+          bytes = base64Decode(data);
+        } catch (e) {
+          return 'base64 图片解码失败：$e';
+        }
+        if (bytes.isEmpty) return 'base64 图片内容为空。';
+      } else {
+        return '缺少图片：传 path（文件路径）或 base64（截图命令返回的 base64 编码图片）都可以。';
+      }
       final registry = ref.read(llmRegistryProvider);
       final visionModel = registry.visionModel.trim();
       if (registry.visionProviderId.isEmpty || visionModel.isEmpty) {
@@ -2682,7 +2706,6 @@ class ChatNotifier extends Notifier<ChatState> {
       final cfg = await ref
           .read(llmRegistryProvider.notifier)
           .configFor(registry.visionProviderId, model: visionModel);
-      final mime = _guessImageMime(path);
       final String prompt;
       if (focus.isNotEmpty && question.isNotEmpty) {
         prompt = '请重点观察图片中的「$focus」，并结合用户的问题回答：$question';
@@ -2789,18 +2812,48 @@ class ChatNotifier extends Notifier<ChatState> {
     String path,
     String scope, {
     String? name,
+    String? base64,
+    String? mime,
   }) async {
+    final rawBase64 = (base64 ?? '').trim();
+    if (rawBase64.isNotEmpty) {
+      String data = rawBase64;
+      String effectiveMime = mime ?? 'image/png';
+      if (data.startsWith('data:') && data.contains(',')) {
+        final header = data.substring(0, data.indexOf(','));
+        final semi = header.indexOf(';');
+        if (semi > 5) {
+          final m = header.substring(5, semi).trim();
+          if (m.isNotEmpty) effectiveMime = m;
+        }
+        data = data.substring(data.indexOf(',') + 1);
+      }
+      final List<int> bytes;
+      try {
+        bytes = base64Decode(data);
+      } catch (e) {
+        return null;
+      }
+      if (bytes.isEmpty) return null;
+      return AiImageAttachment(
+        name: (name == null || name.trim().isEmpty)
+            ? 'base64_image.png'
+            : name.trim(),
+        mime: effectiveMime,
+        dataUri: 'data:$effectiveMime;base64,${base64Encode(bytes)}',
+      );
+    }
     final bridge = ProotBridge();
     final host = await bridge.hostPath(path: path, scope: scope);
     final bytes = await File(host).readAsBytes();
     if (bytes.isEmpty) return null;
-    final mime = _guessImageMime(path);
+    final effectiveMime = mime ?? _guessImageMime(path);
     return AiImageAttachment(
       name: (name == null || name.trim().isEmpty)
           ? path.split('/').last
           : name.trim(),
-      mime: mime,
-      dataUri: 'data:$mime;base64,${base64Encode(bytes)}',
+      mime: effectiveMime,
+      dataUri: 'data:$effectiveMime;base64,${base64Encode(bytes)}',
       path: path,
       scope: scope,
     );
@@ -2824,18 +2877,25 @@ class ChatNotifier extends Notifier<ChatState> {
       if (includeImageTool)
         ExternalTool(
           name: 'image_recognize',
-          description: '识别用户发来的图片/截图。当会话正文里有“用户发来图片：…”这样的标注，'
-              '或者用户问“图上是什么/图片里写了什么/识别这张图”时，调用这个工具。'
-              '把标注里的 path 和 scope 传进来，可带 focus 指定重点观察的位置/细节，'
-              '或带 question 指定要问图片的具体问题。',
+          description: '识别用户发来的图片/截图。传 path+scope（文件路径）或 base64（截图命令'
+              '直接返回的 base64 编码图片）都可以。用户问“图上是什么/图片里写了什么/识别这张图”时调用；'
+              '可带 focus 指定重点观察位置/细节，或带 question 指定具体问题。',
           parameters: const {
             'type': 'object',
             'properties': {
-              'path': {'type': 'string', 'description': '图片路径，来自“用户发来图片：…”标注'},
+              'path': {
+                'type': 'string',
+                'description': '图片路径，来自“用户发来图片：…”标注或截图工具返回'
+              },
               'scope': {
                 'type': 'string',
                 'enum': ['shell', 'app'],
                 'description': '图片所在侧，默认 shell'
+              },
+              'base64': {
+                'type': 'string',
+                'description':
+                    'base64 编码图片（可带 data:image/png;base64, 前缀；不带则按 PNG 处理）'
               },
               'focus': {
                 'type': 'string',
@@ -2846,7 +2906,6 @@ class ChatNotifier extends Notifier<ChatState> {
                 'description': '用户想针对图片问的具体问题；不填则让工具概括图片内容'
               },
             },
-            'required': ['path'],
           },
           origin: '图片识别',
           invoke: _recognizeImage,
@@ -2893,20 +2952,31 @@ class ChatNotifier extends Notifier<ChatState> {
       ExternalTool(
         name: 'show_image',
         description: '把一张图片显示到 AI 聊天里，并让 AI 知道这张图。'
-            '适用于任何已经拿到图片路径的场景：浏览器截图、shell/adb 命令生成的截图、'
-            '用户发来的本地图片等。'
+            '适用于任何已经拿到图片的场景：浏览器截图、shell/adb 命令生成的截图（可能是 base64）、'
+            '用户发来的本地图片等。传 path（文件）或 base64（编码图片）都可以。'
             '支持图片的主模型会直接看到图片；不支持的模型仍可配合 image_recognize 识别。',
         parameters: const {
           'type': 'object',
           'properties': {
             'path': {
               'type': 'string',
-              'description': '图片路径，shell 侧如 /workspace/shot.png，app 侧填宿主绝对路径',
+              'description': '图片路径，shell 侧如 /workspace/shot.png，app 侧填宿主绝对路径；'
+                  '传了 base64 就不用传',
             },
             'scope': {
               'type': 'string',
               'enum': ['shell', 'app'],
               'description': '图片所在侧，默认 shell',
+            },
+            'base64': {
+              'type': 'string',
+              'description':
+                  'base64 编码图片（可带 data:image/png;base64, 前缀；不带则按 PNG 处理）',
+            },
+            'mime': {
+              'type': 'string',
+              'description':
+                  '图片 MIME，如 image/png、image/jpeg；不传自动从 base64 前缀或路径推断',
             },
             'name': {
               'type': 'string',
@@ -2917,7 +2987,6 @@ class ChatNotifier extends Notifier<ChatState> {
               'description': '可选说明，例如“这是刚才 adb 截的设备图”',
             },
           },
-          'required': ['path'],
         },
         origin: '聊天图片',
         invoke: (args) async {
@@ -2926,19 +2995,37 @@ class ChatNotifier extends Notifier<ChatState> {
               args['scope']?.toString().trim() == 'app' ? 'app' : 'shell';
           final name = args['name']?.toString().trim();
           final note = args['note']?.toString().trim() ?? '';
-          if (path.isEmpty) return '缺少图片路径。';
+          final rawBase64 =
+              (args['base64'] ?? args['data'] ?? '').toString().trim();
+          final mime = args['mime']?.toString().trim();
+          if (path.isEmpty && rawBase64.isEmpty) {
+            return '缺少图片：传 path（文件路径）或 base64（截图命令返回的 base64 编码图片）都可以。';
+          }
           try {
-            final img = await _loadImageAttachment(path, scope, name: name);
-            if (img == null) return '图片读取失败或文件为空：$path';
+            final img = await _loadImageAttachment(
+              path,
+              scope,
+              name: name,
+              base64: rawBase64,
+              mime: mime,
+            );
+            if (img == null) {
+              return rawBase64.isNotEmpty
+                  ? 'base64 图片解码失败或内容为空。'
+                  : '图片读取失败或文件为空：$path';
+            }
             _lastToolScreenshot = img;
             _toolScreenshotsBySession
                 .putIfAbsent(state.currentSessionId, () => [])
                 .add(img);
+            final describe = img.path.isNotEmpty
+                ? 'path: ${img.path}\nscope: ${img.scope}'
+                : 'base64: ${rawBase64.length > 120 ? '${rawBase64.substring(0, 120)}…' : rawBase64}';
             return '✅ 图片已显示在聊天里，AI 能看到这张图。\n'
-                'path: ${img.path}\nscope: ${img.scope}'
+                '$describe'
                 '${name == null ? '' : '\nname: $name'}'
                 '${note.isEmpty ? '' : '\n说明：$note'}\n'
-                '如需进一步识别，可调用 image_recognize 传同一 path/scope。';
+                '如需进一步识别，可调用 image_recognize 传上面同样的 path/base64。';
           } catch (e) {
             _lastToolScreenshot = null;
             return '显示图片失败：$e';
