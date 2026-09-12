@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/cache/cache_cleaner.dart';
 import '../../../core/debug/api_debug_log.dart';
+import '../../../core/theme/theme_config.dart';
+import '../../../core/theme/theme_store.dart';
 import '../../../shared/glass_scaffold.dart';
 import '../../../core/llm/llm_registry_provider.dart';
 import '../../ai/floating/ai_dock_provider.dart';
@@ -67,6 +69,8 @@ class SettingsPage extends ConsumerWidget {
               ],
             ),
           ),
+          const SizedBox(height: 8),
+          const _ThemeSchemeCard(),
           const SizedBox(height: 8),
           const SectionLabel('刷新与轮询'),
           _StepperCard(
@@ -431,6 +435,211 @@ class SettingsPage extends ConsumerWidget {
         ThemeMode.light => '亮色',
         ThemeMode.dark => '暗色',
       };
+}
+
+/// 主题方案：显示配色预览点，点击应用，支持导入导出。
+class _ThemeSchemeCard extends ConsumerStatefulWidget {
+  const _ThemeSchemeCard();
+
+  @override
+  ConsumerState<_ThemeSchemeCard> createState() => _ThemeSchemeCardState();
+}
+
+class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
+  Future<void> _importTheme() async {
+    final controller = TextEditingController();
+    final imported = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('导入主题方案'),
+        content: SizedBox(
+          width: 420,
+          child: TextField(
+            controller: controller,
+            maxLines: 12,
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+            decoration: const InputDecoration(
+              hintText:
+                  '粘贴主题 JSON：{"id":"...","name":"...","colors":{...},...}',
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('导入'),
+          ),
+        ],
+      ),
+    );
+    if (imported != true || !mounted) return;
+    try {
+      final theme =
+          await ref.read(themeProvider.notifier).importJson(controller.text);
+      await ref.read(themeProvider.notifier).apply(theme.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已导入并应用主题：${theme.name}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导入失败：$e')),
+      );
+    }
+  }
+
+  Future<void> _exportTheme(ThemeConfig theme) async {
+    final json = ref.read(themeProvider.notifier).exportJson(theme.id);
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('主题方案 JSON - ${theme.name}'),
+        content: SizedBox(
+          width: 420,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              json,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(themeProvider);
+    final notifier = ref.read(themeProvider.notifier);
+    return GlassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.palette_outlined),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  '主题方案',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              TextButton(
+                onPressed: _importTheme,
+                child: const Text('导入'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          for (final theme in state.themes) ...[
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: _ThemePreview(theme: theme),
+              title: Text(
+                theme.name,
+                style:
+                    const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+              subtitle: Text(
+                '${theme.id} · ${theme.isDark ? '暗色' : '亮色'}'
+                '${theme.backgroundImage.isEmpty ? ' · 纯配色' : ' · 背景图'}',
+                style: const TextStyle(fontSize: 11.5),
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (state.activeId == theme.id)
+                    const Icon(Icons.check_circle, color: Colors.green)
+                  else
+                    IconButton(
+                      tooltip: '应用',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => notifier.apply(theme.id),
+                      icon: const Icon(Icons.check_circle_outline),
+                    ),
+                  IconButton(
+                    tooltip: '导出',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _exportTheme(theme),
+                    icon: const Icon(Icons.ios_share),
+                  ),
+                ],
+              ),
+              onTap: () => notifier.apply(theme.id),
+            ),
+            const Divider(height: 1),
+          ],
+          const SizedBox(height: 4),
+          Text(
+            '配置文件：/workspace/.ql_themes/themes.json',
+            style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 主题小预览：一条渐变底 + 几个主色点，不用点开就知道配色倾向。
+class _ThemePreview extends StatelessWidget {
+  const _ThemePreview({required this.theme});
+
+  final ThemeConfig theme;
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = theme.color('primary', const Color(0xFF66BB6A));
+    final accent = theme.color('accent', const Color(0xFF4FC3F7));
+    final surface = theme.color('surface', const Color(0xFF1A1D24));
+    final onSurface = theme.color('onSurface', const Color(0xFFE8EAED));
+    final background = theme.color('background', const Color(0xFF0F1115));
+    final radius = BorderRadius.circular(8);
+    return Container(
+      width: 56,
+      height: 34,
+      decoration: BoxDecoration(
+        borderRadius: radius,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [background, surface, primary.withValues(alpha: 0.55)],
+        ),
+        border: Border.all(
+          color: theme.color('border', Colors.white).withValues(alpha: 0.3),
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _dot(primary),
+          _dot(accent),
+          _dot(onSurface),
+        ],
+      ),
+    );
+  }
+
+  Widget _dot(Color color) => Container(
+        width: 8,
+        height: 8,
+        margin: const EdgeInsets.symmetric(horizontal: 2),
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      );
 }
 
 /// 缓存设置：自动清理开关、保留天数、大小上限、当前占用、手动清空。

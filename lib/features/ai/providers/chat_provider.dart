@@ -8,6 +8,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/cache/cache_cleaner.dart';
 import '../../../core/llm/llm_client.dart';
+import '../../../core/theme/theme_config.dart';
+import '../../../core/theme/theme_store.dart';
 import '../../../core/llm/llm_config_provider.dart';
 import '../../../core/llm/llm_provider.dart';
 import '../../../core/network/error_handler.dart';
@@ -938,7 +940,8 @@ class ChatNotifier extends Notifier<ChatState> {
       ..add('- 写操作确认策略：${_approvalPromptLine()}')
       ..add(
         '- 你可以替用户管理 APP 设置：settings_get/settings_set 查看和修改主题、缓存策略、轮询间隔、调试日志等；'
-        'cache_info/cache_clear 查询/清空缓存；provider_manage 配置 AI 提供商（新增/修改/切换/图片识别模型），'
+        'cache_info/cache_clear 查询/清空缓存；provider_manage 配置 AI 提供商（新增/修改/切换/图片识别模型）；'
+        'theme_manage 生成/应用/导入/导出主题方案（含配色、背景图、玻璃效果），'
         'API Key 会安全保存不会明文回显。',
       )
       ..add(
@@ -3355,6 +3358,125 @@ class ChatNotifier extends Notifier<ChatState> {
           }
 
           return '未知 action：$action（可用 list/add/update/remove/set_active/set_vision）。';
+        },
+      ),
+      ExternalTool(
+        name: 'theme_manage',
+        description: '管理主题方案：列出/应用/导出/导入/新建/删除。'
+            '用户说"换主题/生成个配色/导入主题/导出当前主题/背景图"时用。'
+            '主题配置文件在 /workspace/.ql_themes/themes.json，包含配色表、背景图路径、'
+            '玻璃描边/阴影/圆角/动画等效果配置。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'action': {
+              'type': 'string',
+              'enum': ['list', 'apply', 'get', 'create', 'import', 'remove'],
+              'description':
+                  'list=列出；apply=应用；get/export=导出 JSON；create=生成新方案；import=导入 JSON；remove=删除',
+            },
+            'id': {'type': 'string', 'description': '主题 id，list 返回里带'},
+            'name': {'type': 'string', 'description': 'create 时主题名'},
+            'brightness': {
+              'type': 'string',
+              'enum': ['light', 'dark'],
+              'description': 'create 时亮度，默认 dark'
+            },
+            'background_image': {
+              'type': 'string',
+              'description':
+                  '背景图 guest 路径，如 /workspace/wallpapers/ocean.png；空=纯配色'
+            },
+            'primary': {'type': 'string', 'description': '主色 hex，如 #66BB6A'},
+            'accent': {'type': 'string', 'description': '强调色 hex，如 #4FC3F7'},
+            'background': {'type': 'string', 'description': '背景色 hex'},
+            'on_surface': {'type': 'string', 'description': '正文色 hex'},
+            'config_json': {
+              'type': 'string',
+              'description': 'import 时粘贴的完整主题 JSON'
+            },
+          },
+          'required': ['action'],
+        },
+        origin: '主题方案',
+        invoke: (args) async {
+          final action = args['action']?.toString().trim() ?? '';
+          final id = args['id']?.toString().trim() ?? '';
+          final state = ref.read(themeProvider);
+          final notifier = ref.read(themeProvider.notifier);
+          switch (action) {
+            case 'list':
+              if (state.themes.isEmpty) return '还没有主题方案。';
+              return [
+                '共 ${state.themes.length} 个主题方案：',
+                for (final t in state.themes)
+                  '${t.id} | ${t.name} | ${t.isDark ? '暗色' : '亮色'}'
+                      '${t.backgroundImage.isEmpty ? '' : ' | 背景:${t.backgroundImage}'}'
+                      ' | 主色:${t.colors['primary'] ?? ''}'
+                      ' | 强调:${t.colors['accent'] ?? ''}'
+                      '${t.id == state.activeId ? ' | ⭐当前' : ''}',
+                '',
+                '配置文件：/workspace/.ql_themes/themes.json',
+                '用 theme_manage action=apply 传 id 应用；create 生成新方案；export 导出 JSON。',
+              ].join('\n');
+            case 'apply':
+              if (state.byId(id) == null) return '找不到主题 id=$id。';
+              await notifier.apply(id);
+              return '已应用主题 $id。';
+            case 'get':
+            case 'export':
+              final json = notifier.exportJson(id);
+              if (json.isEmpty) return '找不到主题 id=$id。';
+              return '主题 $id JSON：\n$json';
+            case 'create':
+              final name = args['name']?.toString().trim() ?? '';
+              if (name.isEmpty) return 'create 需要 name。';
+              final brightness =
+                  args['brightness']?.toString().trim() == 'light'
+                      ? 'light'
+                      : 'dark';
+              final stamp = DateTime.now().millisecondsSinceEpoch;
+              final newId = 'theme_$stamp';
+              final colors = {
+                ...ThemeConfig.defaultColorsForBrightness(brightness),
+                if ((args['primary']?.toString().trim() ?? '').isNotEmpty)
+                  'primary': args['primary'].toString().trim(),
+                if ((args['accent']?.toString().trim() ?? '').isNotEmpty)
+                  'accent': args['accent'].toString().trim(),
+                if ((args['background']?.toString().trim() ?? '').isNotEmpty)
+                  'background': args['background'].toString().trim(),
+                if ((args['on_surface']?.toString().trim() ?? '').isNotEmpty)
+                  'onSurface': args['on_surface'].toString().trim(),
+              };
+              final theme = ThemeConfig(
+                id: newId,
+                name: name,
+                brightness: brightness,
+                backgroundImage:
+                    args['background_image']?.toString().trim() ?? '',
+                colors: colors,
+                effects: ThemeConfig.defaultEffects,
+              );
+              await notifier.upsert(theme);
+              await notifier.apply(newId);
+              return '已生成并应用主题：$newId / $name\n'
+                  '导出 JSON：theme_manage action=export id=$newId。';
+            case 'import':
+              final jsonText = args['config_json']?.toString() ?? '';
+              if (jsonText.trim().isEmpty) return 'import 需要 config_json。';
+              try {
+                final theme = await notifier.importJson(jsonText);
+                await notifier.apply(theme.id);
+                return '已导入并应用主题：${theme.name}（${theme.id}）。';
+              } catch (e) {
+                return '主题导入失败：$e';
+              }
+            case 'remove':
+              if (state.byId(id) == null) return '找不到主题 id=$id。';
+              await notifier.remove(id);
+              return '已删除主题 $id。';
+          }
+          return '未知 action：$action（可用 list/apply/get/create/import/remove）。';
         },
       ),
       ...MetaTools.build(

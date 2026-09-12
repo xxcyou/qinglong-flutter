@@ -5,7 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/debug/api_debug_log.dart';
 import 'core/llm/llm_registry_provider.dart';
 import 'core/theme/app_theme.dart';
+import 'core/theme/theme_config.dart';
 import 'core/theme/glass.dart';
+import 'core/theme/theme_store.dart';
 import 'features/ai/floating/ai_dock_overlay.dart';
 import 'features/browser/browser_host.dart';
 import 'features/panels/providers/panel_list_provider.dart';
@@ -30,6 +32,7 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
     });
     Future.microtask(() async {
       await ref.read(settingsProvider.notifier).load();
+      await ref.read(themeProvider.notifier).load();
       ApiDebugLog.enabled = ref.read(settingsProvider).debugLogEnabled;
       // 提供商总表要在设置之后读：第一次启动时它会把老的单份 AI 配置
       // （llmBaseUrl / 那把全局 Key / 模型缓存）迁移成一家提供商，
@@ -43,14 +46,33 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
+    final themeState = ref.watch(themeProvider);
+    final activeTheme = themeState.active;
     final router = ref.watch(routerProvider);
+    final defaultLight = ThemeConfig(
+      id: 'builtin-light',
+      name: '默认亮色',
+      brightness: 'light',
+      colors: ThemeConfig.defaultColorsForBrightness('light'),
+      effects: ThemeConfig.defaultEffects,
+    );
+    final defaultDark = ThemeConfig(
+      id: 'builtin-dark',
+      name: '默认暗色',
+      brightness: 'dark',
+      colors: ThemeConfig.defaultColorsForBrightness('dark'),
+      effects: ThemeConfig.defaultEffects,
+    );
+    final effectiveThemeMode = activeTheme == null
+        ? settings.themeMode
+        : (activeTheme.isDark ? ThemeMode.dark : ThemeMode.light);
 
     return MaterialApp.router(
       title: '青龙面板',
       debugShowCheckedModeBanner: false,
-      themeMode: settings.themeMode,
-      theme: AppTheme.light(),
-      darkTheme: AppTheme.dark(),
+      themeMode: effectiveThemeMode,
+      theme: AppTheme.fromConfig(activeTheme ?? defaultLight),
+      darkTheme: AppTheme.fromConfig(activeTheme ?? defaultDark),
       routerConfig: router,
       // 悬浮 AI 挂在 Navigator 之上：push 出去的脚本页、日志页也能随手问 AI。
       // GlassFlowDriver 包住整棵树：它只旁听指针/滚动事件，用来把背景光斑

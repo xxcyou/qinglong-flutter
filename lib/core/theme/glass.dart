@@ -1,8 +1,12 @@
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+
+import 'theme_visual.dart';
+import '../local_shell/proot_bridge.dart';
 
 /// 液体玻璃视觉基元。
 ///
@@ -143,7 +147,18 @@ class GlassPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final visual = Theme.of(context).extension<ThemeVisual>();
     final br = Glass.radius(radius);
+    final effectiveBlur =
+        blur == Glass.blur && visual != null ? visual.glassBlur : blur;
+    final effectiveShadowY =
+        shadowY == 8 && visual != null ? visual.glassShadowY : shadowY;
+    final effectiveBorderColor = visual?.borderColor ?? Colors.white;
+    final effectiveBorderOpacity = visual?.glassBorderOpacity ??
+        (scheme.brightness == Brightness.dark ? 0.16 : 0.78);
+    final effectiveShadowColor = visual?.shadowColor ?? Colors.black;
+    final effectiveShadowOpacity = visual?.glassShadowOpacity ??
+        (scheme.brightness == Brightness.dark ? 0.42 : 0.14);
     Widget inner = tint == null
         ? _padded(child)
         : DecoratedBox(
@@ -175,7 +190,10 @@ class GlassPanel extends StatelessWidget {
       decoration: BoxDecoration(
         borderRadius: br,
         gradient: Glass.fill(scheme, opacity: opacity),
-        border: Glass.border(scheme, width: borderWidth),
+        border: Border.all(
+          width: borderWidth,
+          color: effectiveBorderColor.withValues(alpha: effectiveBorderOpacity),
+        ),
       ),
       child: inner,
     );
@@ -198,12 +216,29 @@ class GlassPanel extends StatelessWidget {
       margin: margin,
       decoration: BoxDecoration(
         borderRadius: br,
-        boxShadow: Glass.shadow(scheme, y: shadowY),
+        boxShadow: [
+          BoxShadow(
+            color:
+                effectiveShadowColor.withValues(alpha: effectiveShadowOpacity),
+            blurRadius: effectiveShadowY * 2.2,
+            offset: Offset(0, effectiveShadowY),
+          ),
+          BoxShadow(
+            color: scheme.primary.withValues(
+              alpha: scheme.brightness == Brightness.dark ? 0.10 : 0.06,
+            ),
+            blurRadius: effectiveShadowY * 3,
+            spreadRadius: -effectiveShadowY,
+          ),
+        ],
       ),
       child: ClipRRect(
         borderRadius: br,
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+          filter: ImageFilter.blur(
+            sigmaX: effectiveBlur,
+            sigmaY: effectiveBlur,
+          ),
           child: content,
         ),
       ),
@@ -546,33 +581,68 @@ class GlassBackdrop extends StatelessWidget {
     if (_GlassBackdropScope.of(context)) return child;
     final scheme = Theme.of(context).colorScheme;
     final dark = scheme.brightness == Brightness.dark;
+    final visual = Theme.of(context).extension<ThemeVisual>();
+    final bgPath = visual?.config.backgroundImage ?? '';
+    final gradientColors = visual == null
+        ? (dark
+            ? [
+                const Color(0xFF0A1311),
+                const Color(0xFF0F1115),
+                const Color(0xFF0E1A24),
+              ]
+            : [
+                const Color(0xFFD7E7DC),
+                const Color(0xFFEDF3EC),
+                const Color(0xFFD8E3F0),
+              ])
+        : [visual.gradientStart, visual.gradientCenter, visual.gradientEnd];
+    final Widget background = bgPath.isEmpty
+        ? DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: gradientColors,
+              ),
+            ),
+          )
+        : FutureBuilder<String>(
+            future: ProotBridge()
+                .hostPath(path: bgPath, scope: 'shell')
+                .then((host) => host)
+                .catchError((_) => ''),
+            builder: (context, snap) {
+              final host = snap.data ?? '';
+              if (host.isNotEmpty && File(host).existsSync()) {
+                return Image.file(
+                  File(host),
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: gradientColors,
+                      ),
+                    ),
+                  ),
+                );
+              }
+              return DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: gradientColors,
+                  ),
+                ),
+              );
+            },
+          );
     return _GlassBackdropScope(
       child: Stack(
         children: [
-          Positioned.fill(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: dark
-                      ? [
-                          const Color(0xFF0A1311),
-                          scheme.surface,
-                          const Color(0xFF0E1A24),
-                        ]
-                      : [
-                          // 浅色主题的坑：背景和卡片都接近白，玻璃卡就"消失"了
-                          // （实测卡内 239、卡外 233，肉眼分不出边界）。
-                          // 把背景压深、卡片提亮，才有"一块玻璃浮在彩色雾上"。
-                          const Color(0xFFD7E7DC),
-                          const Color(0xFFEDF3EC),
-                          const Color(0xFFD8E3F0),
-                        ],
-                ),
-              ),
-            ),
-          ),
+          Positioned.fill(child: background),
           // 光斑单独一层并且 RepaintBoundary 包住：它每 50ms 重画一次，
           // 不隔离的话整页内容会跟着一起重画。
           Positioned.fill(
