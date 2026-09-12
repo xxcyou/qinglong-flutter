@@ -7,7 +7,6 @@ import 'package:flutter/scheduler.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
-import 'component_effects.dart';
 import 'theme_visual.dart';
 import '../local_shell/proot_bridge.dart';
 
@@ -215,7 +214,7 @@ class GlassPanel extends StatelessWidget {
       );
     }
 
-    final panel = Container(
+    return Container(
       margin: margin,
       decoration: BoxDecoration(
         borderRadius: br,
@@ -245,11 +244,6 @@ class GlassPanel extends StatelessWidget {
           child: content,
         ),
       ),
-    );
-    return ComponentEffectsDecorator(
-      type: 'panel',
-      radius: radius,
-      child: panel,
     );
   }
 

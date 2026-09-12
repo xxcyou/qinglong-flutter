@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../core/theme/component_effects.dart';
 import '../core/theme/glass.dart';
 
 /// 全站统一的页面骨架：全面屏（内容自己延伸到状态栏下）+ 玻璃标题条。
@@ -201,7 +200,7 @@ class GlassCard extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final dark = scheme.brightness == Brightness.dark;
     final br = BorderRadius.circular(radius);
-    final card = Container(
+    return Container(
       decoration: BoxDecoration(
         borderRadius: br,
         // 列表卡也要透：底下那三团流动的光斑要能从卡片里透出来，
@@ -261,11 +260,6 @@ class GlassCard extends StatelessWidget {
           ),
         ],
       ),
-    );
-    return ComponentEffectsDecorator(
-      type: 'card',
-      radius: radius,
-      child: card,
     );
   }
 }
