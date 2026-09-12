@@ -333,6 +333,7 @@ const builtinSkills = <AiSkill>[
 
 ## 原则
 - 高级组件特效用 DSHTheme（见 theme-effect-dev 技能），不要依赖 App 固定效果。
+- DSHTheme 支持：图片/文字特效、paint 组件重绘、styleComponent 真改组件边缘/渐变/发光、interactive 手势互动。
 - 图片路径必须是主题包内 guest 路径。
 ''',
   ),
@@ -360,16 +361,32 @@ DSHTheme.effect({
 DSHTheme.queryComponents({ type: 'panel', callback: function(list) { console.log(list); } });
 DSHTheme.remove('petal_1');
 DSHTheme.clear();
+
+// 真实修改 APP 自带组件（不改坐标、不画覆盖层）
+DSHTheme.styleComponent({
+  page: 'default', type: 'panel', index: 0,
+  style: {
+    borderColor: '#D4AF37', borderWidth: 3,
+    glowColor: '#D4AF37', glowRadius: 14, glowOpacity: 0.8,
+    gradientColors: ['#1a1a2e', '#3a2d0a'], radius: 22
+  }
+});
+
+// 手势互动：默认特效不挡控件，只有 interactive:true 可点击
+window.DSHTheme.onEffect('tap', function(e) { /* e.id */ });
+DSHTheme.effect({ id:'puppet', imagePath: PKG+'/puppet.png', x:10, y:10, width:80, height:80, interactive:true, animation:'bounce' });
 ```
 
 ## 常用字段
-- id/imagePath/icon/text/x/y/width/height/color/animation/fit/interactive/fontSize/speechTail；paint 组件重绘；styleComponent 真实修改组件 style。
+- id/imagePath/icon/text/x/y/width/height/color/animation/fit/interactive/fontSize/speechTail。
+- `paint` 组件重绘：`{type: solid|gradient|radialGradient|glow|stroke|shadow, colors, opacity, borderWidth, radius, cornerRadius, angle}`。
+- `styleComponent` 真实修改组件边缘颜色/宽度/渐变/发光/圆角，支持 page/type/index。
 - 图片路径不要写死包 id，用 `window.DSH_PACKAGE_ROOT + '/image/elements/x.png'`。
 
 ## 标准套路
 1. 落叶：多片 leaf 图，float 动画，定时更新 x/y。
-2. 发光/角标：queryComponents 拿矩形，图片/文字贴角上，发光可用 css filter。
-3. 布偶：布偶图放 image/elements，effect 挂组件上方，bounce 动作；互动 JS 监听触摸并更新气泡。
+2. 发光/渐变/角标：优先用 styleComponent 真改组件，或用 effect.paint 在组件矩形上绘制。
+3. 布偶：布偶图放 image/elements，effect 挂组件上方，bounce 动作；interactive:true + onEffect('tap') 做互动。
 4. 组件背景弹跳：queryComponents 取矩形，JS 每帧限制布偶在矩形内弹跳。
 5. 序号：用返回的 index 精确指定第几个组件，也支持 page/type/index 组合。
 ''',
