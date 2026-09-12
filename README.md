@@ -61,6 +61,7 @@
 - 缓存专用目录 `/cache`：截图、临时文件等非长期数据统一放这里；App 启动自动清理超过 30 天的缓存，超过 200MB 按旧数据优先清理
 - AI 可管理 APP：`settings_get/settings_set` 看/改主题、缓存策略、轮询等；`cache_info/cache_clear` 管缓存；`provider_manage` 配置 AI 提供商（含 API Key 安全保存）
 - 主题方案系统：配置文件 `/workspace/.ql_themes/themes.json`，支持背景图路径、完整配色表、玻璃描边/阴影/圆角/动画效果；设置页带配色点预览；AI 可用 `theme_manage` 生成/应用/导入/导出主题
+- ZIP 主题包：支持含 `theme.json` / `README.md` / `controller.js` / `css/` / `js/` / `image/background/` / `image/elements/` / `audio/` / `方案/` 的压缩包；包内带 `index.html` 时用 WebView 渲染 HTML/CSS/JS/视频动态背景；纯色主题只有脚本和 md，不耗额外渲染
 - 代码编辑器（JetBrains Mono，等宽字体渲染）
 - 三态主题（跟随系统 / 亮 / 暗）
 - 输出整理插件：请求前 hook / 响应后 hook（自定义 JS）

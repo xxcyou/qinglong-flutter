@@ -24,6 +24,7 @@ dependencies:
   flutter_markdown: ^0.6.18
   drift: ^2.13.0
   sqlite3_flutter_libs: ^0.5.20
+  archive: ^3.6.1
   path_provider: ^2.1.1
   file_picker: ^11.0.3
   package_info_plus: ^9.0.1

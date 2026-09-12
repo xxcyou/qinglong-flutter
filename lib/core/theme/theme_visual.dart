@@ -15,6 +15,7 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
     required this.gradientStart,
     required this.gradientCenter,
     required this.gradientEnd,
+    required this.backgroundHtml,
     required this.glassBlur,
     required this.glassBorderOpacity,
     required this.glassShadowY,
@@ -33,6 +34,8 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
   final Color gradientStart;
   final Color gradientCenter;
   final Color gradientEnd;
+
+  final String backgroundHtml;
 
   final double glassBlur;
   final double glassBorderOpacity;
@@ -62,6 +65,7 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
         'gradientEnd',
         dark ? const Color(0xFF0E1A24) : const Color(0xFFD8E3F0),
       ),
+      backgroundHtml: config.backgroundHtml,
       glassBlur: config.effect('glassBlur', 26),
       glassBorderOpacity:
           config.effect('glassBorderOpacity', dark ? 0.16 : 0.78),
@@ -84,6 +88,7 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
     Color? gradientStart,
     Color? gradientCenter,
     Color? gradientEnd,
+    String? backgroundHtml,
     double? glassBlur,
     double? glassBorderOpacity,
     double? glassShadowY,
@@ -101,6 +106,7 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
       gradientStart: gradientStart ?? this.gradientStart,
       gradientCenter: gradientCenter ?? this.gradientCenter,
       gradientEnd: gradientEnd ?? this.gradientEnd,
+      backgroundHtml: backgroundHtml ?? this.backgroundHtml,
       glassBlur: glassBlur ?? this.glassBlur,
       glassBorderOpacity: glassBorderOpacity ?? this.glassBorderOpacity,
       glassShadowY: glassShadowY ?? this.glassShadowY,
@@ -123,6 +129,7 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
       gradientStart: Color.lerp(gradientStart, other.gradientStart, t)!,
       gradientCenter: Color.lerp(gradientCenter, other.gradientCenter, t)!,
       gradientEnd: Color.lerp(gradientEnd, other.gradientEnd, t)!,
+      backgroundHtml: t < 0.5 ? backgroundHtml : other.backgroundHtml,
       glassBlur: glassBlur + (other.glassBlur - glassBlur) * t,
       glassBorderOpacity: glassBorderOpacity +
           (other.glassBorderOpacity - glassBorderOpacity) * t,

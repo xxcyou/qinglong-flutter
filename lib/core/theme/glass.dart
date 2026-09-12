@@ -4,6 +4,7 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 import 'theme_visual.dart';
 import '../local_shell/proot_bridge.dart';
@@ -596,7 +597,8 @@ class GlassBackdrop extends StatelessWidget {
                 const Color(0xFFD8E3F0),
               ])
         : [visual.gradientStart, visual.gradientCenter, visual.gradientEnd];
-    final Widget background = bgPath.isEmpty
+    final bgHtml = visual?.backgroundHtml ?? '';
+    final Widget pureBackground = bgPath.isEmpty
         ? DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -639,6 +641,20 @@ class GlassBackdrop extends StatelessWidget {
               );
             },
           );
+    final Widget background = bgHtml.isNotEmpty
+        ? Stack(
+            fit: StackFit.expand,
+            children: [
+              pureBackground,
+              if (bgHtml.isNotEmpty)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: _WebThemeBackground(htmlPath: bgHtml),
+                  ),
+                ),
+            ],
+          )
+        : pureBackground;
     return _GlassBackdropScope(
       child: Stack(
         children: [
@@ -654,6 +670,49 @@ class GlassBackdrop extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// HTML/CSS/JS 动态主题背景。
+///
+/// 主题包里放了 index.html 时用它：WebView 全屏垫底，Flutter UI 保持透明
+/// 浮在上面，CSS/JS/视频/粒子/落叶都能跑，而且纯色主题没有这个字段 = 不建
+/// WebView，不浪费渲染空间。
+class _WebThemeBackground extends StatefulWidget {
+  const _WebThemeBackground({required this.htmlPath});
+
+  final String htmlPath;
+
+  @override
+  State<_WebThemeBackground> createState() => _WebThemeBackgroundState();
+}
+
+class _WebThemeBackgroundState extends State<_WebThemeBackground> {
+  late final WebViewController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(Colors.transparent);
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final host =
+          await ProotBridge().hostPath(path: widget.htmlPath, scope: 'shell');
+      if (!mounted || host.isEmpty) return;
+      await _controller.loadFile(host);
+    } catch (_) {
+      // HTML 加载失败就留着纯色/渐变兜底，不炸 App。
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return WebViewWidget(controller: _controller);
   }
 }
 

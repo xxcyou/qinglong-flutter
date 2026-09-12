@@ -493,6 +493,63 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
     }
   }
 
+  Future<void> _importZip() async {
+    final controller = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('导入主题 ZIP'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            hintText: '输入 ZIP 包路径，如 /workspace/themes/sakura.zip',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('导入'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      final theme = await ref
+          .read(themeProvider.notifier)
+          .importZip(controller.text.trim());
+      await ref.read(themeProvider.notifier).apply(theme.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已导入 ZIP 主题：${theme.name}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('ZIP 导入失败：$e')),
+      );
+    }
+  }
+
+  Future<void> _exportZip(ThemeConfig theme) async {
+    try {
+      final path = await ref.read(themeProvider.notifier).exportZip(theme.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已导出 ZIP：$path')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('ZIP 导出失败：$e')),
+      );
+    }
+  }
+
   Future<void> _exportTheme(ThemeConfig theme) async {
     final json = ref.read(themeProvider.notifier).exportJson(theme.id);
     await showDialog<void>(
@@ -538,7 +595,11 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
               ),
               TextButton(
                 onPressed: _importTheme,
-                child: const Text('导入'),
+                child: const Text('导入JSON'),
+              ),
+              TextButton(
+                onPressed: _importZip,
+                child: const Text('导入ZIP'),
               ),
             ],
           ),
@@ -571,10 +632,16 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
                       icon: const Icon(Icons.check_circle_outline),
                     ),
                   IconButton(
-                    tooltip: '导出',
+                    tooltip: '导出JSON',
                     visualDensity: VisualDensity.compact,
                     onPressed: () => _exportTheme(theme),
                     icon: const Icon(Icons.ios_share),
+                  ),
+                  IconButton(
+                    tooltip: '导出ZIP',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _exportZip(theme),
+                    icon: const Icon(Icons.archive_outlined),
                   ),
                 ],
               ),

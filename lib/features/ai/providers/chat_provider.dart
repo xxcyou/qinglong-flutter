@@ -3371,9 +3371,18 @@ class ChatNotifier extends Notifier<ChatState> {
           'properties': {
             'action': {
               'type': 'string',
-              'enum': ['list', 'apply', 'get', 'create', 'import', 'remove'],
+              'enum': [
+                'list',
+                'apply',
+                'get',
+                'create',
+                'import',
+                'remove',
+                'import_zip',
+                'export_zip'
+              ],
               'description':
-                  'list=列出；apply=应用；get/export=导出 JSON；create=生成新方案；import=导入 JSON；remove=删除',
+                  'list=列出；apply=应用；get/export=导出 JSON；create=生成新方案；import=导入 JSON；import_zip=从 ZIP 包导入；export_zip=导出 ZIP 包；remove=删除',
             },
             'id': {'type': 'string', 'description': '主题 id，list 返回里带'},
             'name': {'type': 'string', 'description': 'create 时主题名'},
@@ -3394,6 +3403,10 @@ class ChatNotifier extends Notifier<ChatState> {
             'config_json': {
               'type': 'string',
               'description': 'import 时粘贴的完整主题 JSON'
+            },
+            'zip_path': {
+              'type': 'string',
+              'description': 'import_zip/export_zip 用的 ZIP 包 guest 路径'
             },
           },
           'required': ['action'],
@@ -3470,6 +3483,25 @@ class ChatNotifier extends Notifier<ChatState> {
                 return '已导入并应用主题：${theme.name}（${theme.id}）。';
               } catch (e) {
                 return '主题导入失败：$e';
+              }
+            case 'import_zip':
+              final zipPath = args['zip_path']?.toString().trim() ?? '';
+              if (zipPath.isEmpty) return 'import_zip 需要 zip_path。';
+              try {
+                final theme = await notifier.importZip(zipPath);
+                await notifier.apply(theme.id);
+                return '已导入 ZIP 主题并应用：${theme.name}（${theme.id}）\n'
+                    '动态背景：${theme.backgroundHtml.isEmpty ? '无（纯色/静态）' : theme.backgroundHtml}';
+              } catch (e) {
+                return 'ZIP 主题导入失败：$e';
+              }
+            case 'export_zip':
+              if (state.byId(id) == null) return '找不到主题 id=$id。';
+              try {
+                final path = await notifier.exportZip(id);
+                return '已导出主题 ZIP：$path';
+              } catch (e) {
+                return 'ZIP 导出失败：$e';
               }
             case 'remove':
               if (state.byId(id) == null) return '找不到主题 id=$id。';

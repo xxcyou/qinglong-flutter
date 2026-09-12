@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../local_shell/proot_bridge.dart';
@@ -53,6 +55,8 @@ class ThemeState {
 /// JSON 改颜色、改背景图路径、改玻璃效果，改完 App 里一应用就生效。
 class ThemeNotifier extends Notifier<ThemeState> {
   static const configPath = '/workspace/.ql_themes/themes.json';
+  static const packagesRoot = '/workspace/.ql_themes/packages';
+  static const exportsRoot = '/workspace/.ql_themes/exports';
 
   final _bridge = ProotBridge();
   bool _loaded = false;
@@ -161,6 +165,160 @@ class ThemeNotifier extends Notifier<ThemeState> {
     if (state.byId(id) == null) return;
     state = state.copyWith(activeId: id);
     await _save();
+  }
+
+  /// 从 ZIP 主题包导入。zip 内必须包含 theme.json，推荐目录结构：
+  /// theme.json / README.md / controller.js / css/ / js/ / image/background/
+  /// image/elements/ / audio/ / 方案/。有 index.html 会启用 WebView 动态背景。
+  Future<ThemeConfig> importZip(String guestZipPath) async {
+    await _bridge.exec(
+      command: 'mkdir -p $packagesRoot',
+      timeoutSeconds: 20,
+    );
+    final zipHost = await _bridge.hostPath(path: guestZipPath, scope: 'shell');
+    final bytes = await File(zipHost).readAsBytes();
+    final archive = ZipDecoder().decodeBytes(bytes);
+    final themeId = 'pkg${DateTime.now().millisecondsSinceEpoch}';
+    final packageGuest = '$packagesRoot/$themeId';
+    await _bridge.exec(command: 'mkdir -p $packageGuest', timeoutSeconds: 20);
+    final packageHost =
+        await _bridge.hostPath(path: packageGuest, scope: 'shell');
+
+    // 找到 theme.json 并解析。
+    ArchiveFile? configFile;
+    for (final f in archive.files) {
+      final name = f.name.replaceAll('\\', '/');
+      if (f.isFile && name.endsWith('theme.json')) {
+        configFile = f;
+        break;
+      }
+    }
+    if (configFile == null) {
+      throw Exception('ZIP 里找不到 theme.json');
+    }
+    var config = ThemeConfig.fromJson(
+      jsonDecode(utf8.decode(configFile.content as List<int>)),
+    );
+
+    // 解包全部文件。
+    for (final f in archive.files) {
+      if (!f.isFile) continue;
+      final name = f.name.replaceAll('\\', '/');
+      final hostTarget = File('$packageHost/$name');
+      await hostTarget.parent.create(recursive: true);
+      await hostTarget.writeAsBytes(f.content as List<int>, flush: true);
+    }
+
+    // 检测动态 HTML 背景。
+    final htmlRel = archive.files.any((f) =>
+        f.isFile &&
+        (f.name.endsWith('index.html') || f.name.endsWith('/index.htm')));
+    if (htmlRel) {
+      final htmlName = archive.files
+          .firstWhere((f) =>
+              f.isFile &&
+              (f.name.endsWith('index.html') || f.name.endsWith('/index.htm')))
+          .name
+          .replaceAll('\\', '/');
+      config = config.copyWith(
+        id: themeId,
+        name: config.name.isEmpty ? 'ZIP 主题' : config.name,
+        backgroundHtml: '$packageGuest/$htmlName',
+      );
+    } else {
+      // 没有 HTML 就用第一张背景图兜底。
+      final bg = archive.files
+          .where((f) =>
+              f.isFile &&
+              (f.name.contains('background') || f.name.contains('背景')) &&
+              (f.name.endsWith('.png') ||
+                  f.name.endsWith('.jpg') ||
+                  f.name.endsWith('.jpeg') ||
+                  f.name.endsWith('.webp')))
+          .toList();
+      if (bg.isNotEmpty) {
+        final name = bg.first.name.replaceAll('\\', '/');
+        config = config.copyWith(
+          id: themeId,
+          name: config.name.isEmpty ? 'ZIP 主题' : config.name,
+          backgroundImage: '$packageGuest/$name',
+        );
+      } else {
+        config = config.copyWith(
+          id: themeId,
+          name: config.name.isEmpty ? 'ZIP 主题' : config.name,
+        );
+      }
+    }
+    await upsert(config);
+    return config;
+  }
+
+  /// 导出主题为 ZIP 包。返回 guest 路径。
+  ///
+  /// 纯色主题（没有 package 目录）会临时生成最小包：theme.json + README.md
+  /// + controller.js；有动态背景的包会把 packages/<id>/ 整个目录打进去。
+  Future<String> exportZip(String id, {String? outPath}) async {
+    final theme = state.byId(id);
+    if (theme == null) throw Exception('找不到主题 $id');
+    await _bridge.exec(
+      command: 'mkdir -p $exportsRoot',
+      timeoutSeconds: 20,
+    );
+    final safe = _safeName(theme.name.isEmpty ? theme.id : theme.name);
+    final guestOut =
+        outPath?.isNotEmpty == true ? outPath! : '$exportsRoot/$safe.zip';
+    final hostRoot = await _bridge.hostPath(path: exportsRoot, scope: 'shell');
+    final hostOut = File('$hostRoot/$safe.zip');
+
+    // 收集要打包的文件。
+    final files = <String, List<int>>{};
+    final packageGuest = '$packagesRoot/${theme.id}';
+    try {
+      final hostDir =
+          await _bridge.hostPath(path: packageGuest, scope: 'shell');
+      final dir = Directory(hostDir);
+      if (dir.existsSync()) {
+        for (final f in dir.listSync(recursive: true, followLinks: false)) {
+          if (f is File) {
+            files[f.path.substring(hostDir.length + 1)] = f.readAsBytesSync();
+          }
+        }
+      }
+    } catch (_) {
+      // 没有 package 目录 = 纯色/JSON 主题，走下面补最小包。
+    }
+
+    files['theme.json'] = utf8.encode(jsonEncode(theme.toJson()));
+    if (!files.containsKey('README.md')) {
+      files['README.md'] = utf8.encode(
+        '# ${theme.name}\n\n${theme.backgroundHtml.isEmpty ? '纯色/静态主题' : 'HTML/CSS/JS 动态背景主题'}\n'
+        '来源：APP 主题 ${theme.id}\n',
+      );
+    }
+    if (!files.containsKey('controller.js')) {
+      files['controller.js'] = utf8.encode(
+        '// 纯色主题控制脚本：只声明配色，不创建任何 WebView/动画。\n'
+        'const theme = ${jsonEncode(theme.toJson())};\n'
+        'if (!theme.backgroundHtml) { export default { pure: true, colors: theme.colors }; }\n',
+      );
+    }
+
+    final archive = Archive();
+    for (final e in files.entries) {
+      archive.addFile(ArchiveFile(e.key, e.value.length, e.value));
+    }
+    final zipBytes = ZipEncoder().encode(archive)!;
+    if (!hostOut.parent.existsSync()) {
+      hostOut.parent.createSync(recursive: true);
+    }
+    await hostOut.writeAsBytes(zipBytes, flush: true);
+    return guestOut;
+  }
+
+  String _safeName(String name) {
+    final clean = name.replaceAll(RegExp(r'[^a-zA-Z0-9\u4e00-\u9fa5_-]'), '_');
+    return clean.isEmpty ? 'theme' : clean;
   }
 
   /// 导出一个主题为 JSON 字符串。

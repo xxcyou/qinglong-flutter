@@ -15,6 +15,7 @@ class ThemeConfig {
     required this.name,
     this.brightness = 'dark',
     this.backgroundImage = '',
+    this.backgroundHtml = '',
     this.colors = const {},
     this.effects = const {},
   });
@@ -28,6 +29,10 @@ class ThemeConfig {
   /// 背景图路径（guest 路径，如 /workspace/wallpapers/ocean.png）。
   /// 空字符串 = 纯配色，不显示背景图。
   final String backgroundImage;
+
+  /// 动态背景入口 HTML（guest 路径，如 /workspace/.ql_themes/packages/x/index.html）。
+  /// 非空时优先用 HTML/CSS/JS/视频背景，backgroundImage 和纯渐变作为加载中的兜底。
+  final String backgroundHtml;
 
   /// 配色表。见 [defaultColors]。
   final Map<String, String> colors;
@@ -117,6 +122,7 @@ class ThemeConfig {
         'name': name,
         'brightness': brightness,
         'backgroundImage': backgroundImage,
+        'backgroundHtml': backgroundHtml,
         'colors': colors,
         'effects': effects,
       };
@@ -128,6 +134,7 @@ class ThemeConfig {
       name: json['name']?.toString() ?? '未命名主题',
       brightness: json['brightness']?.toString() == 'light' ? 'light' : 'dark',
       backgroundImage: json['backgroundImage']?.toString() ?? '',
+      backgroundHtml: json['backgroundHtml']?.toString() ?? '',
       colors: {
         for (final e in (json['colors'] as Map?)?.entries ??
             <MapEntry<String, dynamic>>[])
@@ -146,6 +153,7 @@ class ThemeConfig {
     String? name,
     String? brightness,
     String? backgroundImage,
+    String? backgroundHtml,
     Map<String, String>? colors,
     Map<String, double>? effects,
   }) {
@@ -154,6 +162,7 @@ class ThemeConfig {
       name: name ?? this.name,
       brightness: brightness ?? this.brightness,
       backgroundImage: backgroundImage ?? this.backgroundImage,
+      backgroundHtml: backgroundHtml ?? this.backgroundHtml,
       colors: colors ?? this.colors,
       effects: effects ?? this.effects,
     );
