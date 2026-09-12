@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/theme/glass.dart';
+import '../core/theme/theme_effects_controller.dart';
 
 /// 全站统一的页面骨架：全面屏（内容自己延伸到状态栏下）+ 玻璃标题条。
 ///
@@ -185,6 +186,7 @@ class GlassCard extends StatelessWidget {
     this.radius = 18,
     this.selected = false,
     this.accent,
+    this.anchorIndex,
   });
 
   final Widget child;
@@ -195,70 +197,77 @@ class GlassCard extends StatelessWidget {
   final bool selected;
   final Color? accent;
 
+  /// 组件锚点序号：主题包 JS 查组件位置时用于区分同页同类型组件。
+  final int? anchorIndex;
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final dark = scheme.brightness == Brightness.dark;
     final br = BorderRadius.circular(radius);
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: br,
-        // 列表卡也要透：底下那三团流动的光斑要能从卡片里透出来，
-        // 不然只有浮层是玻璃、列表还是一片实色板，风格是断的。
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            // 浅色下取纯白而不是 surface：surface 本身就接近背景色，
-            // 半透明叠上去等于没画（实测卡内外只差 6 个灰阶）。
-            (dark ? scheme.surface : Colors.white)
-                .withValues(alpha: dark ? 0.46 : 0.78),
-            (dark ? scheme.surface : Colors.white)
-                .withValues(alpha: dark ? 0.28 : 0.56),
+    return ComponentAnchorTracker(
+      type: 'card',
+      index: anchorIndex,
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: br,
+          // 列表卡也要透：底下那三团流动的光斑要能从卡片里透出来，
+          // 不然只有浮层是玻璃、列表还是一片实色板，风格是断的。
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              // 浅色下取纯白而不是 surface：surface 本身就接近背景色，
+              // 半透明叠上去等于没画（实测卡内外只差 6 个灰阶）。
+              (dark ? scheme.surface : Colors.white)
+                  .withValues(alpha: dark ? 0.46 : 0.78),
+              (dark ? scheme.surface : Colors.white)
+                  .withValues(alpha: dark ? 0.28 : 0.56),
+            ],
+          ),
+          border: Border.all(
+            color: selected
+                ? scheme.primary
+                : (accent ?? Colors.white).withValues(
+                    alpha: selected
+                        ? 1
+                        : accent != null
+                            ? 0.42
+                            : (dark ? 0.12 : 0.6),
+                  ),
+            width: selected ? 1.4 : 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: dark ? 0.22 : 0.08),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
           ],
         ),
-        border: Border.all(
-          color: selected
-              ? scheme.primary
-              : (accent ?? Colors.white).withValues(
-                  alpha: selected
-                      ? 1
-                      : accent != null
-                          ? 0.42
-                          : (dark ? 0.12 : 0.6),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(
+          children: [
+            // 镜面反光：和 GlassPanel 同一套光向，卡片和浮层才像同一种材质。
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(gradient: Glass.sheen(scheme)),
                 ),
-          width: selected ? 1.4 : 1,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: dark ? 0.22 : 0.08),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Stack(
-        children: [
-          // 镜面反光：和 GlassPanel 同一套光向，卡片和浮层才像同一种材质。
-          Positioned.fill(
-            child: IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(gradient: Glass.sheen(scheme)),
               ),
             ),
-          ),
-          Material(
-            color: selected
-                ? scheme.primaryContainer.withValues(alpha: 0.35)
-                : Colors.transparent,
-            child: InkWell(
-              onTap: onTap,
-              onLongPress: onLongPress,
-              child: Padding(padding: padding, child: child),
+            Material(
+              color: selected
+                  ? scheme.primaryContainer.withValues(alpha: 0.35)
+                  : Colors.transparent,
+              child: InkWell(
+                onTap: onTap,
+                onLongPress: onLongPress,
+                child: Padding(padding: padding, child: child),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

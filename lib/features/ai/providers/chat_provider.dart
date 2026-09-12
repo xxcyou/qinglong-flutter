@@ -3366,7 +3366,7 @@ class ChatNotifier extends Notifier<ChatState> {
             '用户说"换主题/生成个配色/导入主题/导出当前主题/背景图"时用。'
             '主题一律是 ZIP 包，不用 JSON。除 README.md 和 controller.js 外其他全是目录：'
             'image/elements、scripts、audio、css、js、html、xml/components、xml/animations。'
-            'controller.js 是总控，负责分配每个组件用哪个子 js/css/html/xml/图片/音效。',
+            'controller.js 是总控，负责分配每个组件用哪个子 js/css/html/xml/图片/音效。高级组件特效（落叶/布偶/气泡/发光/角标/浮动）用 DSHTheme 万能接口写进主题包 js，App 渲染覆盖层。',
         parameters: const {
           'type': 'object',
           'properties': {

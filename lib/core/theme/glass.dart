@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui';
@@ -7,6 +8,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
+import 'theme_effects_controller.dart';
 import 'theme_visual.dart';
 import '../local_shell/proot_bridge.dart';
 
@@ -127,6 +129,7 @@ class GlassPanel extends StatelessWidget {
     this.tint,
     this.onTap,
     this.sheen = true,
+    this.anchorIndex,
   });
 
   final Widget child;
@@ -145,6 +148,10 @@ class GlassPanel extends StatelessWidget {
   /// 镜面反光。默认开；只有极小的药丸（一行字都放不下）才关掉，
   /// 那种尺寸上再叠一道光带只会显脏。
   final bool sheen;
+
+  /// 组件锚点序号：主题包 JS 用 DSHTheme.queryComponents 查询组件位置时，
+  /// 同一页同类型组件可以按这个序号区分（可传可不传）。
+  final int? anchorIndex;
 
   @override
   Widget build(BuildContext context) {
@@ -214,34 +221,38 @@ class GlassPanel extends StatelessWidget {
       );
     }
 
-    return Container(
-      margin: margin,
-      decoration: BoxDecoration(
-        borderRadius: br,
-        boxShadow: [
-          BoxShadow(
-            color:
-                effectiveShadowColor.withValues(alpha: effectiveShadowOpacity),
-            blurRadius: effectiveShadowY * 2.2,
-            offset: Offset(0, effectiveShadowY),
-          ),
-          BoxShadow(
-            color: scheme.primary.withValues(
-              alpha: scheme.brightness == Brightness.dark ? 0.10 : 0.06,
+    return ComponentAnchorTracker(
+      type: 'panel',
+      index: anchorIndex,
+      child: Container(
+        margin: margin,
+        decoration: BoxDecoration(
+          borderRadius: br,
+          boxShadow: [
+            BoxShadow(
+              color: effectiveShadowColor.withValues(
+                  alpha: effectiveShadowOpacity),
+              blurRadius: effectiveShadowY * 2.2,
+              offset: Offset(0, effectiveShadowY),
             ),
-            blurRadius: effectiveShadowY * 3,
-            spreadRadius: -effectiveShadowY,
+            BoxShadow(
+              color: scheme.primary.withValues(
+                alpha: scheme.brightness == Brightness.dark ? 0.10 : 0.06,
+              ),
+              blurRadius: effectiveShadowY * 3,
+              spreadRadius: -effectiveShadowY,
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: br,
+          child: BackdropFilter(
+            filter: ImageFilter.blur(
+              sigmaX: effectiveBlur,
+              sigmaY: effectiveBlur,
+            ),
+            child: content,
           ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: br,
-        child: BackdropFilter(
-          filter: ImageFilter.blur(
-            sigmaX: effectiveBlur,
-            sigmaY: effectiveBlur,
-          ),
-          child: content,
         ),
       ),
     );
@@ -669,6 +680,8 @@ class GlassBackdrop extends StatelessWidget {
             ),
           ),
           Positioned.fill(child: child),
+          // 主题包 JS 通过 DSHTheme 发来的万能特效覆盖层：默认空，不挡点击。
+          const Positioned.fill(child: ThemeEffectsOverlay()),
         ],
       ),
     );
@@ -697,7 +710,11 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     super.initState();
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(Colors.transparent);
+      ..setBackgroundColor(Colors.transparent)
+      ..addJavaScriptChannel(
+        'DSHThemeBridge',
+        onMessageReceived: _onBridgeMessage,
+      );
     _load();
   }
 
@@ -727,6 +744,56 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       }
     } catch (_) {
       // HTML 加载失败就留着纯色/渐变兜底，不炸 App。
+    }
+  }
+
+  Future<void> _onBridgeMessage(JavaScriptMessage message) async {
+    final raw = message.message;
+    Map<String, dynamic>? data;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) data = Map<String, dynamic>.from(decoded);
+    } catch (_) {
+      return;
+    }
+    if (data == null) return;
+    final cmd = data['cmd']?.toString() ?? '';
+    switch (cmd) {
+      case 'effect':
+        final effect = ThemeEffectBridge.parseEffect(data['effect']);
+        if (effect != null) ThemeEffectsController.instance.upsert(effect);
+        break;
+      case 'effectBatch':
+        final list = data['effects'];
+        if (list is List) {
+          for (final item in list) {
+            final effect = ThemeEffectBridge.parseEffect(item);
+            if (effect != null) ThemeEffectsController.instance.upsert(effect);
+          }
+        }
+        break;
+      case 'remove':
+        final id = data['id']?.toString() ?? '';
+        if (id.isNotEmpty) ThemeEffectsController.instance.remove(id);
+        break;
+      case 'clear':
+        ThemeEffectsController.instance.clear();
+        break;
+      case 'queryComponents':
+        final id = data['id']?.toString() ?? '0';
+        final page = data['page']?.toString();
+        final type = data['type']?.toString();
+        final list = ThemeComponentRegistry.instance
+            .query(page: page, type: type)
+            .map((a) => a.toJson())
+            .toList();
+        try {
+          await _controller.runJavaScript(
+            'window.DSHTheme && window.DSHTheme.__componentResult('
+            '$id, ${jsonEncode(list)});',
+          );
+        } catch (_) {}
+        break;
     }
   }
 
@@ -797,6 +864,47 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
         } else {
           html = '$html$scriptText';
         }
+      }
+    }
+
+    // 万能主题桥：主题包 JS 用 window.DSHTheme 让 Flutter 在组件上方
+    // 绘制图片/文字/气泡/动画等特效，并可查询组件真实坐标。
+    if (!html.contains('data-dsh-theme-bridge')) {
+      const bridge = '''
+<script data-dsh-theme-bridge>
+(function () {
+  if (window.DSHTheme && window.DSHTheme.__dsh) return;
+  window.__dshCallbacks = window.__dshCallbacks || {};
+  function post(msg) {
+    try { DSHThemeBridge.postMessage(JSON.stringify(msg)); } catch (e) {}
+  }
+  window.DSHTheme = {
+    __dsh: true,
+    effect: function (e) { post({ cmd: 'effect', effect: e }); },
+    effectBatch: function (effects) { post({ cmd: 'effectBatch', effects: effects }); },
+    remove: function (id) { post({ cmd: 'remove', id: id }); },
+    clear: function () { post({ cmd: 'clear' }); },
+    queryComponents: function (opts) {
+      opts = opts || {};
+      window.__dshQid = (window.__dshQid || 0) + 1;
+      var id = window.__dshQid;
+      window.__dshCallbacks[id] = opts.callback || null;
+      post({ cmd: 'queryComponents', id: id, page: opts.page, type: opts.type });
+    },
+    __componentResult: function (id, list) {
+      var cb = window.__dshCallbacks[id];
+      if (typeof cb === 'function') cb(list);
+      delete window.__dshCallbacks[id];
+    }
+  };
+})();
+</script>
+''';
+      final bodyEnd = html.lastIndexOf('</body>');
+      if (bodyEnd >= 0) {
+        html = html.replaceFirst('</body>', '$bridge</body>');
+      } else {
+        html = '$html$bridge';
       }
     }
 
