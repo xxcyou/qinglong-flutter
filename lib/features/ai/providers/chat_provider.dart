@@ -353,6 +353,9 @@ class ChatNotifier extends Notifier<ChatState> {
   /// 最近一次截图工具产生的附件，供 AgentLoop 的 attachments 回调复用，避免截两次。
   AiImageAttachment? _lastToolScreenshot;
 
+  /// 最近一次截图顺带的 Android UI 文字提取（uiautomator dump），没配图片模型时可当文字识别用。
+  String _lastScreenshotText = '';
+
   @override
   ChatState build() {
     ref.onDispose(_clearLive);
@@ -2516,6 +2519,7 @@ class ChatNotifier extends Notifier<ChatState> {
     }
     _toolScreenshotsBySession.remove(run?.sessionId ?? state.currentSessionId);
     _lastToolScreenshot = null;
+    _lastScreenshotText = '';
     final config = await ref.read(llmConfigProvider.future);
     final activeProviderId = ref.read(llmRegistryProvider).active.id;
     final mainProvider = ref.read(llmRegistryProvider).active;
@@ -2714,6 +2718,7 @@ class ChatNotifier extends Notifier<ChatState> {
   Future<AiImageAttachment?> _captureAdbScreenshot(
       Map<String, dynamic> args) async {
     _lastToolScreenshot = null;
+    _lastScreenshotText = '';
     final serial = args['serial']?.toString().trim() ?? '';
     final bridge = ProotBridge();
     final stamp = DateTime.now().millisecondsSinceEpoch;
@@ -2742,7 +2747,41 @@ class ChatNotifier extends Notifier<ChatState> {
       scope: 'shell',
     );
     _lastToolScreenshot = img;
+
+    // 尽力提取界面文字：uiautomator dump 不是每次都能成功（页面在动画、WebView
+    // 不暴露 accessibility 树），但成功时即使没配图片识别模型，也能用文字回答。
+    final pre =
+        serial.isNotEmpty ? 'adb -s ${_quote(serial)} shell' : 'adb shell';
+    final dump = await bridge.exec(
+      command: '$pre uiautomator dump /sdcard/ql_ui_dump.xml >/dev/null 2>&1 '
+          '&& $pre cat /sdcard/ql_ui_dump.xml',
+      timeoutSeconds: 30,
+    );
+    if (dump.exitCode == 0 && dump.stdout.trim().isNotEmpty) {
+      _lastScreenshotText = _extractAndroidUiText(dump.stdout);
+      if (_lastScreenshotText.isNotEmpty) {
+        // 顺手清掉临时文件，别在设备上留垃圾。
+        await bridge.exec(
+          command: '$pre rm -f /sdcard/ql_ui_dump.xml',
+          timeoutSeconds: 10,
+        );
+      }
+    }
     return img;
+  }
+
+  static String _extractAndroidUiText(String xml) {
+    final seen = <String>{};
+    final lines = <String>[];
+    for (final m
+        in RegExp(r'(?:text|content-desc)="([^"]*)"').allMatches(xml)) {
+      final v = m.group(1)!.trim();
+      if (v.isNotEmpty && seen.add(v)) {
+        lines.add(v);
+        if (lines.length >= 200) break;
+      }
+    }
+    return lines.join('\n');
   }
 
   static String _guessImageMime(String path) {
@@ -2820,10 +2859,13 @@ class ChatNotifier extends Notifier<ChatState> {
                 .putIfAbsent(state.currentSessionId, () => [])
                 .add(img);
             final target = serial.isNotEmpty ? '设备 $serial' : '当前设备';
+            final uiText = _lastScreenshotText.trim();
             return '已通过 adb 截取 $target 的屏幕，图片已显示在聊天里。\n'
                 'path: ${img.path}\nscope: ${img.scope}'
                 '${label == null ? '' : '\n用途：$label'}\n'
-                '需要进一步识别时，用 image_recognize 传上面的 path 和 scope。';
+                '${uiText.isEmpty ? '' : '界面文字提取（uiautomator）：\n$uiText\n'}'
+                '需要进一步识别时，用 image_recognize 传上面的 path 和 scope'
+                '${uiText.isEmpty ? '' : '；已有界面文字时可直接根据文字回答'}。';
           } catch (e) {
             _lastToolScreenshot = null;
             return 'adb 截图失败：$e';
@@ -2861,11 +2903,15 @@ class ChatNotifier extends Notifier<ChatState> {
             _toolScreenshotsBySession
                 .putIfAbsent(state.currentSessionId, () => [])
                 .add(img);
+            final uiText = _lastScreenshotText.trim();
             return '已截取浏览器画面，图片已显示在聊天里。\n'
                 'path: ${img.path}\nscope: ${img.scope}'
                 '${label == null ? '' : '\n用途：$label'}\n'
+                '${uiText.isEmpty ? '' : '界面文字提取（uiautomator）：\n$uiText\n'}'
                 '需要识别时用 image_recognize 传上面的 path 和 scope；'
-                '如果没配图片识别模型，也可用 browser_read 读页面文本代替。';
+                '如果没配图片识别模型，可用 browser_read 读页面文本'
+                '${uiText.isEmpty ? '' : '，或直接使用上面提取到的界面文字'}'
+                '代替。';
           } catch (e) {
             _lastToolScreenshot = null;
             return '浏览器截图失败：$e';
