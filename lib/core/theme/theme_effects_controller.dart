@@ -242,9 +242,58 @@ class ThemeEffectBridge {
 }
 
 /// Flutter 覆盖层：渲染主题包 JS 通过 DSHTheme.effect 发来的特效。
-class ThemeEffectsOverlay extends StatelessWidget {
+/// 全局特效覆盖层。
+///
+/// 放在根 Overlay 里而不是 GlassBackdrop 本地 Stack：
+/// 1. 坐标直接用组件锚点的全局坐标，不会因为页面内边距/标题条发生偏移；
+/// 2. 整层 IgnorePointer，特效永远不会挡住输入框/按钮/列表点击。
+class ThemeEffectsOverlay extends StatefulWidget {
   const ThemeEffectsOverlay({super.key});
 
+  @override
+  State<ThemeEffectsOverlay> createState() => _ThemeEffectsOverlayState();
+}
+
+class _ThemeEffectsOverlayState extends State<ThemeEffectsOverlay> {
+  static int _activeInstances = 0;
+  OverlayEntry? _entry;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_activeInstances > 0) {
+        _activeInstances++;
+        return;
+      }
+      _entry = OverlayEntry(
+        builder: (_) => Positioned.fill(
+          child: IgnorePointer(
+            child: _ThemeOverlayContent(),
+          ),
+        ),
+      );
+      Overlay.of(context, rootOverlay: true).insert(_entry!);
+      _activeInstances++;
+    });
+  }
+
+  @override
+  void dispose() {
+    if (_activeInstances > 0) _activeInstances--;
+    if (_activeInstances == 0 && _entry != null) {
+      _entry!.remove();
+      _entry = null;
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.shrink();
+}
+
+class _ThemeOverlayContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
