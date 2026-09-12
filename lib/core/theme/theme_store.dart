@@ -205,11 +205,35 @@ class ThemeNotifier extends Notifier<ThemeState> {
 
     var backgroundImage = data['backgroundImage']?.toString() ?? '';
     var backgroundHtml = '';
-    if (File('$hostDir/index.html').existsSync()) {
-      backgroundHtml = '$packageGuest/index.html';
-    } else if (File('$hostDir/index.htm').existsSync()) {
-      backgroundHtml = '$packageGuest/index.htm';
-    } else {
+    final htmlCandidates = [
+      '$hostDir/html/index.html',
+      '$hostDir/html/background.html',
+      '$hostDir/index.html',
+      '$hostDir/index.htm',
+    ];
+    for (final candidate in htmlCandidates) {
+      if (File(candidate).existsSync()) {
+        final rel =
+            candidate.substring(hostDir.length + 1).replaceAll('\\', '/');
+        backgroundHtml = '$packageGuest/$rel';
+        break;
+      }
+    }
+    if (backgroundHtml.isEmpty && Directory('$hostDir/html').existsSync()) {
+      final htmlDir = Directory('$hostDir/html');
+      final htmlFiles = htmlDir
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.html') || f.path.endsWith('.htm'))
+          .toList();
+      if (htmlFiles.isNotEmpty) {
+        final rel = htmlFiles.first.path
+            .substring(hostDir.length + 1)
+            .replaceAll('\\', '/');
+        backgroundHtml = '$packageGuest/$rel';
+      }
+    }
+    if (backgroundHtml.isEmpty) {
       backgroundImage =
           _findBackgroundImage(dir, packageGuest, backgroundImage) ??
               backgroundImage;
@@ -353,12 +377,35 @@ class ThemeNotifier extends Notifier<ThemeState> {
     return '$exportsRoot/$safe.zip';
   }
 
+  /// 标准主题包目录骨架：除了 README.md 和 controller.js，其余都是目录。
+  static const _packageDirs = [
+    'image/elements',
+    'scripts',
+    'audio',
+    'css',
+    'js',
+    'html',
+    'xml/components',
+    'xml/animations',
+  ];
+
+  void _ensurePackageStructure(String hostDir) {
+    for (final sub in _packageDirs) {
+      Directory('$hostDir/$sub').createSync(recursive: true);
+    }
+    // 空目录在 zip 里不保留，放一个 .gitkeep 方便用户看到骨架。
+    for (final sub in _packageDirs) {
+      File('$hostDir/$sub/.gitkeep').createSync(recursive: false);
+    }
+  }
+
   /// 确保主题有 package 目录；没有就生成最小纯色包（默认主题导出用这个）。
   Future<String> _ensurePackageDir(ThemeConfig theme) async {
     final rootHost = await _bridge.hostPath(path: packagesRoot, scope: 'shell');
     final packageGuest = '$packagesRoot/${theme.id}';
     final hostDir = '$rootHost/${theme.id}';
     Directory(hostDir).createSync(recursive: true);
+    _ensurePackageStructure(hostDir);
     if (!File('$hostDir/controller.js').existsSync()) {
       await _writeController(hostDir, theme);
     }
@@ -378,6 +425,7 @@ class ThemeNotifier extends Notifier<ThemeState> {
     final rootHost = await _bridge.hostPath(path: packagesRoot, scope: 'shell');
     final hostDir = '$rootHost/${theme.id}';
     Directory(hostDir).createSync(recursive: true);
+    _ensurePackageStructure(hostDir);
     await _writeController(hostDir, theme);
     final readme = File('$hostDir/README.md');
     if (!readme.existsSync()) {
@@ -391,7 +439,8 @@ class ThemeNotifier extends Notifier<ThemeState> {
 
   Future<void> _writeController(String hostDir, ThemeConfig theme) async {
     final b = StringBuffer();
-    b.writeln('// 主题控制脚本：这是主题唯一的配置入口（纯色也在这里配置）。');
+    b.writeln('// 主题控制脚本：这是整个主题的总控入口（纯色也在这里配置）。');
+    b.writeln('// 它负责分配：哪个组件用哪个子 js / css / html / xml / 图片 / 音效。');
     b.writeln('const theme = {');
     b.writeln("  id: '${_jsEscape(theme.id)}',");
     b.writeln("  name: '${_jsEscape(theme.name)}',");
@@ -400,7 +449,20 @@ class ThemeNotifier extends Notifier<ThemeState> {
     b.writeln('  colors: ${jsonEncode(theme.colors)},');
     b.writeln('  effects: ${jsonEncode(theme.effects)},');
     b.writeln('};');
-    b.writeln('export default theme;');
+    b.writeln('');
+    b.writeln('// 主题资源路由：controller.js 在这里分配各组件的子脚本/样式/HTML/XML。');
+    b.writeln("const themeResources = {");
+    b.writeln("  components: {");
+    b.writeln(
+        "    background: { script: 'js/background.js', css: 'css/background.css', html: 'html/index.html', xml: 'xml/animations/background.xml' },");
+    b.writeln(
+        "    chatBubble: { script: 'js/chat-bubble.js', css: 'css/chat-bubble.css', html: 'html/chat-bubble.html', xml: 'xml/components/chat-bubble.xml' },");
+    b.writeln("  },");
+    b.writeln("  images: 'image/elements',");
+    b.writeln("  scripts: 'scripts',");
+    b.writeln("  audio: 'audio',");
+    b.writeln("};");
+    b.writeln('export default themeResources;');
     await File('$hostDir/controller.js').writeAsString(
       b.toString(),
       flush: true,

@@ -61,7 +61,21 @@
 - 缓存专用目录 `/cache`：截图、临时文件等非长期数据统一放这里；App 启动自动清理超过 30 天的缓存，超过 200MB 按旧数据优先清理
 - AI 可管理 APP：`settings_get/settings_set` 看/改主题、缓存策略、轮询等；`cache_info/cache_clear` 管缓存；`provider_manage` 配置 AI 提供商（含 API Key 安全保存）
 - 主题方案系统：只使用 **ZIP 主题包**，不再使用任何 JSON 主题文件（包括包内也不放 `theme.json`）。纯色配置写在 `controller.js` 控制脚本里；设置页带配色点预览；AI 用 `theme_manage` 生成/应用/导入/导出主题 ZIP 包
-- 主题包结构：`controller.js`（唯一配置入口）/ `README.md` / `css/` / `js/` / `image/background/` / `image/elements/` / `audio/` / `方案/`；包内带 `index.html` 时用 WebView 渲染 HTML/CSS/JS/视频动态背景；纯色主题只含控制脚本和 md，不耗额外渲染
+- 主题包结构：除 `README.md` 和 `controller.js` 外其余全是目录；`controller.js` 是总控，分配每个组件的子 js / css / html / xml / 图片 / 音效
+  ```text
+  theme.zip/
+  ├── README.md
+  ├── controller.js          # 总控：组件用什么子脚本/样式/HTML/XML，背景剧本等
+  ├── image/elements/        # 樱花、树叶、人物等图片元素
+  ├── scripts/               # 子脚本（每个组件/场景一个，各有分工）
+  ├── audio/                 # 音效/背景音乐
+  ├── css/                   # 多个 css：不同组件分别负责
+  ├── js/                    # 多个 js：不同组件/特效分别渲染
+  ├── html/                  # 多个 html：动态背景、组件绘制入口
+  ├── xml/components/        # 组件 xml：位置/悬浮/互动参数
+  └── xml/animations/        # 动画 xml：背景剧本/动图组合/音效触发
+  ```
+  包内带 `html/index.html` 或 `html/background.html` 时用 WebView 渲染整个 HTML/CSS/JS/视频/多图组合动态背景；纯色主题只含控制脚本和 md，不耗额外渲染
 - 代码编辑器（JetBrains Mono，等宽字体渲染）
 - 三态主题（跟随系统 / 亮 / 暗）
 - 输出整理插件：请求前 hook / 响应后 hook（自定义 JS）

@@ -3364,8 +3364,9 @@ class ChatNotifier extends Notifier<ChatState> {
         name: 'theme_manage',
         description: '管理主题 ZIP 包：列出/应用/新建/删除/导入 ZIP/导出 ZIP。'
             '用户说"换主题/生成个配色/导入主题/导出当前主题/背景图"时用。'
-            '主题一律是 ZIP 包，不再用 JSON 主题；纯色配置就在 controller.js 控制脚本里，包内可含 css/js/html/image/audio/方案。'
-            '动态包还包含 css/js/html/image/audio/方案。',
+            '主题一律是 ZIP 包，不用 JSON。除 README.md 和 controller.js 外其他全是目录：'
+            'image/elements、scripts、audio、css、js、html、xml/components、xml/animations。'
+            'controller.js 是总控，负责分配每个组件用哪个子 js/css/html/xml/图片/音效。',
         parameters: const {
           'type': 'object',
           'properties': {
