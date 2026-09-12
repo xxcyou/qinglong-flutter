@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/llm/llm_provider.dart';
 import '../../../core/llm/llm_registry_provider.dart';
 import '../../../core/theme/glass.dart';
 import '../../../core/utils/formatter.dart';
@@ -76,6 +77,12 @@ class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
           ),
           const SectionLabel('模型'),
           _ModelSection(onChanged: () => setState(() {})),
+          _Row(
+            icon: Icons.image_search,
+            title: '图片识别模型',
+            value: _visionSummary(registry),
+            onTap: _pickVisionModels,
+          ),
           const SectionLabel('推理与采样'),
           _Row(
             icon: Icons.psychology_outlined,
@@ -214,6 +221,130 @@ class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  String _visionSummary(LlmRegistry registry) {
+    if (registry.providers.isEmpty) return '还没有提供商';
+    final configured =
+        registry.providers.where((p) => p.visionModel.trim().isNotEmpty).length;
+    if (configured == 0) return '未设置（AI 对话不支持图片）';
+    final active = registry.active;
+    final activeText = active.visionModel.trim().isEmpty
+        ? '当前供应商 ${active.label} 未设置'
+        : '当前 ${active.label} · ${active.visionModel.trim()}';
+    return '$configured 家已设置 · $activeText';
+  }
+
+  /// 全局图片识别模型：每家提供商可各选一个自己的视觉模型。
+  Future<void> _pickVisionModels() async {
+    final registry = ref.read(llmRegistryProvider);
+    if (registry.providers.isEmpty) {
+      _toast('还没有提供商，先去添加');
+      return;
+    }
+    final notifier = ref.read(llmRegistryProvider.notifier);
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => SafeArea(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 540),
+          child: ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            child: Material(
+              color: Theme.of(context).colorScheme.surface,
+              child: ListView(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+                    child: Text(
+                      '图片识别模型（每家可单独设置）',
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: Text(
+                      '该家设置后，给这家发图片会自动用对应模型；清空 = 这家不支持图片。',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                  for (final provider in registry.providers) ...[
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              provider.label,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          if (provider.visionModel.trim().isNotEmpty)
+                            TextButton(
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                              ),
+                              onPressed: () async {
+                                await notifier.updateProvider(
+                                  provider.copyWith(visionModel: ''),
+                                );
+                              },
+                              child: const Text('清除'),
+                            ),
+                        ],
+                      ),
+                    ),
+                    if (provider.allModels.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                        child: Text(
+                          '这家还没有模型，先到提供商页获取/添加',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      )
+                    else
+                      for (final model in provider.allModels)
+                        ListTile(
+                          dense: true,
+                          leading: provider.visionModel == model
+                              ? const Icon(Icons.check, size: 18)
+                              : const SizedBox(width: 18),
+                          title: Text(
+                            model,
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                          onTap: () async {
+                            await notifier.updateProvider(
+                              provider.copyWith(visionModel: model),
+                            );
+                            if (context.mounted) Navigator.of(context).pop();
+                            if (mounted) setState(() {});
+                          },
+                        ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

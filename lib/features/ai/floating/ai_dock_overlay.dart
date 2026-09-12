@@ -1845,7 +1845,8 @@ class _WindowState extends ConsumerState<_Window> {
         if (toastContext != null && toastContext.mounted) {
           ScaffoldMessenger.of(toastContext).showSnackBar(
             const SnackBar(
-              content: Text('当前 AI 提供商没有设置图片识别模型，去「设置 → AI → 提供商」里配置后才能发图片。'),
+              content:
+                  Text('当前 AI 提供商没有设置图片识别模型，去「设置 → AI → 图片识别模型」里配置后才能发图片。'),
               duration: Duration(seconds: 3),
             ),
           );
