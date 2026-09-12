@@ -160,7 +160,18 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
         _buildHeaderBottom(state),
         _PathBar(state: state, notifier: _notifier),
         if (state.error != null) _buildError(state),
-        Expanded(child: _buildList(state, entries)),
+        Expanded(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            // 文件夹管理右滑返回上一层目录（横向滑动不影响列表上下滚动）。
+            onHorizontalDragEnd: (details) {
+              if ((details.primaryVelocity ?? 0) > 250) {
+                if (!state.atRoot) _notifier.goUp();
+              }
+            },
+            child: _buildList(state, entries),
+          ),
+        ),
       ],
     );
 
@@ -798,11 +809,60 @@ class _InfoRow extends StatelessWidget {
   }
 }
 
-class _PathBar extends StatelessWidget {
+class _PathBar extends StatefulWidget {
   const _PathBar({required this.state, required this.notifier});
 
   final ShellFilesState state;
   final ShellFilesNotifier notifier;
+
+  @override
+  State<_PathBar> createState() => _PathBarState();
+}
+
+class _PathBarState extends State<_PathBar> {
+  final _pathController = TextEditingController();
+  bool _editing = false;
+
+  ShellFilesState get state => widget.state;
+  ShellFilesNotifier get notifier => widget.notifier;
+
+  @override
+  void initState() {
+    super.initState();
+    _pathController.text = widget.state.path;
+  }
+
+  @override
+  void didUpdateWidget(covariant _PathBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_editing && oldWidget.state.path != widget.state.path) {
+      _pathController.text = widget.state.path;
+    }
+  }
+
+  @override
+  void dispose() {
+    _pathController.dispose();
+    super.dispose();
+  }
+
+  void _startEdit() {
+    setState(() => _editing = true);
+    _pathController.text = widget.state.path;
+  }
+
+  void _cancelEdit() {
+    setState(() => _editing = false);
+    _pathController.text = widget.state.path;
+  }
+
+  void _submit() {
+    final path = _pathController.text.trim();
+    setState(() => _editing = false);
+    if (path.isNotEmpty) {
+      notifier.open(path);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -825,16 +885,59 @@ class _PathBar extends StatelessWidget {
                   icon: const Icon(Icons.arrow_upward, size: 20),
                 ),
                 Expanded(
-                  child: Text(
-                    state.path,
-                    style: const TextStyle(
-                      fontFamily: kMonoFamily,
-                      fontFamilyFallback: kMonoFallback,
-                      fontSize: 12.5,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  child: _editing
+                      ? TextField(
+                          controller: _pathController,
+                          autofocus: true,
+                          style: const TextStyle(
+                            fontFamily: kMonoFamily,
+                            fontFamilyFallback: kMonoFallback,
+                            fontSize: 12.5,
+                          ),
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            border: InputBorder.none,
+                            hintText: '输入路径后回车跳转',
+                            contentPadding: EdgeInsets.symmetric(
+                                vertical: 10, horizontal: 4),
+                          ),
+                          onSubmitted: (_) => _submit(),
+                        )
+                      : InkWell(
+                          onTap: _startEdit,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              vertical: 10,
+                              horizontal: 4,
+                            ),
+                            child: Text(
+                              state.path,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontFamily: kMonoFamily,
+                                fontFamilyFallback: kMonoFallback,
+                                fontSize: 12.5,
+                              ),
+                            ),
+                          ),
+                        ),
                 ),
+                if (_editing)
+                  IconButton(
+                    tooltip: '取消',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _cancelEdit,
+                    icon: const Icon(Icons.close, size: 18),
+                  )
+                else
+                  IconButton(
+                    tooltip: '编辑路径',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _startEdit,
+                    icon: const Icon(Icons.edit_outlined, size: 18),
+                  ),
               ],
             ),
             // 操作按钮横排可滚动：半屏侧滑面板宽度有限，硬塞一排会黄条溢出。
