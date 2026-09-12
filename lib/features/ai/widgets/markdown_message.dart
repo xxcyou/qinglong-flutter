@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -93,26 +92,6 @@ class _MarkdownImage extends StatefulWidget {
 class _MarkdownImageState extends State<_MarkdownImage> {
   bool _loading = false;
 
-  Future<String> _dataUriForRemote() async {
-    final client = HttpClient();
-    try {
-      final req =
-          await client.getUrl(widget.uri).timeout(const Duration(seconds: 15));
-      final res = await req.close().timeout(const Duration(seconds: 15));
-      if (res.statusCode != 200) {
-        throw HttpException('HTTP ${res.statusCode}');
-      }
-      final bytes = await res.fold<List<int>>(
-        <int>[],
-        (all, chunk) => all..addAll(chunk),
-      );
-      final ct = res.headers.contentType?.mimeType ?? _mimeFor(widget.uri);
-      return 'data:$ct;base64,${base64Encode(bytes)}';
-    } finally {
-      client.close(force: true);
-    }
-  }
-
   static String _mimeFor(Uri uri) {
     final path = uri.path.toLowerCase();
     if (path.endsWith('.png') || path.endsWith('.apng')) return 'image/png';
@@ -142,24 +121,20 @@ class _MarkdownImageState extends State<_MarkdownImage> {
 
   Future<void> _openPreview() async {
     try {
-      final dataUri = widget.uri.scheme == 'data'
-          ? widget.uri.toString()
-          : (_loading ? null : await _dataUriForRemote());
-      if (!mounted) return;
-      if (dataUri == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('图片加载中，稍等一下再点')),
+      if (widget.uri.scheme == 'data') {
+        await ImagePreviewOverlay.show(
+          context,
+          AiImageAttachment(
+            name: widget.alt ?? 'markdown_image',
+            mime: _mimeFor(widget.uri),
+            dataUri: widget.uri.toString(),
+          ),
         );
-        return;
+      } else {
+        // 网络图直接用 URL 打开预览，不需要重新下载成 base64，
+        // 点击立刻弹出，并复用 Flutter 图片缓存。
+        await ImagePreviewOverlay.showNetwork(context, widget.uri.toString());
       }
-      await ImagePreviewOverlay.show(
-        context,
-        AiImageAttachment(
-          name: widget.alt ?? 'markdown_image',
-          mime: _mimeFor(widget.uri),
-          dataUri: dataUri,
-        ),
-      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

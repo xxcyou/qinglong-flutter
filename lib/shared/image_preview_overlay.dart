@@ -10,9 +10,16 @@ import '../features/ai/models/ai_message.dart';
 /// 不占用 Navigator 页面栈、不打断聊天，作为一层全屏浮层盖在当前界面上：
 /// 支持双指/双击放大缩小、拖动平移，右上角 × 关闭。
 class ImagePreviewOverlay extends StatefulWidget {
-  const ImagePreviewOverlay({super.key, required this.image});
+  const ImagePreviewOverlay({
+    super.key,
+    required this.image,
+    this.networkUrl,
+  });
 
   final AiImageAttachment image;
+
+  /// 网络图直接展示用；dataUri 为空时走这个。
+  final String? networkUrl;
 
   static Future<void> show(BuildContext context, AiImageAttachment image) {
     return showGeneralDialog(
@@ -22,6 +29,29 @@ class ImagePreviewOverlay extends StatefulWidget {
       barrierColor: Colors.black.withValues(alpha: 0.82),
       transitionDuration: const Duration(milliseconds: 180),
       pageBuilder: (_, __, ___) => ImagePreviewOverlay(image: image),
+      transitionBuilder: (_, animation, __, child) => FadeTransition(
+        opacity: animation,
+        child: child,
+      ),
+    );
+  }
+
+  /// 网络图片预览：直接用 URL 渲染，不用先把整张图下载成 base64。
+  static Future<void> showNetwork(BuildContext context, String url) {
+    return showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: '关闭图片预览',
+      barrierColor: Colors.black.withValues(alpha: 0.82),
+      transitionDuration: const Duration(milliseconds: 180),
+      pageBuilder: (_, __, ___) => ImagePreviewOverlay(
+        networkUrl: url,
+        image: const AiImageAttachment(
+          name: 'network_image',
+          mime: 'image/png',
+          dataUri: '',
+        ),
+      ),
       transitionBuilder: (_, animation, __, child) => FadeTransition(
         opacity: animation,
         child: child,
@@ -83,10 +113,19 @@ class _ImagePreviewOverlayState extends State<ImagePreviewOverlay> {
               maxScale: 8,
               child: Center(
                 child: bytes.isEmpty
-                    ? const Text(
-                        '图片数据无效',
-                        style: TextStyle(color: Colors.white70),
-                      )
+                    ? (widget.networkUrl == null
+                        ? const Text(
+                            '图片数据无效',
+                            style: TextStyle(color: Colors.white70),
+                          )
+                        : Image.network(
+                            widget.networkUrl!,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, e, __) => Text(
+                              '图片加载失败：$e',
+                              style: const TextStyle(color: Colors.white70),
+                            ),
+                          ))
                     : Image.memory(
                         bytes,
                         fit: BoxFit.contain,
