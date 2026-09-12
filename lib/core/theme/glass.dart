@@ -646,13 +646,14 @@ class GlassBackdrop extends StatelessWidget {
         ? Stack(
             fit: StackFit.expand,
             children: [
-              pureBackground,
-              if (bgHtml.isNotEmpty)
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: _WebThemeBackground(htmlPath: bgHtml),
-                  ),
+              // 有 HTML 动态背景时以 WebView 为主背景，不再叠 Flutter 背景图，
+              // 否则图片层会盖住 WebView 而导致 CSS/JS 效果看不见。
+              const ColoredBox(color: Color(0xFF101014)),
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: _WebThemeBackground(htmlPath: bgHtml),
                 ),
+              ),
             ],
           )
         : pureBackground;
@@ -706,6 +707,8 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
           await ProotBridge().hostPath(path: widget.htmlPath, scope: 'shell');
       if (!mounted || host.isEmpty) return;
       String? preparedHtml;
+      debugPrint(
+          'THEME_WEBVIEW load html: $host exists=${File(host).existsSync()}');
       if (File(host).existsSync()) {
         preparedHtml = await _prepareHtml(host);
       }
