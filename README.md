@@ -38,10 +38,10 @@
   - 主模型不支持图片时，自动把图片交给 `image_recognize` 工具，由配置的“图片识别模型”看图
   - `image_recognize` 支持 `focus` 焦点参数，可指定“看右上角”“第三行文字”等细节；无焦点则整体描述
   - 支持只发图片不写字；多图合并为同一条消息；撤回自动恢复全部附件
-- **AI 截图**：
-  - `browser_screenshot`：截取内置浏览器当前画面并显示在聊天里
-  - `device_screenshot`：通过 adb 截取目标 Android 设备屏幕并显示在聊天里
-  - 截图会挂到 assistant 气泡上同时给用户看；主模型支持图片时直接把截图注入对话看图，不支持图片时用 `image_recognize` 识别
+- **AI 截图与图片展示**：
+  - `browser_screenshot`：截取内置浏览器当前画面，只返回图片路径
+  - `show_image`：通用图片展示工具，把任意截图/图片（shell/adb 命令产物、本地图片）显示到聊天里并让 AI 知道
+  - 主模型支持图片时 `show_image` 会把图片注入对话直接看图；不支持图片时用 `image_recognize` 识别
 - **Agent 主线**：主模型始终驱动对话，工具由它按需调用
   - 青龙工具：任务 / 脚本 / 环境变量 / 依赖 / 配置 / 日志 / 订阅 / 系统
   - 本地 Shell：`shell_probe` / `shell_exec` / `shell_script` / 文件读写

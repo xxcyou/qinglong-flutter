@@ -938,8 +938,9 @@ class ChatNotifier extends Notifier<ChatState> {
         '- 图片：用户发来图片时不会直接把图像发给你，而是带着“用户发来图片：路径”标注；'
         '你需要调用 image_recognize 工具（传 path/scope，可带 question/focus）来识别图片内容，'
         '然后把识别结果作为回答依据。'
-        '需要截图时用 device_screenshot（ADB 目标设备）或 browser_screenshot（内置浏览器），'
-        '截图会显示在聊天里；主模型支持图片时会直接看到截图，不支持时用 image_recognize 识别。',
+        '需要截图时用 browser_screenshot（内置浏览器）或 shell/adb 命令生成图片文件；'
+        '截图工具只返回 path/scope。要显示到聊天给用户看，调用 show_image 传 path/scope；'
+        '支持图片的主模型会直接看到图片，不支持时用 image_recognize 识别。',
       );
     // 用户开着哪个代码编辑器：直接决定 editor_* 该往哪写，必须实时。
     final editorState = EditorTools.promptState();
@@ -2784,6 +2785,27 @@ class ChatNotifier extends Notifier<ChatState> {
     return lines.join('\n');
   }
 
+  Future<AiImageAttachment?> _loadImageAttachment(
+    String path,
+    String scope, {
+    String? name,
+  }) async {
+    final bridge = ProotBridge();
+    final host = await bridge.hostPath(path: path, scope: scope);
+    final bytes = await File(host).readAsBytes();
+    if (bytes.isEmpty) return null;
+    final mime = _guessImageMime(path);
+    return AiImageAttachment(
+      name: (name == null || name.trim().isEmpty)
+          ? path.split('/').last
+          : name.trim(),
+      mime: mime,
+      dataUri: 'data:$mime;base64,${base64Encode(bytes)}',
+      path: path,
+      scope: scope,
+    );
+  }
+
   static String _guessImageMime(String path) {
     final lower = path.toLowerCase();
     if (lower.endsWith('.png')) return 'image/png';
@@ -2830,65 +2852,19 @@ class ChatNotifier extends Notifier<ChatState> {
           invoke: _recognizeImage,
         ),
       ExternalTool(
-        name: 'device_screenshot',
-        description: '通过 adb 对目标 Android 设备截屏，并把截图显示在聊天里。'
-            '截屏后主模型支持图片时可直接看图；不支持图片时用 image_recognize '
-            '(传返回的 path/scope)识别。截内置浏览器前先 browser_open 并 show:true '
-            '把浏览器显示到屏幕上。',
-        parameters: const {
-          'type': 'object',
-          'properties': {
-            'serial': {
-              'type': 'string',
-              'description': 'adb 目标设备序列号；不填则用当前唯一连接的设备',
-            },
-            'label': {
-              'type': 'string',
-              'description': '截图用途/名称，显示给用户辨认',
-            },
-          },
-        },
-        origin: 'ADB 截图',
-        invoke: (args) async {
-          final serial = args['serial']?.toString().trim() ?? '';
-          final label = args['label']?.toString().trim();
-          try {
-            final img = await _captureAdbScreenshot(args);
-            if (img == null) return 'adb 截图失败：没有生成图片。';
-            _toolScreenshotsBySession
-                .putIfAbsent(state.currentSessionId, () => [])
-                .add(img);
-            final target = serial.isNotEmpty ? '设备 $serial' : '当前设备';
-            final uiText = _lastScreenshotText.trim();
-            return '已通过 adb 截取 $target 的屏幕，图片已显示在聊天里。\n'
-                'path: ${img.path}\nscope: ${img.scope}'
-                '${label == null ? '' : '\n用途：$label'}\n'
-                '${uiText.isEmpty ? '' : '界面文字提取（uiautomator）：\n$uiText\n'}'
-                '需要进一步识别时，用 image_recognize 传上面的 path 和 scope'
-                '${uiText.isEmpty ? '' : '；已有界面文字时可直接根据文字回答'}。';
-          } catch (e) {
-            _lastToolScreenshot = null;
-            return 'adb 截图失败：$e';
-          }
-        },
-        attachments: (args) async {
-          final img = _lastToolScreenshot;
-          return img == null ? const [] : [img];
-        },
-      ),
-      ExternalTool(
         name: 'browser_screenshot',
-        description: '截取内置浏览器当前画面并显示在聊天里。'
+        description: '截取内置浏览器当前画面。'
             '用法：先 browser_open 打开目标页（打开时 show:true 显示到前台），'
             '再调用本工具；它会先把浏览器窗口带到前台再截屏。'
-            '截屏后主模型支持图片时可直接看图；不支持图片时用 image_recognize 识别，'
-            '如果没配置图片识别模型，可以用 browser_read 读页面文本代替。',
+            '它只负责生成截图文件，不会直接显示到聊天。'
+            '要把截图显示给用户并让 AI 看图，请随后调用 show_image 传返回的 path/scope；'
+            '不支持图片的主模型再用 image_recognize 识别。',
         parameters: const {
           'type': 'object',
           'properties': {
             'label': {
               'type': 'string',
-              'description': '截图用途/名称，显示给用户辨认',
+              'description': '截图用途/名称',
             },
           },
         },
@@ -2900,21 +2876,72 @@ class ChatNotifier extends Notifier<ChatState> {
           try {
             final img = await _captureAdbScreenshot(args);
             if (img == null) return '浏览器截图失败：没有生成图片。';
-            _toolScreenshotsBySession
-                .putIfAbsent(state.currentSessionId, () => [])
-                .add(img);
             final uiText = _lastScreenshotText.trim();
-            return '已截取浏览器画面，图片已显示在聊天里。\n'
+            return '已截取浏览器画面。\n'
                 'path: ${img.path}\nscope: ${img.scope}'
                 '${label == null ? '' : '\n用途：$label'}\n'
                 '${uiText.isEmpty ? '' : '界面文字提取（uiautomator）：\n$uiText\n'}'
-                '需要识别时用 image_recognize 传上面的 path 和 scope；'
-                '如果没配图片识别模型，可用 browser_read 读页面文本'
-                '${uiText.isEmpty ? '' : '，或直接使用上面提取到的界面文字'}'
-                '代替。';
+                '需要显示到聊天：调用 show_image 传 path/scope。'
+                '需要识别：调用 image_recognize 传 path/scope；没有图片模型时'
+                '可用 browser_read 读页面文本${uiText.isEmpty ? '' : '，或直接使用上面提取到的界面文字'}。';
           } catch (e) {
             _lastToolScreenshot = null;
             return '浏览器截图失败：$e';
+          }
+        },
+      ),
+      ExternalTool(
+        name: 'show_image',
+        description: '把一张图片显示到 AI 聊天里，并让 AI 知道这张图。'
+            '适用于任何已经拿到图片路径的场景：浏览器截图、shell/adb 命令生成的截图、'
+            '用户发来的本地图片等。'
+            '支持图片的主模型会直接看到图片；不支持的模型仍可配合 image_recognize 识别。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'path': {
+              'type': 'string',
+              'description': '图片路径，shell 侧如 /workspace/shot.png，app 侧填宿主绝对路径',
+            },
+            'scope': {
+              'type': 'string',
+              'enum': ['shell', 'app'],
+              'description': '图片所在侧，默认 shell',
+            },
+            'name': {
+              'type': 'string',
+              'description': '图片名称，方便用户辨认',
+            },
+            'note': {
+              'type': 'string',
+              'description': '可选说明，例如“这是刚才 adb 截的设备图”',
+            },
+          },
+          'required': ['path'],
+        },
+        origin: '聊天图片',
+        invoke: (args) async {
+          final path = args['path']?.toString().trim() ?? '';
+          final scope =
+              args['scope']?.toString().trim() == 'app' ? 'app' : 'shell';
+          final name = args['name']?.toString().trim();
+          final note = args['note']?.toString().trim() ?? '';
+          if (path.isEmpty) return '缺少图片路径。';
+          try {
+            final img = await _loadImageAttachment(path, scope, name: name);
+            if (img == null) return '图片读取失败或文件为空：$path';
+            _lastToolScreenshot = img;
+            _toolScreenshotsBySession
+                .putIfAbsent(state.currentSessionId, () => [])
+                .add(img);
+            return '✅ 图片已显示在聊天里，AI 能看到这张图。\n'
+                'path: ${img.path}\nscope: ${img.scope}'
+                '${name == null ? '' : '\nname: $name'}'
+                '${note.isEmpty ? '' : '\n说明：$note'}\n'
+                '如需进一步识别，可调用 image_recognize 传同一 path/scope。';
+          } catch (e) {
+            _lastToolScreenshot = null;
+            return '显示图片失败：$e';
           }
         },
         attachments: (args) async {
