@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -538,8 +539,7 @@ class ChatNotifier extends Notifier<ChatState> {
           for (final m in msgs)
             LlmMessage(
               role: m.role == 'assistant' ? 'assistant' : m.role,
-              content: _assistantHistoryContent(m),
-              images: [for (final img in m.images) img.dataUri],
+              content: _llmContentWithImageHints(m),
             ),
         ],
         [
@@ -703,6 +703,19 @@ class ChatNotifier extends Notifier<ChatState> {
   /// assistant 消息除了最终正文，还把执行过程中发过的“中途说明”
   /// （AgentEventKind.answer）一起带上——以前上下文只有结尾正文，
   /// 模型看不到中间那句“我先看一下日志”“这个报错是 xxx”让人前后接不上。
+  /// 发给主模型的正文：图片不进多模态字段，改为文字标注 + 提供 `image_recognize` 工具。
+  ///
+  /// 这样主模型始终是主线，需要看图时自己调图片识别工具，不用整条对话切模型。
+  String _llmContentWithImageHints(AiChatMessage m) {
+    if (m.images.isEmpty) return _assistantHistoryContent(m);
+    final hints = [
+      for (final img in m.images) '[用户发来图片：${img.path}（scope=${img.scope}）]',
+    ];
+    final base = _assistantHistoryContent(m).trim();
+    if (base.isEmpty) return hints.join('\n');
+    return '${hints.join("\n")}\n$base';
+  }
+
   String _assistantHistoryContent(AiChatMessage m) {
     if (m.role != 'assistant') return _historyContent(m);
     final content = _historyContent(m).trim();
@@ -905,7 +918,12 @@ class ChatNotifier extends Notifier<ChatState> {
         '- 当前时间：${now.year}-${_two(now.month)}-${_two(now.day)} '
         '${_two(now.hour)} 时（需要精确时间用 shell_exec date）',
       )
-      ..add('- 写操作确认策略：${_approvalPromptLine()}');
+      ..add('- 写操作确认策略：${_approvalPromptLine()}')
+      ..add(
+        '- 图片：用户发来图片时不会直接把图像发给你，而是带着“用户发来图片：路径”标注；'
+        '你需要调用 image_recognize 工具（传 path/scope，可带 question）来识别图片内容，'
+        '然后把识别结果作为回答依据。',
+      );
     // 用户开着哪个代码编辑器：直接决定 editor_* 该往哪写，必须实时。
     final editorState = EditorTools.promptState();
     if (editorState.isNotEmpty) lines.add(editorState);
@@ -2488,45 +2506,10 @@ class ChatNotifier extends Notifier<ChatState> {
     try {
       // 基础工具集：子代理拿的就是这一份（不含任务代理工具，防止无限分裂）。
       final baseTools = _buildExternalTools();
-      // 同一个会话里只要出现过图片，就继续用图片识别模型：
-      // 后续文字问题还要引用图片内容，切回主模型会把图片上下文丢掉。
-      // 想回到主模型，开个新会话或清掉该会话里的图片即可。
-      final hasImages = history.any((m) => m.images.isNotEmpty);
-      final LlmConfig llmConfig;
-      if (hasImages) {
-        final registry = ref.read(llmRegistryProvider);
-        final visionProviderId = registry.visionProviderId;
-        final visionModel = registry.visionModel.trim();
-        if (visionProviderId.isEmpty || visionModel.isEmpty) {
-          throw StateError('会话里还有图片，但没设置图片识别模型。'
-              '去「AI 设置 → 图片识别模型」里选一个任意提供商的模型，'
-              '或新建会话/移除图片。');
-        }
-        final visionProvider = registry.byId(visionProviderId);
-        if (visionProvider == null) {
-          throw StateError('图片识别模型对应的提供商已被删除，请重新设置图片识别模型。');
-        }
-        final visionConfig = await ref
-            .read(llmRegistryProvider.notifier)
-            .configFor(visionProviderId, model: visionModel);
-        llmConfig = _configFor(visionConfig, keepModel: true);
-        Logger.d(
-            'ai',
-            'image session uses vision config: provider=${visionProvider.label} '
-                'model=$visionModel '
-                '(base=${visionConfig.baseUrl}, providerId=$visionProviderId, '
-                'imageMessages=${history.where((m) => m.images.isNotEmpty).length})');
-      } else {
-        llmConfig = _configFor(config);
-      }
-      // 图片会话统一走图片识别提供商的插件配置；普通会话才走主提供商的。
-      // 不然主提供商的插件可能把图片提供商上游不认的消息格式带过去。
-      final transformProviderId = hasImages
-          ? ref.read(llmRegistryProvider).visionProviderId
-          : activeProviderId;
-      if (hasImages && transformProviderId != activeProviderId) {
-        await _ensureOutputPlugin(transformProviderId);
-      }
+      // 主模型始终是主线。用户发图片时正文里已带“用户发来图片：路径”提示，
+      // 主模型看到后会调用 image_recognize 工具，由工具用图片识别模型看图，
+      // 这样既不用切换主模型，也不会丢失会话上下文。
+      final LlmConfig llmConfig = _configFor(config);
       // 子代理可以走另一家提供商 / 另一个模型：派出去查资料的活用便宜快的
       // 模型更划算，贵的留给主代理做判断。没设过就还是主代理那份。
       final plan = ref.read(llmRegistryProvider).subAgent;
@@ -2575,8 +2558,8 @@ class ChatNotifier extends Notifier<ChatState> {
         approvalMode: state.approvalMode,
         maxTurns: ref.read(llmRegistryProvider).mainMaxTurns,
         cancelToken: token,
-        requestTransformer: _requestTransformerFor(transformProviderId),
-        responseTransformer: _responseTransformerFor(transformProviderId),
+        requestTransformer: _requestTransformerFor(activeProviderId),
+        responseTransformer: _responseTransformerFor(activeProviderId),
         // 每轮 LLM 请求一回来就刷新顶部上下文/token，不用等整轮跑完。
         onUsage: (total, prompt, cache) {
           if (_cancelToken != token) return;
@@ -2629,11 +2612,94 @@ class ChatNotifier extends Notifier<ChatState> {
     }
   }
 
+  /// 图片识别工具本体：用配置的图片识别模型看一张图，返回文字结果。
+  Future<String> _recognizeImage(Map<String, dynamic> args) async {
+    final path = args['path']?.toString().trim() ?? '';
+    final scope = args['scope']?.toString().trim() == 'app' ? 'app' : 'shell';
+    final question = args['question']?.toString().trim() ?? '';
+    if (path.isEmpty) {
+      return '缺少图片路径。请从用户消息里的“用户发来图片：…”取 path。';
+    }
+    try {
+      final bridge = ProotBridge();
+      final host = await bridge.hostPath(path: path, scope: scope);
+      final bytes = await File(host).readAsBytes();
+      if (bytes.isEmpty) return '图片文件为空：$path';
+      final registry = ref.read(llmRegistryProvider);
+      final visionModel = registry.visionModel.trim();
+      if (registry.visionProviderId.isEmpty || visionModel.isEmpty) {
+        return '还没有设置图片识别模型。去「AI 设置 → 图片识别模型」里选择一个提供商和模型。';
+      }
+      final visionProvider = registry.byId(registry.visionProviderId);
+      if (visionProvider == null) {
+        return '图片识别模型对应的提供商已被删除，请重新设置图片识别模型。';
+      }
+      final cfg = await ref
+          .read(llmRegistryProvider.notifier)
+          .configFor(registry.visionProviderId, model: visionModel);
+      final mime = _guessImageMime(path);
+      final prompt =
+          question.isEmpty ? '请仔细观察这张图片，详细描述内容（物体、场景、文字、颜色等）。' : question;
+      final response = await LlmClient.complete(
+        config: cfg,
+        messages: [
+          const LlmMessage(
+            role: 'system',
+            content: '你是图片识别工具。只依据图片内容回答，看不到的信息不要编造。',
+          ),
+          LlmMessage(
+            role: 'user',
+            content: prompt,
+            images: ['data:$mime;base64,${base64Encode(bytes)}'],
+          ),
+        ],
+      );
+      final text = response.content.trim();
+      return text.isEmpty ? '（图片识别模型没有返回可读内容）' : text;
+    } catch (e) {
+      return '图片识别失败：$e';
+    }
+  }
+
+  static String _guessImageMime(String path) {
+    final lower = path.toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.gif')) return 'image/gif';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.bmp')) return 'image/bmp';
+    return 'image/png';
+  }
+
   static String _quote(String value) => "'${value.replaceAll("'", "'\\''")}'";
 
   /// 组装运行期扩展工具：元能力（记忆/技能/MCP 自管理）+ 技能读取 + MCP 工具。
   List<ExternalTool> _buildExternalTools() {
     final tools = <ExternalTool>[
+      ExternalTool(
+        name: 'image_recognize',
+        description: '识别用户发来的图片/截图。当会话正文里有“用户发来图片：…”这样的标注，'
+            '或者用户问“图上是什么/图片里写了什么/识别这张图”时，调用这个工具。'
+            '把标注里的 path 和 scope 传进来，可带 question 指定要问图片的具体问题。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'path': {'type': 'string', 'description': '图片路径，来自“用户发来图片：…”标注'},
+            'scope': {
+              'type': 'string',
+              'enum': ['shell', 'app'],
+              'description': '图片所在侧，默认 shell'
+            },
+            'question': {
+              'type': 'string',
+              'description': '用户想针对图片问的具体问题；不填则让工具概括图片内容'
+            },
+          },
+          'required': ['path'],
+        },
+        origin: '图片识别',
+        invoke: _recognizeImage,
+      ),
       ...MetaTools.build(
         memory: ref.read(memoryProvider.notifier),
         skills: ref.read(skillProvider.notifier),
