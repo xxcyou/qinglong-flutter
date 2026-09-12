@@ -270,7 +270,7 @@ DSHTheme.clear();
 - `x y width height`: 屏幕逻辑坐标（先查组件锚点再定位）
 - `color`: 颜色
 - `animation`: none / float / bounce / spin
-- `fontSize`, `speechTail`, `fit`，`kind`（image/border/corner），border/corner 时用 borderWidth/glowRadius/glowOpacity，corner 另用 cornerSize/corners
+- `fontSize`, `speechTail`, `fit`（contain/fill/cover）
 
 ### 实现"括号中的高级效果"的标准做法
 1. **落叶飘在组件上**：用 `DSHTheme.effect` 放 N 片叶子图片在组件上方，`animation:'float'`，用 `setInterval`/`requestAnimationFrame` 定期更新 x/y。

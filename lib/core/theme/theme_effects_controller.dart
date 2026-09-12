@@ -68,7 +68,6 @@ class ThemeComponentRegistry {
 class ThemeEffect {
   const ThemeEffect({
     required this.id,
-    this.kind = 'image',
     this.imagePath,
     this.icon,
     this.text,
@@ -79,19 +78,11 @@ class ThemeEffect {
     this.color = const Color(0xFFFF9EC4),
     this.animation = 'none',
     this.fit = 'contain',
-    this.borderWidth = 2,
-    this.glowRadius = 8,
-    this.glowOpacity = 0.6,
-    this.cornerSize = 24,
-    this.corners = 'all',
     this.fontSize = 14,
     this.speechTail = false,
   });
 
   final String id;
-
-  /// image / border；border 是原生边缘发光，不依赖图片。
-  final String kind;
 
   /// 主题包内图片的 guest 路径，例如 /workspace/.ql_themes/packages/x/image/elements/puppet.png。
   final String? imagePath;
@@ -112,20 +103,10 @@ class ThemeEffect {
   /// contain / fill / cover
   final String fit;
   final double fontSize;
-
-  /// border 效果专用。
-  final double borderWidth;
-  final double glowRadius;
-  final double glowOpacity;
-
-  /// corner 效果专用：四角镀金。
-  final double cornerSize;
-  final String corners;
   final bool speechTail;
 
   Map<String, dynamic> toJson() => {
         'id': id,
-        'kind': kind,
         'imagePath': imagePath,
         'icon': icon,
         'text': text,
@@ -136,11 +117,6 @@ class ThemeEffect {
         'color': color.toARGB32(),
         'animation': animation,
         'fit': fit,
-        'borderWidth': borderWidth,
-        'glowRadius': glowRadius,
-        'glowOpacity': glowOpacity,
-        'cornerSize': cornerSize,
-        'corners': corners,
         'fontSize': fontSize,
         'speechTail': speechTail,
       };
@@ -254,7 +230,6 @@ class ThemeEffectBridge {
     if (id.isEmpty) return null;
     return ThemeEffect(
       id: id,
-      kind: map['kind']?.toString() ?? 'image',
       imagePath: map['imagePath']?.toString(),
       icon: map['icon']?.toString(),
       text: map['text']?.toString(),
@@ -265,11 +240,6 @@ class ThemeEffectBridge {
       color: _color(map['color']?.toString()) ?? const Color(0xFFFF9EC4),
       animation: map['animation']?.toString() ?? 'none',
       fit: map['fit']?.toString() ?? 'contain',
-      borderWidth: (map['borderWidth'] as num?)?.toDouble() ?? 2,
-      glowRadius: (map['glowRadius'] as num?)?.toDouble() ?? 8,
-      glowOpacity: (map['glowOpacity'] as num?)?.toDouble() ?? 0.6,
-      cornerSize: (map['cornerSize'] as num?)?.toDouble() ?? 24,
-      corners: map['corners']?.toString() ?? 'all',
       fontSize: (map['fontSize'] as num?)?.toDouble() ?? 14,
       speechTail: map['speechTail'] == true,
     );
@@ -388,109 +358,6 @@ class _ThemeOverlayContentState extends State<_ThemeOverlayContent> {
   }
 }
 
-/// 原生边缘发光：主题包不需要再拿一张图硬拉伸，效果精确贴住组件边缘。
-class _BorderEffect extends StatelessWidget {
-  const _BorderEffect({required this.effect});
-
-  final ThemeEffect effect;
-
-  @override
-  Widget build(BuildContext context) {
-    final e = effect;
-    final radius = BorderRadius.circular(math.min(e.width, e.height) * 0.12);
-    return IgnorePointer(
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          borderRadius: radius,
-          border: Border.all(
-            color: e.color,
-            width: e.borderWidth,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: e.color.withValues(alpha: e.glowOpacity),
-              blurRadius: e.glowRadius,
-              spreadRadius: 0,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 四角镀金/角标：原生绘制四个角，不靠图片，精确贴在组件四角。
-class _CornerEffect extends StatelessWidget {
-  const _CornerEffect({required this.effect});
-
-  final ThemeEffect effect;
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: CustomPaint(
-        painter: _CornerPainter(effect),
-        size: Size.infinite,
-      ),
-    );
-  }
-}
-
-class _CornerPainter extends CustomPainter {
-  _CornerPainter(this.effect);
-
-  final ThemeEffect effect;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final e = effect;
-    final w = size.width;
-    final h = size.height;
-    if (w <= 0 || h <= 0) return;
-
-    final cs = math.min(e.cornerSize, math.min(w, h) * 0.4);
-    final stroke = math.max(1.0, e.borderWidth);
-    final cornerFlag = e.corners.toLowerCase();
-
-    Path pathFor(Offset a, Offset b, Offset c) => Path()
-      ..moveTo(a.dx, a.dy)
-      ..lineTo(b.dx, b.dy)
-      ..lineTo(c.dx, c.dy);
-
-    final corners = <String, Path>{
-      'tl': pathFor(Offset(0, cs), Offset(0, 0), Offset(cs, 0)),
-      'tr': pathFor(Offset(w - cs, 0), Offset(w, 0), Offset(w, cs)),
-      'br': pathFor(Offset(w, h - cs), Offset(w, h), Offset(w - cs, h)),
-      'bl': pathFor(Offset(cs, h), Offset(0, h), Offset(0, h - cs)),
-    };
-
-    final glowPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..color = e.color.withValues(alpha: e.glowOpacity)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, e.glowRadius);
-    final solidPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..color = e.color;
-
-    corners.forEach((key, path) {
-      if (cornerFlag == 'all' || cornerFlag.contains(key)) {
-        canvas.drawPath(path, glowPaint);
-        canvas.drawPath(path, solidPaint);
-      }
-    });
-  }
-
-  @override
-  bool shouldRepaint(covariant _CornerPainter oldDelegate) =>
-      oldDelegate.effect != effect;
-}
-
 class _EffectWidget extends StatefulWidget {
   const _EffectWidget({required this.effect});
 
@@ -525,8 +392,6 @@ class _EffectWidgetState extends State<_EffectWidget>
   @override
   Widget build(BuildContext context) {
     final e = widget.effect;
-    if (e.kind == 'border') return _BorderEffect(effect: e);
-    if (e.kind == 'corner') return _CornerEffect(effect: e);
     Widget child;
     if (e.imagePath != null && e.imagePath!.isNotEmpty) {
       child = FutureBuilder<String>(
