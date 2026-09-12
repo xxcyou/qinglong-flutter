@@ -271,22 +271,16 @@ class ThemeNotifier extends Notifier<ThemeState> {
     final hostRoot = await _bridge.hostPath(path: exportsRoot, scope: 'shell');
     final hostOut = File('$hostRoot/$safe.zip');
 
-    // 收集要打包的文件。
+    // 收集要打包的文件。默认/纯色主题没有 package 目录时先补一个最小包目录，
+    // 再打包，避免“默认主题导出失败”这种问题。
+    final packageGuest = await _ensurePackageDir(theme);
     final files = <String, List<int>>{};
-    final packageGuest = '$packagesRoot/${theme.id}';
-    try {
-      final hostDir =
-          await _bridge.hostPath(path: packageGuest, scope: 'shell');
-      final dir = Directory(hostDir);
-      if (dir.existsSync()) {
-        for (final f in dir.listSync(recursive: true, followLinks: false)) {
-          if (f is File) {
-            files[f.path.substring(hostDir.length + 1)] = f.readAsBytesSync();
-          }
-        }
+    final hostDir = await _bridge.hostPath(path: packageGuest, scope: 'shell');
+    final dir = Directory(hostDir);
+    for (final f in dir.listSync(recursive: true, followLinks: false)) {
+      if (f is File) {
+        files[f.path.substring(hostDir.length + 1)] = f.readAsBytesSync();
       }
-    } catch (_) {
-      // 没有 package 目录 = 纯色/JSON 主题，走下面补最小包。
     }
 
     files['theme.json'] = utf8.encode(jsonEncode(theme.toJson()));
@@ -316,9 +310,51 @@ class ThemeNotifier extends Notifier<ThemeState> {
     return guestOut;
   }
 
+  /// 确保主题有 package 目录；没有就生成最小纯色包（默认主题导出用这个）。
+  Future<String> _ensurePackageDir(ThemeConfig theme) async {
+    final packageGuest = '$packagesRoot/${theme.id}';
+    try {
+      await _bridge.hostPath(path: packageGuest, scope: 'shell');
+      return packageGuest;
+    } catch (_) {
+      // 不存在就新建。
+    }
+    await _bridge.exec(
+      command: 'mkdir -p $packageGuest',
+      timeoutSeconds: 20,
+    );
+    final hostDir = await _bridge.hostPath(path: packageGuest, scope: 'shell');
+    final themeFile = File('$hostDir/theme.json');
+    if (!themeFile.existsSync()) {
+      await themeFile.writeAsString(
+        jsonEncode(theme.toJson()),
+        flush: true,
+      );
+    }
+    final readme = File('$hostDir/README.md');
+    if (!readme.existsSync()) {
+      await readme.writeAsString(
+        '# ${theme.name}\n\n${theme.backgroundHtml.isEmpty ? '纯色/静态主题' : 'HTML/CSS/JS 动态背景主题'}\n'
+        '来源：APP 主题 ${theme.id}\n',
+        flush: true,
+      );
+    }
+    final controller = File('$hostDir/controller.js');
+    if (!controller.existsSync()) {
+      await controller.writeAsString(
+        '// 纯色主题控制脚本：只声明配色，不创建任何 WebView/动画。\n'
+        'const theme = ${jsonEncode(theme.toJson())};\n'
+        'if (!theme.backgroundHtml) { export default { pure: true, colors: theme.colors }; }\n',
+        flush: true,
+      );
+    }
+    return packageGuest;
+  }
+
   String _safeName(String name) {
-    final clean = name.replaceAll(RegExp(r'[^a-zA-Z0-9\u4e00-\u9fa5_-]'), '_');
-    return clean.isEmpty ? 'theme' : clean;
+    // 文件名只用安全 ASCII，避免中文/特殊字符在部分文件系统或 zip 工具里出问题。
+    if (RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(name)) return name;
+    return 'theme_${DateTime.now().millisecondsSinceEpoch}';
   }
 
   /// 导出一个主题为 JSON 字符串。
