@@ -1136,9 +1136,10 @@ class ChatNotifier extends Notifier<ChatState> {
   /// 别的会话在跑完全不影响本会话立刻开跑。
   Future<void> send(String text) async {
     final value = text.trim();
-    if (value.isEmpty) return;
     final sid = state.currentSessionId;
     final images = state.pendingImages;
+    // 只带附件、没有文字也可以发：AI 会直接看附件/调工具识别。
+    if (value.isEmpty && images.isEmpty) return;
     if (_runs.containsKey(sid)) {
       enqueueWithImages(value, images);
       clearPendingImages();
@@ -1797,6 +1798,8 @@ class ChatNotifier extends Notifier<ChatState> {
       liveAgentEvents: const [],
       clearLiveText: true,
       clearError: true,
+      // 撤回带附件的消息时，把附件原样恢复到待发送区；多张图一次全回来。
+      pendingImages: [...state.pendingImages, ...target.images],
     );
     return target.content;
   }
@@ -1814,7 +1817,7 @@ class ChatNotifier extends Notifier<ChatState> {
     }
     if (target < 0) return;
     final text = rollbackTo(target);
-    if (text.trim().isEmpty) return;
+    if (text.trim().isEmpty && state.pendingImages.isEmpty) return;
     await send(text);
   }
 

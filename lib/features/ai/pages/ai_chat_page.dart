@@ -191,7 +191,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     // 附件（本地文件、页面自动带上来的日志）要拼进提问里，
     // 和悬浮窗走同一个 composePrompt，两边行为一致。
     final prompt = dock.composePrompt(_controller.text);
-    if (prompt.trim().isEmpty) return;
+    // 只带图片/附件、没有文字也可以直接发。
+    if (prompt.trim().isEmpty && ref.read(chatProvider).pendingImages.isEmpty) {
+      return;
+    }
     _controller.clear();
     dock.consumeChips();
     // 自己发的消息一定要看到，所以先强制恢复跟随。

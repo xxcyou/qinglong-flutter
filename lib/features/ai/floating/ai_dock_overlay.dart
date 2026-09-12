@@ -115,7 +115,10 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
     final dock = ref.read(aiDockProvider);
     final notifier = ref.read(aiDockProvider.notifier);
     final prompt = notifier.composePrompt(_input.text);
-    if (prompt.trim().isEmpty) return;
+    // 只带图片/附件、没有文字也可以直接发。
+    if (prompt.trim().isEmpty && ref.read(chatProvider).pendingImages.isEmpty) {
+      return;
+    }
     _input.clear();
     notifier.setDraft('');
     notifier.consumeChips();
