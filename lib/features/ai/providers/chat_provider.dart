@@ -941,7 +941,7 @@ class ChatNotifier extends Notifier<ChatState> {
       ..add(
         '- 你可以替用户管理 APP 设置：settings_get/settings_set 查看和修改主题、缓存策略、轮询间隔、调试日志等；'
         'cache_info/cache_clear 查询/清空缓存；provider_manage 配置 AI 提供商（新增/修改/切换/图片识别模型）；'
-        'theme_manage 生成/应用/导入/导出主题方案（含配色、背景图、玻璃效果），'
+        'theme_manage 生成/应用/导入/导出主题 ZIP 包（含配色、背景图、HTML/CSS/JS 动态效果），'
         'API Key 会安全保存不会明文回显。',
       )
       ..add(
@@ -3362,10 +3362,10 @@ class ChatNotifier extends Notifier<ChatState> {
       ),
       ExternalTool(
         name: 'theme_manage',
-        description: '管理主题方案：列出/应用/导出/导入/新建/删除。'
+        description: '管理主题 ZIP 包：列出/应用/新建/删除/导入 ZIP/导出 ZIP。'
             '用户说"换主题/生成个配色/导入主题/导出当前主题/背景图"时用。'
-            '主题配置文件在 /workspace/.ql_themes/themes.json，包含配色表、背景图路径、'
-            '玻璃描边/阴影/圆角/动画等效果配置。',
+            '主题一律是 ZIP 包，不再用 JSON 主题；纯色包包含 theme.json+README.md+controller.js，'
+            '动态包还包含 css/js/html/image/audio/方案。',
         parameters: const {
           'type': 'object',
           'properties': {
@@ -3374,15 +3374,13 @@ class ChatNotifier extends Notifier<ChatState> {
               'enum': [
                 'list',
                 'apply',
-                'get',
                 'create',
-                'import',
                 'remove',
                 'import_zip',
                 'export_zip'
               ],
               'description':
-                  'list=列出；apply=应用；get/export=导出 JSON；create=生成新方案；import=导入 JSON；import_zip=从 ZIP 包导入；export_zip=导出 ZIP 包；remove=删除',
+                  'list=列出；apply=应用；create=生成新的主题 ZIP 包并应用；import_zip=从 ZIP 包导入；export_zip=导出 ZIP 包；remove=删除。不再使用 JSON 主题。',
             },
             'id': {'type': 'string', 'description': '主题 id，list 返回里带'},
             'name': {'type': 'string', 'description': 'create 时主题名'},
@@ -3400,10 +3398,6 @@ class ChatNotifier extends Notifier<ChatState> {
             'accent': {'type': 'string', 'description': '强调色 hex，如 #4FC3F7'},
             'background': {'type': 'string', 'description': '背景色 hex'},
             'on_surface': {'type': 'string', 'description': '正文色 hex'},
-            'config_json': {
-              'type': 'string',
-              'description': 'import 时粘贴的完整主题 JSON'
-            },
             'zip_path': {
               'type': 'string',
               'description': 'import_zip/export_zip 用的 ZIP 包 guest 路径'
@@ -3429,18 +3423,13 @@ class ChatNotifier extends Notifier<ChatState> {
                       ' | 强调:${t.colors['accent'] ?? ''}'
                       '${t.id == state.activeId ? ' | ⭐当前' : ''}',
                 '',
-                '配置文件：/workspace/.ql_themes/themes.json',
-                '用 theme_manage action=apply 传 id 应用；create 生成新方案；export 导出 JSON。',
+                '主题包目录：/workspace/.ql_themes/packages（ZIP 导出在 /workspace/.ql_themes/exports）',
+                '用 theme_manage action=apply 传 id 应用；create 生成新的 ZIP 包；export_zip 导出 ZIP。',
               ].join('\n');
             case 'apply':
               if (state.byId(id) == null) return '找不到主题 id=$id。';
               await notifier.apply(id);
               return '已应用主题 $id。';
-            case 'get':
-            case 'export':
-              final json = notifier.exportJson(id);
-              if (json.isEmpty) return '找不到主题 id=$id。';
-              return '主题 $id JSON：\n$json';
             case 'create':
               final name = args['name']?.toString().trim() ?? '';
               if (name.isEmpty) return 'create 需要 name。';
@@ -3472,18 +3461,9 @@ class ChatNotifier extends Notifier<ChatState> {
               );
               await notifier.upsert(theme);
               await notifier.apply(newId);
-              return '已生成并应用主题：$newId / $name\n'
-                  '导出 JSON：theme_manage action=export id=$newId。';
-            case 'import':
-              final jsonText = args['config_json']?.toString() ?? '';
-              if (jsonText.trim().isEmpty) return 'import 需要 config_json。';
-              try {
-                final theme = await notifier.importJson(jsonText);
-                await notifier.apply(theme.id);
-                return '已导入并应用主题：${theme.name}（${theme.id}）。';
-              } catch (e) {
-                return '主题导入失败：$e';
-              }
+              final zipPath = await notifier.exportZip(newId);
+              return '已生成并应用主题包：$newId / $name\n'
+                  '主题 ZIP：$zipPath（跨设备/分享直接传这个 zip）。';
             case 'import_zip':
               final zipPath = args['zip_path']?.toString().trim() ?? '';
               if (zipPath.isEmpty) return 'import_zip 需要 zip_path。';

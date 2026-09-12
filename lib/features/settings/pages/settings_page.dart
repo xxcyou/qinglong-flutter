@@ -446,53 +446,6 @@ class _ThemeSchemeCard extends ConsumerStatefulWidget {
 }
 
 class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
-  Future<void> _importTheme() async {
-    final controller = TextEditingController();
-    final imported = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('导入主题方案'),
-        content: SizedBox(
-          width: 420,
-          child: TextField(
-            controller: controller,
-            maxLines: 12,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-            decoration: const InputDecoration(
-              hintText:
-                  '粘贴主题 JSON：{"id":"...","name":"...","colors":{...},...}',
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('导入'),
-          ),
-        ],
-      ),
-    );
-    if (imported != true || !mounted) return;
-    try {
-      final theme =
-          await ref.read(themeProvider.notifier).importJson(controller.text);
-      await ref.read(themeProvider.notifier).apply(theme.id);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已导入并应用主题：${theme.name}')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导入失败：$e')),
-      );
-    }
-  }
-
   Future<void> _importZip() async {
     final controller = TextEditingController();
     final ok = await showDialog<bool>(
@@ -550,31 +503,6 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
     }
   }
 
-  Future<void> _exportTheme(ThemeConfig theme) async {
-    final json = ref.read(themeProvider.notifier).exportJson(theme.id);
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('主题方案 JSON - ${theme.name}'),
-        content: SizedBox(
-          width: 420,
-          child: SingleChildScrollView(
-            child: SelectableText(
-              json,
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('关闭'),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(themeProvider);
@@ -592,10 +520,6 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
                   '主题方案',
                   style: TextStyle(fontWeight: FontWeight.w600),
                 ),
-              ),
-              TextButton(
-                onPressed: _importTheme,
-                child: const Text('导入JSON'),
               ),
               TextButton(
                 onPressed: _importZip,
@@ -632,12 +556,6 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
                       icon: const Icon(Icons.check_circle_outline),
                     ),
                   IconButton(
-                    tooltip: '导出JSON',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => _exportTheme(theme),
-                    icon: const Icon(Icons.ios_share),
-                  ),
-                  IconButton(
                     tooltip: '导出ZIP',
                     visualDensity: VisualDensity.compact,
                     onPressed: () => _exportZip(theme),
@@ -651,7 +569,7 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
           ],
           const SizedBox(height: 4),
           Text(
-            '配置文件：/workspace/.ql_themes/themes.json',
+            '主题包目录：/workspace/.ql_themes/packages（导入导出均为 ZIP）',
             style: TextStyle(
                 fontSize: 11,
                 color: Theme.of(context).colorScheme.onSurfaceVariant),
