@@ -97,6 +97,7 @@ DSHTheme.clear();
 
 
 ### 真实修改组件（styleComponent）
+> 不传 `index`、或 `type:'*'`、`page:'*'` 时会应用到全部匹配组件；传 `index` 只改指定那一个。
 直接改变 APP 组件装饰属性，不改坐标、不画覆盖层：
 ```js
 DSHTheme.styleComponent({

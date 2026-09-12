@@ -380,7 +380,7 @@ DSHTheme.effect({ id:'puppet', imagePath: PKG+'/puppet.png', x:10, y:10, width:8
 ## 常用字段
 - id/imagePath/icon/text/x/y/width/height/color/animation/fit/interactive/fontSize/speechTail。
 - `paint` 组件重绘：`{type: solid|gradient|radialGradient|glow|stroke|shadow, colors, opacity, borderWidth, radius, cornerRadius, angle}`。
-- `styleComponent` 真实修改组件边缘颜色/宽度/渐变/发光/圆角，支持 page/type/index。
+- `styleComponent` 真实修改组件边缘颜色/宽度/渐变/发光/圆角；不传 index 或 type:'*' 可应用到全部匹配组件。
 - 图片路径不要写死包 id，用 `window.DSH_PACKAGE_ROOT + '/image/elements/x.png'`。
 
 ## 标准套路

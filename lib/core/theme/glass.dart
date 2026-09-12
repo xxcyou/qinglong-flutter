@@ -876,25 +876,38 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     if (options is! Map) return;
     final style = ThemeEffectBridge.parseComponentStyle(options);
     if (style == null) return;
-    final page = options['page']?.toString() ?? 'default';
-    final type = options['type']?.toString() ?? '';
-    if (type.isEmpty) return;
-    final index = (options['index'] as num?)?.toInt() ?? 0;
-    ThemeEffectsController.instance.applyComponentStyle(
-      page: page,
-      type: type,
-      index: index,
-      style: style,
-    );
+    final page = options['page']?.toString();
+    final type = options['type']?.toString();
+    final rawIndex = options['index'];
+    final pageFilter = page == null || page == '*' ? null : page;
+    final typeFilter = type == null || type == '*' ? null : type;
+    final anchors = ThemeComponentRegistry.instance
+        .query(page: pageFilter, type: typeFilter);
+    for (final a in anchors) {
+      if (rawIndex != null && a.index != (rawIndex as num).toInt()) continue;
+      ThemeEffectsController.instance.applyComponentStyle(
+        page: a.page,
+        type: a.type,
+        index: a.index,
+        style: style,
+      );
+    }
   }
 
   void _handleRemoveComponentStyle(Object? options) {
     if (options is! Map) return;
-    final page = options['page']?.toString() ?? 'default';
-    final type = options['type']?.toString() ?? '';
-    if (type.isEmpty) return;
-    final index = (options['index'] as num?)?.toInt() ?? 0;
-    ThemeEffectsController.instance.removeComponentStyle(page, type, index);
+    final page = options['page']?.toString();
+    final type = options['type']?.toString();
+    final rawIndex = options['index'];
+    final pageFilter = page == null || page == '*' ? null : page;
+    final typeFilter = type == null || type == '*' ? null : type;
+    final anchors = ThemeComponentRegistry.instance
+        .query(page: pageFilter, type: typeFilter);
+    for (final a in anchors) {
+      if (rawIndex != null && a.index != (rawIndex as num).toInt()) continue;
+      ThemeEffectsController.instance
+          .removeComponentStyle(a.page, a.type, a.index);
+    }
   }
 
   /// 自动把主题包里的 css/js 注入 html，并对 controller.js 里声明的
