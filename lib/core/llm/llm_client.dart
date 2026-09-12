@@ -14,6 +14,7 @@ class LlmMessage {
   const LlmMessage({
     required this.role,
     this.content = '',
+    this.images = const [],
     this.toolCalls = const [],
     this.toolCallId,
     this.name,
@@ -21,6 +22,10 @@ class LlmMessage {
 
   final String role;
   final String content;
+
+  /// 多模态图片，每项是 `data:image/...;base64,...`。
+  /// 非空时 `content` 会序列化成 OpenAI 风格的 content 数组。
+  final List<String> images;
   final List<LlmToolCall> toolCalls;
 
   /// role == 'tool' 时必须回填对应的 tool_call.id，否则严格实现的服务端会 400。
@@ -31,7 +36,17 @@ class LlmMessage {
 
   Map<String, dynamic> toJson() => {
         'role': role,
-        if (content.isNotEmpty || role == 'tool') 'content': content,
+        if (images.isNotEmpty)
+          'content': [
+            if (content.isNotEmpty) {'type': 'text', 'text': content},
+            for (final url in images)
+              {
+                'type': 'image_url',
+                'image_url': {'url': url}
+              },
+          ]
+        else if (content.isNotEmpty || role == 'tool')
+          'content': content,
         if (toolCallId != null) 'tool_call_id': toolCallId,
         if (name != null) 'name': name,
         if (toolCalls.isNotEmpty)

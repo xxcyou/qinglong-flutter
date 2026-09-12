@@ -478,13 +478,37 @@ class OutputPluginService {
     }
   }
 
-  static LlmMessage _messageFromJson(Map<String, dynamic> json) => LlmMessage(
-        role: json['role']?.toString() ?? 'user',
-        content: json['content']?.toString() ?? '',
-        toolCallId: json['tool_call_id']?.toString(),
-        name: json['name']?.toString(),
-        toolCalls: _toolCallsFromJson(json['tool_calls']) ?? const [],
-      );
+  static LlmMessage _messageFromJson(Map<String, dynamic> json) {
+    var content = '';
+    var images = <String>[];
+    final rawContent = json['content'];
+    if (rawContent is List) {
+      // 多模态 content 数组：文字和图片混在一起。
+      for (final part in rawContent) {
+        if (part is! Map) continue;
+        final type = part['type']?.toString() ?? '';
+        if (type == 'text') {
+          content += part['text']?.toString() ?? '';
+        } else if (type == 'image_url') {
+          final url = part['image_url'];
+          if (url is Map) {
+            final u = url['url']?.toString() ?? '';
+            if (u.isNotEmpty) images.add(u);
+          }
+        }
+      }
+    } else {
+      content = rawContent?.toString() ?? '';
+    }
+    return LlmMessage(
+      role: json['role']?.toString() ?? 'user',
+      content: content,
+      images: images,
+      toolCallId: json['tool_call_id']?.toString(),
+      name: json['name']?.toString(),
+      toolCalls: _toolCallsFromJson(json['tool_calls']) ?? const [],
+    );
+  }
 
   static List<LlmToolCall>? _toolCallsFromJson(dynamic value) {
     if (value is! List) return null;

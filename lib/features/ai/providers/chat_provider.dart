@@ -67,6 +67,7 @@ class ChatState {
     this.liveContentChars = 0,
     this.liveTool = '',
     this.livePlan = const AgentTaskPlan(),
+    this.pendingImages = const [],
     this.toolRecords = const [],
     this.pendingPlan = const [],
     this.pendingQuestion,
@@ -129,6 +130,9 @@ class ChatState {
 
   /// 正在跑的这一轮的任务清单：AI 每更新一步，界面上的勾就动一下。
   final AgentTaskPlan livePlan;
+
+  /// 待发送的图片附件（选了图但还没点发送）。
+  final List<AiImageAttachment> pendingImages;
   final List<ToolCallRecord> toolRecords;
   final List<AiPlanAction> pendingPlan;
 
@@ -236,6 +240,7 @@ class ChatState {
     String? liveTool,
     bool clearLiveText = false,
     AgentTaskPlan? livePlan,
+    List<AiImageAttachment>? pendingImages,
     List<ToolCallRecord>? toolRecords,
     List<AiPlanAction>? pendingPlan,
     AgentQuestion? pendingQuestion,
@@ -278,6 +283,7 @@ class ChatState {
           clearLiveText ? 0 : liveContentChars ?? this.liveContentChars,
       liveTool: clearLiveText ? '' : liveTool ?? this.liveTool,
       livePlan: livePlan ?? this.livePlan,
+      pendingImages: pendingImages ?? this.pendingImages,
       toolRecords: toolRecords ?? this.toolRecords,
       pendingPlan: pendingPlan ?? this.pendingPlan,
       pendingQuestion:
@@ -533,6 +539,7 @@ class ChatNotifier extends Notifier<ChatState> {
             LlmMessage(
               role: m.role == 'assistant' ? 'assistant' : m.role,
               content: _historyContent(m),
+              images: [for (final img in m.images) img.dataUri],
             ),
         ],
         [
@@ -589,6 +596,7 @@ class ChatNotifier extends Notifier<ChatState> {
           LlmMessage(
             role: m.role,
             content: [...carried, m.content].join('\n'),
+            images: m.images,
           ),
         );
         carried.clear();
@@ -947,7 +955,11 @@ class ChatNotifier extends Notifier<ChatState> {
   int _estimateTokens(List<LlmMessage> messages) {
     final chars = messages.fold<int>(
       0,
-      (sum, m) => sum + m.content.length + m.toolCalls.length * 80,
+      (sum, m) =>
+          sum +
+          m.content.length +
+          m.toolCalls.length * 80 +
+          m.images.length * 850,
     );
     return (chars / 3.5).ceil();
   }
@@ -980,6 +992,7 @@ class ChatNotifier extends Notifier<ChatState> {
         out.add(LlmMessage(
           role: m.role,
           content: content,
+          images: m.images,
           toolCalls: m.toolCalls,
           toolCallId: m.toolCallId,
           name: m.name,
@@ -1064,17 +1077,43 @@ class ChatNotifier extends Notifier<ChatState> {
     return out.join('\n');
   }
 
+  /// 往输入框上方挂一张待发送图片。
+  void addPendingImage(AiImageAttachment image) {
+    state = state.copyWith(
+      pendingImages: [...state.pendingImages, image],
+    );
+  }
+
+  /// 撤下一张待发送图片。
+  void removePendingImage(int index) {
+    if (index < 0 || index >= state.pendingImages.length) return;
+    state = state.copyWith(
+      pendingImages: [
+        for (var i = 0; i < state.pendingImages.length; i++)
+          if (i != index) state.pendingImages[i],
+      ],
+    );
+  }
+
+  void clearPendingImages() {
+    if (state.pendingImages.isEmpty) return;
+    state = state.copyWith(pendingImages: const []);
+  }
+
   /// 发送。当前会话正在跑的时候不再丢弃输入，而是进该会话的排队区；
   /// 别的会话在跑完全不影响本会话立刻开跑。
   Future<void> send(String text) async {
     final value = text.trim();
     if (value.isEmpty) return;
     final sid = state.currentSessionId;
+    final images = state.pendingImages;
     if (_runs.containsKey(sid)) {
-      enqueue(value);
+      enqueueWithImages(value, images);
+      clearPendingImages();
       return;
     }
-    await _sendNow(value, sessionId: sid);
+    await _sendNow(value, sessionId: sid, images: images);
+    clearPendingImages();
     // 这里不再无条件 drain：_sendNow 收尾时已经按"是否挂起"判断过一次。
     _pumpQueue(sid);
   }
@@ -1089,6 +1128,22 @@ class ChatNotifier extends Notifier<ChatState> {
       queue: [
         ...state.queue,
         QueuedMessage.create(value, sessionId: state.currentSessionId),
+      ],
+    );
+  }
+
+  /// 带图片的排队消息。
+  void enqueueWithImages(String text, List<AiImageAttachment> images) {
+    final value = text.trim();
+    if (value.isEmpty && images.isEmpty) return;
+    state = state.copyWith(
+      queue: [
+        ...state.queue,
+        QueuedMessage.create(
+          value,
+          sessionId: state.currentSessionId,
+          images: images,
+        ),
       ],
     );
   }
@@ -1160,7 +1215,7 @@ class ChatNotifier extends Notifier<ChatState> {
           ...state.queue.skip(idx + 1),
         ],
       );
-      await _sendNow(next.text, sessionId: sid);
+      await _sendNow(next.text, sessionId: sid, images: next.images);
     }
   }
 
@@ -1178,6 +1233,7 @@ class ChatNotifier extends Notifier<ChatState> {
     bool appendUser = true,
     String? sessionId,
     List<AgentEvent>? resumeEvents,
+    List<AiImageAttachment> images = const [],
   }) async {
     final session =
         sessionId == null ? state.currentSession : _sessionById(sessionId);
@@ -1206,7 +1262,10 @@ class ChatNotifier extends Notifier<ChatState> {
 
     if (appendUser) {
       final userMessage = AiChatMessage(
-          role: 'user', content: value, createdAt: DateTime.now());
+          role: 'user',
+          content: value,
+          images: images,
+          createdAt: DateTime.now());
       final updated = AiSession(
         id: session.id,
         title: session.title == '新会话' ? _titleFrom(value) : session.title,
@@ -2410,7 +2469,19 @@ class ChatNotifier extends Notifier<ChatState> {
     try {
       // 基础工具集：子代理拿的就是这一份（不含任务代理工具，防止无限分裂）。
       final baseTools = _buildExternalTools();
-      final llmConfig = _configFor(config);
+      final hasImages = history.any((m) => m.images.isNotEmpty);
+      final activeProvider = ref.read(llmRegistryProvider).active;
+      final visionModel = activeProvider.visionModel.trim();
+      final LlmConfig llmConfig;
+      if (hasImages) {
+        if (visionModel.isEmpty) {
+          throw StateError('当前 AI 提供商没有设置图片识别模型，无法发送图片。'
+              '去「供应商 → 图片识别」里设置一个模型，或先移除图片。');
+        }
+        llmConfig = _configFor(config, model: visionModel);
+      } else {
+        llmConfig = _configFor(config);
+      }
       // 子代理可以走另一家提供商 / 另一个模型：派出去查资料的活用便宜快的
       // 模型更划算，贵的留给主代理做判断。没设过就还是主代理那份。
       final plan = ref.read(llmRegistryProvider).subAgent;

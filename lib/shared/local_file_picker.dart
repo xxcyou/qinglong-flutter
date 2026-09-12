@@ -1,8 +1,11 @@
+import 'dart:convert';
+import 'dart:io';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 
 import '../core/local_shell/proot_bridge.dart';
+import '../features/ai/models/ai_message.dart';
 import '../core/theme/glass.dart';
 import '../core/utils/formatter.dart';
 import 'file_kinds.dart';
@@ -17,21 +20,56 @@ class PickedLocalFile {
     required this.size,
     required this.truncated,
     this.language,
+    this.scope = 'shell',
+    this.mime = '',
   });
 
   final String path;
   final String name;
 
-  /// 文件正文（超限已截断，见 [truncated]）。
+  /// 文件正文（超限已截断，见 [truncated]）。图片类附件不读正文，为空。
   final String content;
   final int size;
   final bool truncated;
 
   /// 代码高亮语言名，供附件块标注 fence。
   final String? language;
+
+  /// 文件在哪一侧：shell（终端）或 app（APP 沙箱）。
+  final String scope;
+
+  /// MIME 类型（图片附件要用，文本附件可为空）。
+  final String mime;
 }
 
 /// 本地文件选择器：给 AI 加附件用。
+
+/// 把图片选择结果转成聊天用的 [AiImageAttachment]。
+///
+/// 图片不走「读文本」那条路：这里通过宿主路径读原始字节，编码成 data URI，
+/// 既给模型识别用，也给气泡/悬浮窗展示用。
+Future<AiImageAttachment?> readPickedImage(PickedLocalFile picked) async {
+  if (!picked.mime.toLowerCase().startsWith('image/')) return null;
+  try {
+    final bridge = ProotBridge();
+    final host = await bridge.hostPath(
+      path: picked.path,
+      scope: picked.scope,
+    );
+    final bytes = await File(host).readAsBytes();
+    if (bytes.isEmpty) return null;
+    return AiImageAttachment(
+      name: picked.name,
+      mime: picked.mime,
+      dataUri: 'data:${picked.mime};base64,${base64Encode(bytes)}',
+      path: picked.path,
+      scope: picked.scope,
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
 ///
 /// 复用文件管理那套目录能力（[ProotBridge]），但**不是**文件管理器：
 /// 这里只做"挑一个能当附件的文本文件"，所以
@@ -148,6 +186,20 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
     if (_reading) return;
     setState(() => _reading = true);
     try {
+      if (kind.category == FileCategory.image) {
+        Navigator.of(context).pop(
+          PickedLocalFile(
+            path: entry.path,
+            name: entry.name,
+            content: '',
+            size: entry.size,
+            truncated: false,
+            scope: _appScope ? 'app' : 'shell',
+            mime: FileKinds.mimeOf(entry.name),
+          ),
+        );
+        return;
+      }
       final raw = await _bridge.readFile(
         path: entry.path,
         scope: _appScope ? 'app' : 'shell',
@@ -162,6 +214,7 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
           size: entry.size,
           truncated: truncated,
           language: kind.language,
+          scope: _appScope ? 'app' : 'shell',
         ),
       );
     } catch (e) {
@@ -197,11 +250,11 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
       if (result.files.length == 1) {
         final one = result.files.first;
         final kind = FileKinds.of(one.name);
-        if (kind.isTextLike) {
+        if (kind.isTextLike || kind.category == FileCategory.image) {
           await _choose(one, kind);
           return;
         }
-        // 传进来的是图片/压缩包这类：文件留在目录里，但当不了附件，说清楚原因。
+        // 传进来的是压缩包/可执行这类：文件留在目录里，但当不了附件，说清楚原因。
         _rejectBinary(kind);
       }
     } catch (e) {
@@ -388,7 +441,9 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
                             entry.name,
                             isDirectory: entry.isDirectory,
                           );
-                          final usable = entry.isDirectory || kind.isTextLike;
+                          final usable = entry.isDirectory ||
+                              kind.isTextLike ||
+                              kind.category == FileCategory.image;
                           return _Tile(
                             entry: entry,
                             kind: kind,
@@ -396,7 +451,8 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
                             onTap: () {
                               if (entry.isDirectory) {
                                 _load(entry.path);
-                              } else if (kind.isTextLike) {
+                              } else if (kind.isTextLike ||
+                                  kind.category == FileCategory.image) {
                                 _choose(entry, kind);
                               } else {
                                 _rejectBinary(kind);

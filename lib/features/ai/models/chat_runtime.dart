@@ -1,33 +1,56 @@
 import 'dart:convert';
 
 import 'agent_event.dart';
+import 'ai_message.dart';
 
 /// 排队中的一条待发消息。
 class QueuedMessage {
   QueuedMessage({
     required this.id,
     required this.text,
+    this.images = const [],
     this.sessionId = '',
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
 
   final String id;
   final String text;
+  final List<AiImageAttachment> images;
 
   /// 这条消息属于哪个会话；空表示旧数据/全局。并发跑时每个会话各自排各的队。
   final String sessionId;
   final DateTime createdAt;
 
-  factory QueuedMessage.create(String text, {String sessionId = ''}) =>
+  factory QueuedMessage.create(
+    String text, {
+    String sessionId = '',
+    List<AiImageAttachment> images = const [],
+  }) =>
       QueuedMessage(
         id: DateTime.now().microsecondsSinceEpoch.toRadixString(36),
         text: text,
+        images: images,
         sessionId: sessionId,
+      );
+
+  QueuedMessage copyWith({
+    String? text,
+    List<AiImageAttachment>? images,
+    String? sessionId,
+  }) =>
+      QueuedMessage(
+        id: id,
+        text: text ?? this.text,
+        images: images ?? this.images,
+        sessionId: sessionId ?? this.sessionId,
+        createdAt: createdAt,
       );
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'text': text,
+        if (images.isNotEmpty)
+          'images': [for (final img in images) img.toJson()],
         'sessionId': sessionId,
         'createdAt': createdAt.toIso8601String(),
       };
@@ -36,6 +59,10 @@ class QueuedMessage {
         id: json['id']?.toString() ??
             DateTime.now().microsecondsSinceEpoch.toRadixString(36),
         text: json['text']?.toString() ?? '',
+        images: [
+          for (final img in (json['images'] as List? ?? const []))
+            if (img is Map<String, dynamic>) AiImageAttachment.fromJson(img),
+        ],
         sessionId: json['sessionId']?.toString() ?? '',
         createdAt: DateTime.tryParse(json['createdAt']?.toString() ?? ''),
       );

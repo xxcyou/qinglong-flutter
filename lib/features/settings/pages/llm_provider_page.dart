@@ -1072,6 +1072,122 @@ class _ProviderModels extends ConsumerWidget {
                 ),
               ),
             ),
+        const SectionLabel('图片识别'),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: GlassCard(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    provider.visionModel.trim().isEmpty
+                        ? '未设置（AI 对话不支持图片）'
+                        : '已设置：${provider.visionModel.trim()}',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: provider.visionModel.trim().isEmpty
+                          ? scheme.onSurfaceVariant
+                          : scheme.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '有图片时这一轮会改用这个模型。清空后聊天里就不能再发图片；'
+                    '历史里已经发过的图片仍会显示。',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      GlassPill(
+                        icon: Icons.image_search,
+                        label: provider.visionModel.trim().isEmpty
+                            ? '选择图片识别模型'
+                            : '更换图片识别模型',
+                        dense: true,
+                        onTap: () async {
+                          if (models.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('还没有模型，先获取/添加模型后再设置'),
+                                duration: Duration(seconds: 2),
+                              ),
+                            );
+                            return;
+                          }
+                          final picked = await showModalBottomSheet<String>(
+                            context: context,
+                            isScrollControlled: true,
+                            builder: (context) => SafeArea(
+                              child: ConstrainedBox(
+                                constraints:
+                                    const BoxConstraints(maxHeight: 460),
+                                child: ListView(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 8),
+                                  children: [
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                          16, 6, 16, 6),
+                                      child: Text(
+                                        '选择图片识别模型',
+                                        style: const TextStyle(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w700),
+                                      ),
+                                    ),
+                                    for (final m in models)
+                                      ListTile(
+                                        dense: true,
+                                        leading: m == provider.visionModel
+                                            ? const Icon(Icons.check, size: 18)
+                                            : const SizedBox(width: 18),
+                                        title: Text(m,
+                                            style:
+                                                const TextStyle(fontSize: 13)),
+                                        onTap: () => Navigator.pop(context, m),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                          if (picked == null || !context.mounted) return;
+                          await ref
+                              .read(llmRegistryProvider.notifier)
+                              .updateProvider(
+                                provider.copyWith(visionModel: picked),
+                              );
+                        },
+                      ),
+                      if (provider.visionModel.trim().isNotEmpty)
+                        GlassPill(
+                          icon: Icons.backspace_outlined,
+                          label: '清除（禁用图片）',
+                          dense: true,
+                          onTap: () async {
+                            await ref
+                                .read(llmRegistryProvider.notifier)
+                                .updateProvider(
+                                  provider.copyWith(visionModel: ''),
+                                );
+                          },
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ],
     );
   }

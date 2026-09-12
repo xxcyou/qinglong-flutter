@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/llm/llm_registry_provider.dart';
 import '../../../core/theme/glass.dart';
 import '../../../router.dart';
 import '../../../shared/editor_bus.dart';
@@ -11,6 +13,7 @@ import '../../../shared/float_stack.dart';
 import '../../../shared/local_file_picker.dart';
 import '../../home/home_navigation_provider.dart';
 import '../models/agent_event.dart';
+import '../models/ai_message.dart';
 import '../models/approval_mode.dart';
 import '../widgets/ai_composer.dart';
 import '../widgets/ai_control_sheets.dart';
@@ -27,6 +30,8 @@ import '../agent/agent_loop.dart';
 import '../providers/chat_provider.dart';
 import '../widgets/agent_process_card.dart';
 import '../widgets/markdown_message.dart';
+import '../widgets/pending_image_bar.dart';
+import '../../../shared/image_preview_overlay.dart';
 import 'ai_dock_provider.dart';
 
 /// 悬浮 AI 的宿主。
@@ -1561,6 +1566,7 @@ class _WindowState extends ConsumerState<_Window> {
                                     isUser: m.isUser,
                                     text: m.content,
                                     outcome: m.outcome,
+                                    images: m.images,
                                     // 悬浮窗以前没有重发/撤回：发错一句只能
                                     // 切到 AI 页去改，用户直接说"悬浮窗 AI
                                     // 不能重发"。这里补齐，交互上用"点两下
@@ -1649,6 +1655,12 @@ class _WindowState extends ConsumerState<_Window> {
                               ],
                             ),
                 ),
+                if (!_sessions)
+                  PendingImageBar(
+                    images: chat.pendingImages,
+                    onRemove: chatNotifier.removePendingImage,
+                    margin: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+                  ),
                 if (!_sessions && dock.chips.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
@@ -1823,6 +1835,45 @@ class _WindowState extends ConsumerState<_Window> {
     final picked = await LocalFilePicker.pick(navContext);
     if (picked == null) {
       notifier.open();
+      return;
+    }
+    if (picked.mime.toLowerCase().startsWith('image/')) {
+      final active = ref.read(llmRegistryProvider).active;
+      if (active.visionModel.trim().isEmpty) {
+        notifier.open();
+        final toastContext = appNavigatorKey.currentContext;
+        if (toastContext != null && toastContext.mounted) {
+          ScaffoldMessenger.of(toastContext).showSnackBar(
+            const SnackBar(
+              content: Text('当前 AI 提供商没有设置图片识别模型，去「设置 → AI → 提供商」里配置后才能发图片。'),
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+        return;
+      }
+      final image = await readPickedImage(picked);
+      if (image == null) {
+        notifier.open();
+        final toastContext = appNavigatorKey.currentContext;
+        if (toastContext != null && toastContext.mounted) {
+          ScaffoldMessenger.of(toastContext).showSnackBar(
+            SnackBar(content: Text('图片读取失败：${picked.path}')),
+          );
+        }
+        return;
+      }
+      ref.read(chatProvider.notifier).addPendingImage(image);
+      notifier.open();
+      final toastContext = appNavigatorKey.currentContext;
+      if (toastContext != null && toastContext.mounted) {
+        ScaffoldMessenger.of(toastContext).showSnackBar(
+          SnackBar(
+            content: Text('已附上图片 ${picked.name}'),
+            duration: const Duration(seconds: 1),
+          ),
+        );
+      }
       return;
     }
     // pushFile(open: true) 会把窗口重新展开，附件已经在输入框上方了。
@@ -2436,11 +2487,33 @@ class _Hints extends StatelessWidget {
   }
 }
 
+class _MiniImage extends StatelessWidget {
+  const _MiniImage({required this.image});
+
+  final AiImageAttachment image;
+
+  @override
+  Widget build(BuildContext context) {
+    final comma = image.dataUri.indexOf(',');
+    final raw = comma >= 0 ? image.dataUri.substring(comma + 1) : image.dataUri;
+    try {
+      return Image.memory(
+        base64Decode(raw),
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined),
+      );
+    } catch (_) {
+      return const Icon(Icons.broken_image_outlined);
+    }
+  }
+}
+
 class _MiniBubble extends StatefulWidget {
   const _MiniBubble({
     required this.isUser,
     required this.text,
     required this.outcome,
+    this.images = const [],
     this.onResend,
     this.onRollback,
   });
@@ -2448,6 +2521,7 @@ class _MiniBubble extends StatefulWidget {
   final bool isUser;
   final String text;
   final String outcome;
+  final List<AiImageAttachment> images;
 
   /// 重发这条（会把它之后的对话删掉重来）。
   final VoidCallback? onResend;
@@ -2514,6 +2588,28 @@ class _MiniBubbleState extends State<_MiniBubble> {
           crossAxisAlignment:
               isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
+            if (widget.images.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 5),
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final image in widget.images)
+                      GestureDetector(
+                        onTap: () => ImagePreviewOverlay.show(context, image),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: SizedBox(
+                            width: 88,
+                            height: 88,
+                            child: _MiniImage(image: image),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             if (isUser)
               Text(
                 text.length > 300 ? '${text.substring(0, 300)}…' : text,

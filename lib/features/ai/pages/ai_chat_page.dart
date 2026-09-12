@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/llm/llm_config_provider.dart';
+import '../../../core/llm/llm_registry_provider.dart';
 import '../../../core/theme/glass.dart';
 import '../../../core/utils/formatter.dart';
 import '../../../core/utils/error_text.dart';
@@ -34,7 +35,9 @@ import '../widgets/queue_strip.dart';
 import 'mcp_server_page.dart';
 import 'skill_list_page.dart';
 import '../widgets/markdown_message.dart';
+import '../widgets/pending_image_bar.dart';
 import '../../../shared/mono_text.dart';
+import '../../../shared/image_preview_overlay.dart';
 import '../../terminal/pages/shell_files_page.dart';
 
 class AiChatPage extends ConsumerStatefulWidget {
@@ -197,10 +200,37 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
 
-  /// 挑一个本地文件当附件。
+  /// 挑一个本地文件当附件。图片走独立图片通道，需要提供商配好图片识别模型。
   Future<void> _pickFile() async {
     final picked = await LocalFilePicker.pick(context);
     if (picked == null || !mounted) return;
+    if (picked.mime.toLowerCase().startsWith('image/')) {
+      final active = ref.read(llmRegistryProvider).active;
+      if (active.visionModel.trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('当前 AI 提供商没有设置图片识别模型，去「设置 → AI → 提供商」里配置后才能发图片。'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+      final image = await readPickedImage(picked);
+      if (image == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('图片读取失败：${picked.path}')),
+        );
+        return;
+      }
+      ref.read(chatProvider.notifier).addPendingImage(image);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已附上图片 ${picked.name}'),
+          duration: const Duration(seconds: 1),
+        ),
+      );
+      return;
+    }
     final label = ref.read(aiDockProvider.notifier).pushFile(
           path: picked.path,
           name: picked.name,
@@ -1087,6 +1117,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                   onRemove: notifier.dequeue,
                   onInterruptSend: notifier.interruptAndSend,
                 ),
+                // 待发送图片条。
+                PendingImageBar(
+                  images: state.pendingImages,
+                  onRemove: notifier.removePendingImage,
+                ),
                 // 附件条。用的是悬浮窗那份 chips：两边共享同一个会话，
                 // 附件当然也得是同一份，否则在这里加的附件发出去不带上。
                 if (chips.isNotEmpty)
@@ -1389,6 +1424,28 @@ class _MessageBubble extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (message.images.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final image in message.images)
+                      GestureDetector(
+                        onTap: () => ImagePreviewOverlay.show(context, image),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: SizedBox(
+                            width: 112,
+                            height: 112,
+                            child: _MessageImage(image: image),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             if (isUser)
               SelectableText(
                 message.content,
@@ -1910,6 +1967,27 @@ class _SendErrorLine extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+class _MessageImage extends StatelessWidget {
+  const _MessageImage({required this.image});
+
+  final AiImageAttachment image;
+
+  @override
+  Widget build(BuildContext context) {
+    final comma = image.dataUri.indexOf(',');
+    final raw = comma >= 0 ? image.dataUri.substring(comma + 1) : image.dataUri;
+    try {
+      return Image.memory(
+        base64Decode(raw),
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined),
+      );
+    } catch (_) {
+      return const Icon(Icons.broken_image_outlined);
+    }
   }
 }
 
