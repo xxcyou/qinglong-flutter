@@ -68,6 +68,7 @@ class ThemeComponentRegistry {
 class ThemeEffect {
   const ThemeEffect({
     required this.id,
+    this.kind = 'image',
     this.imagePath,
     this.icon,
     this.text,
@@ -78,11 +79,17 @@ class ThemeEffect {
     this.color = const Color(0xFFFF9EC4),
     this.animation = 'none',
     this.fit = 'contain',
+    this.borderWidth = 2,
+    this.glowRadius = 8,
+    this.glowOpacity = 0.6,
     this.fontSize = 14,
     this.speechTail = false,
   });
 
   final String id;
+
+  /// image / border；border 是原生边缘发光，不依赖图片。
+  final String kind;
 
   /// 主题包内图片的 guest 路径，例如 /workspace/.ql_themes/packages/x/image/elements/puppet.png。
   final String? imagePath;
@@ -103,10 +110,16 @@ class ThemeEffect {
   /// contain / fill / cover
   final String fit;
   final double fontSize;
+
+  /// border 效果专用。
+  final double borderWidth;
+  final double glowRadius;
+  final double glowOpacity;
   final bool speechTail;
 
   Map<String, dynamic> toJson() => {
         'id': id,
+        'kind': kind,
         'imagePath': imagePath,
         'icon': icon,
         'text': text,
@@ -117,6 +130,9 @@ class ThemeEffect {
         'color': color.toARGB32(),
         'animation': animation,
         'fit': fit,
+        'borderWidth': borderWidth,
+        'glowRadius': glowRadius,
+        'glowOpacity': glowOpacity,
         'fontSize': fontSize,
         'speechTail': speechTail,
       };
@@ -230,6 +246,7 @@ class ThemeEffectBridge {
     if (id.isEmpty) return null;
     return ThemeEffect(
       id: id,
+      kind: map['kind']?.toString() ?? 'image',
       imagePath: map['imagePath']?.toString(),
       icon: map['icon']?.toString(),
       text: map['text']?.toString(),
@@ -240,6 +257,9 @@ class ThemeEffectBridge {
       color: _color(map['color']?.toString()) ?? const Color(0xFFFF9EC4),
       animation: map['animation']?.toString() ?? 'none',
       fit: map['fit']?.toString() ?? 'contain',
+      borderWidth: (map['borderWidth'] as num?)?.toDouble() ?? 2,
+      glowRadius: (map['glowRadius'] as num?)?.toDouble() ?? 8,
+      glowOpacity: (map['glowOpacity'] as num?)?.toDouble() ?? 0.6,
       fontSize: (map['fontSize'] as num?)?.toDouble() ?? 14,
       speechTail: map['speechTail'] == true,
     );
@@ -358,6 +378,37 @@ class _ThemeOverlayContentState extends State<_ThemeOverlayContent> {
   }
 }
 
+/// 原生边缘发光：主题包不需要再拿一张图硬拉伸，效果精确贴住组件边缘。
+class _BorderEffect extends StatelessWidget {
+  const _BorderEffect({required this.effect});
+
+  final ThemeEffect effect;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = effect;
+    final radius = BorderRadius.circular(math.min(e.width, e.height) * 0.12);
+    return IgnorePointer(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: radius,
+          border: Border.all(
+            color: e.color,
+            width: e.borderWidth,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: e.color.withValues(alpha: e.glowOpacity),
+              blurRadius: e.glowRadius,
+              spreadRadius: 0,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _EffectWidget extends StatefulWidget {
   const _EffectWidget({required this.effect});
 
@@ -392,6 +443,7 @@ class _EffectWidgetState extends State<_EffectWidget>
   @override
   Widget build(BuildContext context) {
     final e = widget.effect;
+    if (e.kind == 'border') return _BorderEffect(effect: e);
     Widget child;
     if (e.imagePath != null && e.imagePath!.isNotEmpty) {
       child = FutureBuilder<String>(

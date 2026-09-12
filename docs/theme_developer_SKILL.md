@@ -58,6 +58,7 @@ DSHTheme.clear();
 | x/y/width/height | 屏幕逻辑坐标与大小 |
 | color | 颜色 |
 | animation | none/float/bounce/spin |
+| kind | image / border，border=原生边缘发光，不依赖图片 |
 | fit | contain/fill/cover，图片填充方式 |
 | fontSize | 文字大小 |
 | speechTail | 是否显示气泡尾巴 |
