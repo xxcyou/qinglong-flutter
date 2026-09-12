@@ -705,9 +705,9 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       final host =
           await ProotBridge().hostPath(path: widget.htmlPath, scope: 'shell');
       if (!mounted || host.isEmpty) return;
+      String? preparedHtml;
       if (File(host).existsSync()) {
-        final html = await _prepareHtml(host);
-        await File(host).writeAsString(html, flush: true);
+        preparedHtml = await _prepareHtml(host);
       }
       final platform = _controller.platform;
       if (platform is AndroidWebViewController) {
@@ -715,7 +715,15 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
         await platform.setAllowContentAccess(true);
         await platform.setMediaPlaybackRequiresUserGesture(false);
       }
-      await _controller.loadFile(host);
+      if (preparedHtml != null) {
+        // 用 loadHtmlString + baseUrl 而不是直接 loadFile：相对路径的
+        // css/js 由 WebView 按 html 目录解析，比 file:// 直读更稳。
+        final base = Uri.file('${File(host).parent.path}/');
+        await _controller.loadHtmlString(preparedHtml,
+            baseUrl: base.toString());
+      } else {
+        await _controller.loadFile(host);
+      }
     } catch (_) {
       // HTML 加载失败就留着纯色/渐变兜底，不炸 App。
     }
