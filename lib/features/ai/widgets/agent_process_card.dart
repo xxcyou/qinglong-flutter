@@ -389,6 +389,29 @@ class _TimelineRowState extends State<_TimelineRow> {
                             overflow: TextOverflow.ellipsis,
                           ),
                   ),
+                  if (event.imageDataUri != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 160),
+                          child: Image.memory(
+                            base64Decode(
+                              event.imageDataUri!.split(',').last,
+                            ),
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) => Text(
+                              '图片预览加载失败',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: scheme.error,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -472,6 +495,8 @@ class _TimelineRowState extends State<_TimelineRow> {
         return _Visual(Icons.psychology_outlined, scheme.tertiary, '思考');
       case AgentEventKind.toolStart:
         return _Visual(Icons.play_arrow_rounded, scheme.primary, '调用');
+      case AgentEventKind.toolImage:
+        return _Visual(Icons.image_outlined, scheme.primary, '图片');
       case AgentEventKind.toolEnd:
         return event.ok
             ? _Visual(Icons.check_rounded, Colors.green.shade600, '完成')

@@ -3052,6 +3052,17 @@ class ChatNotifier extends Notifier<ChatState> {
             _toolScreenshotsBySession
                 .putIfAbsent(state.currentSessionId, () => [])
                 .add(img);
+            // show_image 一加载完就推进工具链，不用等整个工具结束才看到图。
+            _appendAgentEvent(
+              state.currentSessionId,
+              AgentEvent(
+                kind: AgentEventKind.toolImage,
+                message: '图片已显示：${name ?? 'show_image'}',
+                toolName: 'show_image',
+                args: args,
+                imageDataUri: img.dataUri,
+              ),
+            );
             final describe = img.path.isNotEmpty
                 ? 'path: ${img.path}\nscope: ${img.scope}'
                 : 'base64: ${rawBase64.length > 120 ? '${rawBase64.substring(0, 120)}…' : rawBase64}';

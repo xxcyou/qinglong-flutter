@@ -2,6 +2,7 @@ enum AgentEventKind {
   thinking,
   toolStart,
   toolEnd,
+  toolImage,
   planPending,
 
   /// 模型向用户提问，等待回答。
@@ -61,6 +62,7 @@ class AgentEvent {
     this.args,
     this.result,
     this.fullResult,
+    this.imageDataUri,
     this.durationMs,
     this.ok = true,
     this.turn = 0,
@@ -72,6 +74,9 @@ class AgentEvent {
   final String? toolName;
   final Map<String, dynamic>? args;
   final String? result;
+
+  /// 工具链里要立即展示的图片（data URI），例如 show_image 一加载完就推送。
+  final String? imageDataUri;
 
   /// 未截断的原始返回。
   ///
@@ -112,6 +117,7 @@ class AgentEvent {
         if (toolName != null) 'toolName': toolName,
         if (args != null) 'args': args,
         if (result != null) 'result': result,
+        if (imageDataUri != null) 'imageDataUri': imageDataUri,
         if (fullResult != null && fullResult != result)
           'fullResult': fullResult!.length > persistedFullResultLimit
               ? '${fullResult!.substring(0, persistedFullResultLimit)}'
@@ -137,6 +143,7 @@ class AgentEvent {
           : null,
       result: json['result']?.toString(),
       fullResult: json['fullResult']?.toString(),
+      imageDataUri: json['imageDataUri']?.toString(),
       durationMs: (json['durationMs'] as num?)?.toInt(),
       ok: json['ok'] != false,
       turn: (json['turn'] as num?)?.toInt() ?? 0,

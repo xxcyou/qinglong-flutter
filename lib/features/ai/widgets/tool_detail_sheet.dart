@@ -108,6 +108,7 @@ class _ToolDetailSheetState extends State<ToolDetailSheet> {
   String get _kindLabel => switch (widget.event.kind) {
         AgentEventKind.thinking => '模型思考',
         AgentEventKind.toolStart => '开始调用工具',
+        AgentEventKind.toolImage => '图片工具',
         AgentEventKind.toolEnd => '工具返回',
         AgentEventKind.planPending => '等待确认写操作',
         AgentEventKind.question => '向用户提问',

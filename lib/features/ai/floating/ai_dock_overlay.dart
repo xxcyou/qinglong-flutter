@@ -1239,6 +1239,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
         AgentEventKind.thinking => '思考中',
         AgentEventKind.answer => '答复中',
         AgentEventKind.toolStart => events.last.toolName ?? '调用工具',
+        AgentEventKind.toolImage => '显示图片',
         AgentEventKind.toolEnd => '处理结果',
         AgentEventKind.taskPlan => '规划任务',
         AgentEventKind.canvas => '生成卡片',
