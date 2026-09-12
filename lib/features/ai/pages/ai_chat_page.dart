@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/llm/llm_config_provider.dart';
 import '../../../core/llm/llm_registry_provider.dart';
 import '../../../core/theme/glass.dart';
+import '../../../core/theme/theme_effects_controller.dart';
 import '../../../core/utils/formatter.dart';
 import '../../../core/utils/error_text.dart';
 import '../../browser/browser_engine.dart';
@@ -965,6 +966,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                     key: _bubbleKeyAt(index),
                                     child: _MessageBubble(
                                       message: state.messages[index],
+                                      anchorIndex: index,
                                       onResend: state.isLoading
                                           ? null
                                           : () => notifier.resendAt(index),
@@ -1397,9 +1399,11 @@ class _MessageBubble extends StatelessWidget {
     required this.message,
     this.onResend,
     this.onRollback,
+    this.anchorIndex,
   });
 
   final AiChatMessage message;
+  final int? anchorIndex;
 
   /// 重发这条（撤回到它之前再重新问一次）。
   final VoidCallback? onResend;
@@ -1413,159 +1417,208 @@ class _MessageBubble extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final footer = _footer();
 
-    final bubble = Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.sizeOf(context).width * (isUser ? 0.82 : 0.92),
-        ),
-        decoration: BoxDecoration(
-          color: isUser ? scheme.primaryContainer : scheme.surfaceContainerLow,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(isUser ? 16 : 4),
-            bottomRight: Radius.circular(isUser ? 4 : 16),
+    final bubble = ListenableBuilder(
+      listenable: ThemeEffectsController.instance,
+      builder: (context, _) {
+        final page = ModalRoute.of(context)?.settings.name ?? 'default';
+        final bubbleStyle = ThemeEffectsController.instance
+            .componentStyleFor(page, 'bubble', anchorIndex ?? 0);
+        final baseColor =
+            isUser ? scheme.primaryContainer : scheme.surfaceContainerLow;
+        final br = bubbleStyle?.radius != null
+            ? BorderRadius.circular(bubbleStyle!.radius!)
+            : BorderRadius.only(
+                topLeft: const Radius.circular(16),
+                topRight: const Radius.circular(16),
+                bottomLeft: Radius.circular(isUser ? 16 : 4),
+                bottomRight: Radius.circular(isUser ? 4 : 16),
+              );
+        final gradientColors = bubbleStyle?.gradientColors ?? [];
+        final hasGradient = gradientColors.length >= 2;
+        final glow = bubbleStyle?.glowColor != null
+            ? [
+                BoxShadow(
+                  color: (bubbleStyle!.glowColor ?? Colors.transparent)
+                      .withValues(alpha: bubbleStyle.glowOpacity ?? 0.6),
+                  blurRadius: bubbleStyle.glowRadius ?? 12,
+                  spreadRadius: 0,
+                ),
+              ]
+            : const <BoxShadow>[];
+        final borderColor = bubbleStyle?.borderColor;
+        final borderWidth = bubbleStyle?.borderWidth ?? 1;
+        return Align(
+          alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+          child: ComponentAnchorTracker(
+            type: 'bubble',
+            index: anchorIndex ?? 0,
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+              constraints: BoxConstraints(
+                maxWidth:
+                    MediaQuery.sizeOf(context).width * (isUser ? 0.82 : 0.92),
+              ),
+              decoration: BoxDecoration(
+                color: hasGradient ? null : baseColor,
+                gradient: hasGradient
+                    ? LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: gradientColors,
+                      )
+                    : null,
+                borderRadius: br,
+                border: borderColor != null
+                    ? Border.all(
+                        color: borderColor,
+                        width: borderWidth,
+                      )
+                    : isUser
+                        ? null
+                        : Border.all(
+                            color: scheme.outlineVariant.withValues(alpha: 0.5),
+                          ),
+                boxShadow: glow.isEmpty ? null : glow,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (message.images.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final image in message.images)
+                            GestureDetector(
+                              onTap: () =>
+                                  ImagePreviewOverlay.show(context, image),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: SizedBox(
+                                  width: 112,
+                                  height: 112,
+                                  child: _MessageImage(image: image),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  if (isUser)
+                    SelectableText(
+                      message.content,
+                      style: TextStyle(
+                        height: 1.4,
+                        color: scheme.onPrimaryContainer,
+                      ),
+                    )
+                  else
+                    MarkdownMessage(
+                      text: message.content.isEmpty
+                          ? '_（无文字回复）_'
+                          : message.content,
+                    ),
+                  if (isUser && (onResend != null || onRollback != null))
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (onResend != null)
+                            _BubbleAction(
+                              icon: Icons.refresh,
+                              label: '重发',
+                              color: scheme.onPrimaryContainer,
+                              onTap: () => _confirmResend(context),
+                            ),
+                          if (onRollback != null) ...[
+                            const SizedBox(width: 10),
+                            _BubbleAction(
+                              icon: Icons.undo,
+                              label: '撤回到这里',
+                              color: scheme.onPrimaryContainer,
+                              onTap: () => _confirmRollback(context),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  if (!isUser && footer.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _footerIcon(),
+                            size: 12.5,
+                            color: _failed()
+                                ? scheme.error
+                                : scheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              footer,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: _failed()
+                                    ? scheme.error
+                                    : scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          if (onResend != null) ...[
+                            InkWell(
+                              onTap: () => _confirmResend(context),
+                              child: Icon(
+                                Icons.refresh,
+                                size: 15,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                          ],
+                          if (onRollback != null) ...[
+                            InkWell(
+                              onTap: () => _confirmRollback(context),
+                              child: Icon(
+                                Icons.undo,
+                                size: 15,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                          ],
+                          InkWell(
+                            onTap: () {
+                              Clipboard.setData(
+                                ClipboardData(text: message.content),
+                              );
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('已复制回复'),
+                                  duration: Duration(seconds: 1),
+                                ),
+                              );
+                            },
+                            child: Icon(
+                              Icons.copy_rounded,
+                              size: 14,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ),
-          border: isUser
-              ? null
-              : Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (message.images.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final image in message.images)
-                      GestureDetector(
-                        onTap: () => ImagePreviewOverlay.show(context, image),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(10),
-                          child: SizedBox(
-                            width: 112,
-                            height: 112,
-                            child: _MessageImage(image: image),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            if (isUser)
-              SelectableText(
-                message.content,
-                style: TextStyle(
-                  height: 1.4,
-                  color: scheme.onPrimaryContainer,
-                ),
-              )
-            else
-              MarkdownMessage(
-                text: message.content.isEmpty ? '_（无文字回复）_' : message.content,
-              ),
-            // 用户消息的操作按钮直接摆出来。
-            // 长按行不通：SelectableText 会把长按吃掉去做文字选择，
-            // 手势竞争里外层的 GestureDetector 拿不到事件。
-            if (isUser && (onResend != null || onRollback != null))
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (onResend != null)
-                      _BubbleAction(
-                        icon: Icons.refresh,
-                        label: '重发',
-                        color: scheme.onPrimaryContainer,
-                        onTap: () => _confirmResend(context),
-                      ),
-                    if (onRollback != null) ...[
-                      const SizedBox(width: 10),
-                      _BubbleAction(
-                        icon: Icons.undo,
-                        label: '撤回到这里',
-                        color: scheme.onPrimaryContainer,
-                        onTap: () => _confirmRollback(context),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            if (!isUser && footer.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Row(
-                  children: [
-                    Icon(
-                      _footerIcon(),
-                      size: 12.5,
-                      color: _failed() ? scheme.error : scheme.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        footer,
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: _failed()
-                              ? scheme.error
-                              : scheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
-                    if (onResend != null) ...[
-                      InkWell(
-                        onTap: () => _confirmResend(context),
-                        child: Icon(
-                          Icons.refresh,
-                          size: 15,
-                          color: scheme.onSurfaceVariant,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                    ],
-                    if (onRollback != null) ...[
-                      InkWell(
-                        onTap: () => _confirmRollback(context),
-                        child: Icon(
-                          Icons.undo,
-                          size: 15,
-                          color: scheme.onSurfaceVariant,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                    ],
-                    InkWell(
-                      onTap: () {
-                        Clipboard.setData(
-                          ClipboardData(text: message.content),
-                        );
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('已复制回复'),
-                            duration: Duration(seconds: 1),
-                          ),
-                        );
-                      },
-                      child: Icon(
-                        Icons.copy_rounded,
-                        size: 14,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-          ],
-        ),
-      ),
+        );
+      },
     );
 
     final interactive = bubble;
