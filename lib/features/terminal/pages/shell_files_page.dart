@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -133,6 +134,10 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
             case 'selectAll':
               _notifier.selectAll();
           }
+          if (value.startsWith('view:')) {
+            final mode = FileViewMode.values.asNameMap()[value.substring(5)];
+            if (mode != null) _notifier.setViewMode(mode);
+          }
         },
         itemBuilder: (_) => [
           for (final sort in FileSort.values)
@@ -143,6 +148,13 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                 '按${sort.label}'
                 '${state.sort == sort ? (state.descending ? ' ↓' : ' ↑') : ''}',
               ),
+            ),
+          const PopupMenuDivider(),
+          for (final mode in FileViewMode.values)
+            CheckedPopupMenuItem(
+              value: 'view:${mode.name}',
+              checked: state.viewMode == mode,
+              child: Text('${mode.label}样式'),
             ),
           const PopupMenuDivider(),
           CheckedPopupMenuItem(
@@ -400,6 +412,10 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
         ),
       );
     }
+    if (state.viewMode == FileViewMode.grid) {
+      return _buildGrid(state, entries);
+    }
+    final compact = state.viewMode == FileViewMode.list;
     return RefreshIndicator(
       onRefresh: _notifier.refresh,
       child: ListView.separated(
@@ -413,6 +429,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
             selected: state.selected.contains(entry.path),
             selecting: state.isSelecting,
             showPath: state.isSearchMode,
+            compact: compact,
             onTap: () {
               if (state.isSelecting) {
                 _notifier.toggleSelect(entry.path);
@@ -422,6 +439,40 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
             },
             onLongPress: () => _showActions(entry),
             onAction: (action) => _handleAction(action, entry),
+            hostPathResolver: (path) => _notifier.hostPath(path),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildGrid(ShellFilesState state, List<ShellFileEntry> entries) {
+    return RefreshIndicator(
+      onRefresh: _notifier.refresh,
+      child: GridView.builder(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 110),
+        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: 140,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: 0.72,
+        ),
+        itemCount: entries.length,
+        itemBuilder: (context, index) {
+          final entry = entries[index];
+          return _FileGridTile(
+            entry: entry,
+            selected: state.selected.contains(entry.path),
+            selecting: state.isSelecting,
+            onTap: () {
+              if (state.isSelecting) {
+                _notifier.toggleSelect(entry.path);
+              } else {
+                _open(entry);
+              }
+            },
+            onLongPress: () => _showActions(entry),
+            hostPathResolver: (path) => _notifier.hostPath(path),
           );
         },
       ),
@@ -505,13 +556,25 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
   }
 
   Future<void> _openImage(ShellFileEntry entry, FileKind kind) async {
-    // Image.file 只认宿主真实路径，guest 路径（/workspace/...）读不到。
-    final host = await _notifier.hostPath(entry.path);
-    if (host == null || host.isEmpty || !mounted) return;
+    // 把当前目录里的图片都带进查看器，左右滑就能上一张/下一张。
+    final state = ref.read(shellFilesProvider);
+    final images = state.visibleEntries
+        .where((e) =>
+            !e.isDirectory &&
+            FileKinds.of(e.name).category == FileCategory.image)
+        .toList();
+    final hosts = <String>[];
+    for (final e in images) {
+      final h = await _notifier.hostPath(e.path);
+      if (h != null && h.isNotEmpty) hosts.add(h);
+    }
+    if (hosts.isEmpty || !mounted) return;
+    final index = images.indexWhere((e) => e.path == entry.path);
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ImageViewerPage(
-          hostPath: host,
+          hostPaths: hosts,
+          initialIndex: index < 0 ? 0 : index,
           title: entry.name,
           subtitle: FileKinds.sizeText(entry.size),
           onOpenExternal: () => _notifier.openExternal(
@@ -1058,6 +1121,134 @@ class _PathBarState extends State<_PathBar> {
   }
 }
 
+/// 图片缩略图：加载 host 路径后显示小图，加载中/失败退回类型图标。
+class _ImageThumbnail extends StatelessWidget {
+  const _ImageThumbnail({
+    required this.path,
+    required this.resolver,
+    required this.color,
+    required this.icon,
+    this.size = 38,
+  });
+
+  final String path;
+  final Future<String?> Function(String path) resolver;
+  final Color color;
+  final IconData icon;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String?>(
+      future: resolver(path),
+      builder: (context, snap) {
+        final host = snap.data;
+        if (host != null && host.isNotEmpty) {
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.file(
+              File(host),
+              width: size,
+              height: size,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+              errorBuilder: (_, __, ___) => _fallback(),
+            ),
+          );
+        }
+        return _fallback();
+      },
+    );
+  }
+
+  Widget _fallback() => Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, color: color, size: size * 0.55),
+      );
+}
+
+/// 网格视图的格子：大缩略图/图标在上，名称在下。
+class _FileGridTile extends StatelessWidget {
+  const _FileGridTile({
+    required this.entry,
+    required this.selected,
+    required this.selecting,
+    required this.onTap,
+    required this.onLongPress,
+    required this.hostPathResolver,
+  });
+
+  final ShellFileEntry entry;
+  final bool selected;
+  final bool selecting;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+  final Future<String?> Function(String path) hostPathResolver;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final kind = FileKinds.of(entry.name, isDirectory: entry.isDirectory);
+    return GlassCard(
+      selected: selected,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      padding: const EdgeInsets.all(6),
+      child: Column(
+        children: [
+          if (selecting)
+            Align(
+              alignment: Alignment.topRight,
+              child: Icon(
+                selected ? Icons.check_circle : Icons.circle_outlined,
+                size: 18,
+                color: selected ? scheme.primary : scheme.onSurfaceVariant,
+              ),
+            ),
+          Expanded(
+            child: kind.category == FileCategory.image
+                ? _ImageThumbnail(
+                    path: entry.path,
+                    resolver: hostPathResolver,
+                    color: kind.color,
+                    icon: kind.icon,
+                    size: 52,
+                  )
+                : Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      color: kind.color.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(kind.icon, color: kind.color, size: 28),
+                  ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            entry.name,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: entry.hidden
+                  ? scheme.onSurface.withValues(alpha: 0.55)
+                  : null,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _FileTile extends StatelessWidget {
   const _FileTile({
     required this.entry,
@@ -1067,6 +1258,8 @@ class _FileTile extends StatelessWidget {
     required this.onTap,
     required this.onLongPress,
     required this.onAction,
+    this.hostPathResolver,
+    this.compact = false,
   });
 
   final ShellFileEntry entry;
@@ -1078,6 +1271,8 @@ class _FileTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onLongPress;
   final ValueChanged<String> onAction;
+  final Future<String?> Function(String path)? hostPathResolver;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -1101,16 +1296,24 @@ class _FileTile extends StatelessWidget {
                 color: selected ? scheme.primary : scheme.onSurfaceVariant,
               ),
             ),
-          // 类型图标：按扩展名给形状 + 品牌色，扫一眼就知道是什么文件。
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: kind.color.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(10),
+          // 图片文件显示缩略图，其它文件用类型图标。
+          if (kind.category == FileCategory.image && hostPathResolver != null)
+            _ImageThumbnail(
+              path: entry.path,
+              resolver: hostPathResolver!,
+              color: kind.color,
+              icon: kind.icon,
+            )
+          else
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: kind.color.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(kind.icon, color: kind.color, size: 21),
             ),
-            child: Icon(kind.icon, color: kind.color, size: 21),
-          ),
           const SizedBox(width: 11),
           Expanded(
             child: Column(
@@ -1129,67 +1332,69 @@ class _FileTile extends StatelessWidget {
                         : null,
                   ),
                 ),
-                const SizedBox(height: 3),
-                // 第二行：日期/大小/权限。半屏侧滑面板窄，改横向滚动防黄条。
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      Text(
-                        Formatter.dateTime(entry.modified),
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontFamily: kMonoFamily,
-                          fontFamilyFallback: kMonoFallback,
-                          color: scheme.onSurfaceVariant,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      if (sizeText != null)
+                if (!compact) ...[
+                  const SizedBox(height: 3),
+                  // 第二行：日期/大小/权限。半屏侧滑面板窄，改横向滚动防黄条。
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
                         Text(
-                          sizeText,
+                          Formatter.dateTime(entry.modified),
                           style: TextStyle(
                             fontSize: 11,
                             fontFamily: kMonoFamily,
                             fontFamilyFallback: kMonoFallback,
-                            fontWeight: FontWeight.w600,
-                            color: scheme.onSurfaceVariant,
-                          ),
-                        )
-                      else
-                        Text(
-                          '文件夹',
-                          style: TextStyle(
-                            fontSize: 11,
                             color: scheme.onSurfaceVariant,
                           ),
                         ),
-                      const SizedBox(width: 8),
-                      Text(
-                        entry.modeText,
-                        style: TextStyle(
-                          fontSize: 10.5,
-                          fontFamily: kMonoFamily,
-                          fontFamilyFallback: kMonoFallback,
-                          color:
-                              scheme.onSurfaceVariant.withValues(alpha: 0.75),
-                        ),
-                      ),
-                      if (entry.matchedContent)
-                        Padding(
-                          padding: const EdgeInsets.only(left: 6),
-                          child: Text(
-                            '内容命中',
+                        const SizedBox(width: 8),
+                        if (sizeText != null)
+                          Text(
+                            sizeText,
                             style: TextStyle(
-                              fontSize: 10.5,
+                              fontSize: 11,
+                              fontFamily: kMonoFamily,
+                              fontFamilyFallback: kMonoFallback,
                               fontWeight: FontWeight.w600,
-                              color: scheme.primary,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          )
+                        else
+                          Text(
+                            '文件夹',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: scheme.onSurfaceVariant,
                             ),
                           ),
+                        const SizedBox(width: 8),
+                        Text(
+                          entry.modeText,
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            fontFamily: kMonoFamily,
+                            fontFamilyFallback: kMonoFallback,
+                            color:
+                                scheme.onSurfaceVariant.withValues(alpha: 0.75),
+                          ),
                         ),
-                    ],
+                        if (entry.matchedContent)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 6),
+                            child: Text(
+                              '内容命中',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                color: scheme.primary,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
-                ),
+                ],
                 if (showPath)
                   Padding(
                     padding: const EdgeInsets.only(top: 2),

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/local_shell/proot_bridge.dart';
 
@@ -28,6 +29,17 @@ enum FileSort {
   final String label;
 }
 
+/// 文件管理显示样式：Windows 式列表/网格等。
+enum FileViewMode {
+  list('列表'),
+  details('详细信息'),
+  grid('网格');
+
+  const FileViewMode(this.label);
+
+  final String label;
+}
+
 class ShellFilesState {
   const ShellFilesState({
     this.scope = FileScope.shell,
@@ -48,6 +60,7 @@ class ShellFilesState {
     this.sort = FileSort.name,
     this.descending = false,
     this.showHidden = false,
+    this.viewMode = FileViewMode.list,
     this.selected = const {},
     this.clipboardPath,
     this.clipboardIsCut = false,
@@ -71,6 +84,7 @@ class ShellFilesState {
   final FileSort sort;
   final bool descending;
   final bool showHidden;
+  final FileViewMode viewMode;
 
   /// 多选集合（路径）。
   final Set<String> selected;
@@ -131,6 +145,7 @@ class ShellFilesState {
     FileSort? sort,
     bool? descending,
     bool? showHidden,
+    FileViewMode? viewMode,
     Set<String>? selected,
     String? clipboardPath,
     bool? clipboardIsCut,
@@ -151,6 +166,7 @@ class ShellFilesState {
       sort: sort ?? this.sort,
       descending: descending ?? this.descending,
       showHidden: showHidden ?? this.showHidden,
+      viewMode: viewMode ?? this.viewMode,
       selected: selected ?? this.selected,
       clipboardPath:
           clearClipboard ? null : clipboardPath ?? this.clipboardPath,
@@ -165,7 +181,34 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
   final _bridge = ProotBridge();
 
   @override
-  ShellFilesState build() => const ShellFilesState();
+  ShellFilesState build() {
+    Future.microtask(_loadPrefs);
+    return const ShellFilesState();
+  }
+
+  static const _showHiddenKey = 'fileShowHidden';
+  static const _viewModeKey = 'fileViewMode';
+
+  Future<void> _loadPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final hidden = prefs.getBool(_showHiddenKey) ?? false;
+      final modeIndex = prefs.getInt(_viewModeKey) ?? 0;
+      if (modeIndex < 0 || modeIndex >= FileViewMode.values.length) return;
+      state = state.copyWith(
+        showHidden: hidden,
+        viewMode: FileViewMode.values[modeIndex],
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _savePrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_showHiddenKey, state.showHidden);
+      await prefs.setInt(_viewModeKey, state.viewMode.index);
+    } catch (_) {}
+  }
 
   Future<void> open([String? path]) async {
     final target = path ?? state.path;
@@ -226,7 +269,16 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
     }
   }
 
-  void toggleHidden() => state = state.copyWith(showHidden: !state.showHidden);
+  void toggleHidden() {
+    state = state.copyWith(showHidden: !state.showHidden);
+    _savePrefs();
+  }
+
+  void setViewMode(FileViewMode mode) {
+    if (mode == state.viewMode) return;
+    state = state.copyWith(viewMode: mode);
+    _savePrefs();
+  }
 
   void toggleSelect(String path) {
     final next = {...state.selected};

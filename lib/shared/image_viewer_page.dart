@@ -12,28 +12,40 @@ import 'glass_scaffold.dart';
 /// 面板高度全丢了。这里就地开一页，支持双指缩放、双击放大、拖动平移。
 /// 真正需要外部 APP 的是压缩包、APK、PDF 这类我们不打算内建的格式。
 class ImageViewerPage extends StatefulWidget {
-  const ImageViewerPage({
+  ImageViewerPage({
     super.key,
-    required this.hostPath,
+    this.hostPath,
+    this.hostPaths = const [],
+    this.initialIndex = 0,
     required this.title,
     this.subtitle,
     this.onOpenExternal,
-  });
+  }) : assert(hostPath != null || hostPaths.isNotEmpty, '至少需要一个图片路径');
 
-  /// 宿主真实路径（guest 路径 Image.file 读不到）。
-  final String hostPath;
+  /// 兼容单图：宿主真实路径。
+  final String? hostPath;
+
+  /// 多图列表：文件管理器把当前目录所有图片传进来，支持左右滑切换。
+  final List<String> hostPaths;
+
+  /// 打开时落在第几张。
+  final int initialIndex;
+
   final String title;
   final String? subtitle;
 
   /// "用其它 APP 打开"，为 null 则不显示这个按钮。
   final VoidCallback? onOpenExternal;
 
+  List<String> get paths => hostPaths.isNotEmpty ? hostPaths : [hostPath!];
+
   @override
   State<ImageViewerPage> createState() => _ImageViewerPageState();
 }
 
 class _ImageViewerPageState extends State<ImageViewerPage> {
-  final _controller = TransformationController();
+  final _pageController = PageController();
+  int _pageIndex = 0;
 
   /// 图片本身的像素尺寸，取到后显示在副标题里。
   int? _width;
@@ -43,18 +55,42 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   @override
   void initState() {
     super.initState();
+    _pageIndex = widget.initialIndex.clamp(0, widget.paths.length - 1);
+    if (_pageIndex != widget.initialIndex) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _pageController.hasClients) {
+          _pageController.jumpToPage(_pageIndex);
+        }
+      });
+    }
     _resolveSize();
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _pageController.dispose();
     super.dispose();
   }
 
+  String get _currentHost => widget.paths[_pageIndex];
+
+  String get _currentName {
+    final p = _currentHost.replaceAll('\\', '/');
+    return p.substring(p.lastIndexOf('/') + 1);
+  }
+
   Future<void> _resolveSize() async {
+    setState(() {
+      _width = null;
+      _height = null;
+      _error = null;
+    });
     try {
-      final file = File(widget.hostPath);
+      final file = File(_currentHost);
+      if (!file.existsSync()) {
+        if (mounted) setState(() => _error = '文件不存在');
+        return;
+      }
       final stream = Image.file(file).image.resolve(
             const ImageConfiguration(),
           );
@@ -81,33 +117,23 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
     }
   }
 
-  void _toggleZoom(TapDownDetails details) {
-    final current = _controller.value.getMaxScaleOnAxis();
-    if (current > 1.05) {
-      _controller.value = Matrix4.identity();
-      return;
-    }
-    // 以双击点为中心放大到 2.5×。
-    final position = details.localPosition;
-    _controller.value = Matrix4.identity()
-      ..translateByDouble(-position.dx * 1.5, -position.dy * 1.5, 0, 1)
-      ..scaleByDouble(2.5, 2.5, 2.5, 1);
-  }
-
   @override
   Widget build(BuildContext context) {
     final size = _width != null && _height != null ? '$_width×$_height' : null;
+    final total = widget.paths.length;
+    final subtitleParts = [
+      if (total > 1) '${_pageIndex + 1}/$total',
+      if (size != null) size,
+      if (widget.subtitle != null) widget.subtitle!,
+    ];
     return GlassScaffold(
-      title: widget.title,
-      subtitle: [
-        if (size != null) size,
-        if (widget.subtitle != null) widget.subtitle!,
-      ].join(' · '),
+      title: _currentName,
+      subtitle: subtitleParts.join(' · '),
       bodyTopPadding: 0,
       actions: [
         IconButton(
           tooltip: '还原缩放',
-          onPressed: () => _controller.value = Matrix4.identity(),
+          onPressed: () => _pageKey.currentState?.reset(),
           icon: const Icon(Icons.zoom_out_map),
         ),
         if (widget.onOpenExternal != null)
@@ -135,27 +161,81 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
                       ),
                     ),
                   )
-                : GestureDetector(
-                    onDoubleTapDown: _toggleZoom,
-                    onDoubleTap: () {},
-                    child: InteractiveViewer(
-                      transformationController: _controller,
-                      minScale: 0.5,
-                      maxScale: 8,
-                      child: Center(
-                        child: Image.file(
-                          File(widget.hostPath),
-                          fit: BoxFit.contain,
-                          errorBuilder: (_, error, __) => Center(
-                            child: Text(
-                              '解码失败：$error',
-                              style: const TextStyle(color: Colors.white70),
-                            ),
-                          ),
-                        ),
-                      ),
+                : PageView.builder(
+                    controller: _pageController,
+                    itemCount: total,
+                    onPageChanged: (i) {
+                      setState(() => _pageIndex = i);
+                      _resolveSize();
+                    },
+                    itemBuilder: (context, index) => _ZoomableImage(
+                      key: index == _pageIndex ? _pageKey : null,
+                      hostPath: widget.paths[index],
                     ),
                   ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  final _pageKey = GlobalKey<_ZoomableImageState>();
+}
+
+/// 可缩放/双击放大的单张图片。
+class _ZoomableImage extends StatefulWidget {
+  const _ZoomableImage({super.key, required this.hostPath});
+
+  final String hostPath;
+
+  @override
+  State<_ZoomableImage> createState() => _ZoomableImageState();
+}
+
+class _ZoomableImageState extends State<_ZoomableImage> {
+  final _controller = TransformationController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void reset() {
+    _controller.value = Matrix4.identity();
+  }
+
+  void _toggleZoom(TapDownDetails details) {
+    final current = _controller.value.getMaxScaleOnAxis();
+    if (current > 1.05) {
+      _controller.value = Matrix4.identity();
+      return;
+    }
+    final position = details.localPosition;
+    _controller.value = Matrix4.identity()
+      ..translateByDouble(-position.dx * 1.5, -position.dy * 1.5, 0, 1)
+      ..scaleByDouble(2.5, 2.5, 2.5, 1);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onDoubleTapDown: _toggleZoom,
+      onDoubleTap: () {},
+      child: InteractiveViewer(
+        transformationController: _controller,
+        minScale: 0.5,
+        maxScale: 8,
+        child: Center(
+          child: Image.file(
+            File(widget.hostPath),
+            fit: BoxFit.contain,
+            errorBuilder: (_, error, __) => Center(
+              child: Text(
+                '解码失败：$error',
+                style: const TextStyle(color: Colors.white70),
+              ),
+            ),
           ),
         ),
       ),
