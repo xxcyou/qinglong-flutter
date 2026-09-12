@@ -42,6 +42,14 @@ class PickedLocalFile {
   final String mime;
 }
 
+enum LocalFilePickerMode {
+  /// 挑一个能当附件的文本/图片文件。
+  attachment,
+
+  /// 挑任意文件（只返回路径，不读内容），用于导入 ZIP 等场景。
+  anyFile,
+}
+
 /// 本地文件选择器：给 AI 加附件用。
 
 /// 把图片选择结果转成聊天用的 [AiImageAttachment]。
@@ -77,10 +85,17 @@ Future<AiImageAttachment?> readPickedImage(PickedLocalFile picked) async {
 ///    塞二进制进上下文没有意义，还会把 token 烧光）；
 ///  - 选中即读取并按上限截断，调用方拿到的就是可以直接拼进提问的正文。
 class LocalFilePicker extends StatefulWidget {
-  const LocalFilePicker({super.key, this.maxChars = 20000});
+  const LocalFilePicker({
+    super.key,
+    this.maxChars = 20000,
+    this.mode = LocalFilePickerMode.attachment,
+  });
 
   /// 附件正文上限。超过就截断——一份 500KB 的日志灌进去只会挤掉真正的对话。
   final int maxChars;
+
+  /// attachment=挑文本/图片附件；anyFile=挑任意文件（ZIP/APK/二进制都行）。
+  final LocalFilePickerMode mode;
 
   /// 弹出选择器，返回用户挑中的文件；取消返回 null。
   static Future<PickedLocalFile?> pick(
@@ -106,6 +121,35 @@ class LocalFilePicker extends StatefulWidget {
               color:
                   Theme.of(context).colorScheme.surface.withValues(alpha: 0.86),
               child: LocalFilePicker(maxChars: maxChars),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 弹出选择器挑任意文件（ZIP/APK/二进制等），只返回路径，不读内容。
+  static Future<PickedLocalFile?> pickFile(BuildContext context) {
+    return showModalBottomSheet<PickedLocalFile>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.86,
+        minChildSize: 0.5,
+        maxChildSize: 0.94,
+        builder: (context, _) => ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(
+                sigmaX: Glass.blurStrong, sigmaY: Glass.blurStrong),
+            child: Material(
+              color:
+                  Theme.of(context).colorScheme.surface.withValues(alpha: 0.86),
+              child: const LocalFilePicker(
+                mode: LocalFilePickerMode.anyFile,
+              ),
             ),
           ),
         ),
@@ -184,6 +228,20 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
 
   Future<void> _choose(ShellFileEntry entry, FileKind kind) async {
     if (_reading) return;
+    if (widget.mode == LocalFilePickerMode.anyFile) {
+      Navigator.of(context).pop(
+        PickedLocalFile(
+          path: entry.path,
+          name: entry.name,
+          content: '',
+          size: entry.size,
+          truncated: false,
+          scope: _appScope ? 'app' : 'shell',
+          mime: FileKinds.mimeOf(entry.name),
+        ),
+      );
+      return;
+    }
     setState(() => _reading = true);
     try {
       if (kind.category == FileCategory.image) {
@@ -442,6 +500,7 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
                             isDirectory: entry.isDirectory,
                           );
                           final usable = entry.isDirectory ||
+                              widget.mode == LocalFilePickerMode.anyFile ||
                               kind.isTextLike ||
                               kind.category == FileCategory.image;
                           return _Tile(
@@ -451,6 +510,9 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
                             onTap: () {
                               if (entry.isDirectory) {
                                 _load(entry.path);
+                              } else if (widget.mode ==
+                                  LocalFilePickerMode.anyFile) {
+                                _choose(entry, kind);
                               } else if (kind.isTextLike ||
                                   kind.category == FileCategory.image) {
                                 _choose(entry, kind);

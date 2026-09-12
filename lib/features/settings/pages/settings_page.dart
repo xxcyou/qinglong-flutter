@@ -6,6 +6,7 @@ import '../../../core/debug/api_debug_log.dart';
 import '../../../core/theme/theme_config.dart';
 import '../../../core/theme/theme_store.dart';
 import '../../../shared/glass_scaffold.dart';
+import '../../../shared/local_file_picker.dart';
 import '../../../core/llm/llm_registry_provider.dart';
 import '../../ai/floating/ai_dock_provider.dart';
 import '../../ai/providers/chat_provider.dart';
@@ -447,34 +448,11 @@ class _ThemeSchemeCard extends ConsumerStatefulWidget {
 
 class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
   Future<void> _importZip() async {
-    final controller = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('导入主题 ZIP'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            hintText: '输入 ZIP 包路径，如 /workspace/themes/sakura.zip',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('导入'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !mounted) return;
+    final picked = await LocalFilePicker.pickFile(context);
+    if (picked == null || !mounted) return;
     try {
-      final theme = await ref
-          .read(themeProvider.notifier)
-          .importZip(controller.text.trim());
+      final theme =
+          await ref.read(themeProvider.notifier).importZip(picked.path);
       await ref.read(themeProvider.notifier).apply(theme.id);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
