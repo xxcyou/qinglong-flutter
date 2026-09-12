@@ -6,11 +6,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/cache/cache_cleaner.dart';
 import '../../../core/llm/llm_client.dart';
 import '../../../core/llm/llm_config_provider.dart';
 import '../../../core/llm/llm_provider.dart';
 import '../../../core/network/error_handler.dart';
 import '../../../core/local_shell/proot_bridge.dart';
+import '../../../core/storage/secure_storage.dart';
 import '../../../core/local_shell/shell_lock.dart';
 import '../../../core/utils/logger.dart';
 import '../../../router.dart';
@@ -934,6 +936,11 @@ class ChatNotifier extends Notifier<ChatState> {
         '${_two(now.hour)} 时（需要精确时间用 shell_exec date）',
       )
       ..add('- 写操作确认策略：${_approvalPromptLine()}')
+      ..add(
+        '- 你可以替用户管理 APP 设置：settings_get/settings_set 查看和修改主题、缓存策略、轮询间隔、调试日志等；'
+        'cache_info/cache_clear 查询/清空缓存；provider_manage 配置 AI 提供商（新增/修改/切换/图片识别模型），'
+        'API Key 会安全保存不会明文回显。',
+      )
       ..add(
         '- 图片：用户发来图片时不会直接把图像发给你，而是带着“用户发来图片：路径”标注；'
         '你需要调用 image_recognize 工具（传 path/scope，可带 question/focus）来识别图片内容，'
@@ -2887,6 +2894,14 @@ class ChatNotifier extends Notifier<ChatState> {
 
   static String _quote(String value) => "'${value.replaceAll("'", "'\\''")}'";
 
+  static String _fmtCacheBytes(int bytes) {
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+    }
+    if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
+    return '$bytes B';
+  }
+
   /// 组装运行期扩展工具：元能力（记忆/技能/MCP 自管理）+ 技能读取 + MCP 工具。
   List<ExternalTool> _buildExternalTools({bool includeImageTool = true}) {
     final tools = <ExternalTool>[
@@ -3050,6 +3065,296 @@ class ChatNotifier extends Notifier<ChatState> {
         attachments: (args) async {
           final img = _lastToolScreenshot;
           return img == null ? const [] : [img];
+        },
+      ),
+      ExternalTool(
+        name: 'settings_get',
+        description: '查看 APP 当前设置：主题、轮询间隔、缓存策略与缓存占用、AI 提供商/主模型/图片识别模型等。'
+            '用户问"现在设置是怎么样的/缓存多大/当前用哪个模型"时调用。',
+        parameters: const {
+          'type': 'object',
+          'properties': {},
+        },
+        origin: 'APP 设置',
+        invoke: (args) async {
+          final settings = ref.read(settingsProvider);
+          final registry = ref.read(llmRegistryProvider);
+          final cacheSize = await CacheCleaner.size();
+          final active = registry.active;
+          return [
+            '## 当前设置',
+            '主题：${settings.themeMode.name}',
+            '任务列表轮询：${settings.pollIntervalSeconds} 秒',
+            '日志自动刷新：${settings.logPollMillis} 毫秒',
+            '自动清理缓存：${settings.cacheCleanupEnabled ? '开' : '关'}',
+            '缓存保留时长：${settings.cacheMaxAgeDays} 天',
+            '缓存大小上限：${settings.cacheMaxSizeMB} MB',
+            '当前缓存占用：${_fmtCacheBytes(cacheSize)}',
+            '调试日志：${settings.debugLogEnabled ? '开' : '关'}',
+            '允许自签名 HTTPS：${settings.allowSelfSigned ? '开' : '关'}',
+            '启动页索引：${settings.startupTabIndex}',
+            '',
+            '## AI',
+            '当前提供商：${active.label}（${active.id}）',
+            '主模型：${active.defaultModel.isEmpty ? '未设置' : active.defaultModel}',
+            '图片识别：${registry.visionProviderId.isEmpty ? '未配置' : '${registry.visionProviderId} / ${registry.visionModel}'}',
+            '',
+            '## 提供商列表',
+            for (final p in registry.providers)
+              '${p.id} | ${p.label} | ${p.baseUrl}'
+                  '${p.defaultModel.isEmpty ? '' : ' | 默认模型:${p.defaultModel}'}'
+                  ' | 模型:${p.allModels.take(12).join(',')}'
+                  '${p.id == registry.activeId ? ' | ⭐当前' : ''}',
+          ].join('\n');
+        },
+      ),
+      ExternalTool(
+        name: 'settings_set',
+        description: '修改 APP 设置。用户说"帮我改主题/调大缓存/关闭自动清理/改轮询间隔"时调用。'
+            '只传要改的字段；theme 可选 system/light/dark，startup_tab_index 0=任务 1=面板 2=AI 3=终端 4=管理 5=设置。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'theme': {
+              'type': 'string',
+              'enum': ['system', 'light', 'dark']
+            },
+            'cache_cleanup_enabled': {'type': 'boolean'},
+            'cache_max_age_days': {
+              'type': 'integer',
+              'minimum': 1,
+              'maximum': 365
+            },
+            'cache_max_size_mb': {
+              'type': 'integer',
+              'minimum': 50,
+              'maximum': 2000
+            },
+            'poll_interval_seconds': {
+              'type': 'integer',
+              'minimum': 1,
+              'maximum': 60
+            },
+            'log_poll_millis': {
+              'type': 'integer',
+              'minimum': 200,
+              'maximum': 60000
+            },
+            'debug_log_enabled': {'type': 'boolean'},
+            'allow_self_signed': {'type': 'boolean'},
+            'startup_tab_index': {
+              'type': 'integer',
+              'minimum': 0,
+              'maximum': 5
+            },
+          },
+        },
+        origin: 'APP 设置',
+        invoke: (args) async {
+          final settings = ref.read(settingsProvider);
+          final notifier = ref.read(settingsProvider.notifier);
+          final themeName = args['theme']?.toString().trim();
+          final next = settings.copyWith(
+            themeMode: themeName == null
+                ? null
+                : (ThemeMode.values.asNameMap()[themeName] ?? ThemeMode.system),
+            cacheCleanupEnabled: (args['cache_cleanup_enabled'] as bool?) ??
+                settings.cacheCleanupEnabled,
+            cacheMaxAgeDays: (args['cache_max_age_days'] as num?)?.toInt() ??
+                settings.cacheMaxAgeDays,
+            cacheMaxSizeMB: (args['cache_max_size_mb'] as num?)?.toInt() ??
+                settings.cacheMaxSizeMB,
+            pollIntervalSeconds:
+                (args['poll_interval_seconds'] as num?)?.toInt() ??
+                    settings.pollIntervalSeconds,
+            logPollMillis: (args['log_poll_millis'] as num?)?.toInt() ??
+                settings.logPollMillis,
+            debugLogEnabled: (args['debug_log_enabled'] as bool?) ??
+                settings.debugLogEnabled,
+            allowSelfSigned: (args['allow_self_signed'] as bool?) ??
+                settings.allowSelfSigned,
+            startupTabIndex: (args['startup_tab_index'] as num?)?.toInt() ??
+                settings.startupTabIndex,
+          );
+          await notifier.update(next);
+          final updated = ref.read(settingsProvider);
+          return '已更新设置：\n'
+              '主题=${updated.themeMode.name}，缓存自动清理=${updated.cacheCleanupEnabled ? '开' : '关'}，'
+              '保留=${updated.cacheMaxAgeDays}天，上限=${updated.cacheMaxSizeMB}MB，'
+              '轮询=${updated.pollIntervalSeconds}s，启动页=${updated.startupTabIndex}。';
+        },
+      ),
+      ExternalTool(
+        name: 'cache_info',
+        description: '获取缓存专用目录 `/cache` 的当前占用信息。用户问"缓存多大/占了多少空间"时用。',
+        parameters: const {
+          'type': 'object',
+          'properties': {},
+        },
+        origin: '缓存管理',
+        invoke: (args) async {
+          final size = await CacheCleaner.size();
+          return '缓存目录 /cache 当前占用 ${_fmtCacheBytes(size)}（$size 字节）。\n'
+              '自动清理：${ref.read(settingsProvider).cacheCleanupEnabled ? '开' : '关'}'
+              '；保留 ${ref.read(settingsProvider).cacheMaxAgeDays} 天'
+              '；上限 ${ref.read(settingsProvider).cacheMaxSizeMB} MB。';
+        },
+      ),
+      ExternalTool(
+        name: 'cache_clear',
+        description: '清空缓存专用目录 `/cache` 里的所有临时文件（截图、临时图片、分享中转等）。'
+            '用户说"清理缓存/清一下垃圾"时调用。不影响 workspace、设置和用户数据。',
+        parameters: const {
+          'type': 'object',
+          'properties': {},
+        },
+        origin: '缓存管理',
+        invoke: (args) async {
+          final freed = await CacheCleaner.clearAll();
+          return freed > 0
+              ? '缓存已清空，释放 ${_fmtCacheBytes(freed)}。'
+              : '缓存本来就是空的，没有需要清理的文件。';
+        },
+      ),
+      ExternalTool(
+        name: 'provider_manage',
+        description: '管理 AI 提供商：列出/新增/修改/删除/切换默认/设置图片识别模型。'
+            '用户说"帮我配置个新模型地址/换一家提供商/当前哪家/图片识别用哪个模型"时用。'
+            'API Key 会存进安全存储，返回里不会明文显示。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'action': {
+              'type': 'string',
+              'enum': [
+                'list',
+                'add',
+                'update',
+                'remove',
+                'set_active',
+                'set_vision'
+              ],
+              'description': '操作类型',
+            },
+            'id': {'type': 'string', 'description': '提供商 id，list 返回里带'},
+            'name': {'type': 'string', 'description': '显示名'},
+            'base_url': {
+              'type': 'string',
+              'description': 'OpenAI 兼容 Base URL（填到 /v1）'
+            },
+            'api_key': {'type': 'string', 'description': 'API Key，新增/修改时可选'},
+            'default_model': {'type': 'string', 'description': '默认模型名'},
+            'models': {
+              'type': 'array',
+              'items': {'type': 'string'},
+              'description': '手填模型列表，新增/修改时可选',
+            },
+            'vision_model': {
+              'type': 'string',
+              'description': 'set_vision 时的图片识别模型名'
+            },
+          },
+          'required': ['action'],
+        },
+        origin: 'AI 提供商',
+        invoke: (args) async {
+          final action = args['action']?.toString().trim() ?? '';
+          final id = args['id']?.toString().trim() ?? '';
+          final registry = ref.read(llmRegistryProvider);
+          final notifier = ref.read(llmRegistryProvider.notifier);
+
+          if (action == 'list') {
+            if (registry.providers.isEmpty) return '还没有配置任何提供商。';
+            return [
+              '共 ${registry.providers.length} 家提供商：',
+              for (final p in registry.providers)
+                '${p.id} | ${p.label} | ${p.baseUrl}'
+                    '${p.defaultModel.isEmpty ? '' : ' | 默认:${p.defaultModel}'}'
+                    ' | 模型:${p.allModels.take(12).join(',')}'
+                    '${p.id == registry.activeId ? ' | ⭐当前' : ''}',
+              '',
+              '图片识别：${registry.visionProviderId.isEmpty ? '未配置' : '${registry.visionProviderId} / ${registry.visionModel}'}',
+            ].join('\n');
+          }
+
+          if (action == 'add') {
+            final baseUrl = args['base_url']?.toString().trim() ?? '';
+            if (baseUrl.isEmpty) return 'add 需要 base_url。';
+            final name = args['name']?.toString().trim() ?? '';
+            final apiKey = args['api_key']?.toString().trim() ?? '';
+            final model = args['default_model']?.toString().trim() ?? '';
+            final rawModels = args['models'];
+            final models = rawModels is List
+                ? rawModels.map((e) => e.toString()).toList()
+                : <String>[];
+            final newId =
+                await notifier.addProvider(name: name, baseUrl: baseUrl);
+            if (apiKey.isNotEmpty) {
+              await SecureStorage.saveLlmApiKey(apiKey, providerId: newId);
+            }
+            final created = ref.read(llmRegistryProvider).byId(newId);
+            if (created != null) {
+              var next = created;
+              if (model.isNotEmpty) {
+                next = next.copyWith(defaultModel: model);
+              }
+              if (models.isNotEmpty) next = next.copyWith(manualModels: models);
+              await notifier.updateProvider(next);
+            }
+            return '已新增提供商 $newId（${name.isEmpty ? baseUrl : name}）'
+                '${apiKey.isEmpty ? '' : '，API Key 已保存'}。\n'
+                '用 provider_manage action=update 再补模型/模型能力，或用 set_active 切换过去。';
+          }
+
+          if (action == 'update') {
+            final p = registry.byId(id);
+            if (p == null) return '找不到 id=$id 的提供商。';
+            final name = args['name']?.toString().trim();
+            final baseUrl = args['base_url']?.toString().trim();
+            final model = args['default_model']?.toString().trim();
+            final apiKey = args['api_key']?.toString().trim() ?? '';
+            final rawModels = args['models'];
+            var next = p;
+            if (rawModels is List) {
+              next = next.copyWith(
+                manualModels: rawModels.map((e) => e.toString()).toList(),
+              );
+            }
+            if (name != null) next = next.copyWith(name: name);
+            if (baseUrl != null) next = next.copyWith(baseUrl: baseUrl);
+            if ((model?.isNotEmpty ?? false)) {
+              next = next.copyWith(defaultModel: model!);
+            }
+            await notifier.updateProvider(next);
+            if (apiKey.isNotEmpty) {
+              await SecureStorage.saveLlmApiKey(apiKey, providerId: id);
+            }
+            return '已更新提供商 $id。';
+          }
+
+          if (action == 'remove') {
+            if (registry.byId(id) == null) return '找不到 id=$id 的提供商。';
+            await notifier.removeProvider(id);
+            return '已删除提供商 $id（含其 API Key）。';
+          }
+
+          if (action == 'set_active') {
+            if (registry.byId(id) == null) return '找不到 id=$id 的提供商。';
+            await notifier.setActive(id);
+            return '已切换到提供商 $id。';
+          }
+
+          if (action == 'set_vision') {
+            final model = args['vision_model']?.toString().trim() ?? '';
+            if (id.isEmpty || model.isEmpty) {
+              return 'set_vision 需要 id 和 vision_model。';
+            }
+            if (registry.byId(id) == null) return '找不到 id=$id 的提供商。';
+            notifier.setVisionModel(id, model);
+            return '已设置图片识别：$id / $model。';
+          }
+
+          return '未知 action：$action（可用 list/add/update/remove/set_active/set_vision）。';
         },
       ),
       ...MetaTools.build(
