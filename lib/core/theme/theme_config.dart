@@ -8,7 +8,7 @@ import 'package:flutter/material.dart';
 /// - 配色表：主色、背景、表面、文字、描边、阴影、语义色……方方面面
 /// - 效果表：玻璃模糊、描边透明度、悬浮深度、圆角、动画时长等
 ///
-/// 配置文件是单文件 JSON：`/workspace/.ql_themes/themes.json`。
+/// 主题一律是 ZIP 包，核心配置写在 `controller.js` 控制脚本里。
 class ThemeConfig {
   const ThemeConfig({
     required this.id,
@@ -114,37 +114,6 @@ class ThemeConfig {
           dark ? const Color(0xFF1A1C1E) : const Color(0xFFF2F2F2)),
       inversePrimary: color('accent', const Color(0xFF80D8FF)),
       surfaceTint: color('primary', const Color(0xFF66BB6A)),
-    );
-  }
-
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'brightness': brightness,
-        'backgroundImage': backgroundImage,
-        'backgroundHtml': backgroundHtml,
-        'colors': colors,
-        'effects': effects,
-      };
-
-  static ThemeConfig fromJson(Map<String, dynamic> json) {
-    return ThemeConfig(
-      id: json['id']?.toString() ??
-          'theme${DateTime.now().millisecondsSinceEpoch}',
-      name: json['name']?.toString() ?? '未命名主题',
-      brightness: json['brightness']?.toString() == 'light' ? 'light' : 'dark',
-      backgroundImage: json['backgroundImage']?.toString() ?? '',
-      backgroundHtml: json['backgroundHtml']?.toString() ?? '',
-      colors: {
-        for (final e in (json['colors'] as Map?)?.entries ??
-            <MapEntry<String, dynamic>>[])
-          e.key.toString(): e.value.toString(),
-      },
-      effects: {
-        for (final e in (json['effects'] as Map?)?.entries ??
-            <MapEntry<String, dynamic>>[])
-          e.key.toString(): (e.value as num?)?.toDouble() ?? 0,
-      },
     );
   }
 

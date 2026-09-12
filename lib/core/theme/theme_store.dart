@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:archive/archive.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../local_shell/proot_bridge.dart';
 import '../utils/logger.dart';
@@ -49,49 +50,87 @@ class ThemeState {
   }
 }
 
-/// 主题方案读写：配置文件在 `/workspace/.ql_themes/themes.json`。
+/// 主题方案读写：主题一律是 ZIP 包。
 ///
-/// 用文件而不是 SharedPreferences，就是让 AI/终端/用户都能直接打开这个
-/// JSON 改颜色、改背景图路径、改玻璃效果，改完 App 里一应用就生效。
+/// 包目录在 `/workspace/.ql_themes/packages/<id>/`，核心配置是 `controller.js`
+/// 控制脚本（纯色也在脚本里配置），HTML/CSS/JS/图片/音频/方案目录原样保留。
+/// 不用任何独立 JSON 主题文件；当前激活主题 id 只存在 SharedPreferences。
 class ThemeNotifier extends Notifier<ThemeState> {
-  static const configPath = '/workspace/.ql_themes/themes.json';
   static const packagesRoot = '/workspace/.ql_themes/packages';
   static const exportsRoot = '/workspace/.ql_themes/exports';
+  static const activeKey = 'activeThemeId';
 
   final _bridge = ProotBridge();
-  bool _loaded = false;
+  bool _loading = false;
+  int _retryCount = 0;
 
   @override
   ThemeState build() => const ThemeState();
 
   Future<void> load() async {
-    if (_loaded) return;
-    _loaded = true;
+    if (_loading) return;
+    _loading = true;
     try {
-      await _bridge.exec(
-        command: 'mkdir -p /workspace/.ql_themes',
-        timeoutSeconds: 20,
-      );
-      final raw = await _bridge.readFile(path: configPath);
-      if (raw.trim().isNotEmpty) {
-        final decoded = jsonDecode(raw);
-        if (decoded is Map<String, dynamic>) {
-          final themes = [
-            for (final it in (decoded['themes'] as List? ?? const []))
-              if (it is Map<String, dynamic>) ThemeConfig.fromJson(it),
-          ];
-          final activeId = decoded['activeId']?.toString() ??
-              (themes.isNotEmpty ? themes.first.id : '');
-          state = ThemeState(themes: themes, activeId: activeId, loaded: true);
-          return;
-        }
+      // 用 Dart 直接建目录，不依赖 PRoot exec（避免启动时 proot 还没起来导致
+      // “默认主题目录不存在/导出失败”）。
+      const qlGuest = '/workspace/.ql_themes';
+      String qlHost;
+      try {
+        qlHost = await _bridge.hostPath(path: qlGuest, scope: 'shell');
+      } catch (_) {
+        await _bridge.exec(command: 'mkdir -p $qlGuest', timeoutSeconds: 20);
+        qlHost = await _bridge.hostPath(path: qlGuest, scope: 'shell');
       }
-      state = _defaultState();
-      await _save();
+      Directory('$qlHost/packages').createSync(recursive: true);
+      Directory('$qlHost/exports').createSync(recursive: true);
+      // 清理旧的独立 JSON 主题索引，全面只认 ZIP 包。
+      final oldJson = File('$qlHost/themes.json');
+      if (oldJson.existsSync()) {
+        try {
+          oldJson.deleteSync();
+        } catch (_) {}
+      }
+      // 保证默认暗色/亮色也是真实存在的 ZIP 主题包目录。
+      await _ensureDefaults();
+      final themes = await _scanPackages();
+      final prefs = await SharedPreferences.getInstance();
+      final activeId = prefs.getString(activeKey) ??
+          (themes.isNotEmpty ? themes.first.id : '');
+      state = ThemeState(themes: themes, activeId: activeId, loaded: true);
+      _retryCount = 0;
+      _loading = false;
     } catch (e) {
-      // Runtime 没装/文件系统不可用时退回内存默认，App 照常能用。
-      Logger.e('theme', '主题配置读取失败，使用默认主题', e);
+      // Runtime 没装/文件系统不可用时退回内存默认，App 照常能用；
+      // 稍后自动重试，避免启动时 PRoot 还没就绪导致默认主题包建不出来。
+      Logger.e('theme', '主题包扫描失败，使用默认主题，稍后重试', e);
       state = _defaultState(loaded: true);
+      _loading = false;
+      if (_retryCount < 5) {
+        _retryCount++;
+        Future<void>.delayed(const Duration(seconds: 1), load);
+      }
+    }
+  }
+
+  Future<void> _ensureDefaults() async {
+    final defaults = [
+      ThemeConfig(
+        id: 'default-dark',
+        name: '默认暗色',
+        brightness: 'dark',
+        colors: ThemeConfig.defaultColorsForBrightness('dark'),
+        effects: ThemeConfig.defaultEffects,
+      ),
+      ThemeConfig(
+        id: 'default-light',
+        name: '默认亮色',
+        brightness: 'light',
+        colors: ThemeConfig.defaultColorsForBrightness('light'),
+        effects: ThemeConfig.defaultEffects,
+      ),
+    ];
+    for (final t in defaults) {
+      await _ensurePackageDir(t);
     }
   }
 
@@ -117,26 +156,106 @@ class ThemeNotifier extends Notifier<ThemeState> {
     );
   }
 
-  Future<void> _save() async {
-    try {
-      await _bridge.exec(
-        command: 'mkdir -p /workspace/.ql_themes',
-        timeoutSeconds: 20,
-      );
-      await _bridge.writeFile(
-        path: configPath,
-        content: jsonEncode({
-          'activeId': state.activeId,
-          'themes': [for (final t in state.themes) t.toJson()],
-        }),
-      );
-    } catch (e) {
-      Logger.e('theme', '主题配置保存失败', e);
+  Future<List<ThemeConfig>> _scanPackages() async {
+    final hostRoot = await _bridge.hostPath(path: packagesRoot, scope: 'shell');
+    final rootDir = Directory(hostRoot);
+    if (!rootDir.existsSync()) return const [];
+    final result = <ThemeConfig>[];
+    for (final d in rootDir.listSync(followLinks: false)) {
+      if (d is! Directory) continue;
+      final id = d.path.split(Platform.pathSeparator).last;
+      try {
+        result.add(await _readPackageConfig(id));
+      } catch (e) {
+        Logger.e('theme', '主题包 $id 解析失败，跳过', e);
+      }
     }
+    result.sort((a, b) => a.name.compareTo(b.name));
+    return result;
   }
 
-  /// 新增/覆盖主题。
+  /// 从 package 目录读取主题配置：核心是 controller.js。
+  Future<ThemeConfig> _readPackageConfig(String id) async {
+    final packageGuest = '$packagesRoot/$id';
+    final hostDir = await _bridge.hostPath(path: packageGuest, scope: 'shell');
+    final dir = Directory(hostDir);
+    final controllerFile = File('$hostDir/controller.js');
+    if (!controllerFile.existsSync()) {
+      throw Exception('主题包 $id 缺少 controller.js');
+    }
+    final data = _parseJsObject(await controllerFile.readAsString());
+    final brightness =
+        data['brightness']?.toString() == 'light' ? 'light' : 'dark';
+    final baseColors = ThemeConfig.defaultColorsForBrightness(brightness);
+    final rawColors = data['colors'];
+    final colors = <String, String>{
+      ...baseColors,
+      if (rawColors is Map)
+        for (final e in rawColors.entries) e.key.toString(): e.value.toString(),
+    };
+    final rawEffects = data['effects'];
+    final effects = <String, double>{
+      ...ThemeConfig.defaultEffects,
+      if (rawEffects is Map)
+        for (final e in rawEffects.entries)
+          e.key.toString(): (e.value as num?)?.toDouble() ??
+              ThemeConfig.defaultEffects[e.key.toString()] ??
+              0,
+    };
+
+    var backgroundImage = data['backgroundImage']?.toString() ?? '';
+    var backgroundHtml = '';
+    if (File('$hostDir/index.html').existsSync()) {
+      backgroundHtml = '$packageGuest/index.html';
+    } else if (File('$hostDir/index.htm').existsSync()) {
+      backgroundHtml = '$packageGuest/index.htm';
+    } else {
+      backgroundImage =
+          _findBackgroundImage(dir, packageGuest, backgroundImage) ??
+              backgroundImage;
+    }
+
+    return ThemeConfig(
+      id: id,
+      name: data['name']?.toString() ?? id,
+      brightness: brightness,
+      backgroundImage: backgroundImage,
+      backgroundHtml: backgroundHtml,
+      colors: colors,
+      effects: effects,
+    );
+  }
+
+  String? _findBackgroundImage(
+    Directory dir,
+    String packageGuest,
+    String current,
+  ) {
+    if (current.isNotEmpty) return current;
+    for (final f in dir.listSync(recursive: true, followLinks: false)) {
+      if (f is! File) continue;
+      final path = f.path.replaceAll('\\', '/');
+      final lower = path.toLowerCase();
+      final inBg = lower.contains('/background/') ||
+          lower.contains('image/background') ||
+          lower.contains('背景');
+      if (!inBg) continue;
+      if (!(lower.endsWith('.png') ||
+          lower.endsWith('.jpg') ||
+          lower.endsWith('.jpeg') ||
+          lower.endsWith('.webp') ||
+          lower.endsWith('.gif'))) {
+        continue;
+      }
+      final rel = f.path.substring(dir.path.length + 1).replaceAll('\\', '/');
+      return '$packageGuest/$rel';
+    }
+    return null;
+  }
+
+  /// 新增/覆盖主题包（写 controller.js，不写任何 JSON 主题文件）。
   Future<void> upsert(ThemeConfig config) async {
+    await _writePackageConfig(config);
     final list = [...state.themes];
     final idx = list.indexWhere((t) => t.id == config.id);
     if (idx < 0) {
@@ -145,10 +264,16 @@ class ThemeNotifier extends Notifier<ThemeState> {
       list[idx] = config;
     }
     state = state.copyWith(themes: list);
-    await _save();
   }
 
   Future<void> remove(String id) async {
+    try {
+      final hostDir =
+          await _bridge.hostPath(path: '$packagesRoot/$id', scope: 'shell');
+      if (Directory(hostDir).existsSync()) {
+        Directory(hostDir).deleteSync(recursive: true);
+      }
+    } catch (_) {}
     state = state.copyWith(
       themes: state.themes.where((t) => t.id != id).toList(),
       activeId: state.activeId == id
@@ -157,50 +282,28 @@ class ThemeNotifier extends Notifier<ThemeState> {
               : '')
           : state.activeId,
     );
-    await _save();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(activeKey, state.activeId);
   }
 
   /// 应用某个主题（只改 activeId，不删别的方案）。
   Future<void> apply(String id) async {
     if (state.byId(id) == null) return;
     state = state.copyWith(activeId: id);
-    await _save();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(activeKey, id);
   }
 
-  /// 从 ZIP 主题包导入。zip 内必须包含 theme.json，推荐目录结构：
-  /// theme.json / README.md / controller.js / css/ / js/ / image/background/
-  /// image/elements/ / audio/ / 方案/。有 index.html 会启用 WebView 动态背景。
+  /// 从 ZIP 主题包导入。zip 内必须有 controller.js（纯色配置也写在脚本里）。
   Future<ThemeConfig> importZip(String guestZipPath) async {
-    await _bridge.exec(
-      command: 'mkdir -p $packagesRoot',
-      timeoutSeconds: 20,
-    );
+    final rootHost = await _bridge.hostPath(path: packagesRoot, scope: 'shell');
     final zipHost = await _bridge.hostPath(path: guestZipPath, scope: 'shell');
     final bytes = await File(zipHost).readAsBytes();
     final archive = ZipDecoder().decodeBytes(bytes);
     final themeId = 'pkg${DateTime.now().millisecondsSinceEpoch}';
-    final packageGuest = '$packagesRoot/$themeId';
-    await _bridge.exec(command: 'mkdir -p $packageGuest', timeoutSeconds: 20);
-    final packageHost =
-        await _bridge.hostPath(path: packageGuest, scope: 'shell');
+    final packageHost = '$rootHost/$themeId';
+    Directory(packageHost).createSync(recursive: true);
 
-    // 找到 theme.json 并解析。
-    ArchiveFile? configFile;
-    for (final f in archive.files) {
-      final name = f.name.replaceAll('\\', '/');
-      if (f.isFile && name.endsWith('theme.json')) {
-        configFile = f;
-        break;
-      }
-    }
-    if (configFile == null) {
-      throw Exception('ZIP 里找不到 theme.json');
-    }
-    var config = ThemeConfig.fromJson(
-      jsonDecode(utf8.decode(configFile.content as List<int>)),
-    );
-
-    // 解包全部文件。
     for (final f in archive.files) {
       if (!f.isFile) continue;
       final name = f.name.replaceAll('\\', '/');
@@ -208,96 +311,36 @@ class ThemeNotifier extends Notifier<ThemeState> {
       await hostTarget.parent.create(recursive: true);
       await hostTarget.writeAsBytes(f.content as List<int>, flush: true);
     }
+    _deleteJsonThemeFiles(packageHost);
 
-    // 检测动态 HTML 背景。
-    final htmlRel = archive.files.any((f) =>
-        f.isFile &&
-        (f.name.endsWith('index.html') || f.name.endsWith('/index.htm')));
-    if (htmlRel) {
-      final htmlName = archive.files
-          .firstWhere((f) =>
-              f.isFile &&
-              (f.name.endsWith('index.html') || f.name.endsWith('/index.htm')))
-          .name
-          .replaceAll('\\', '/');
-      config = config.copyWith(
-        id: themeId,
-        name: config.name.isEmpty ? 'ZIP 主题' : config.name,
-        backgroundHtml: '$packageGuest/$htmlName',
-      );
-    } else {
-      // 没有 HTML 就用第一张背景图兜底。
-      final bg = archive.files
-          .where((f) =>
-              f.isFile &&
-              (f.name.contains('background') || f.name.contains('背景')) &&
-              (f.name.endsWith('.png') ||
-                  f.name.endsWith('.jpg') ||
-                  f.name.endsWith('.jpeg') ||
-                  f.name.endsWith('.webp')))
-          .toList();
-      if (bg.isNotEmpty) {
-        final name = bg.first.name.replaceAll('\\', '/');
-        config = config.copyWith(
-          id: themeId,
-          name: config.name.isEmpty ? 'ZIP 主题' : config.name,
-          backgroundImage: '$packageGuest/$name',
-        );
-      } else {
-        config = config.copyWith(
-          id: themeId,
-          name: config.name.isEmpty ? 'ZIP 主题' : config.name,
-        );
-      }
+    if (!File('$packageHost/controller.js').existsSync()) {
+      Directory(packageHost).deleteSync(recursive: true);
+      throw Exception('ZIP 里没有 controller.js，不是有效的主题包');
     }
+
+    final config = await _readPackageConfig(themeId);
     await upsert(config);
     return config;
   }
 
   /// 导出主题为 ZIP 包。返回 guest 路径。
-  ///
-  /// 纯色主题（没有 package 目录）会临时生成最小包：theme.json + README.md
-  /// + controller.js；有动态背景的包会把 packages/<id>/ 整个目录打进去。
   Future<String> exportZip(String id, {String? outPath}) async {
     final theme = state.byId(id);
     if (theme == null) throw Exception('找不到主题 $id');
-    await _bridge.exec(
-      command: 'mkdir -p $exportsRoot',
-      timeoutSeconds: 20,
-    );
-    final safe = _safeName(theme.name.isEmpty ? theme.id : theme.name);
-    final guestOut =
-        outPath?.isNotEmpty == true ? outPath! : '$exportsRoot/$safe.zip';
     final hostRoot = await _bridge.hostPath(path: exportsRoot, scope: 'shell');
-    final hostOut = File('$hostRoot/$safe.zip');
-
-    // 收集要打包的文件。默认/纯色主题没有 package 目录时先补一个最小包目录，
-    // 再打包，避免“默认主题导出失败”这种问题。
+    Directory(hostRoot).createSync(recursive: true);
+    // 保证默认主题也是完整 package 目录。
     final packageGuest = await _ensurePackageDir(theme);
-    final files = <String, List<int>>{};
+    final safe = _safeName(theme.name.isEmpty ? theme.id : theme.name);
+    final hostOut = File('$hostRoot/$safe.zip');
     final hostDir = await _bridge.hostPath(path: packageGuest, scope: 'shell');
     final dir = Directory(hostDir);
+    final files = <String, List<int>>{};
     for (final f in dir.listSync(recursive: true, followLinks: false)) {
       if (f is File) {
         files[f.path.substring(hostDir.length + 1)] = f.readAsBytesSync();
       }
     }
-
-    files['theme.json'] = utf8.encode(jsonEncode(theme.toJson()));
-    if (!files.containsKey('README.md')) {
-      files['README.md'] = utf8.encode(
-        '# ${theme.name}\n\n${theme.backgroundHtml.isEmpty ? '纯色/静态主题' : 'HTML/CSS/JS 动态背景主题'}\n'
-        '来源：APP 主题 ${theme.id}\n',
-      );
-    }
-    if (!files.containsKey('controller.js')) {
-      files['controller.js'] = utf8.encode(
-        '// 纯色主题控制脚本：只声明配色，不创建任何 WebView/动画。\n'
-        'const theme = ${jsonEncode(theme.toJson())};\n'
-        'if (!theme.backgroundHtml) { export default { pure: true, colors: theme.colors }; }\n',
-      );
-    }
-
     final archive = Archive();
     for (final e in files.entries) {
       archive.addFile(ArchiveFile(e.key, e.value.length, e.value));
@@ -307,30 +350,19 @@ class ThemeNotifier extends Notifier<ThemeState> {
       hostOut.parent.createSync(recursive: true);
     }
     await hostOut.writeAsBytes(zipBytes, flush: true);
-    return guestOut;
+    return '$exportsRoot/$safe.zip';
   }
 
   /// 确保主题有 package 目录；没有就生成最小纯色包（默认主题导出用这个）。
   Future<String> _ensurePackageDir(ThemeConfig theme) async {
+    final rootHost = await _bridge.hostPath(path: packagesRoot, scope: 'shell');
     final packageGuest = '$packagesRoot/${theme.id}';
-    try {
-      await _bridge.hostPath(path: packageGuest, scope: 'shell');
-      return packageGuest;
-    } catch (_) {
-      // 不存在就新建。
+    final hostDir = '$rootHost/${theme.id}';
+    Directory(hostDir).createSync(recursive: true);
+    if (!File('$hostDir/controller.js').existsSync()) {
+      await _writeController(hostDir, theme);
     }
-    await _bridge.exec(
-      command: 'mkdir -p $packageGuest',
-      timeoutSeconds: 20,
-    );
-    final hostDir = await _bridge.hostPath(path: packageGuest, scope: 'shell');
-    final themeFile = File('$hostDir/theme.json');
-    if (!themeFile.existsSync()) {
-      await themeFile.writeAsString(
-        jsonEncode(theme.toJson()),
-        flush: true,
-      );
-    }
+    _deleteJsonThemeFiles(hostDir);
     final readme = File('$hostDir/README.md');
     if (!readme.existsSync()) {
       await readme.writeAsString(
@@ -339,44 +371,118 @@ class ThemeNotifier extends Notifier<ThemeState> {
         flush: true,
       );
     }
-    final controller = File('$hostDir/controller.js');
-    if (!controller.existsSync()) {
-      await controller.writeAsString(
-        '// 纯色主题控制脚本：只声明配色，不创建任何 WebView/动画。\n'
-        'const theme = ${jsonEncode(theme.toJson())};\n'
-        'if (!theme.backgroundHtml) { export default { pure: true, colors: theme.colors }; }\n',
-        flush: true,
-      );
-    }
     return packageGuest;
   }
 
+  Future<void> _writePackageConfig(ThemeConfig theme) async {
+    final rootHost = await _bridge.hostPath(path: packagesRoot, scope: 'shell');
+    final hostDir = '$rootHost/${theme.id}';
+    Directory(hostDir).createSync(recursive: true);
+    await _writeController(hostDir, theme);
+    final readme = File('$hostDir/README.md');
+    if (!readme.existsSync()) {
+      await readme.writeAsString(
+        '# ${theme.name}\n\n${theme.backgroundHtml.isEmpty ? '纯色/静态主题' : 'HTML/CSS/JS 动态背景主题'}\n'
+        '来源：APP 主题 ${theme.id}\n',
+        flush: true,
+      );
+    }
+  }
+
+  Future<void> _writeController(String hostDir, ThemeConfig theme) async {
+    final b = StringBuffer();
+    b.writeln('// 主题控制脚本：这是主题唯一的配置入口（纯色也在这里配置）。');
+    b.writeln('const theme = {');
+    b.writeln("  id: '${_jsEscape(theme.id)}',");
+    b.writeln("  name: '${_jsEscape(theme.name)}',");
+    b.writeln("  brightness: '${_jsEscape(theme.brightness)}',");
+    b.writeln("  backgroundImage: '${_jsEscape(theme.backgroundImage)}',");
+    b.writeln('  colors: ${jsonEncode(theme.colors)},');
+    b.writeln('  effects: ${jsonEncode(theme.effects)},');
+    b.writeln('};');
+    b.writeln('export default theme;');
+    await File('$hostDir/controller.js').writeAsString(
+      b.toString(),
+      flush: true,
+    );
+  }
+
+  String _jsEscape(String s) => s
+      .replaceAll('\\', '\\\\')
+      .replaceAll("'", "\\'")
+      .replaceAll('\n', '\\n')
+      .replaceAll('\r', '');
+
   String _safeName(String name) {
-    // 文件名只用安全 ASCII，避免中文/特殊字符在部分文件系统或 zip 工具里出问题。
     if (RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(name)) return name;
     return 'theme_${DateTime.now().millisecondsSinceEpoch}';
   }
 
-  /// 导出一个主题为 JSON 字符串。
-  String exportJson(String id) {
-    final theme = state.byId(id);
-    if (theme == null) return '';
-    return const JsonEncoder.withIndent('  ').convert(theme.toJson());
+  /// 删除包内残留的 theme.json（全面改为 controller.js 配置）。
+  void _deleteJsonThemeFiles(String hostDir) {
+    final dir = Directory(hostDir);
+    if (!dir.existsSync()) return;
+    for (final f in dir.listSync(recursive: true, followLinks: false)) {
+      if (f is File &&
+          f.path.split(Platform.pathSeparator).last == 'theme.json') {
+        try {
+          f.deleteSync();
+        } catch (_) {}
+      }
+    }
   }
 
-  /// 从 JSON 字符串导入一个主题。id 重复时覆盖；不传 id 则自动生成。
-  Future<ThemeConfig> importJson(
-    String jsonText, {
-    String? overrideId,
-  }) async {
-    final decoded = jsonDecode(jsonText);
-    final map = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
-    var theme = ThemeConfig.fromJson(map);
-    if (overrideId != null && overrideId.isNotEmpty) {
-      theme = theme.copyWith(id: overrideId);
+  /// 从 controller.js 里取 `const theme = {...}` 对象。
+  Map<String, dynamic> _parseJsObject(String script) {
+    final start = script.indexOf('{');
+    if (start < 0) return const {};
+    final end = _findClosingBrace(script, start);
+    if (end < 0) return const {};
+    var obj = script.substring(start, end + 1);
+    // 先生成包里的 controller.js 本来就是合法 JSON 对象；AI 手写单引号/注释也兼容。
+    obj = obj.replaceAll(RegExp(r'//[^\n]*'), '').replaceAll("'", '"');
+    obj = obj.replaceAllMapped(
+      RegExp(r'([{,]\s*)([A-Za-z_$][\w$]*)\s*:'),
+      (m) => '${m.group(1)}"${m.group(2)}":',
+    );
+    obj = obj.replaceAll(RegExp(r',\s*}'), '}');
+    try {
+      final decoded = jsonDecode(obj);
+      if (decoded is Map) {
+        return decoded.map(
+          (key, value) => MapEntry(key.toString(), value),
+        );
+      }
+    } catch (_) {}
+    return const {};
+  }
+
+  int _findClosingBrace(String s, int start) {
+    var depth = 0;
+    var inString = false;
+    var quoteChar = '';
+    for (var i = start; i < s.length; i++) {
+      final c = s[i];
+      if (inString) {
+        if (c == '\\') {
+          i++;
+          continue;
+        }
+        if (c == quoteChar) inString = false;
+        continue;
+      }
+      if (c == "'" || c == '"') {
+        inString = true;
+        quoteChar = c;
+        continue;
+      }
+      if (c == '{') depth++;
+      if (c == '}') {
+        depth--;
+        if (depth == 0) return i;
+      }
     }
-    await upsert(theme);
-    return theme;
+    return -1;
   }
 }
 
