@@ -2488,21 +2488,19 @@ class ChatNotifier extends Notifier<ChatState> {
     try {
       // 基础工具集：子代理拿的就是这一份（不含任务代理工具，防止无限分裂）。
       final baseTools = _buildExternalTools();
-      // 只有“这一条用户消息带着新图片”才切图片识别模型；
-      // 之前历史里发过图片、现在只是普通问答时，继续用主模型。
-      final hasImages = history.isNotEmpty &&
-          history.last.role == 'user' &&
-          history.last.images.isNotEmpty;
-      var runHistory = history;
+      // 同一个会话里只要出现过图片，就继续用图片识别模型：
+      // 后续文字问题还要引用图片内容，切回主模型会把图片上下文丢掉。
+      // 想回到主模型，开个新会话或清掉该会话里的图片即可。
+      final hasImages = history.any((m) => m.images.isNotEmpty);
       final LlmConfig llmConfig;
       if (hasImages) {
         final registry = ref.read(llmRegistryProvider);
         final visionProviderId = registry.visionProviderId;
         final visionModel = registry.visionModel.trim();
         if (visionProviderId.isEmpty || visionModel.isEmpty) {
-          throw StateError('还没有设置图片识别模型，无法发送图片。'
+          throw StateError('会话里还有图片，但没设置图片识别模型。'
               '去「AI 设置 → 图片识别模型」里选一个任意提供商的模型，'
-              '或先移除图片。');
+              '或新建会话/移除图片。');
         }
         final visionProvider = registry.byId(visionProviderId);
         if (visionProvider == null) {
@@ -2514,27 +2512,15 @@ class ChatNotifier extends Notifier<ChatState> {
         llmConfig = _configFor(visionConfig, keepModel: true);
         Logger.d(
             'ai',
-            'image turn uses vision config: provider=${visionProvider.label} '
+            'image session uses vision config: provider=${visionProvider.label} '
                 'model=$visionModel '
                 '(base=${visionConfig.baseUrl}, providerId=$visionProviderId, '
                 'imageMessages=${history.where((m) => m.images.isNotEmpty).length})');
       } else {
-        // 普通问答不带历史图片：主模型多是纯文本模型，别把旧的 base64
-        // 图片也塞进请求里。
-        runHistory = [
-          for (final m in history)
-            LlmMessage(
-              role: m.role,
-              content: m.content,
-              toolCallId: m.toolCallId,
-              name: m.name,
-              toolCalls: m.toolCalls,
-            ),
-        ];
         llmConfig = _configFor(config);
       }
-      // 图片这一轮走图片识别提供商的插件配置；普通问答走主提供商的。
-      // 不然主提供商整理的插件可能把图片提供商上游不认的消息格式带过去。
+      // 图片会话统一走图片识别提供商的插件配置；普通会话才走主提供商的。
+      // 不然主提供商的插件可能把图片提供商上游不认的消息格式带过去。
       final transformProviderId = hasImages
           ? ref.read(llmRegistryProvider).visionProviderId
           : activeProviderId;
@@ -2604,7 +2590,7 @@ class ChatNotifier extends Notifier<ChatState> {
           }
         },
       ).run(
-        history: runHistory,
+        history: history,
         onEvent: onEvent,
         onDelta: (delta) =>
             _appendAgentDelta(run?.sessionId ?? state.currentSessionId, delta),
