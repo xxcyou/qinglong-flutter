@@ -68,6 +68,7 @@ class ThemeComponentRegistry {
 class ThemeEffect {
   const ThemeEffect({
     required this.id,
+    this.paint,
     this.imagePath,
     this.icon,
     this.text,
@@ -83,6 +84,10 @@ class ThemeEffect {
   });
 
   final String id;
+
+  /// 通用组件重绘/发光：主题包传 paint 描述，Flutter 按描述绘制。
+  /// 支持 type: solid / gradient / radialGradient / glow / stroke / shadow。
+  final Map<String, dynamic>? paint;
 
   /// 主题包内图片的 guest 路径，例如 /workspace/.ql_themes/packages/x/image/elements/puppet.png。
   final String? imagePath;
@@ -107,6 +112,7 @@ class ThemeEffect {
 
   Map<String, dynamic> toJson() => {
         'id': id,
+        'paint': paint,
         'imagePath': imagePath,
         'icon': icon,
         'text': text,
@@ -230,6 +236,9 @@ class ThemeEffectBridge {
     if (id.isEmpty) return null;
     return ThemeEffect(
       id: id,
+      paint: map['paint'] is Map
+          ? Map<String, dynamic>.from(map['paint'] as Map)
+          : null,
       imagePath: map['imagePath']?.toString(),
       icon: map['icon']?.toString(),
       text: map['text']?.toString(),
@@ -237,7 +246,7 @@ class ThemeEffectBridge {
       y: (map['y'] as num?)?.toDouble() ?? 0,
       width: (map['width'] as num?)?.toDouble() ?? 80,
       height: (map['height'] as num?)?.toDouble() ?? 80,
-      color: _color(map['color']?.toString()) ?? const Color(0xFFFF9EC4),
+      color: parseColor(map['color']) ?? const Color(0xFFFF9EC4),
       animation: map['animation']?.toString() ?? 'none',
       fit: map['fit']?.toString() ?? 'contain',
       fontSize: (map['fontSize'] as num?)?.toDouble() ?? 14,
@@ -245,7 +254,7 @@ class ThemeEffectBridge {
     );
   }
 
-  static Color? _color(Object? v) {
+  static Color? parseColor(Object? v) {
     if (v is int) return Color(v);
     if (v is String) {
       final s = v.replaceFirst('#', '');
@@ -358,6 +367,140 @@ class _ThemeOverlayContentState extends State<_ThemeOverlayContent> {
   }
 }
 
+/// 通用组件重绘：按主题包传来的 paint 描述在组件矩形上绘制
+/// 纯色/渐变/发光/描边/阴影等效果。只画在覆盖层，不拦截点击。
+class _PaintEffect extends StatelessWidget {
+  const _PaintEffect({required this.effect});
+
+  final ThemeEffect effect;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: CustomPaint(
+        painter: _ComponentPaintPainter(effect),
+        size: Size.infinite,
+      ),
+    );
+  }
+}
+
+class _ComponentPaintPainter extends CustomPainter {
+  _ComponentPaintPainter(this.effect);
+
+  final ThemeEffect effect;
+
+  List<Color> _colors(Object? raw, Color fallback) {
+    if (raw is List) {
+      final list = raw
+          .map((v) => ThemeEffectBridge.parseColor(v))
+          .whereType<Color>()
+          .toList();
+      if (list.isNotEmpty) return list;
+    }
+    return [fallback];
+  }
+
+  double _num(Map<String, dynamic> p, String key, double fallback) {
+    final v = p[key];
+    return v is num ? v.toDouble() : fallback;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p = effect.paint;
+    if (p == null || size.width <= 0 || size.height <= 0) return;
+
+    final type = (p['type']?.toString() ?? 'solid').toLowerCase();
+    final colors = _colors(p['colors'], effect.color);
+    final opacity = _num(p, 'opacity', 1).clamp(0.0, 1.0);
+    final strokeWidth = _num(p, 'borderWidth', 2).clamp(0.5, 20.0);
+    final blurRadius = _num(p, 'radius', 10);
+    final cornerRadius = _num(p, 'cornerRadius', 16);
+    final angle = _num(p, 'angle', 0);
+    final rect = Offset.zero & size;
+    final rrect = RRect.fromRectAndRadius(
+      rect,
+      Radius.circular(
+          cornerRadius.clamp(0, math.min(size.width, size.height) / 2)),
+    );
+
+    switch (type) {
+      case 'gradient':
+        final rad = angle * math.pi / 180;
+        final dx = math.cos(rad).toDouble();
+        final dy = math.sin(rad).toDouble();
+        final shader = LinearGradient(
+          colors: colors,
+          begin: Alignment(-dx, -dy),
+          end: Alignment(dx, dy),
+        ).createShader(rect);
+        canvas.drawRRect(
+          rrect,
+          Paint()
+            ..shader = shader
+            ..color = colors.first.withValues(alpha: opacity),
+        );
+        break;
+      case 'radialGradient':
+        final radius = _num(p, 'radius', 0.8).clamp(0.0, 1.2);
+        final shader = RadialGradient(
+          colors: colors,
+          radius: radius,
+        ).createShader(rect);
+        canvas.drawRRect(
+          rrect,
+          Paint()..shader = shader,
+        );
+        break;
+      case 'glow':
+        final blur = blurRadius.clamp(0.5, 60.0);
+        final glowPaint = Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = strokeWidth
+          ..color = colors.first.withValues(alpha: opacity)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, blur);
+        canvas.drawRRect(rrect, glowPaint);
+        canvas.drawRRect(
+          rrect,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = strokeWidth
+            ..color = colors.first,
+        );
+        break;
+      case 'stroke':
+        canvas.drawRRect(
+          rrect,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = strokeWidth
+            ..color = colors.first.withValues(alpha: opacity),
+        );
+        break;
+      case 'shadow':
+        canvas.drawRRect(
+          rrect,
+          Paint()
+            ..color = colors.first.withValues(alpha: opacity)
+            ..maskFilter = MaskFilter.blur(BlurStyle.normal, blurRadius),
+        );
+        break;
+      case 'solid':
+      default:
+        canvas.drawRRect(
+          rrect,
+          Paint()..color = colors.first.withValues(alpha: opacity),
+        );
+        break;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ComponentPaintPainter oldDelegate) =>
+      oldDelegate.effect != effect;
+}
+
 class _EffectWidget extends StatefulWidget {
   const _EffectWidget({required this.effect});
 
@@ -393,6 +536,7 @@ class _EffectWidgetState extends State<_EffectWidget>
   Widget build(BuildContext context) {
     final e = widget.effect;
     Widget child;
+    if (e.paint != null) return _PaintEffect(effect: e);
     if (e.imagePath != null && e.imagePath!.isNotEmpty) {
       child = FutureBuilder<String>(
         future: ThemeEffectsController.instance.resolveImagePath(e.imagePath!),

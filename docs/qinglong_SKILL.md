@@ -271,10 +271,11 @@ DSHTheme.clear();
 - `color`: 颜色
 - `animation`: none / float / bounce / spin
 - `fontSize`, `speechTail`, `fit`（contain/fill/cover）
+- `paint`：组件重绘/发光，`{type: solid|gradient|radialGradient|glow|stroke|shadow, colors, opacity, borderWidth, radius, cornerRadius, angle}`
 
 ### 实现"括号中的高级效果"的标准做法
 1. **落叶飘在组件上**：用 `DSHTheme.effect` 放 N 片叶子图片在组件上方，`animation:'float'`，用 `setInterval`/`requestAnimationFrame` 定期更新 x/y。
-2. **组件边缘/四角发光、角标图标**：先 `queryComponents` 拿到组件矩形，再用一个透明的 `effect` 图片/文字以组件左上角为 x/y 叠加；发光本身可以直接在主题包的 css 里用 `filter: drop-shadow` 画在背景层，或者用文字/图片角标贴到组件角上。
+2. **组件边缘/四角发光、角标图标**：先 `queryComponents` 拿到组件矩形，再用一个透明的 `effect` 图片/文字以组件左上角为 x/y 叠加；发光/渐变可以直接用 `effect` 的 `paint` 画在组件矩形上：`DSHTheme.effect({id:'glow', x, y, width, height, paint:{type:'glow', ...}})`。
 3. **2D/3D 布偶**：把布偶图放 `image/elements`，用 `DSHTheme.effect` 放在组件上方，`animation:'bounce'` 做动作；互动 = 用主题包自己的 JS 监听触摸事件 + DSHTheme 更新气泡。
 4. **组件背景动态布偶撞来撞去**：这是"组件内部背景动画"——主题包先 `queryComponents` 取组件矩形，再用 JS 把布偶位置限制在该矩形内做弹跳，通过 DSHTheme 实时更新。
 5. **给 AI 输入框/列表等指定序号**：主题包用 `queryComponents({type:...)})` 返回 `index`，用 `index` 精确控制某个组件；也支持 `page/type/index` 自由组合。
