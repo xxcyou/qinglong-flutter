@@ -373,4 +373,79 @@ DSHTheme.clear();
 5. 序号：用返回的 index 精确指定第几个组件，也支持 page/type/index 组合。
 ''',
   ),
+  AiSkill(
+    id: 'builtin-settings-guide',
+    name: 'settings-guide',
+    description: '设置页面导航：认识 App 设置页各分区，回答外观/刷新/AI/终端/调试/关于怎么配置',
+    whenToUse: '用户问"设置在哪/怎么改刷新间隔/AI 在哪配/主题在哪换/输出插件在哪加"时',
+    builtin: true,
+    instructions: r'''
+# 设置页面导航
+
+## 入口
+- 主设置页：`设置`。
+- AI 设置页：`设置 - AI` 或从 AI 页面进入，负责提供商、模型、推理参数、上下文、行为、技能库、MCP。
+- LLM 提供商页：负责模型连接、API 地址、Key、上下文长度、输出整理插件。
+
+## 主设置页分区
+- 外观：主题包、亮度、背景效果。
+- 刷新与轮询：任务列表轮询间隔、日志自动刷新间隔。
+- AI：跳转 AI 设置 / LLM 提供商 / 技能库 / MCP。
+- 终端：Proot 运行时、shell 工作区相关。
+- 调试：日志、缓存、清空缓存。
+- 关于：版本、更新。
+
+## 常见配置
+- 换主题：设置 - 外观 - 主题包，可导入 ZIP / 应用已装主题 / 导出当前主题。
+- AI 提供商：设置 - AI - 连接 - 提供商，再填 API 地址、Key、模型。
+- 技能库：设置 - AI - 扩展 - 技能库，可开关/导入内置技能包。
+- 输出整理插件：LLM 提供商页面下方「输出整理插件」，添加/移除 `.js` 插件。
+
+## 回答原则
+- 只读问题直接答，不要猜路径；先说进哪一级，再说改哪个开关。
+- 需要写操作（改配置/清缓存/删主题）按确认策略走。
+''',
+  ),
+  AiSkill(
+    id: 'builtin-output-plugin-dev',
+    name: 'output-plugin-dev',
+    description: '输出整理插件开发包：写 QingLong JS 插件，在模型输出前/后整理内容',
+    whenToUse: '用户要写/改/修输出整理插件，让 AI 输出更干净、去掉工具调用标记、格式化文本时',
+    builtin: true,
+    instructions: r'''
+# 输出整理插件开发包
+
+## 插件格式
+输出整理插件是一个 `.js` 文件，文件管理器里新建，头部必须有识别注释：
+```javascript
+// @qinglong-plugin
+// name: 输出整理
+// description: 清理模型输出泄露的工具调用标记
+function process(text) {
+  return text.replace(/<tool_call>...<\/tool_call>/g, '');
+}
+```
+
+## 支持 hook
+- `beforeSend(messages)`：提交给模型前改写 messages。
+- `processResponse({content, reasoning, toolCalls})`：拿到响应后同时改正文/思考/工具调用，返回 `{content, reasoning, toolCalls}`。
+- `process(text)` / `transform(text)`：纯文本清理，作为 processResponse 的兜底。
+
+## 常见场景
+- 去掉工具调用标记：正则清理 `<tool_call>`、`<result>`、`<thinking>` 泄露。
+- 统一格式：空行压缩、列表规范、Markdown 修整。
+- 敏感信息脱敏：把 token/cookie 打码。
+- 关键词高亮/替换：把实体编号改成可读名称。
+
+## 安装与验证
+1. 文件写到 `/workspace` 下（PRoot shell 作用域）。
+2. 到 LLM 提供商页面「输出整理插件」添加该文件。
+3. 让 AI 说一句话触发一次，点插件状态钮看 hook 执行记录：ran/skipped/error。
+
+## 规范
+- 每个函数必须返回处理后的值；不处理就原样返回。
+- 不要做网络请求、不要读文件；插件只做纯文本转换。
+- 出错时不要吞异常：让插件失败直接暴露，不要用内置兜底掩盖。
+''',
+  ),
 ];
