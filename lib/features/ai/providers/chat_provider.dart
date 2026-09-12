@@ -538,7 +538,7 @@ class ChatNotifier extends Notifier<ChatState> {
           for (final m in msgs)
             LlmMessage(
               role: m.role == 'assistant' ? 'assistant' : m.role,
-              content: _historyContent(m),
+              content: _assistantHistoryContent(m),
               images: [for (final img in m.images) img.dataUri],
             ),
         ],
@@ -703,6 +703,12 @@ class ChatNotifier extends Notifier<ChatState> {
   /// assistant 消息除了最终正文，还把执行过程中发过的“中途说明”
   /// （AgentEventKind.answer）一起带上——以前上下文只有结尾正文，
   /// 模型看不到中间那句“我先看一下日志”“这个报错是 xxx”让人前后接不上。
+  String _assistantHistoryContent(AiChatMessage m) {
+    if (m.role != 'assistant') return _historyContent(m);
+    final content = _historyContent(m).trim();
+    return content.isEmpty ? '（无文字回复）' : content;
+  }
+
   String _historyContent(AiChatMessage m) {
     final base =
         m.role == 'assistant' ? stripQuestionCard(m.content) : m.content;
@@ -2482,7 +2488,12 @@ class ChatNotifier extends Notifier<ChatState> {
     try {
       // 基础工具集：子代理拿的就是这一份（不含任务代理工具，防止无限分裂）。
       final baseTools = _buildExternalTools();
-      final hasImages = history.any((m) => m.images.isNotEmpty);
+      // 只有“这一条用户消息带着新图片”才切图片识别模型；
+      // 之前历史里发过图片、现在只是普通问答时，继续用主模型。
+      final hasImages = history.isNotEmpty &&
+          history.last.role == 'user' &&
+          history.last.images.isNotEmpty;
+      var runHistory = history;
       final LlmConfig llmConfig;
       if (hasImages) {
         final registry = ref.read(llmRegistryProvider);
@@ -2508,7 +2519,27 @@ class ChatNotifier extends Notifier<ChatState> {
                 '(base=${visionConfig.baseUrl}, providerId=$visionProviderId, '
                 'imageMessages=${history.where((m) => m.images.isNotEmpty).length})');
       } else {
+        // 普通问答不带历史图片：主模型多是纯文本模型，别把旧的 base64
+        // 图片也塞进请求里。
+        runHistory = [
+          for (final m in history)
+            LlmMessage(
+              role: m.role,
+              content: m.content,
+              toolCallId: m.toolCallId,
+              name: m.name,
+              toolCalls: m.toolCalls,
+            ),
+        ];
         llmConfig = _configFor(config);
+      }
+      // 图片这一轮走图片识别提供商的插件配置；普通问答走主提供商的。
+      // 不然主提供商整理的插件可能把图片提供商上游不认的消息格式带过去。
+      final transformProviderId = hasImages
+          ? ref.read(llmRegistryProvider).visionProviderId
+          : activeProviderId;
+      if (hasImages && transformProviderId != activeProviderId) {
+        await _ensureOutputPlugin(transformProviderId);
       }
       // 子代理可以走另一家提供商 / 另一个模型：派出去查资料的活用便宜快的
       // 模型更划算，贵的留给主代理做判断。没设过就还是主代理那份。
@@ -2558,8 +2589,8 @@ class ChatNotifier extends Notifier<ChatState> {
         approvalMode: state.approvalMode,
         maxTurns: ref.read(llmRegistryProvider).mainMaxTurns,
         cancelToken: token,
-        requestTransformer: _requestTransformerFor(activeProviderId),
-        responseTransformer: _responseTransformerFor(activeProviderId),
+        requestTransformer: _requestTransformerFor(transformProviderId),
+        responseTransformer: _responseTransformerFor(transformProviderId),
         // 每轮 LLM 请求一回来就刷新顶部上下文/token，不用等整轮跑完。
         onUsage: (total, prompt, cache) {
           if (_cancelToken != token) return;
@@ -2573,7 +2604,7 @@ class ChatNotifier extends Notifier<ChatState> {
           }
         },
       ).run(
-        history: history,
+        history: runHistory,
         onEvent: onEvent,
         onDelta: (delta) =>
             _appendAgentDelta(run?.sessionId ?? state.currentSessionId, delta),
