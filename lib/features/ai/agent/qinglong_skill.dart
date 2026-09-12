@@ -231,6 +231,10 @@ const qinglongSystemPrompt = '''
 - `GlassPanel` / `GlassCard` 会自动上报组件锚点，js 能查到组件在屏幕上的真实位置。
 
 ### DSHTheme API
+
+> 主题包内图片路径不要写死包 id，统一用 `window.DSH_PACKAGE_ROOT` 拼接：
+> `window.DSH_PACKAGE_ROOT + '/image/elements/petal.png'`。
+> ZIP 导入后包目录会变成 `pkgxxx`，写死旧 id 会读不到图。
 ```javascript
 // 放一个特效（同 id 会更新）
 DSHTheme.effect({

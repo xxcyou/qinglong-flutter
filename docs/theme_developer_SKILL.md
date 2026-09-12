@@ -18,6 +18,10 @@
 
 ## DSHTheme API
 
+> 主题包内图片路径不要写死包 id，统一用 `window.DSH_PACKAGE_ROOT` 拼接：
+> `window.DSH_PACKAGE_ROOT + '/image/elements/petal.png'`。
+> ZIP 导入后包目录会变成 `pkgxxx`，写死旧 id 会读不到图。
+
 ```javascript
 DSHTheme.effect({
   id: 'petal_1',

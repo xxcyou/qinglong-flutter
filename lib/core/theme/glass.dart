@@ -722,12 +722,14 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     // 换主题/重载背景时清掉旧主题留下的覆盖层特效，避免串台。
     ThemeEffectsController.instance.clear();
     try {
+      final pkg = RegExp(r'/packages/([^/]+)/').firstMatch(widget.htmlPath);
+      ThemeEffectsController.instance.currentPackageId = pkg?.group(1);
       final host =
           await ProotBridge().hostPath(path: widget.htmlPath, scope: 'shell');
       if (!mounted || host.isEmpty) return;
       String? preparedHtml;
       if (File(host).existsSync()) {
-        preparedHtml = await _prepareHtml(host);
+        preparedHtml = await _prepareHtml(host, widget.htmlPath);
       }
       final platform = _controller.platform;
       if (platform is AndroidWebViewController) {
@@ -802,12 +804,13 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   /// 自动把主题包里的 css/js 注入 html，并对 controller.js 里声明的
   /// 背景图片做一次 file:// 映射，否则 AI 生成的 html 经常光有 div/canvas、
   /// 忘了引 css/js，效果只剩换色。
-  Future<String> _prepareHtml(String hostHtmlPath) async {
+  Future<String> _prepareHtml(String hostHtmlPath, String guestHtmlPath) async {
     final htmlFile = File(hostHtmlPath);
     var html = await htmlFile.readAsString();
     final htmlDir = htmlFile.parent;
     final packageRoot = Directory(htmlDir.parent.path);
     if (!packageRoot.existsSync()) return html;
+    final guestPackageRoot = File(guestHtmlPath).parent.parent.path;
 
     // 只有已注入正确的 ../css/ 才跳过；旧的 css/（相对 html 目录）是
     // WebView 读不到的错误路径，不能当作已注入。
@@ -840,42 +843,16 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     if (styleOverride != null && !html.contains('data-dsh-theme-bg')) {
       headParts.writeln(styleOverride);
     }
-    // 脚本统一放到 </body> 前，避免阻塞渲染。
-    if (!hasScriptTag) {
-      final scriptParts = StringBuffer();
-      for (final dirName in ['js', 'scripts']) {
-        final dir = Directory('${packageRoot.path}/$dirName');
-        if (!dir.existsSync()) continue;
-        for (final f in dir.listSync().whereType<File>()) {
-          if (!f.path.endsWith('.js')) continue;
-          final name = f.uri.pathSegments.last;
-          // 和 css 同理，html 在 html/ 子目录，脚本是兄弟目录 ../js/。
-          final ref = '../$dirName/$name';
-          if (html.contains('src="$ref"')) continue;
-          scriptParts.writeln('<script src="$ref"></script>');
-        }
-      }
-      final scriptText = scriptParts.toString();
-      if (scriptText.isNotEmpty) {
-        final bodyEnd = html.lastIndexOf('</body>');
-        if (bodyEnd >= 0) {
-          html = html.replaceFirst(
-            '</body>',
-            '$scriptText</body>',
-          );
-        } else {
-          html = '$html$scriptText';
-        }
-      }
-    }
-
     // 万能主题桥：主题包 JS 用 window.DSHTheme 让 Flutter 在组件上方
     // 绘制图片/文字/气泡/动画等特效，并可查询组件真实坐标。
+    // 必须先于主题 JS 注入，否则 background.js 首次执行时 DSHTheme 还没定义。
     if (!html.contains('data-dsh-theme-bridge')) {
-      const bridge = '''
+      final guestPackageJs = guestPackageRoot.replaceAll('\\', '/');
+      final bridge = '''
 <script data-dsh-theme-bridge>
 (function () {
   if (window.DSHTheme && window.DSHTheme.__dsh) return;
+  window.DSH_PACKAGE_ROOT = '$guestPackageJs';
   window.__dshCallbacks = window.__dshCallbacks || {};
   function post(msg) {
     try { DSHThemeBridge.postMessage(JSON.stringify(msg)); } catch (e) {}
@@ -907,6 +884,35 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
         html = html.replaceFirst('</body>', '$bridge</body>');
       } else {
         html = '$html$bridge';
+      }
+    }
+
+    // 脚本统一放到 </body> 前，避免阻塞渲染。
+    if (!hasScriptTag) {
+      final scriptParts = StringBuffer();
+      for (final dirName in ['js', 'scripts']) {
+        final dir = Directory('${packageRoot.path}/$dirName');
+        if (!dir.existsSync()) continue;
+        for (final f in dir.listSync().whereType<File>()) {
+          if (!f.path.endsWith('.js')) continue;
+          final name = f.uri.pathSegments.last;
+          // 和 css 同理，html 在 html/ 子目录，脚本是兄弟目录 ../js/。
+          final ref = '../$dirName/$name';
+          if (html.contains('src="$ref"')) continue;
+          scriptParts.writeln('<script src="$ref"></script>');
+        }
+      }
+      final scriptText = scriptParts.toString();
+      if (scriptText.isNotEmpty) {
+        final bodyEnd = html.lastIndexOf('</body>');
+        if (bodyEnd >= 0) {
+          html = html.replaceFirst(
+            '</body>',
+            '$scriptText</body>',
+          );
+        } else {
+          html = '$html$scriptText';
+        }
       }
     }
 

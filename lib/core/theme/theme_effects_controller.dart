@@ -124,11 +124,55 @@ class ThemeEffectsController extends ChangeNotifier {
 
   static final ThemeEffectsController instance = ThemeEffectsController._();
 
+  /// 当前激活主题包 id，导入后实际包目录会变成 pkgxxxx。
+  /// 用于把主题包里写死的旧包路径修正到当前包，以及解析相对图片路径。
+  String? currentPackageId;
+
   final Map<String, ThemeEffect> _effects = {};
 
   List<ThemeEffect> get effects => List.unmodifiable(_effects.values);
 
   ThemeEffect? byId(String id) => _effects[id];
+
+  /// 把主题包 JS 传的图片路径解析成宿主可读文件路径。
+  /// 支持：绝对 guest 路径、相对包内路径（image/elements/x.png）、
+  /// 以及导入后旧包 id 仍写死在 JS 里的容错替换。
+  Future<String> resolveImagePath(String guestPath) async {
+    final bridge = ProotBridge();
+    Future<String> host(String p) async {
+      try {
+        return await bridge.hostPath(path: p, scope: 'shell');
+      } catch (_) {
+        return '';
+      }
+    }
+
+    String path = guestPath.trim();
+    if (path.isEmpty) return '';
+
+    // 相对路径：按当前主题包根目录解析。
+    if (!path.startsWith('/') && currentPackageId != null) {
+      path = '/workspace/.ql_themes/packages/$currentPackageId/$path';
+    }
+
+    final direct = await host(path);
+    if (direct.isNotEmpty && File(direct).existsSync()) return direct;
+
+    // 绝对路径里写死了旧包 id：导入 ZIP 后包目录会变成 pkgxxxx，
+    // 把旧 id 替换成当前 id 再试一次。
+    if (path.startsWith('/workspace/.ql_themes/packages/') &&
+        currentPackageId != null) {
+      final fixed = path.replaceFirst(
+        RegExp(r'^/workspace/.ql_themes/packages/[^/]+/'),
+        '/workspace/.ql_themes/packages/$currentPackageId/',
+      );
+      if (fixed != path) {
+        final retry = await host(fixed);
+        if (retry.isNotEmpty && File(retry).existsSync()) return retry;
+      }
+    }
+    return direct;
+  }
 
   void upsert(ThemeEffect effect) {
     _effects[effect.id] = effect;
@@ -263,7 +307,7 @@ class _EffectWidgetState extends State<_EffectWidget>
     Widget child;
     if (e.imagePath != null && e.imagePath!.isNotEmpty) {
       child = FutureBuilder<String>(
-        future: ProotBridge().hostPath(path: e.imagePath!, scope: 'shell'),
+        future: ThemeEffectsController.instance.resolveImagePath(e.imagePath!),
         builder: (context, snap) {
           final host = snap.data ?? '';
           if (host.isNotEmpty) {

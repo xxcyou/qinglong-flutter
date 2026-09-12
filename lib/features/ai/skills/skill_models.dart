@@ -364,6 +364,7 @@ DSHTheme.clear();
 
 ## 常用字段
 - id/imagePath/icon/text/x/y/width/height/color/animation/fontSize/speechTail。
+- 图片路径不要写死包 id，用 `window.DSH_PACKAGE_ROOT + '/image/elements/x.png'`。
 
 ## 标准套路
 1. 落叶：多片 leaf 图，float 动画，定时更新 x/y。
