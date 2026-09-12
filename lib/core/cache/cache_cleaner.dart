@@ -1,38 +1,43 @@
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../utils/logger.dart';
 
 /// 缓存专用目录的自动保洁。
 ///
 /// 规则：
-/// - 超过 30 天的缓存文件直接删；
-/// - 总大小超过 [maxBytes]（默认 200MB）时，按“最旧优先”继续删到
-///   [softTargetBytes]（默认 140MB）以下，智能腾地方；
+/// - 超过 `cacheMaxAgeDays`（默认 30）天的缓存文件直接删；
+/// - 总大小超过 `cacheMaxSizeMB`（默认 200MB）时，按“最旧优先”继续删到
+///   其 70% 以下，智能腾地方；
 /// - 只删缓存目录里的文件，不碰 workspace、用户文件、设置等长期数据。
 class CacheCleaner {
   CacheCleaner._();
 
-  /// 缓存最大保留时长。
-  static const maxAge = Duration(days: 30);
-
-  /// 缓存总量硬上限；超过后触发“旧数据优先”清理。
-  static const maxBytes = 200 * 1024 * 1024;
-
-  /// 清到多少以下才算完事，留点余量避免每次启动都清。
-  static const softTargetBytes = 140 * 1024 * 1024;
+  static const _prefsEnabled = 'cacheCleanupEnabled';
+  static const _prefsMaxAgeDays = 'cacheMaxAgeDays';
+  static const _prefsMaxSizeMB = 'cacheMaxSizeMB';
 
   /// 启动时调用一次。结果只写日志，绝不阻塞首帧（调用方负责 unawaited）。
   static Future<void> run() async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final enabled = prefs.getBool(_prefsEnabled) ?? true;
+      if (!enabled) return;
+      final maxAgeDays = prefs.getInt(_prefsMaxAgeDays) ?? 30;
+      final maxSizeMB = prefs.getInt(_prefsMaxSizeMB) ?? 200;
       final root = await getApplicationCacheDirectory();
-      final stat = await _clean(root);
+      final stat = await _clean(
+        root,
+        maxAgeDays: maxAgeDays,
+        maxSizeMB: maxSizeMB,
+      );
       if (stat.deletedFiles > 0 || stat.deletedBytes > 0) {
         Logger.d(
           'cache',
           '启动缓存清理完成：删除 ${stat.deletedFiles} 个文件，'
-              '释放 ${_fmt(stat.deletedBytes)}，当前缓存 ${_fmt(stat.remainingBytes)}',
+          '释放 ${_fmt(stat.deletedBytes)}，当前缓存 ${_fmt(stat.remainingBytes)}',
         );
       }
     } catch (e) {
@@ -41,10 +46,51 @@ class CacheCleaner {
     }
   }
 
-  static Future<_CleanStat> _clean(Directory root) async {
+  /// 设置页手动“立即清理”：清空整个缓存目录，返回释放了多少字节。
+  static Future<int> clearAll() async {
+    final root = await getApplicationCacheDirectory();
+    var freed = 0;
+    try {
+      await for (final entity in root.list(recursive: true, followLinks: false)) {
+        try {
+          if (entity is File) {
+            freed += entity.lengthSync();
+            await entity.delete();
+          }
+        } catch (_) {}
+      }
+      // 清完文件再收目录。
+      final dirs = <Directory>[];
+      await for (final entity in root.list(recursive: true, followLinks: false)) {
+        if (entity is Directory) dirs.add(entity);
+      }
+      dirs.sort((a, b) => b.path.length.compareTo(a.path.length));
+      for (final d in dirs) {
+        try {
+          if (d.existsSync() && d.listSync().isEmpty) d.deleteSync();
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return freed;
+  }
+
+  /// 当前缓存目录总大小（字节）。
+  static Future<int> size() async {
+    final root = await getApplicationCacheDirectory();
+    return _dirSize(root);
+  }
+
+  /// 按设置规则清理。
+  static Future<_CleanStat> _clean(
+    Directory root, {
+    required int maxAgeDays,
+    required int maxSizeMB,
+  }) async {
     final files = await _collectFiles(root);
     final now = DateTime.now();
-    final cutoff = now.subtract(maxAge);
+    final cutoff = now.subtract(Duration(days: maxAgeDays));
+    final maxBytes = maxSizeMB * 1024 * 1024;
+    final softTargetBytes = (maxBytes * 0.7).round();
     final deletable = <File>[];
 
     var totalBytes = 0;
@@ -73,7 +119,7 @@ class CacheCleaner {
       }
     }
 
-    // 第一波：按时间清掉超过一个月的。
+    // 第一波：按时间清掉超过保留时长的。
     for (final f in deletable) {
       try {
         final size = f.lengthSync();
@@ -106,19 +152,17 @@ class CacheCleaner {
     // 顺手把空目录收掉，别留一堆空壳。
     await _removeEmptyDirs(root);
 
-    var remaining = 0;
-    try {
-      remaining = await _dirSize(root);
-    } catch (_) {}
-
-    return _CleanStat(deletedFiles, deletedBytes, remaining);
+    return _CleanStat(
+      deletedFiles,
+      deletedBytes,
+      await _dirSize(root),
+    );
   }
 
   static Future<List<File>> _collectFiles(Directory dir) async {
     final out = <File>[];
     try {
-      await for (final entity
-          in dir.list(recursive: true, followLinks: false)) {
+      await for (final entity in dir.list(recursive: true, followLinks: false)) {
         if (entity is File) out.add(entity);
       }
     } catch (_) {
@@ -146,8 +190,7 @@ class CacheCleaner {
   static Future<int> _dirSize(Directory dir) async {
     var total = 0;
     try {
-      await for (final entity
-          in dir.list(recursive: true, followLinks: false)) {
+      await for (final entity in dir.list(recursive: true, followLinks: false)) {
         if (entity is File) {
           try {
             total += entity.lengthSync();
@@ -159,8 +202,9 @@ class CacheCleaner {
   }
 
   static String _fmt(int bytes) {
-    if (bytes >= 1024 * 1024)
+    if (bytes >= 1024 * 1024) {
       return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+    }
     if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
     return '$bytes B';
   }

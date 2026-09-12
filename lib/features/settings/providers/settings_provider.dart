@@ -36,6 +36,9 @@ class AppSettings {
     this.terminalCommandHighlight = true,
     this.cachedModels = const [],
     this.modelsFetchedAt,
+    this.cacheCleanupEnabled = true,
+    this.cacheMaxAgeDays = 30,
+    this.cacheMaxSizeMB = 200,
   });
 
   final ThemeMode themeMode;
@@ -107,6 +110,15 @@ class AppSettings {
   /// 命令输入框是否做 shell 语法高亮。
   final bool terminalCommandHighlight;
 
+  /// 启动时是否自动清理缓存目录。
+  final bool cacheCleanupEnabled;
+
+  /// 缓存文件超过多少天算旧，启动时清掉。
+  final int cacheMaxAgeDays;
+
+  /// 缓存总大小超过多少 MB 时按旧数据优先清理。
+  final int cacheMaxSizeMB;
+
   /// 解析额外 JSON，坏了就当空——配置错不该让对话直接不可用。
   Map<String, dynamic> get extraBodyMap => _decodeMap(llmExtraBody);
 
@@ -154,6 +166,9 @@ class AppSettings {
     double? terminalFontSize,
     double? terminalLineHeight,
     bool? terminalCommandHighlight,
+    bool? cacheCleanupEnabled,
+    int? cacheMaxAgeDays,
+    int? cacheMaxSizeMB,
     // 采样参数需要"清空"语义，单独给显式清除开关。
     bool clearTemperature = false,
     bool clearTopP = false,
@@ -176,6 +191,9 @@ class AppSettings {
       terminalLineHeight: terminalLineHeight ?? this.terminalLineHeight,
       terminalCommandHighlight:
           terminalCommandHighlight ?? this.terminalCommandHighlight,
+      cacheCleanupEnabled: cacheCleanupEnabled ?? this.cacheCleanupEnabled,
+      cacheMaxAgeDays: cacheMaxAgeDays ?? this.cacheMaxAgeDays,
+      cacheMaxSizeMB: cacheMaxSizeMB ?? this.cacheMaxSizeMB,
       languageCode: languageCode ?? this.languageCode,
       llmBaseUrl: llmBaseUrl ?? this.llmBaseUrl,
       llmModel: llmModel ?? this.llmModel,
@@ -212,6 +230,9 @@ class AppSettings {
         'terminalFontSize': terminalFontSize,
         'terminalLineHeight': terminalLineHeight,
         'terminalCommandHighlight': terminalCommandHighlight,
+        'cacheCleanupEnabled': cacheCleanupEnabled,
+        'cacheMaxAgeDays': cacheMaxAgeDays,
+        'cacheMaxSizeMB': cacheMaxSizeMB,
         'languageCode': languageCode,
         'llmBaseUrl': llmBaseUrl,
         'llmModel': llmModel,
@@ -255,6 +276,9 @@ class SettingsNotifier extends Notifier<AppSettings> {
       terminalLineHeight: prefs.getDouble('terminalLineHeight') ?? 1.25,
       terminalCommandHighlight:
           prefs.getBool('terminalCommandHighlight') ?? true,
+      cacheCleanupEnabled: prefs.getBool('cacheCleanupEnabled') ?? true,
+      cacheMaxAgeDays: prefs.getInt('cacheMaxAgeDays') ?? 30,
+      cacheMaxSizeMB: prefs.getInt('cacheMaxSizeMB') ?? 200,
       languageCode: prefs.getString('languageCode') ?? 'zh',
       llmBaseUrl: prefs.getString('llmBaseUrl') ?? '',
       llmModel: prefs.getString('llmModel') ?? '',
@@ -303,6 +327,9 @@ class SettingsNotifier extends Notifier<AppSettings> {
       'terminalCommandHighlight',
       next.terminalCommandHighlight,
     );
+    await prefs.setBool('cacheCleanupEnabled', next.cacheCleanupEnabled);
+    await prefs.setInt('cacheMaxAgeDays', next.cacheMaxAgeDays);
+    await prefs.setInt('cacheMaxSizeMB', next.cacheMaxSizeMB);
     await prefs.setString('languageCode', next.languageCode);
     await prefs.setString('llmBaseUrl', next.llmBaseUrl);
     await prefs.setString('llmModel', next.llmModel);

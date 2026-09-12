@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/cache/cache_cleaner.dart';
 import '../../../core/debug/api_debug_log.dart';
 import '../../../shared/glass_scaffold.dart';
 import '../../../core/llm/llm_registry_provider.dart';
@@ -146,6 +147,8 @@ class SettingsPage extends ConsumerWidget {
               ],
             ),
           ),
+          const SizedBox(height: 8),
+          const _CacheSettingsCard(),
           const SizedBox(height: 8),
           const SectionLabel('AI'),
           Consumer(
@@ -428,6 +431,203 @@ class SettingsPage extends ConsumerWidget {
         ThemeMode.light => '亮色',
         ThemeMode.dark => '暗色',
       };
+}
+
+/// 缓存设置：自动清理开关、保留天数、大小上限、当前占用、手动清空。
+class _CacheSettingsCard extends ConsumerStatefulWidget {
+  const _CacheSettingsCard();
+
+  @override
+  ConsumerState<_CacheSettingsCard> createState() => _CacheSettingsCardState();
+}
+
+class _CacheSettingsCardState extends ConsumerState<_CacheSettingsCard> {
+  int? _cacheSize;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshSize();
+  }
+
+  Future<void> _refreshSize() async {
+    final size = await CacheCleaner.size();
+    if (mounted) setState(() => _cacheSize = size);
+  }
+
+  Future<void> _clearCache() async {
+    if (_busy) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('清空缓存？'),
+        content: const Text('会删除 /cache 下的所有临时文件（截图、临时图片、分享中转等），'
+            '不影响 workspace、设置和用户数据。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final freed = await CacheCleaner.clearAll();
+      await _refreshSize();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+          freed > 0 ? '已清空缓存，释放 ${_fmtBytes(freed)}' : '缓存已经是空的',
+        )),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = ref.watch(settingsProvider);
+    final notifier = ref.read(settingsProvider.notifier);
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
+    final sizeText = _cacheSize == null ? '读取中…' : _fmtBytes(_cacheSize!);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionLabel('缓存'),
+        GlassCard(
+          child: Row(
+            children: [
+              const Icon(Icons.cleaning_services_outlined),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '自动清理缓存',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '启动时自动清超过保留时长的旧文件；超大小上限按旧数据优先清',
+                      style: TextStyle(fontSize: 12.5, color: muted),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: settings.cacheCleanupEnabled,
+                onChanged: (v) => notifier.update(
+                  settings.copyWith(cacheCleanupEnabled: v),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        _StepperCard(
+          icon: Icons.calendar_today_outlined,
+          title: '缓存保留时长',
+          valueLabel: '${settings.cacheMaxAgeDays} 天',
+          subtitle: '启动清理时，超过这个时间的缓存文件会被删除',
+          onMinus: settings.cacheMaxAgeDays > 1
+              ? () => notifier.update(
+                    settings.copyWith(
+                      cacheMaxAgeDays: settings.cacheMaxAgeDays - 1,
+                    ),
+                  )
+              : null,
+          onPlus: settings.cacheMaxAgeDays < 365
+              ? () => notifier.update(
+                    settings.copyWith(
+                      cacheMaxAgeDays: settings.cacheMaxAgeDays + 1,
+                    ),
+                  )
+              : null,
+        ),
+        const SizedBox(height: 8),
+        _StepperCard(
+          icon: Icons.data_usage_outlined,
+          title: '缓存大小上限',
+          valueLabel: '${settings.cacheMaxSizeMB} MB',
+          subtitle: '超上限时最旧优先清理，直到降到约 70% 以下',
+          onMinus: settings.cacheMaxSizeMB > 50
+              ? () => notifier.update(
+                    settings.copyWith(
+                      cacheMaxSizeMB: settings.cacheMaxSizeMB - 50,
+                    ),
+                  )
+              : null,
+          onPlus: settings.cacheMaxSizeMB < 2000
+              ? () => notifier.update(
+                    settings.copyWith(
+                      cacheMaxSizeMB: settings.cacheMaxSizeMB + 50,
+                    ),
+                  )
+              : null,
+        ),
+        const SizedBox(height: 8),
+        GlassCard(
+          child: Row(
+            children: [
+              const Icon(Icons.folder_off_outlined),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '缓存占用',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      sizeText,
+                      style: TextStyle(fontSize: 12.5, color: muted),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: '刷新',
+                onPressed: _refreshSize,
+                icon: const Icon(Icons.refresh),
+              ),
+              TextButton(
+                onPressed: _busy ? null : _clearCache,
+                child: _busy
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('清空缓存'),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  static String _fmtBytes(int bytes) {
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+    }
+    if (bytes >= 1024) {
+      return '${(bytes / 1024).toStringAsFixed(0)} KB';
+    }
+    return '$bytes B';
+  }
 }
 
 /// 带 −/+ 两个按钮的数值卡片。
