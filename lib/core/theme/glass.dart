@@ -5,6 +5,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import 'theme_visual.dart';
 import '../local_shell/proot_bridge.dart';
@@ -704,9 +705,117 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       final host =
           await ProotBridge().hostPath(path: widget.htmlPath, scope: 'shell');
       if (!mounted || host.isEmpty) return;
+      if (File(host).existsSync()) {
+        final html = await _prepareHtml(host);
+        await File(host).writeAsString(html, flush: true);
+      }
+      final platform = _controller.platform;
+      if (platform is AndroidWebViewController) {
+        await platform.setAllowFileAccess(true);
+        await platform.setAllowContentAccess(true);
+        await platform.setMediaPlaybackRequiresUserGesture(false);
+      }
       await _controller.loadFile(host);
     } catch (_) {
       // HTML 加载失败就留着纯色/渐变兜底，不炸 App。
+    }
+  }
+
+  /// 自动把主题包里的 css/js 注入 html，并对 controller.js 里声明的
+  /// 背景图片做一次 file:// 映射，否则 AI 生成的 html 经常光有 div/canvas、
+  /// 忘了引 css/js，效果只剩换色。
+  Future<String> _prepareHtml(String hostHtmlPath) async {
+    final htmlFile = File(hostHtmlPath);
+    var html = await htmlFile.readAsString();
+    final htmlDir = htmlFile.parent;
+    final packageRoot = Directory(htmlDir.parent.path);
+    if (!packageRoot.existsSync()) return html;
+
+    final hasCssLink = html.contains('<link') && html.contains('.css');
+    final hasScriptTag = html.contains('<script src') &&
+        (html.contains('js/') || html.contains('scripts/'));
+
+    final styleOverride = await _backgroundImageOverride(packageRoot);
+    final headParts = StringBuffer();
+    if (!hasCssLink) {
+      for (final dirName in ['css', 'styles']) {
+        final dir = Directory('${packageRoot.path}/$dirName');
+        if (!dir.existsSync()) continue;
+        for (final f in dir.listSync().whereType<File>()) {
+          if (!f.path.endsWith('.css')) continue;
+          final name = f.uri.pathSegments.last;
+          if (html.contains('href="$dirName/$name"') ||
+              html.contains('href=\'$dirName/$name\'')) {
+            continue;
+          }
+          headParts.writeln(
+            '<link rel="stylesheet" href="$dirName/$name">',
+          );
+        }
+      }
+    }
+    if (styleOverride != null && !html.contains('data-dsh-theme-bg')) {
+      headParts.writeln(styleOverride);
+    }
+    // 脚本统一放到 </body> 前，避免阻塞渲染。
+    if (!hasScriptTag) {
+      final scriptParts = StringBuffer();
+      for (final dirName in ['js', 'scripts']) {
+        final dir = Directory('${packageRoot.path}/$dirName');
+        if (!dir.existsSync()) continue;
+        for (final f in dir.listSync().whereType<File>()) {
+          if (!f.path.endsWith('.js')) continue;
+          final name = f.uri.pathSegments.last;
+          if (html.contains('src="$dirName/$name"')) continue;
+          scriptParts.writeln('<script src="$dirName/$name"></script>');
+        }
+      }
+      final scriptText = scriptParts.toString();
+      if (scriptText.isNotEmpty) {
+        final bodyEnd = html.lastIndexOf('</body>');
+        if (bodyEnd >= 0) {
+          html = html.replaceFirst(
+            '</body>',
+            '$scriptText</body>',
+          );
+        } else {
+          html = '$html$scriptText';
+        }
+      }
+    }
+
+    if (headParts.isNotEmpty) {
+      final headPartsText = headParts.toString();
+      final headEnd = html.indexOf('</head>');
+      if (headEnd >= 0) {
+        html = html.replaceFirst('</head>', '$headPartsText</head>');
+      } else {
+        html = '$headPartsText$html';
+      }
+    }
+    return html;
+  }
+
+  /// 从 controller.js 读 backgroundImage，把 guest 路径映射成宿主绝对
+  /// file:// URL，并整段写进 style（不影响原 css 文件内容）。
+  Future<String?> _backgroundImageOverride(Directory packageRoot) async {
+    final controllerPath = '${packageRoot.path}/controller.js';
+    if (!File(controllerPath).existsSync()) return null;
+    try {
+      final text = await File(controllerPath).readAsString();
+      final match = RegExp(
+        r'''backgroundImage\s*:\s*['"]([^'"]+)['"]''',
+      ).firstMatch(text);
+      final guest = match?.group(1);
+      if (guest == null || guest.isEmpty) return null;
+      final host = await ProotBridge().hostPath(path: guest, scope: 'shell');
+      if (host.isEmpty) return null;
+      final fileUrl = Uri.file(host).toString();
+      return '<style data-dsh-theme-bg>'
+          '#sakura-bg{background-image:url("$fileUrl")!important}'
+          '</style>';
+    } catch (_) {
+      return null;
     }
   }
 
