@@ -2668,11 +2668,9 @@ class ChatNotifier extends Notifier<ChatState> {
     late String mime;
     try {
       if (path.isNotEmpty) {
-        final bridge = ProotBridge();
-        final host = await bridge.hostPath(path: path, scope: scope);
-        bytes = await File(host).readAsBytes();
-        if (bytes.isEmpty) return '图片文件为空：$path';
-        mime = _guessImageMime(path);
+        final (readBytes, readMime) = await _readImageBytes(path, scope);
+        bytes = readBytes;
+        mime = readMime;
       } else if (rawBase64.isNotEmpty) {
         String data = rawBase64;
         mime = 'image/png';
@@ -2808,6 +2806,27 @@ class ChatNotifier extends Notifier<ChatState> {
     return lines.join('\n');
   }
 
+  /// 读取一张图片文件，自动在 shell/app 两种作用域间兜底。
+  ///
+  /// 有的模型把 scope 填成 'app'，但传进来的其实是 /workspace/... 的 guest 路径，
+  /// 直接 hostPath 会报 “只允许访问 APP 自身目录”。这里失败一次就换另一侧再试，
+  /// 避免这种 scope 选错导致的 PlatformException。
+  Future<(List<int>, String)> _readImageBytes(String path, String scope) async {
+    final bridge = ProotBridge();
+    Object? lastError;
+    for (final s in {scope, scope == 'app' ? 'shell' : 'app'}) {
+      try {
+        final host = await bridge.hostPath(path: path, scope: s);
+        final bytes = await File(host).readAsBytes();
+        if (bytes.isNotEmpty) return (bytes, _guessImageMime(path));
+        lastError = '图片文件为空：$path';
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw Exception(lastError?.toString() ?? '图片读取失败：$path');
+  }
+
   Future<AiImageAttachment?> _loadImageAttachment(
     String path,
     String scope, {
@@ -2843,11 +2862,8 @@ class ChatNotifier extends Notifier<ChatState> {
         dataUri: 'data:$effectiveMime;base64,${base64Encode(bytes)}',
       );
     }
-    final bridge = ProotBridge();
-    final host = await bridge.hostPath(path: path, scope: scope);
-    final bytes = await File(host).readAsBytes();
-    if (bytes.isEmpty) return null;
-    final effectiveMime = mime ?? _guessImageMime(path);
+    final (bytes, guessedMime) = await _readImageBytes(path, scope);
+    final effectiveMime = mime ?? guessedMime;
     return AiImageAttachment(
       name: (name == null || name.trim().isEmpty)
           ? path.split('/').last
