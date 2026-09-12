@@ -1375,8 +1375,18 @@ class ChatNotifier extends Notifier<ChatState> {
       final messages = [...current.messages];
       final lastUser = messages.lastIndexWhere((m) => m.isUser);
       if (lastUser >= 0) {
+        var sendError = _friendlyError(e);
+        final hasImageInHistory =
+            current.messages.any((m) => m.images.isNotEmpty);
+        if (hasImageInHistory) {
+          final visionModel =
+              ref.read(llmRegistryProvider).active.visionModel.trim();
+          if (visionModel.isNotEmpty && !sendError.contains(visionModel)) {
+            sendError = '图片识别模型「$visionModel」调用失败：$sendError';
+          }
+        }
         messages[lastUser] = messages[lastUser].copyWith(
-          sendError: _friendlyError(e),
+          sendError: sendError,
           // 失败前已经跑过的工具照样留着：多轮任务中途断线时，
           // 用户得能看到"断在哪一步"。
           agentEvents: List<AgentEvent>.from(run.events),
@@ -2479,6 +2489,11 @@ class ChatNotifier extends Notifier<ChatState> {
               '去「供应商 → 图片识别」里设置一个模型，或先移除图片。');
         }
         llmConfig = _configFor(config, model: visionModel);
+        Logger.d(
+            'ai',
+            'image turn uses vision model: $visionModel '
+                '(base=${config.baseUrl}, provider=${activeProvider.id}, '
+                'imageMessages=${history.where((m) => m.images.isNotEmpty).length})');
       } else {
         llmConfig = _configFor(config);
       }

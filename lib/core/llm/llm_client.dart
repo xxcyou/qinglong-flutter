@@ -604,40 +604,50 @@ class LlmClient {
     List<LlmFunctionSpec>? tools,
     bool stream = false,
     bool includeUsage = false,
-  }) =>
-      {
-        'model': config.model,
-        if (config.reasoningEffort > 0)
-          'reasoning_effort': switch (config.reasoningEffort) {
-            1 => 'low',
-            2 => 'medium',
-            _ => 'high',
-          },
-        if (config.temperature != null) 'temperature': config.temperature,
-        if (config.topP != null) 'top_p': config.topP,
-        if (config.maxTokens != null) 'max_tokens': config.maxTokens,
-        if (config.frequencyPenalty != null)
-          'frequency_penalty': config.frequencyPenalty,
-        if (config.presencePenalty != null)
-          'presence_penalty': config.presencePenalty,
-        ...config.extraBody,
-        'messages': [for (final m in messages) m.toJson()],
-        if (tools != null && tools.isNotEmpty)
-          'tools': [
-            for (final t in tools)
-              {
-                'type': 'function',
-                'function': {
-                  'name': t.name,
-                  'description': t.description,
-                  'parameters': t.parameters,
-                },
+  }) {
+    final imageMessages = messages.where((m) => m.images.isNotEmpty).length;
+    if (imageMessages > 0) {
+      final first = messages.firstWhere((m) => m.images.isNotEmpty);
+      final firstUri = first.images.first;
+      Logger.d(
+          'llm',
+          'multimodal request model=${config.model} '
+              'imageMessages=$imageMessages dataUriLength=${firstUri.length}');
+    }
+    return {
+      'model': config.model,
+      if (config.reasoningEffort > 0)
+        'reasoning_effort': switch (config.reasoningEffort) {
+          1 => 'low',
+          2 => 'medium',
+          _ => 'high',
+        },
+      if (config.temperature != null) 'temperature': config.temperature,
+      if (config.topP != null) 'top_p': config.topP,
+      if (config.maxTokens != null) 'max_tokens': config.maxTokens,
+      if (config.frequencyPenalty != null)
+        'frequency_penalty': config.frequencyPenalty,
+      if (config.presencePenalty != null)
+        'presence_penalty': config.presencePenalty,
+      ...config.extraBody,
+      'messages': [for (final m in messages) m.toJson()],
+      if (tools != null && tools.isNotEmpty)
+        'tools': [
+          for (final t in tools)
+            {
+              'type': 'function',
+              'function': {
+                'name': t.name,
+                'description': t.description,
+                'parameters': t.parameters,
               },
-          ],
-        if (stream) 'stream': true,
-        // 流式默认不报 usage，得显式要一份，否则计费和上下文占用全是 0。
-        if (stream && includeUsage) 'stream_options': {'include_usage': true},
-      };
+            },
+        ],
+      if (stream) 'stream': true,
+      // 流式默认不报 usage，得显式要一份，否则计费和上下文占用全是 0。
+      if (stream && includeUsage) 'stream_options': {'include_usage': true},
+    };
+  }
 
   /// 流式一轮：边收边把增量交给 [onDelta]，收完拼成完整回复。
   ///
