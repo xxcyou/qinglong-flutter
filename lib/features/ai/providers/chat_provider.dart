@@ -1379,10 +1379,13 @@ class ChatNotifier extends Notifier<ChatState> {
         final hasImageInHistory =
             current.messages.any((m) => m.images.isNotEmpty);
         if (hasImageInHistory) {
-          final visionModel =
-              ref.read(llmRegistryProvider).active.visionModel.trim();
+          final registry = ref.read(llmRegistryProvider);
+          final visionModel = registry.visionModel.trim();
+          final visionProvider = registry.byId(registry.visionProviderId);
           if (visionModel.isNotEmpty && !sendError.contains(visionModel)) {
-            sendError = '图片识别模型「$visionModel」调用失败：$sendError';
+            final providerLabel =
+                visionProvider?.label ?? registry.visionProviderId;
+            sendError = '图片识别模型「$providerLabel · $visionModel」调用失败：$sendError';
           }
         }
         messages[lastUser] = messages[lastUser].copyWith(
@@ -2480,19 +2483,29 @@ class ChatNotifier extends Notifier<ChatState> {
       // 基础工具集：子代理拿的就是这一份（不含任务代理工具，防止无限分裂）。
       final baseTools = _buildExternalTools();
       final hasImages = history.any((m) => m.images.isNotEmpty);
-      final activeProvider = ref.read(llmRegistryProvider).active;
-      final visionModel = activeProvider.visionModel.trim();
       final LlmConfig llmConfig;
       if (hasImages) {
-        if (visionModel.isEmpty) {
-          throw StateError('当前 AI 提供商没有设置图片识别模型，无法发送图片。'
-              '去「供应商 → 图片识别」里设置一个模型，或先移除图片。');
+        final registry = ref.read(llmRegistryProvider);
+        final visionProviderId = registry.visionProviderId;
+        final visionModel = registry.visionModel.trim();
+        if (visionProviderId.isEmpty || visionModel.isEmpty) {
+          throw StateError('还没有设置图片识别模型，无法发送图片。'
+              '去「AI 设置 → 图片识别模型」里选一个任意提供商的模型，'
+              '或先移除图片。');
         }
-        llmConfig = _configFor(config, model: visionModel);
+        final visionProvider = registry.byId(visionProviderId);
+        if (visionProvider == null) {
+          throw StateError('图片识别模型对应的提供商已被删除，请重新设置图片识别模型。');
+        }
+        final visionConfig = await ref
+            .read(llmRegistryProvider.notifier)
+            .configFor(visionProviderId, model: visionModel);
+        llmConfig = _configFor(visionConfig, keepModel: true);
         Logger.d(
             'ai',
-            'image turn uses vision model: $visionModel '
-                '(base=${config.baseUrl}, provider=${activeProvider.id}, '
+            'image turn uses vision config: provider=${visionProvider.label} '
+                'model=$visionModel '
+                '(base=${visionConfig.baseUrl}, providerId=$visionProviderId, '
                 'imageMessages=${history.where((m) => m.images.isNotEmpty).length})');
       } else {
         llmConfig = _configFor(config);

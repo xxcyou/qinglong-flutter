@@ -227,17 +227,15 @@ class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
 
   String _visionSummary(LlmRegistry registry) {
     if (registry.providers.isEmpty) return '还没有提供商';
-    final configured =
-        registry.providers.where((p) => p.visionModel.trim().isNotEmpty).length;
-    if (configured == 0) return '未设置（AI 对话不支持图片）';
-    final active = registry.active;
-    final activeText = active.visionModel.trim().isEmpty
-        ? '当前供应商 ${active.label} 未设置'
-        : '当前 ${active.label} · ${active.visionModel.trim()}';
-    return '$configured 家已设置 · $activeText';
+    final pid = registry.visionProviderId;
+    final model = registry.visionModel.trim();
+    if (pid.isEmpty || model.isEmpty) return '未设置（AI 对话不支持图片）';
+    final provider = registry.byId(pid);
+    if (provider == null) return '已删除的提供商 · $model';
+    return '${provider.label} · $model';
   }
 
-  /// 全局图片识别模型：每家提供商可各选一个自己的视觉模型。
+  /// 全局图片识别模型：可以从任意一家提供商里挑模型。
   Future<void> _pickVisionModels() async {
     final registry = ref.read(llmRegistryProvider);
     if (registry.providers.isEmpty) {
@@ -251,7 +249,7 @@ class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
       backgroundColor: Colors.transparent,
       builder: (context) => SafeArea(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 540),
+          constraints: const BoxConstraints(maxHeight: 560),
           child: ClipRRect(
             borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
             child: Material(
@@ -262,7 +260,7 @@ class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
                     child: Text(
-                      '图片识别模型（每家可单独设置）',
+                      '图片识别模型（可从任意提供商里选）',
                       style: const TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.w700,
@@ -272,7 +270,7 @@ class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                     child: Text(
-                      '该家设置后，给这家发图片会自动用对应模型；清空 = 这家不支持图片。',
+                      '选好后，以后发图片都会走这个提供商 + 模型，主对话模型不变。',
                       style: TextStyle(
                         fontSize: 12,
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -293,15 +291,15 @@ class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
                               ),
                             ),
                           ),
-                          if (provider.visionModel.trim().isNotEmpty)
+                          if (registry.visionProviderId == provider.id &&
+                              registry.visionModel.isNotEmpty)
                             TextButton(
                               style: TextButton.styleFrom(
                                 visualDensity: VisualDensity.compact,
                               ),
-                              onPressed: () async {
-                                await notifier.updateProvider(
-                                  provider.copyWith(visionModel: ''),
-                                );
+                              onPressed: () {
+                                notifier.setVisionModel('', '');
+                                if (context.mounted) setState(() {});
                               },
                               child: const Text('清除'),
                             ),
@@ -324,17 +322,18 @@ class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
                       for (final model in provider.allModels)
                         ListTile(
                           dense: true,
-                          leading: provider.visionModel == model
+                          selected: registry.visionProviderId == provider.id &&
+                              registry.visionModel == model,
+                          leading: registry.visionProviderId == provider.id &&
+                                  registry.visionModel == model
                               ? const Icon(Icons.check, size: 18)
                               : const SizedBox(width: 18),
                           title: Text(
                             model,
                             style: const TextStyle(fontSize: 13),
                           ),
-                          onTap: () async {
-                            await notifier.updateProvider(
-                              provider.copyWith(visionModel: model),
-                            );
+                          onTap: () {
+                            notifier.setVisionModel(provider.id, model);
                             if (context.mounted) Navigator.of(context).pop();
                             if (mounted) setState(() {});
                           },

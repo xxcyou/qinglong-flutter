@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -39,7 +40,12 @@ class LlmRegistryNotifier extends Notifier<LlmRegistry> {
       if (raw != null && raw.isNotEmpty) {
         final decoded = jsonDecode(raw);
         if (decoded is Map<String, dynamic>) {
-          state = LlmRegistry.fromJson(decoded);
+          final inherited = _inheritLegacyVision(LlmRegistry.fromJson(decoded));
+          state = inherited;
+          if (inherited.visionProviderId.isNotEmpty ||
+              inherited.visionModel.isNotEmpty) {
+            await _save();
+          }
           return;
         }
       }
@@ -113,6 +119,35 @@ class LlmRegistryNotifier extends Notifier<LlmRegistry> {
       activeId: 'default',
       loaded: true,
     );
+  }
+
+  /// 老版本把图片识别模型记在各家提供商的 `visionModel` 里。
+  /// 新版本改成全局的「提供商 + 模型」，加载时自动继承第一家已设置的。
+  LlmRegistry _inheritLegacyVision(LlmRegistry registry) {
+    if (registry.visionProviderId.isNotEmpty &&
+        registry.visionModel.isNotEmpty) {
+      return registry;
+    }
+    for (final p in registry.providers) {
+      final v = p.visionModel.trim();
+      if (v.isNotEmpty) {
+        return registry.copyWith(
+          visionProviderId: p.id,
+          visionModel: v,
+        );
+      }
+    }
+    return registry;
+  }
+
+  /// 全局图片识别模型：可以在任意一家提供商里挑模型。
+  void setVisionModel(String providerId, String model) {
+    final trimmed = model.trim();
+    state = state.copyWith(
+      visionProviderId: trimmed.isEmpty ? '' : providerId,
+      visionModel: trimmed,
+    );
+    unawaited(_save());
   }
 
   Future<void> _save() async {

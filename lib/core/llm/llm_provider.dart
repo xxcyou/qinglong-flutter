@@ -256,11 +256,19 @@ class LlmRegistry {
     this.subAgent = const SubAgentPlan(),
     this.mainMaxTurns = 200,
     this.loaded = false,
+    this.visionProviderId = '',
+    this.visionModel = '',
   });
 
   final List<LlmProviderConfig> providers;
   final String activeId;
   final SubAgentPlan subAgent;
+
+  /// 全局图片识别配置：可以指向任意一家提供商。
+  ///
+  /// 有图片时用这个提供商 + 模型发，主对话模型不受影响。
+  final String visionProviderId;
+  final String visionModel;
 
   /// 主 agent 的轮次预算。手动在设置里调，默认 200。
   final int mainMaxTurns;
@@ -293,6 +301,8 @@ class LlmRegistry {
     SubAgentPlan? subAgent,
     int? mainMaxTurns,
     bool? loaded,
+    String? visionProviderId,
+    String? visionModel,
   }) =>
       LlmRegistry(
         providers: providers ?? this.providers,
@@ -300,11 +310,15 @@ class LlmRegistry {
         subAgent: subAgent ?? this.subAgent,
         mainMaxTurns: mainMaxTurns ?? this.mainMaxTurns,
         loaded: loaded ?? this.loaded,
+        visionProviderId: visionProviderId ?? this.visionProviderId,
+        visionModel: visionModel ?? this.visionModel,
       );
 
   Map<String, dynamic> toJson() => {
         'providers': [for (final p in providers) p.toJson()],
         'activeId': activeId,
+        if (visionProviderId.isNotEmpty) 'visionProviderId': visionProviderId,
+        if (visionModel.isNotEmpty) 'visionModel': visionModel,
         'subAgent': subAgent.toJson(),
         'mainMaxTurns': mainMaxTurns,
       };
@@ -323,6 +337,8 @@ class LlmRegistry {
           : const SubAgentPlan(),
       mainMaxTurns:
           ((json['mainMaxTurns'] as num?)?.toInt() ?? 200).clamp(4, 1000),
+      visionProviderId: json['visionProviderId']?.toString() ?? '',
+      visionModel: json['visionModel']?.toString() ?? '',
       loaded: true,
     );
   }

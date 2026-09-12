@@ -205,11 +205,12 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     final picked = await LocalFilePicker.pick(context);
     if (picked == null || !mounted) return;
     if (picked.mime.toLowerCase().startsWith('image/')) {
-      final active = ref.read(llmRegistryProvider).active;
-      if (active.visionModel.trim().isEmpty) {
+      final registry = ref.read(llmRegistryProvider);
+      if (registry.visionModel.trim().isEmpty ||
+          registry.visionProviderId.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('当前 AI 提供商没有设置图片识别模型，去「设置 → AI → 图片识别模型」里配置后才能发图片。'),
+            content: Text('还没有设置图片识别模型，去「设置 → AI → 图片识别模型」里配置后才能发图片。'),
             duration: Duration(seconds: 3),
           ),
         );
