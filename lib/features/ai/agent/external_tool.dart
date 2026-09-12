@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import '../models/ai_message.dart';
+
 /// 运行期注入的外部工具（MCP 服务器工具、技能读取等）。
 ///
 /// AgentLoop 不关心它从哪来，只需要名字、schema 和怎么执行。
@@ -13,6 +15,7 @@ class ExternalTool {
     this.isWrite = false,
     this.danger = false,
     this.origin = '',
+    this.attachments,
   });
 
   final String name;
@@ -28,4 +31,11 @@ class ExternalTool {
 
   /// 来源描述，出错时告诉用户是哪个服务器。
   final String origin;
+
+  /// 可选：这次工具执行后产生的图片附件。
+  ///
+  /// 主要用于截屏/截图工具：tool 返回文字给模型看，同时把图片交给
+  /// AgentLoop 做“图片注入”（主模型支持图片时直接看图）和聊天展示。
+  final Future<List<AiImageAttachment>> Function(Map<String, dynamic> args)?
+      attachments;
 }

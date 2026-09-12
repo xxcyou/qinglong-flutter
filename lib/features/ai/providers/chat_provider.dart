@@ -22,6 +22,7 @@ import '../agent/web_search.dart';
 import '../agent/external_tool.dart';
 import '../agent/mcp_gateway.dart';
 import '../../browser/browser_tools.dart';
+import '../../browser/browser_engine.dart';
 import '../../editor/editor_tools.dart';
 import '../../../shared/editor_bus.dart';
 import '../agent/meta_tools.dart';
@@ -40,7 +41,6 @@ import '../models/audit_log.dart';
 import '../models/chat_runtime.dart';
 import '../models/tool_call_record.dart';
 import '../plugins/output_plugin.dart';
-import '../../browser/browser_engine.dart';
 import '../floating/ai_dock_provider.dart';
 import '../../home/home_navigation_provider.dart';
 import '../widgets/ai_canvas_sheet.dart';
@@ -346,6 +346,12 @@ class ChatNotifier extends Notifier<ChatState> {
 
   /// 本次运行累积的事件，写入消息以便回看（当前会话视图使用）。
   final List<AgentEvent> _runEvents = [];
+
+  /// 各会话本轮 Agent 运行中截图/图片工具产生的附件，运行结束后挂到 assistant 气泡上。
+  final Map<String, List<AiImageAttachment>> _toolScreenshotsBySession = {};
+
+  /// 最近一次截图工具产生的附件，供 AgentLoop 的 attachments 回调复用，避免截两次。
+  AiImageAttachment? _lastToolScreenshot;
 
   @override
   ChatState build() {
@@ -927,8 +933,10 @@ class ChatNotifier extends Notifier<ChatState> {
       ..add('- 写操作确认策略：${_approvalPromptLine()}')
       ..add(
         '- 图片：用户发来图片时不会直接把图像发给你，而是带着“用户发来图片：路径”标注；'
-        '你需要调用 image_recognize 工具（传 path/scope，可带 question）来识别图片内容，'
-        '然后把识别结果作为回答依据。',
+        '你需要调用 image_recognize 工具（传 path/scope，可带 question/focus）来识别图片内容，'
+        '然后把识别结果作为回答依据。'
+        '需要截图时用 device_screenshot（ADB 目标设备）或 browser_screenshot（内置浏览器），'
+        '截图会显示在聊天里；主模型支持图片时会直接看到截图，不支持时用 image_recognize 识别。',
       );
     // 用户开着哪个代码编辑器：直接决定 editor_* 该往哪写，必须实时。
     final editorState = EditorTools.promptState();
@@ -1344,6 +1352,9 @@ class ChatNotifier extends Notifier<ChatState> {
       final assistantMessage = AiChatMessage(
         role: 'assistant',
         content: assistantContent,
+        images: List<AiImageAttachment>.from(
+          _toolScreenshotsBySession[session.id] ?? const [],
+        ),
         toolCalls: [
           for (final r in result.toolRecords)
             AiToolCall(name: r.toolName, arguments: r.args),
@@ -1662,6 +1673,9 @@ class ChatNotifier extends Notifier<ChatState> {
               content: result.content.isNotEmpty
                   ? result.content
                   : '计划已执行，请到对应模块查看结果。',
+              images: List<AiImageAttachment>.from(
+                _toolScreenshotsBySession[session.id] ?? const [],
+              ),
               createdAt: DateTime.now(),
               agentEvents: List<AgentEvent>.from(run.events),
               outcome: result.outcome.name,
@@ -2500,6 +2514,8 @@ class ChatNotifier extends Notifier<ChatState> {
     } else {
       run.livePlan = const AgentTaskPlan();
     }
+    _toolScreenshotsBySession.remove(run?.sessionId ?? state.currentSessionId);
+    _lastToolScreenshot = null;
     final config = await ref.read(llmConfigProvider.future);
     final activeProviderId = ref.read(llmRegistryProvider).active.id;
     final mainProvider = ref.read(llmRegistryProvider).active;
@@ -2548,6 +2564,7 @@ class ChatNotifier extends Notifier<ChatState> {
             approvalMode: state.approvalMode,
             maxTurns: plan.maxTurns,
             enableTools: mainCaps.supportsTools,
+            enableImageInjection: mainCaps.supportsImage,
             cancelToken: token,
             requestTransformer: _requestTransformerFor(
               plan.overridesModel ? plan.providerId : activeProviderId,
@@ -2561,6 +2578,7 @@ class ChatNotifier extends Notifier<ChatState> {
         registry: registry,
         confirmedActionKeys: confirmedKeys,
         enableTools: mainCaps.supportsTools,
+        enableImageInjection: mainCaps.supportsImage,
         externalTools: [
           ...baseTools,
           // 任务代理组只挂在主代理身上。
@@ -2692,6 +2710,41 @@ class ChatNotifier extends Notifier<ChatState> {
     }
   }
 
+  /// 通过 adb 截取目标设备屏幕，读成 AiImageAttachment 并缓存到 [_lastToolScreenshot]。
+  Future<AiImageAttachment?> _captureAdbScreenshot(
+      Map<String, dynamic> args) async {
+    _lastToolScreenshot = null;
+    final serial = args['serial']?.toString().trim() ?? '';
+    final bridge = ProotBridge();
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    final out = '/workspace/.ai_screenshots/shot_$stamp.png';
+    final adb = serial.isNotEmpty
+        ? 'adb -s ${_quote(serial)} exec-out screencap -p'
+        : 'adb exec-out screencap -p';
+    final result = await bridge.exec(
+      command: 'mkdir -p /workspace/.ai_screenshots && $adb > ${_quote(out)}',
+      timeoutSeconds: 60,
+    );
+    if (result.exitCode != 0) {
+      final err = result.stderr.trim().isNotEmpty
+          ? result.stderr.trim()
+          : result.stdout.trim();
+      throw Exception('adb 执行失败（exit=${result.exitCode}）：$err');
+    }
+    final host = await bridge.hostPath(path: out, scope: 'shell');
+    final bytes = await File(host).readAsBytes();
+    if (bytes.isEmpty) throw Exception('截图文件为空：$out');
+    final img = AiImageAttachment(
+      name: 'adb_$stamp.png',
+      mime: 'image/png',
+      dataUri: 'data:image/png;base64,${base64Encode(bytes)}',
+      path: out,
+      scope: 'shell',
+    );
+    _lastToolScreenshot = img;
+    return img;
+  }
+
   static String _guessImageMime(String path) {
     final lower = path.toLowerCase();
     if (lower.endsWith('.png')) return 'image/png';
@@ -2737,6 +2790,92 @@ class ChatNotifier extends Notifier<ChatState> {
           origin: '图片识别',
           invoke: _recognizeImage,
         ),
+      ExternalTool(
+        name: 'device_screenshot',
+        description: '通过 adb 对目标 Android 设备截屏，并把截图显示在聊天里。'
+            '截屏后主模型支持图片时可直接看图；不支持图片时用 image_recognize '
+            '(传返回的 path/scope)识别。截内置浏览器前先 browser_open 并 show:true '
+            '把浏览器显示到屏幕上。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'serial': {
+              'type': 'string',
+              'description': 'adb 目标设备序列号；不填则用当前唯一连接的设备',
+            },
+            'label': {
+              'type': 'string',
+              'description': '截图用途/名称，显示给用户辨认',
+            },
+          },
+        },
+        origin: 'ADB 截图',
+        invoke: (args) async {
+          final serial = args['serial']?.toString().trim() ?? '';
+          final label = args['label']?.toString().trim();
+          try {
+            final img = await _captureAdbScreenshot(args);
+            if (img == null) return 'adb 截图失败：没有生成图片。';
+            _toolScreenshotsBySession
+                .putIfAbsent(state.currentSessionId, () => [])
+                .add(img);
+            final target = serial.isNotEmpty ? '设备 $serial' : '当前设备';
+            return '已通过 adb 截取 $target 的屏幕，图片已显示在聊天里。\n'
+                'path: ${img.path}\nscope: ${img.scope}'
+                '${label == null ? '' : '\n用途：$label'}\n'
+                '需要进一步识别时，用 image_recognize 传上面的 path 和 scope。';
+          } catch (e) {
+            _lastToolScreenshot = null;
+            return 'adb 截图失败：$e';
+          }
+        },
+        attachments: (args) async {
+          final img = _lastToolScreenshot;
+          return img == null ? const [] : [img];
+        },
+      ),
+      ExternalTool(
+        name: 'browser_screenshot',
+        description: '截取内置浏览器当前画面并显示在聊天里。'
+            '用法：先 browser_open 打开目标页（打开时 show:true 显示到前台），'
+            '再调用本工具；它会先把浏览器窗口带到前台再截屏。'
+            '截屏后主模型支持图片时可直接看图；不支持图片时用 image_recognize 识别，'
+            '如果没配置图片识别模型，可以用 browser_read 读页面文本代替。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'label': {
+              'type': 'string',
+              'description': '截图用途/名称，显示给用户辨认',
+            },
+          },
+        },
+        origin: '浏览器截图',
+        invoke: (args) async {
+          BrowserEngine.instance.show(byAgent: true);
+          await Future<void>.delayed(const Duration(milliseconds: 350));
+          final label = args['label']?.toString().trim();
+          try {
+            final img = await _captureAdbScreenshot(args);
+            if (img == null) return '浏览器截图失败：没有生成图片。';
+            _toolScreenshotsBySession
+                .putIfAbsent(state.currentSessionId, () => [])
+                .add(img);
+            return '已截取浏览器画面，图片已显示在聊天里。\n'
+                'path: ${img.path}\nscope: ${img.scope}'
+                '${label == null ? '' : '\n用途：$label'}\n'
+                '需要识别时用 image_recognize 传上面的 path 和 scope；'
+                '如果没配图片识别模型，也可用 browser_read 读页面文本代替。';
+          } catch (e) {
+            _lastToolScreenshot = null;
+            return '浏览器截图失败：$e';
+          }
+        },
+        attachments: (args) async {
+          final img = _lastToolScreenshot;
+          return img == null ? const [] : [img];
+        },
+      ),
       ...MetaTools.build(
         memory: ref.read(memoryProvider.notifier),
         skills: ref.read(skillProvider.notifier),

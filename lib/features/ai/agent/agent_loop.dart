@@ -7,6 +7,7 @@ import 'package:dio/dio.dart';
 import '../../../core/llm/llm_client.dart';
 import '../../../core/network/api_exception.dart';
 import '../models/agent_event.dart';
+import '../models/ai_message.dart';
 import '../models/agent_task_plan.dart';
 import '../models/canvas_result_bus.dart';
 import '../models/approval_mode.dart';
@@ -165,6 +166,7 @@ class AgentLoop {
     this.requestTransformer,
     this.responseTransformer,
     this.enableTools = true,
+    this.enableImageInjection = false,
   });
 
   final LlmConfig config;
@@ -173,6 +175,10 @@ class AgentLoop {
 
   /// 模型不支持工具时置 false：不给模型声明任何 function calling。
   final bool enableTools;
+
+  /// 主模型支持图片时置 true：截图/图片工具产生的附件会以 user 图片消息
+  /// 注入回对话，让主模型直接看图。
+  final bool enableImageInjection;
 
   /// 运行期注入的扩展工具（MCP / 技能）。与内置工具同等参与确认策略。
   final List<ExternalTool> externalTools;
@@ -1565,6 +1571,7 @@ class AgentLoop {
           }
         }
 
+        final batchToolImages = <AiImageAttachment>[];
         for (final call in response.toolCalls) {
           checkCancelled();
           // 这些都在上面处理过了，不进普通工具流程。
@@ -1744,6 +1751,16 @@ class AgentLoop {
                       ))
                 .timeout(deadline);
             final result = _truncate(raw);
+            try {
+              final attachFn = ext?.attachments;
+              if (attachFn != null) {
+                final imgs = await attachFn(call.arguments).timeout(deadline);
+                batchToolImages.addAll(imgs);
+              }
+            } catch (_) {
+              // 附件失败不能把工具本体判失败：文字结果已经拿到了，
+              // 只是聊天里少一张图而已。
+            }
             final elapsed = DateTime.now().difference(startedAt).inMilliseconds;
             if (isWrite) {
               mutated = true;
@@ -1922,6 +1939,23 @@ class AgentLoop {
           ),
         );
         messages.addAll(toolMessages);
+        // 主模型支持图片时，把截图/图片类工具产生的附件作为 user 图片消息注入，
+        // 下一轮它就直接看图回答，不需要再绕一层识别工具。
+        if (enableImageInjection && batchToolImages.isNotEmpty) {
+          for (var i = 0; i < batchToolImages.length; i++) {
+            final img = batchToolImages[i];
+            messages.add(
+              LlmMessage(
+                role: 'user',
+                content: i == 0
+                    ? '【AI 截图 / 图片】这是刚才工具调用得到的图片，你直接看图并'
+                        '按用户需求处理，不需要再重复调识别工具。'
+                    : '【另外一张截图/图片】也一起看一下。',
+                images: [img.dataUri],
+              ),
+            );
+          }
+        }
         // 老的工具结果压成摘要：省下的是"每轮都重发"的钱，不是一次性的钱。
         _ageToolResults(messages, toolMessages);
 
