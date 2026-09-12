@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'component_effects.dart';
 import 'theme_config.dart';
 
 /// 挂在 ThemeData 上的“玻璃视觉”扩展：背景图、渐变底、描边、阴影、
@@ -25,6 +26,7 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
     required this.floatingDepth,
     required this.animationDurationMs,
     required this.animatedGradient,
+    required this.componentEffects,
   });
 
   final ThemeConfig config;
@@ -46,6 +48,9 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
   final double floatingDepth;
   final int animationDurationMs;
   final bool animatedGradient;
+
+  /// 组件级特效（来自 controller.js 的 componentEffects）。
+  final List<ComponentEffect> componentEffects;
 
   static ThemeVisual fromConfig(ThemeConfig config) {
     final dark = config.isDark;
@@ -77,6 +82,7 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
       floatingDepth: config.effect('floatingDepth', 4),
       animationDurationMs: config.effect('animationDurationMs', 250).round(),
       animatedGradient: config.effect('animatedGradient', 0) != 0,
+      componentEffects: config.componentEffects,
     );
   }
 
@@ -98,6 +104,7 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
     double? floatingDepth,
     int? animationDurationMs,
     bool? animatedGradient,
+    List<ComponentEffect>? componentEffects,
   }) {
     return ThemeVisual(
       config: config ?? this.config,
@@ -116,6 +123,7 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
       floatingDepth: floatingDepth ?? this.floatingDepth,
       animationDurationMs: animationDurationMs ?? this.animationDurationMs,
       animatedGradient: animatedGradient ?? this.animatedGradient,
+      componentEffects: componentEffects ?? this.componentEffects,
     );
   }
 
@@ -142,6 +150,7 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
       animationDurationMs:
           t < 0.5 ? animationDurationMs : other.animationDurationMs,
       animatedGradient: t < 0.5 ? animatedGradient : other.animatedGradient,
+      componentEffects: t < 0.5 ? componentEffects : other.componentEffects,
     );
   }
 }

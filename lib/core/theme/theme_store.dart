@@ -2,11 +2,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../local_shell/proot_bridge.dart';
 import '../utils/logger.dart';
+import 'component_effects.dart';
 import 'theme_config.dart';
 
 /// 主题方案库状态。
@@ -243,6 +245,15 @@ class ThemeNotifier extends Notifier<ThemeState> {
               backgroundImage;
     }
 
+    final rawComponentEffects = data['componentEffects'];
+    final componentEffects = rawComponentEffects is List
+        ? rawComponentEffects
+            .map(ComponentEffect.fromMap)
+            .where(
+                (e) => e.border != null || e.corner != null || e.float != null)
+            .toList()
+        : const <ComponentEffect>[];
+
     return ThemeConfig(
       id: id,
       name: data['name']?.toString() ?? id,
@@ -251,6 +262,7 @@ class ThemeNotifier extends Notifier<ThemeState> {
       backgroundHtml: backgroundHtml,
       colors: colors,
       effects: effects,
+      componentEffects: componentEffects,
     );
   }
 
@@ -550,6 +562,8 @@ class ThemeNotifier extends Notifier<ThemeState> {
     b.writeln("  backgroundImage: '${_jsEscape(theme.backgroundImage)}',");
     b.writeln('  colors: ${jsonEncode(theme.colors)},');
     b.writeln('  effects: ${jsonEncode(theme.effects)},');
+    final effectBlock = _componentEffectsJs(theme.componentEffects);
+    if (effectBlock.isNotEmpty) b.writeln(effectBlock);
     b.writeln('};');
     b.writeln('');
     b.writeln('// 主题资源路由：controller.js 在这里分配各组件的子脚本/样式/HTML/XML。');
@@ -569,6 +583,56 @@ class ThemeNotifier extends Notifier<ThemeState> {
       b.toString(),
       flush: true,
     );
+  }
+
+  String _componentEffectsJs(List<ComponentEffect> effects) {
+    if (effects.isEmpty) return '';
+    final list = effects.map(_componentEffectToMap).toList();
+    return '  componentEffects: ${jsonEncode(list)},';
+  }
+
+  Map<String, dynamic> _componentEffectToMap(ComponentEffect e) {
+    return {
+      if (e.page != null) 'page': e.page,
+      if (e.type != null) 'type': e.type,
+      if (e.index != null) 'index': e.index,
+      if (e.all) 'all': true,
+      if (e.border != null)
+        'border': {
+          'color': _colorHex(e.border!.color),
+          'width': e.border!.width,
+          'glowRadius': e.border!.glowRadius,
+          'glowOpacity': e.border!.glowOpacity,
+          'corners': e.border!.corners,
+          'allSides': e.border!.allSides,
+        },
+      if (e.corner != null)
+        'corner': {
+          'icon': _iconName(e.corner!.icon),
+          'position': e.corner!.position,
+          'size': e.corner!.size,
+          'color': _colorHex(e.corner!.color),
+          'glow': e.corner!.glow,
+        },
+      if (e.float != null)
+        'float': {
+          'dx': e.float!.dx,
+          'dy': e.float!.dy,
+          'durationMs': e.float!.durationMs,
+        },
+    };
+  }
+
+  String _colorHex(Color color) {
+    final v = color.toARGB32() & 0xFFFFFF;
+    return '#${v.toRadixString(16).padLeft(6, '0').toUpperCase()}';
+  }
+
+  String _iconName(IconData icon) {
+    for (final e in ComponentCornerEffect.staticIcons.entries) {
+      if (e.value == icon) return e.key;
+    }
+    return 'sparkle';
   }
 
   String _jsEscape(String s) => s

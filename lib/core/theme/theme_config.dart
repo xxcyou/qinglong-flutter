@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'component_effects.dart';
+
 /// 主题方案配置。
 ///
 /// 一个主题由四部分组成：
@@ -18,6 +20,7 @@ class ThemeConfig {
     this.backgroundHtml = '',
     this.colors = const {},
     this.effects = const {},
+    this.componentEffects = const [],
   });
 
   final String id;
@@ -39,6 +42,9 @@ class ThemeConfig {
 
   /// 效果表。见 [defaultEffects]。
   final Map<String, double> effects;
+
+  /// 组件级特效：边框发光、角标、浮动等，见 [ComponentEffect]。
+  final List<ComponentEffect> componentEffects;
 
   bool get isDark => brightness != 'light';
 
@@ -125,6 +131,7 @@ class ThemeConfig {
     String? backgroundHtml,
     Map<String, String>? colors,
     Map<String, double>? effects,
+    List<ComponentEffect>? componentEffects,
   }) {
     return ThemeConfig(
       id: id ?? this.id,
@@ -134,6 +141,7 @@ class ThemeConfig {
       backgroundHtml: backgroundHtml ?? this.backgroundHtml,
       colors: colors ?? this.colors,
       effects: effects ?? this.effects,
+      componentEffects: componentEffects ?? this.componentEffects,
     );
   }
 
