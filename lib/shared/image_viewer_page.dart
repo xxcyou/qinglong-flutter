@@ -44,7 +44,7 @@ class ImageViewerPage extends StatefulWidget {
 }
 
 class _ImageViewerPageState extends State<ImageViewerPage> {
-  final _pageController = PageController();
+  late final PageController _pageController;
   int _pageIndex = 0;
 
   /// 图片本身的像素尺寸，取到后显示在副标题里。
@@ -56,13 +56,7 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   void initState() {
     super.initState();
     _pageIndex = widget.initialIndex.clamp(0, widget.paths.length - 1);
-    if (_pageIndex != widget.initialIndex) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _pageController.hasClients) {
-          _pageController.jumpToPage(_pageIndex);
-        }
-      });
-    }
+    _pageController = PageController(initialPage: _pageIndex);
     _resolveSize();
   }
 
