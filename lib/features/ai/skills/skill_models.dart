@@ -306,4 +306,71 @@ const builtinSkills = <AiSkill>[
 - 不做高频请求，不做压测。
 ''',
   ),
+  AiSkill(
+    id: 'builtin-theme-developer',
+    name: 'theme-developer',
+    description: '主题包开发与安装：从零生成/修改/导入导出主题 ZIP，把效果写进主题包',
+    whenToUse: '用户要换主题、生成主题、做樱花树背景、导入/导出主题包时',
+    builtin: true,
+    instructions: r'''
+# 主题包开发与安装
+
+## 角色
+你是主题包开发者，所有视觉/组件特效都由主题包自己实现，App 不内置固定特效。
+
+## 主题包结构
+- `controller.js`：总控，声明 theme/themeResources。
+- `html/index.html`：背景 HTML。
+- `css/`、`js/`：背景样式与脚本（兄弟目录，相对 html 用 `../css/`、`../js/`）。
+- `image/elements/`：布偶、花瓣、角标等图片。
+- `xml/`：动画/组件定义。
+
+## 流程
+1. `theme_manage create` 生成基础包。
+2. shell 写 html/js/css/image，controller.js 声明资源。
+3. `theme_manage export_zip` 导出。
+4. `theme_manage import_zip` 导入安装并应用。
+
+## 原则
+- 高级组件特效用 DSHTheme（见 theme-effect-dev 技能），不要依赖 App 固定效果。
+- 图片路径必须是主题包内 guest 路径。
+''',
+  ),
+  AiSkill(
+    id: 'builtin-theme-effect-dev',
+    name: 'theme-effect-dev',
+    description: 'DSHTheme 高级组件特效：落叶、浮动、发光、角标、布偶、气泡、组件背景弹跳',
+    whenToUse: '用户要组件特效/落叶/布偶/气泡/边框发光/角标/组件浮动时',
+    builtin: true,
+    instructions: r'''
+# DSHTheme 组件特效开发
+
+## App 开放接口
+- 主题包 js 调 `window.DSHTheme.*`，在 Flutter 组件上层绘制效果，不挡点击。
+- GlassPanel/GlassCard 自动上报锚点，用 DSHTheme.queryComponents 查真实坐标。
+
+## API
+```javascript
+DSHTheme.effect({
+  id: 'petal_1',
+  imagePath: '/workspace/.ql_themes/packages/x/image/elements/petal.png',
+  x: 120, y: 300, width: 40, height: 40,
+  animation: 'float' // none | float | bounce | spin
+});
+DSHTheme.queryComponents({ type: 'panel', callback: function(list) { console.log(list); } });
+DSHTheme.remove('petal_1');
+DSHTheme.clear();
+```
+
+## 常用字段
+- id/imagePath/icon/text/x/y/width/height/color/animation/fontSize/speechTail。
+
+## 标准套路
+1. 落叶：多片 leaf 图，float 动画，定时更新 x/y。
+2. 发光/角标：queryComponents 拿矩形，图片/文字贴角上，发光可用 css filter。
+3. 布偶：布偶图放 image/elements，effect 挂组件上方，bounce 动作；互动 JS 监听触摸并更新气泡。
+4. 组件背景弹跳：queryComponents 取矩形，JS 每帧限制布偶在矩形内弹跳。
+5. 序号：用返回的 index 精确指定第几个组件，也支持 page/type/index 组合。
+''',
+  ),
 ];
