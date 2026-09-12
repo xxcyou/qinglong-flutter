@@ -2638,6 +2638,7 @@ class ChatNotifier extends Notifier<ChatState> {
     final path = args['path']?.toString().trim() ?? '';
     final scope = args['scope']?.toString().trim() == 'app' ? 'app' : 'shell';
     final question = args['question']?.toString().trim() ?? '';
+    final focus = args['focus']?.toString().trim() ?? '';
     if (path.isEmpty) {
       return '缺少图片路径。请从用户消息里的“用户发来图片：…”取 path。';
     }
@@ -2659,8 +2660,17 @@ class ChatNotifier extends Notifier<ChatState> {
           .read(llmRegistryProvider.notifier)
           .configFor(registry.visionProviderId, model: visionModel);
       final mime = _guessImageMime(path);
-      final prompt =
-          question.isEmpty ? '请仔细观察这张图片，详细描述内容（物体、场景、文字、颜色等）。' : question;
+      final String prompt;
+      if (focus.isNotEmpty && question.isNotEmpty) {
+        prompt = '请重点观察图片中的「$focus」，并结合用户的问题回答：$question';
+      } else if (focus.isNotEmpty) {
+        prompt = '请重点观察图片中的「$focus」，详细描述这一部分的细节'
+            '（物体、文字、颜色、状态等）。';
+      } else if (question.isNotEmpty) {
+        prompt = question;
+      } else {
+        prompt = '请仔细观察这张图片，详细描述内容（物体、场景、文字、颜色等）。';
+      }
       final response = await LlmClient.complete(
         config: cfg,
         messages: [
@@ -2702,7 +2712,8 @@ class ChatNotifier extends Notifier<ChatState> {
           name: 'image_recognize',
           description: '识别用户发来的图片/截图。当会话正文里有“用户发来图片：…”这样的标注，'
               '或者用户问“图上是什么/图片里写了什么/识别这张图”时，调用这个工具。'
-              '把标注里的 path 和 scope 传进来，可带 question 指定要问图片的具体问题。',
+              '把标注里的 path 和 scope 传进来，可带 focus 指定重点观察的位置/细节，'
+              '或带 question 指定要问图片的具体问题。',
           parameters: const {
             'type': 'object',
             'properties': {
@@ -2711,6 +2722,10 @@ class ChatNotifier extends Notifier<ChatState> {
                 'type': 'string',
                 'enum': ['shell', 'app'],
                 'description': '图片所在侧，默认 shell'
+              },
+              'focus': {
+                'type': 'string',
+                'description': '用户想重点看的位置/细节，例如“右上角”“第三行文字”“人物表情”；没有则让工具整体描述图片'
               },
               'question': {
                 'type': 'string',
