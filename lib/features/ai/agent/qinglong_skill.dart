@@ -274,6 +274,8 @@ DSHTheme.clear();
 - `animation`: none / float / bounce / spin
 - `fontSize`, `speechTail`, `fit`（contain/fill/cover）
 - `paint`：组件重绘/发光，`{type: solid|gradient|radialGradient|glow|stroke|shadow, colors, opacity, borderWidth, radius, cornerRadius, angle}`
+- `styleComponent`：真实修改组件边缘颜色/宽度/渐变/发光（page,type,index,style）
+- `interactive:true`：让特效可点击/长按；默认不拦截正常控件
 
 ### 实现"括号中的高级效果"的标准做法
 1. **落叶飘在组件上**：用 `DSHTheme.effect` 放 N 片叶子图片在组件上方，`animation:'float'`，用 `setInterval`/`requestAnimationFrame` 定期更新 x/y。

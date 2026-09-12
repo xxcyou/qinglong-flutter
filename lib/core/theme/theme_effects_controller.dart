@@ -64,7 +64,49 @@ class ThemeComponentRegistry {
   }
 }
 
+/// 组件原生风格覆盖：不是画上去的图层，而是直接改 APP 自带组件的
+/// 边缘颜色/宽度/圆角/渐变/发光等真实装饰属性。
+class ComponentStyle {
+  const ComponentStyle({
+    this.borderColor,
+    this.borderWidth,
+    this.glowColor,
+    this.glowRadius,
+    this.glowOpacity,
+    this.gradientColors,
+    this.gradientAngle = 135,
+    this.fillOpacity,
+    this.radius,
+  });
+
+  final Color? borderColor;
+  final double? borderWidth;
+  final Color? glowColor;
+  final double? glowRadius;
+  final double? glowOpacity;
+  final List<Color>? gradientColors;
+  final double gradientAngle;
+  final double? fillOpacity;
+  final double? radius;
+
+  ComponentStyle merge(ComponentStyle? base) {
+    if (base == null) return this;
+    return ComponentStyle(
+      borderColor: borderColor ?? base.borderColor,
+      borderWidth: borderWidth ?? base.borderWidth,
+      glowColor: glowColor ?? base.glowColor,
+      glowRadius: glowRadius ?? base.glowRadius,
+      glowOpacity: glowOpacity ?? base.glowOpacity,
+      gradientColors: gradientColors ?? base.gradientColors,
+      gradientAngle: gradientAngle,
+      fillOpacity: fillOpacity ?? base.fillOpacity,
+      radius: radius ?? base.radius,
+    );
+  }
+}
+
 /// 一个覆盖在 Flutter 组件上方的万能效果图层元素。
+
 class ThemeEffect {
   const ThemeEffect({
     required this.id,
@@ -79,6 +121,7 @@ class ThemeEffect {
     this.color = const Color(0xFFFF9EC4),
     this.animation = 'none',
     this.fit = 'contain',
+    this.interactive = false,
     this.fontSize = 14,
     this.speechTail = false,
   });
@@ -107,6 +150,9 @@ class ThemeEffect {
 
   /// contain / fill / cover
   final String fit;
+
+  /// true 时这个特效可点击/长按；false（默认）整层透明不挡任何控件。
+  final bool interactive;
   final double fontSize;
   final bool speechTail;
 
@@ -123,6 +169,7 @@ class ThemeEffect {
         'color': color.toARGB32(),
         'animation': animation,
         'fit': fit,
+        'interactive': interactive,
         'fontSize': fontSize,
         'speechTail': speechTail,
       };
@@ -144,6 +191,11 @@ class ThemeEffectsController extends ChangeNotifier {
   Offset overlayOffset = Offset.zero;
 
   final Map<String, ThemeEffect> _effects = {};
+  final Map<String, ComponentStyle> _styles = {};
+
+  /// 主题包交互事件回调（由 WebView 背景注册）。
+  Function(String id)? onEffectTap;
+  Function(String id)? onEffectLongPress;
 
   List<ThemeEffect> get effects => List.unmodifiable(_effects.values);
 
@@ -194,6 +246,37 @@ class ThemeEffectsController extends ChangeNotifier {
     overlayOffset = offset;
     notifyListeners();
   }
+
+  String _styleKey(String page, String type, int index) => '$page|$type|$index';
+
+  ComponentStyle? componentStyleFor(String page, String type, int index) {
+    return _styles[_styleKey(page, type, index)];
+  }
+
+  void applyComponentStyle({
+    required String page,
+    required String type,
+    required int index,
+    required ComponentStyle style,
+  }) {
+    final old = _styles[_styleKey(page, type, index)];
+    _styles[_styleKey(page, type, index)] = style.merge(old);
+    notifyListeners();
+  }
+
+  void removeComponentStyle(String page, String type, int index) {
+    _styles.remove(_styleKey(page, type, index));
+    notifyListeners();
+  }
+
+  void clearComponentStyles() {
+    if (_styles.isEmpty) return;
+    _styles.clear();
+    notifyListeners();
+  }
+
+  void emitEffectTap(String id) => onEffectTap?.call(id);
+  void emitEffectLongPress(String id) => onEffectLongPress?.call(id);
 
   void upsert(ThemeEffect effect) {
     _effects[effect.id] = effect;
@@ -249,8 +332,35 @@ class ThemeEffectBridge {
       color: parseColor(map['color']) ?? const Color(0xFFFF9EC4),
       animation: map['animation']?.toString() ?? 'none',
       fit: map['fit']?.toString() ?? 'contain',
+      interactive: map['interactive'] == true,
       fontSize: (map['fontSize'] as num?)?.toDouble() ?? 14,
       speechTail: map['speechTail'] == true,
+    );
+  }
+
+  static ComponentStyle? parseComponentStyle(Object? raw) {
+    if (raw is! Map) return null;
+    final m = Map<String, dynamic>.from(raw);
+    final style = m['style'];
+    if (style is! Map) return null;
+    final st = Map<String, dynamic>.from(style);
+    List<Color>? colors;
+    final rawColors = st['colors'];
+    if (rawColors is List) {
+      final parsed =
+          rawColors.map((c) => parseColor(c)).whereType<Color>().toList();
+      if (parsed.isNotEmpty) colors = parsed;
+    }
+    return ComponentStyle(
+      borderColor: parseColor(st['borderColor']),
+      borderWidth: (st['borderWidth'] as num?)?.toDouble(),
+      glowColor: parseColor(st['glowColor']),
+      glowRadius: (st['glowRadius'] as num?)?.toDouble(),
+      glowOpacity: (st['glowOpacity'] as num?)?.toDouble(),
+      gradientColors: colors,
+      gradientAngle: (st['angle'] as num?)?.toDouble() ?? 135,
+      fillOpacity: (st['fillOpacity'] as num?)?.toDouble(),
+      radius: (st['radius'] as num?)?.toDouble(),
     );
   }
 
@@ -294,9 +404,7 @@ class _ThemeEffectsOverlayState extends State<ThemeEffectsOverlay> {
       }
       _entry = OverlayEntry(
         builder: (_) => Positioned.fill(
-          child: IgnorePointer(
-            child: _ThemeOverlayContent(),
-          ),
+          child: _ThemeOverlayContent(),
         ),
       );
       Overlay.of(context, rootOverlay: true).insert(_entry!);
@@ -376,11 +484,9 @@ class _PaintEffect extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: CustomPaint(
-        painter: _ComponentPaintPainter(effect),
-        size: Size.infinite,
-      ),
+    return CustomPaint(
+      painter: _ComponentPaintPainter(effect),
+      size: Size.infinite,
     );
   }
 }
@@ -536,8 +642,9 @@ class _EffectWidgetState extends State<_EffectWidget>
   Widget build(BuildContext context) {
     final e = widget.effect;
     Widget child;
-    if (e.paint != null) return _PaintEffect(effect: e);
-    if (e.imagePath != null && e.imagePath!.isNotEmpty) {
+    if (e.paint != null) {
+      child = _PaintEffect(effect: e);
+    } else if (e.imagePath != null && e.imagePath!.isNotEmpty) {
       child = FutureBuilder<String>(
         future: ThemeEffectsController.instance.resolveImagePath(e.imagePath!),
         builder: (context, snap) {
@@ -559,29 +666,40 @@ class _EffectWidgetState extends State<_EffectWidget>
     } else {
       child = _iconOrText(e);
     }
-    if (e.animation == 'none') return child;
-
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, _) {
-        final t = _controller.value;
-        Offset offset = Offset.zero;
-        double angle = 0;
-        switch (e.animation) {
-          case 'float':
-            offset = Offset(0, 6 * math.sin(t * 2 * math.pi));
-          case 'bounce':
-            offset = Offset(0, -10 * (1 - t) * t * 4).scale(1, 1);
-            offset = Offset(0, -10 * math.sin(t * math.pi));
-          case 'spin':
-            angle = t * 2 * math.pi;
-        }
-        return Transform.translate(
-          offset: offset,
-          child: Transform.rotate(angle: angle, child: child),
-        );
-      },
-    );
+    if (e.animation != 'none') {
+      child = AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) {
+          final t = _controller.value;
+          Offset offset = Offset.zero;
+          double angle = 0;
+          switch (e.animation) {
+            case 'float':
+              offset = Offset(0, 6 * math.sin(t * 2 * math.pi));
+            case 'bounce':
+              offset = Offset(0, -10 * math.sin(t * math.pi));
+            case 'spin':
+              angle = t * 2 * math.pi;
+          }
+          return Transform.translate(
+            offset: offset,
+            child: Transform.rotate(angle: angle, child: child),
+          );
+        },
+      );
+    }
+    if (e.interactive) {
+      child = GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => ThemeEffectsController.instance.emitEffectTap(e.id),
+        onLongPress: () =>
+            ThemeEffectsController.instance.emitEffectLongPress(e.id),
+        child: child,
+      );
+    } else {
+      child = IgnorePointer(child: child);
+    }
+    return child;
   }
 
   Widget _iconOrText(ThemeEffect e) {

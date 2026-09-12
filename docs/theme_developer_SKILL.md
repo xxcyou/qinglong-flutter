@@ -94,3 +94,32 @@ DSHTheme.clear();
 - App 不做固定组件特效，所有高级效果必须写进主题包。
 - 特效覆盖层默认不挡点击，不要用 DSHTheme 做需要原生输入拦截的效果。
 - 图片路径必须用主题包内 guest 路径。
+
+
+### 真实修改组件（styleComponent）
+直接改变 APP 组件装饰属性，不改坐标、不画覆盖层：
+```js
+DSHTheme.styleComponent({
+  page: 'default',
+  type: 'panel',
+  index: 0,
+  style: {
+    borderColor: '#D4AF37',
+    borderWidth: 3,
+    glowColor: '#D4AF37',
+    glowRadius: 14,
+    glowOpacity: 0.8,
+    gradientColors: ['#1a1a2e', '#3a2d0a'],
+    radius: 22
+  }
+});
+```
+
+### 手势互动
+默认特效不拦截点击。需要可点击的特效加 `interactive:true`：
+```js
+window.DSHTheme.onEffect('tap', function(e) {
+  // e = { id: 'puppet' }
+});
+DSHTheme.effect({ id:'puppet', imagePath: PKG+'/puppet.png', interactive:true, ... });
+```

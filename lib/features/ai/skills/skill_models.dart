@@ -363,7 +363,7 @@ DSHTheme.clear();
 ```
 
 ## 常用字段
-- id/imagePath/icon/text/x/y/width/height/color/animation/fit/fontSize/speechTail；paint 组件重绘：type=solid/gradient/radialGradient/glow/stroke/shadow + colors/opacity/borderWidth/radius/cornerRadius/angle。
+- id/imagePath/icon/text/x/y/width/height/color/animation/fit/interactive/fontSize/speechTail；paint 组件重绘；styleComponent 真实修改组件 style。
 - 图片路径不要写死包 id，用 `window.DSH_PACKAGE_ROOT + '/image/elements/x.png'`。
 
 ## 标准套路

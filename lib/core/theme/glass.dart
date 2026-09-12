@@ -155,106 +155,142 @@ class GlassPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final visual = Theme.of(context).extension<ThemeVisual>();
-    final br = Glass.radius(radius);
-    final effectiveBlur =
-        blur == Glass.blur && visual != null ? visual.glassBlur : blur;
-    final effectiveShadowY =
-        shadowY == 8 && visual != null ? visual.glassShadowY : shadowY;
-    final effectiveBorderColor = visual?.borderColor ?? Colors.white;
-    final effectiveBorderOpacity = visual?.glassBorderOpacity ??
-        (scheme.brightness == Brightness.dark ? 0.16 : 0.78);
-    final effectiveShadowColor = visual?.shadowColor ?? Colors.black;
-    final effectiveShadowOpacity = visual?.glassShadowOpacity ??
-        (scheme.brightness == Brightness.dark ? 0.42 : 0.14);
-    Widget inner = tint == null
-        ? _padded(child)
-        : DecoratedBox(
-            decoration: BoxDecoration(
-              borderRadius: br,
-              color: tint!.withValues(alpha: 0.10),
-            ),
-            child: _padded(child),
-          );
-    // 反光叠在内容**下面**：叠在上面会把文字也蒙上一层白。
-    if (sheen) {
-      inner = Stack(
-        children: [
-          Positioned.fill(
-            child: IgnorePointer(
-              child: DecoratedBox(
+    return ListenableBuilder(
+      listenable: ThemeEffectsController.instance,
+      builder: (context, _) {
+        final scheme = Theme.of(context).colorScheme;
+        final visual = Theme.of(context).extension<ThemeVisual>();
+        final page = ModalRoute.of(context)?.settings.name ?? 'default';
+        final style = ThemeEffectsController.instance
+            .componentStyleFor(page, 'panel', anchorIndex ?? 0);
+        final baseRadius = style?.radius ?? radius;
+        final br = Glass.radius(baseRadius);
+        final effectiveBlur =
+            blur == Glass.blur && visual != null ? visual.glassBlur : blur;
+        final effectiveShadowY =
+            shadowY == 8 && visual != null ? visual.glassShadowY : shadowY;
+        final effectiveBorderColor =
+            style?.borderColor ?? visual?.borderColor ?? Colors.white;
+        final effectiveBorderOpacity = style?.borderColor != null
+            ? 1.0
+            : (visual?.glassBorderOpacity ??
+                (scheme.brightness == Brightness.dark ? 0.16 : 0.78));
+        final effectiveBorderWidth = style?.borderWidth ?? borderWidth;
+        final effectiveShadowColor = visual?.shadowColor ?? Colors.black;
+        final effectiveShadowOpacity = visual?.glassShadowOpacity ??
+            (scheme.brightness == Brightness.dark ? 0.42 : 0.14);
+        final fillOpacity = style?.fillOpacity ?? opacity;
+        Widget inner = tint == null
+            ? _padded(child)
+            : DecoratedBox(
                 decoration: BoxDecoration(
                   borderRadius: br,
-                  gradient: Glass.sheen(scheme, opacity: opacity),
+                  color: tint!.withValues(alpha: 0.10),
+                ),
+                child: _padded(child),
+              );
+        if (sheen) {
+          inner = Stack(
+            children: [
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      borderRadius: br,
+                      gradient: Glass.sheen(scheme, opacity: fillOpacity),
+                    ),
+                  ),
                 ),
               ),
+              inner,
+            ],
+          );
+        }
+        final List<Color> gradientColors = style?.gradientColors ?? [];
+        final gradient = gradientColors.isNotEmpty
+            ? LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: gradientColors.length >= 2
+                    ? gradientColors
+                    : [gradientColors.first, gradientColors.first],
+              )
+            : Glass.fill(scheme, opacity: fillOpacity);
+        Widget content = DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: br,
+            gradient: gradient,
+            border: Border.all(
+              width: effectiveBorderWidth,
+              color: effectiveBorderColor.withValues(
+                  alpha: effectiveBorderOpacity),
             ),
           ),
-          inner,
-        ],
-      );
-    }
-    Widget content = DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: br,
-        gradient: Glass.fill(scheme, opacity: opacity),
-        border: Border.all(
-          width: borderWidth,
-          color: effectiveBorderColor.withValues(alpha: effectiveBorderOpacity),
-        ),
-      ),
-      child: inner,
-    );
+          child: inner,
+        );
 
-    if (onTap != null) {
-      content = Stack(
-        children: [
-          content,
-          Positioned.fill(
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(borderRadius: br, onTap: onTap),
-            ),
-          ),
-        ],
-      );
-    }
-
-    return ComponentAnchorTracker(
-      type: 'panel',
-      index: anchorIndex,
-      child: Container(
-        margin: margin,
-        decoration: BoxDecoration(
-          borderRadius: br,
-          boxShadow: [
-            BoxShadow(
-              color: effectiveShadowColor.withValues(
-                  alpha: effectiveShadowOpacity),
-              blurRadius: effectiveShadowY * 2.2,
-              offset: Offset(0, effectiveShadowY),
-            ),
-            BoxShadow(
-              color: scheme.primary.withValues(
-                alpha: scheme.brightness == Brightness.dark ? 0.10 : 0.06,
+        if (onTap != null) {
+          content = Stack(
+            children: [
+              content,
+              Positioned.fill(
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(borderRadius: br, onTap: onTap),
+                ),
               ),
-              blurRadius: effectiveShadowY * 3,
-              spreadRadius: -effectiveShadowY,
+            ],
+          );
+        }
+
+        final glow = style?.glowColor != null
+            ? [
+                BoxShadow(
+                  color: (style!.glowColor ?? Colors.transparent)
+                      .withValues(alpha: style.glowOpacity ?? 0.6),
+                  blurRadius: style.glowRadius ?? 12,
+                  spreadRadius: 0,
+                ),
+              ]
+            : const <BoxShadow>[];
+
+        return ComponentAnchorTracker(
+          type: 'panel',
+          index: anchorIndex,
+          child: Container(
+            margin: margin,
+            decoration: BoxDecoration(
+              borderRadius: br,
+              boxShadow: [
+                BoxShadow(
+                  color: effectiveShadowColor.withValues(
+                      alpha: effectiveShadowOpacity),
+                  blurRadius: effectiveShadowY * 2.2,
+                  offset: Offset(0, effectiveShadowY),
+                ),
+                BoxShadow(
+                  color: scheme.primary.withValues(
+                    alpha: scheme.brightness == Brightness.dark ? 0.10 : 0.06,
+                  ),
+                  blurRadius: effectiveShadowY * 3,
+                  spreadRadius: -effectiveShadowY,
+                ),
+                ...glow,
+              ],
             ),
-          ],
-        ),
-        child: ClipRRect(
-          borderRadius: br,
-          child: BackdropFilter(
-            filter: ImageFilter.blur(
-              sigmaX: effectiveBlur,
-              sigmaY: effectiveBlur,
+            child: ClipRRect(
+              borderRadius: br,
+              child: BackdropFilter(
+                filter: ImageFilter.blur(
+                  sigmaX: effectiveBlur,
+                  sigmaY: effectiveBlur,
+                ),
+                child: content,
+              ),
             ),
-            child: content,
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -718,9 +754,37 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     _load();
   }
 
+  @override
+  void didUpdateWidget(covariant _WebThemeBackground oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 切换主题后 htmlPath 变化会走到这里；必须重新加载 HTML/JS，
+    // 否则新主题的 controller.js/background.js 不会立即生效。
+    if (oldWidget.htmlPath != widget.htmlPath) {
+      _load();
+    }
+  }
+
   Future<void> _load() async {
-    // 换主题/重载背景时清掉旧主题留下的覆盖层特效，避免串台。
+    // 换主题/重载背景时清掉旧主题留下的覆盖层特效和组件风格，避免串台。
     ThemeEffectsController.instance.clear();
+    ThemeEffectsController.instance.clearComponentStyles();
+    // 交互事件回传 WebView：主题 JS 用 DSHTheme.onEffect('tap', fn) 监听。
+    ThemeEffectsController.instance.onEffectTap = (id) {
+      try {
+        _controller.runJavaScript(
+          'window.DSHTheme && window.DSHTheme.__emitEffect('
+          "'tap', {id: '$id'});",
+        );
+      } catch (_) {}
+    };
+    ThemeEffectsController.instance.onEffectLongPress = (id) {
+      try {
+        _controller.runJavaScript(
+          'window.DSHTheme && window.DSHTheme.__emitEffect('
+          "'longPress', {id: '$id'});",
+        );
+      } catch (_) {}
+    };
     try {
       final pkg = RegExp(r'/packages/([^/]+)/').firstMatch(widget.htmlPath);
       ThemeEffectsController.instance.currentPackageId = pkg?.group(1);
@@ -782,6 +846,13 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
         break;
       case 'clear':
         ThemeEffectsController.instance.clear();
+        ThemeEffectsController.instance.clearComponentStyles();
+        break;
+      case 'styleComponent':
+        _handleStyleComponent(data['options']);
+        break;
+      case 'removeComponentStyle':
+        _handleRemoveComponentStyle(data['options']);
         break;
       case 'queryComponents':
         final id = data['id']?.toString() ?? '0';
@@ -799,6 +870,31 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
         } catch (_) {}
         break;
     }
+  }
+
+  void _handleStyleComponent(Object? options) {
+    if (options is! Map) return;
+    final style = ThemeEffectBridge.parseComponentStyle(options);
+    if (style == null) return;
+    final page = options['page']?.toString() ?? 'default';
+    final type = options['type']?.toString() ?? '';
+    if (type.isEmpty) return;
+    final index = (options['index'] as num?)?.toInt() ?? 0;
+    ThemeEffectsController.instance.applyComponentStyle(
+      page: page,
+      type: type,
+      index: index,
+      style: style,
+    );
+  }
+
+  void _handleRemoveComponentStyle(Object? options) {
+    if (options is! Map) return;
+    final page = options['page']?.toString() ?? 'default';
+    final type = options['type']?.toString() ?? '';
+    if (type.isEmpty) return;
+    final index = (options['index'] as num?)?.toInt() ?? 0;
+    ThemeEffectsController.instance.removeComponentStyle(page, type, index);
   }
 
   /// 自动把主题包里的 css/js 注入 html，并对 controller.js 里声明的
@@ -863,6 +959,18 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     effectBatch: function (effects) { post({ cmd: 'effectBatch', effects: effects }); },
     remove: function (id) { post({ cmd: 'remove', id: id }); },
     clear: function () { post({ cmd: 'clear' }); },
+    styleComponent: function (options) { post({ cmd: 'styleComponent', options: options || {} }); },
+    removeComponentStyle: function (options) {
+      post({ cmd: 'removeComponentStyle', options: options || {} });
+    },
+    onEffect: function (type, handler) {
+      window.__dshEffectListeners = window.__dshEffectListeners || {};
+      window.__dshEffectListeners[type] = handler;
+    },
+    __emitEffect: function (type, data) {
+      var h = (window.__dshEffectListeners || {})[type];
+      if (typeof h === 'function') h(data || {});
+    },
     queryComponents: function (opts) {
       opts = opts || {};
       window.__dshQid = (window.__dshQid || 0) + 1;

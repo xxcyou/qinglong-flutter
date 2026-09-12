@@ -202,31 +202,26 @@ class GlassCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final dark = scheme.brightness == Brightness.dark;
-    final br = BorderRadius.circular(radius);
-    return ComponentAnchorTracker(
-      type: 'card',
-      index: anchorIndex,
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: br,
-          // 列表卡也要透：底下那三团流动的光斑要能从卡片里透出来，
-          // 不然只有浮层是玻璃、列表还是一片实色板，风格是断的。
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              // 浅色下取纯白而不是 surface：surface 本身就接近背景色，
-              // 半透明叠上去等于没画（实测卡内外只差 6 个灰阶）。
-              (dark ? scheme.surface : Colors.white)
-                  .withValues(alpha: dark ? 0.46 : 0.78),
-              (dark ? scheme.surface : Colors.white)
-                  .withValues(alpha: dark ? 0.28 : 0.56),
-            ],
-          ),
-          border: Border.all(
-            color: selected
+    return ListenableBuilder(
+      listenable: ThemeEffectsController.instance,
+      builder: (context, _) {
+        final scheme = Theme.of(context).colorScheme;
+        final dark = scheme.brightness == Brightness.dark;
+        final page = ModalRoute.of(context)?.settings.name ?? 'default';
+        final style = ThemeEffectsController.instance
+            .componentStyleFor(page, 'card', anchorIndex ?? 0);
+        final br = BorderRadius.circular(style?.radius ?? radius);
+        final List<Color> gradientColors = style?.gradientColors ??
+            [
+              (dark ? scheme.surface : Colors.white).withValues(
+                  alpha: style?.fillOpacity ?? (dark ? 0.46 : 0.78)),
+              (dark ? scheme.surface : Colors.white).withValues(
+                  alpha: style?.fillOpacity == null
+                      ? (dark ? 0.28 : 0.56)
+                      : style!.fillOpacity! * 0.7),
+            ];
+        final borderColor = style?.borderColor ??
+            (selected
                 ? scheme.primary
                 : (accent ?? Colors.white).withValues(
                     alpha: selected
@@ -234,41 +229,68 @@ class GlassCard extends StatelessWidget {
                         : accent != null
                             ? 0.42
                             : (dark ? 0.12 : 0.6),
-                  ),
-            width: selected ? 1.4 : 1,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: dark ? 0.22 : 0.08),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Stack(
-          children: [
-            // 镜面反光：和 GlassPanel 同一套光向，卡片和浮层才像同一种材质。
-            Positioned.fill(
-              child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(gradient: Glass.sheen(scheme)),
+                  ));
+        final borderWidth = style?.borderWidth ?? (selected ? 1.4 : 1);
+        final glow = style?.glowColor != null
+            ? [
+                BoxShadow(
+                  color: (style!.glowColor ?? Colors.transparent)
+                      .withValues(alpha: style.glowOpacity ?? 0.6),
+                  blurRadius: style.glowRadius ?? 12,
+                  spreadRadius: 0,
                 ),
+              ]
+            : const <BoxShadow>[];
+
+        return ComponentAnchorTracker(
+          type: 'card',
+          index: anchorIndex,
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: br,
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: gradientColors,
               ),
-            ),
-            Material(
-              color: selected
-                  ? scheme.primaryContainer.withValues(alpha: 0.35)
-                  : Colors.transparent,
-              child: InkWell(
-                onTap: onTap,
-                onLongPress: onLongPress,
-                child: Padding(padding: padding, child: child),
+              border: Border.all(
+                color: style?.borderColor != null ? borderColor : borderColor,
+                width: borderWidth,
               ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: dark ? 0.22 : 0.08),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+                ...glow,
+              ],
             ),
-          ],
-        ),
-      ),
+            clipBehavior: Clip.antiAlias,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(gradient: Glass.sheen(scheme)),
+                    ),
+                  ),
+                ),
+                Material(
+                  color: selected
+                      ? scheme.primaryContainer.withValues(alpha: 0.35)
+                      : Colors.transparent,
+                  child: InkWell(
+                    onTap: onTap,
+                    onLongPress: onLongPress,
+                    child: Padding(padding: padding, child: child),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
