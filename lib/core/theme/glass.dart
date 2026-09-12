@@ -707,8 +707,6 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
           await ProotBridge().hostPath(path: widget.htmlPath, scope: 'shell');
       if (!mounted || host.isEmpty) return;
       String? preparedHtml;
-      debugPrint(
-          'THEME_WEBVIEW load html: $host exists=${File(host).existsSync()}');
       if (File(host).existsSync()) {
         preparedHtml = await _prepareHtml(host);
       }
@@ -742,9 +740,14 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     final packageRoot = Directory(htmlDir.parent.path);
     if (!packageRoot.existsSync()) return html;
 
-    final hasCssLink = html.contains('<link') && html.contains('.css');
+    // 只有已注入正确的 ../css/ 才跳过；旧的 css/（相对 html 目录）是
+    // WebView 读不到的错误路径，不能当作已注入。
+    final hasCssLink = html.contains('href="../css/') ||
+        html.contains('href=\'../css/\'') ||
+        html.contains('href="../styles/') ||
+        html.contains('href=\'../styles/\'');
     final hasScriptTag = html.contains('<script src') &&
-        (html.contains('js/') || html.contains('scripts/'));
+        (html.contains('../js/') || html.contains('../scripts/'));
 
     final styleOverride = await _backgroundImageOverride(packageRoot);
     final headParts = StringBuffer();
@@ -755,13 +758,13 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
         for (final f in dir.listSync().whereType<File>()) {
           if (!f.path.endsWith('.css')) continue;
           final name = f.uri.pathSegments.last;
-          if (html.contains('href="$dirName/$name"') ||
-              html.contains('href=\'$dirName/$name\'')) {
+          // html/index.html 在 html/ 目录里，标准主题包 css/ 是它的兄弟目录，
+          // 所以要用 ../css/ 而不是 css/，否则 WebView 会去 html/css/ 找文件。
+          final ref = '../$dirName/$name';
+          if (html.contains('href="$ref"') || html.contains('href=\'$ref\'')) {
             continue;
           }
-          headParts.writeln(
-            '<link rel="stylesheet" href="$dirName/$name">',
-          );
+          headParts.writeln('<link rel="stylesheet" href="$ref">');
         }
       }
     }
@@ -777,8 +780,10 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
         for (final f in dir.listSync().whereType<File>()) {
           if (!f.path.endsWith('.js')) continue;
           final name = f.uri.pathSegments.last;
-          if (html.contains('src="$dirName/$name"')) continue;
-          scriptParts.writeln('<script src="$dirName/$name"></script>');
+          // 和 css 同理，html 在 html/ 子目录，脚本是兄弟目录 ../js/。
+          final ref = '../$dirName/$name';
+          if (html.contains('src="$ref"')) continue;
+          scriptParts.writeln('<script src="$ref"></script>');
         }
       }
       final scriptText = scriptParts.toString();
