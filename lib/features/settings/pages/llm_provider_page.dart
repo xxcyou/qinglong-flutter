@@ -854,6 +854,17 @@ class _LlmProviderEditPageState extends ConsumerState<LlmProviderEditPage> {
 }
 
 /// 某一家的模型列表：获取 / 手填 / 选默认。
+String _capabilitySummary(LlmProviderConfig provider, String model) {
+  final caps = provider.capabilitiesFor(model);
+  final parts = <String>[
+    '上下文 ${provider.contextLimits[model] ?? 8000} tokens',
+    if (caps.supportsImage) '支持图片',
+    if (!caps.supportsReasoning) '不支持思考',
+    if (!caps.supportsTools) '不支持工具',
+  ];
+  return parts.join(' · ');
+}
+
 class _ProviderModels extends ConsumerWidget {
   const _ProviderModels({required this.providerId});
 
@@ -994,7 +1005,7 @@ class _ProviderModels extends ConsumerWidget {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            '上下文 ${provider.contextLimits[m] ?? 8000} tokens',
+                            _capabilitySummary(provider, m),
                             style: TextStyle(
                               fontSize: 11.5,
                               color: scheme.onSurfaceVariant,
@@ -1002,6 +1013,87 @@ class _ProviderModels extends ConsumerWidget {
                           ),
                         ],
                       ),
+                    ),
+                    IconButton(
+                      tooltip: '能力设置（图片/思考/工具）',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () async {
+                        final caps = provider.capabilitiesFor(m);
+                        var supportsImage = caps.supportsImage;
+                        var supportsReasoning = caps.supportsReasoning;
+                        var supportsTools = caps.supportsTools;
+                        void save() => ref
+                            .read(llmRegistryProvider.notifier)
+                            .updateProvider(
+                              provider.copyWith(
+                                modelCapabilities: {
+                                  ...provider.modelCapabilities,
+                                  m: ModelCapabilities(
+                                    supportsImage: supportsImage,
+                                    supportsReasoning: supportsReasoning,
+                                    supportsTools: supportsTools,
+                                  ),
+                                },
+                              ),
+                            );
+                        await showModalBottomSheet<void>(
+                          context: context,
+                          isScrollControlled: true,
+                          builder: (sheetContext) => SafeArea(
+                            child: StatefulBuilder(
+                              builder: (sheetContext, setSheetState) => Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.fromLTRB(
+                                        16, 14, 16, 4),
+                                    child: Text(
+                                      '$m 的能力设置',
+                                      style: const TextStyle(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w700),
+                                    ),
+                                  ),
+                                  CheckboxListTile(
+                                    value: supportsImage,
+                                    title: const Text('支持图片'),
+                                    subtitle: const Text(
+                                        '开启后图片直接发给主模型，不调用 image_recognize 工具'),
+                                    onChanged: (v) {
+                                      supportsImage = v ?? false;
+                                      save();
+                                      setSheetState(() {});
+                                    },
+                                  ),
+                                  CheckboxListTile(
+                                    value: supportsReasoning,
+                                    title: const Text('支持思考'),
+                                    subtitle: const Text(
+                                        '允许发送 reasoning_effort / 思维链'),
+                                    onChanged: (v) {
+                                      supportsReasoning = v ?? true;
+                                      save();
+                                      setSheetState(() {});
+                                    },
+                                  ),
+                                  CheckboxListTile(
+                                    value: supportsTools,
+                                    title: const Text('支持工具'),
+                                    subtitle: const Text('允许调用函数/工具'),
+                                    onChanged: (v) {
+                                      supportsTools = v ?? true;
+                                      save();
+                                      setSheetState(() {});
+                                    },
+                                  ),
+                                  const SizedBox(height: 8),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.tune, size: 18),
                     ),
                     IconButton(
                       tooltip: '设置上下文长度',

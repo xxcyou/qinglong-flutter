@@ -206,11 +206,19 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     if (picked == null || !mounted) return;
     if (picked.mime.toLowerCase().startsWith('image/')) {
       final registry = ref.read(llmRegistryProvider);
-      if (registry.visionModel.trim().isEmpty ||
-          registry.visionProviderId.isEmpty) {
+      final activeProvider = registry.active;
+      final currentModel = ref.read(chatProvider).selectedModel.isNotEmpty
+          ? ref.read(chatProvider).selectedModel
+          : activeProvider.defaultModel;
+      final mainSupportsImage =
+          activeProvider.capabilitiesFor(currentModel).supportsImage;
+      if (!mainSupportsImage &&
+          (registry.visionModel.trim().isEmpty ||
+              registry.visionProviderId.isEmpty)) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('还没有设置图片识别模型，去「设置 → AI → 图片识别模型」里配置后才能发图片。'),
+            content: Text(
+                '当前主模型不支持图片，且没有设置图片识别模型。去「设置 → AI → 图片识别模型」配置，或在模型能力里给主模型勾选“支持图片”。'),
             duration: Duration(seconds: 3),
           ),
         );

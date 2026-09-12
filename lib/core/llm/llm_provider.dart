@@ -16,6 +16,53 @@
 library;
 
 /// 一家提供商（一个 OpenAI 兼容端点）。
+/// 单个模型的能力开关。
+///
+/// 默认都关图片（用户要求）；思考/工具默认开，避免老配置/新模型一上来
+/// 把现有 agent 行为打断。
+class ModelCapabilities {
+  const ModelCapabilities({
+    this.supportsImage = false,
+    this.supportsReasoning = true,
+    this.supportsTools = true,
+  });
+
+  /// 是否支持图片输入：支持时图片直接发给主模型，不绕 image_recognize 工具。
+  final bool supportsImage;
+
+  /// 是否支持思考/推理内容（reasoning_effort / thinking）。
+  final bool supportsReasoning;
+
+  /// 是否支持函数/工具调用。
+  final bool supportsTools;
+
+  bool get isDefault => !supportsImage && supportsReasoning && supportsTools;
+
+  ModelCapabilities copyWith({
+    bool? supportsImage,
+    bool? supportsReasoning,
+    bool? supportsTools,
+  }) =>
+      ModelCapabilities(
+        supportsImage: supportsImage ?? this.supportsImage,
+        supportsReasoning: supportsReasoning ?? this.supportsReasoning,
+        supportsTools: supportsTools ?? this.supportsTools,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (supportsImage) 'supportsImage': true,
+        if (!supportsReasoning) 'supportsReasoning': false,
+        if (!supportsTools) 'supportsTools': false,
+      };
+
+  static ModelCapabilities fromJson(Map<String, dynamic> json) =>
+      ModelCapabilities(
+        supportsImage: json['supportsImage'] == true,
+        supportsReasoning: json['supportsReasoning'] != false,
+        supportsTools: json['supportsTools'] != false,
+      );
+}
+
 class LlmProviderConfig {
   const LlmProviderConfig({
     required this.id,
@@ -24,6 +71,7 @@ class LlmProviderConfig {
     this.models = const [],
     this.manualModels = const [],
     this.contextLimits = const {},
+    this.modelCapabilities = const {},
     this.defaultModel = '',
     this.timeoutSeconds = 180,
     this.extraHeaders = '',
@@ -53,6 +101,9 @@ class LlmProviderConfig {
   /// 每个模型的上下文长度上限。跟着提供商存：同名模型在不同网关上
   /// 开放的上下文经常不一样。
   final Map<String, int> contextLimits;
+
+  /// 每个模型的能力开关（图片/思考/工具）。
+  final Map<String, ModelCapabilities> modelCapabilities;
 
   /// 这家默认用哪个模型（切回这家时自动选中它）。
   final String defaultModel;
@@ -99,6 +150,10 @@ class LlmProviderConfig {
 
   bool get isConfigured => baseUrl.trim().isNotEmpty;
 
+  /// 某个模型的能力开关；没单独配过就按默认值。
+  ModelCapabilities capabilitiesFor(String model) =>
+      modelCapabilities[model] ?? const ModelCapabilities();
+
   /// 缓存 + 手填，去重后排序：界面上就按这个列。
   List<String> get allModels {
     final set = <String>{...models, ...manualModels};
@@ -112,6 +167,7 @@ class LlmProviderConfig {
     List<String>? models,
     List<String>? manualModels,
     Map<String, int>? contextLimits,
+    Map<String, ModelCapabilities>? modelCapabilities,
     String? defaultModel,
     int? timeoutSeconds,
     String? extraHeaders,
@@ -128,6 +184,7 @@ class LlmProviderConfig {
       models: models ?? this.models,
       manualModels: manualModels ?? this.manualModels,
       contextLimits: contextLimits ?? this.contextLimits,
+      modelCapabilities: modelCapabilities ?? this.modelCapabilities,
       defaultModel: defaultModel ?? this.defaultModel,
       timeoutSeconds: timeoutSeconds ?? this.timeoutSeconds,
       extraHeaders: extraHeaders ?? this.extraHeaders,
@@ -146,6 +203,10 @@ class LlmProviderConfig {
         'models': models,
         'manualModels': manualModels,
         'contextLimits': contextLimits,
+        'modelCapabilities': {
+          for (final e in modelCapabilities.entries)
+            if (!e.value.isDefault) e.key: e.value.toJson(),
+        },
         'defaultModel': defaultModel,
         'timeoutSeconds': timeoutSeconds,
         'extraHeaders': extraHeaders,
@@ -175,6 +236,15 @@ class LlmProviderConfig {
                 e.key.toString(): (e.value as num?)?.toInt() ?? 8000,
             }
           : const {},
+      modelCapabilities: (json['modelCapabilities'] is Map
+          ? {
+              for (final e in (json['modelCapabilities'] as Map).entries)
+                e.key.toString(): e.value is Map
+                    ? ModelCapabilities.fromJson(
+                        e.value.cast<String, dynamic>())
+                    : const ModelCapabilities(),
+            }
+          : const {}),
       defaultModel: json['defaultModel']?.toString() ?? '',
       timeoutSeconds: (json['timeoutSeconds'] as num?)?.toInt() ?? 180,
       extraHeaders: json['extraHeaders']?.toString() ?? '',

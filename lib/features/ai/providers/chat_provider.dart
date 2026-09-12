@@ -496,6 +496,7 @@ class ChatNotifier extends Notifier<ChatState> {
     String userInput = '',
     String? sessionId,
     List<AgentEvent>? resumeEvents,
+    bool includeImages = false,
   }) {
     final sessionMessages = sessionId == null
         ? state.messages
@@ -539,7 +540,12 @@ class ChatNotifier extends Notifier<ChatState> {
           for (final m in msgs)
             LlmMessage(
               role: m.role == 'assistant' ? 'assistant' : m.role,
-              content: _llmContentWithImageHints(m),
+              content: includeImages
+                  ? _assistantHistoryContent(m)
+                  : _llmContentWithImageHints(m),
+              images: includeImages
+                  ? [for (final img in m.images) img.dataUri]
+                  : const [],
             ),
         ],
         [
@@ -1036,11 +1042,13 @@ class ChatNotifier extends Notifier<ChatState> {
     String userInput = '',
     String? sessionId,
     List<AgentEvent>? resumeEvents,
+    bool includeImages = false,
   }) {
     final history = _history(
       userInput: userInput,
       sessionId: sessionId,
       resumeEvents: resumeEvents,
+      includeImages: includeImages,
     );
     final limit = state.contextLimit;
     if (limit <= 0 || history.length < 2) return history;
@@ -2250,6 +2258,7 @@ class ChatNotifier extends Notifier<ChatState> {
     LlmConfig base, {
     String? model,
     bool keepModel = false,
+    bool allowReasoning = true,
   }) {
     final effectiveModel = model ??
         (keepModel
@@ -2261,7 +2270,7 @@ class ChatNotifier extends Notifier<ChatState> {
       baseUrl: base.baseUrl,
       model: effectiveModel,
       apiKey: base.apiKey,
-      reasoningEffort: state.reasoningEffort,
+      reasoningEffort: allowReasoning ? state.reasoningEffort : 0,
       // 采样与透传参数都来自设置页，这里原样带上，别在中途丢掉。
       temperature: base.temperature,
       topP: base.topP,
@@ -2490,6 +2499,8 @@ class ChatNotifier extends Notifier<ChatState> {
     }
     final config = await ref.read(llmConfigProvider.future);
     final activeProviderId = ref.read(llmRegistryProvider).active.id;
+    final mainProvider = ref.read(llmRegistryProvider).active;
+    final mainCaps = mainProvider.capabilitiesFor(config.model);
     OutputPluginService.instance.beginRun();
     await _ensureOutputPlugin(activeProviderId);
     final registry = QlToolRegistry(
@@ -2499,17 +2510,22 @@ class ChatNotifier extends Notifier<ChatState> {
       userInput: userInput,
       sessionId: run?.sessionId,
       resumeEvents: run?.resumeEvents,
+      // 主模型支持图片时直接把图发过去；不支持时用文字标注 + image_recognize 工具。
+      includeImages: mainCaps.supportsImage,
     );
     final token = run?.cancelToken ?? AgentCancelToken();
     run?.cancelToken = token;
     _cancelToken = token;
     try {
       // 基础工具集：子代理拿的就是这一份（不含任务代理工具，防止无限分裂）。
-      final baseTools = _buildExternalTools();
-      // 主模型始终是主线。用户发图片时正文里已带“用户发来图片：路径”提示，
-      // 主模型看到后会调用 image_recognize 工具，由工具用图片识别模型看图，
-      // 这样既不用切换主模型，也不会丢失会话上下文。
-      final LlmConfig llmConfig = _configFor(config);
+      // 主模型支持图片时不需要 image_recognize 工具。
+      final baseTools = _buildExternalTools(
+        includeImageTool: !mainCaps.supportsImage,
+      );
+      // 主模型始终是主线。支持图片的主模型直接看多模态图片；
+      // 不支持的走 image_recognize 工具识别。
+      final LlmConfig llmConfig =
+          _configFor(config, allowReasoning: mainCaps.supportsReasoning);
       // 子代理可以走另一家提供商 / 另一个模型：派出去查资料的活用便宜快的
       // 模型更划算，贵的留给主代理做判断。没设过就还是主代理那份。
       final plan = ref.read(llmRegistryProvider).subAgent;
@@ -2528,6 +2544,7 @@ class ChatNotifier extends Notifier<ChatState> {
             externalTools: baseTools,
             approvalMode: state.approvalMode,
             maxTurns: plan.maxTurns,
+            enableTools: mainCaps.supportsTools,
             cancelToken: token,
             requestTransformer: _requestTransformerFor(
               plan.overridesModel ? plan.providerId : activeProviderId,
@@ -2540,6 +2557,7 @@ class ChatNotifier extends Notifier<ChatState> {
         config: llmConfig,
         registry: registry,
         confirmedActionKeys: confirmedKeys,
+        enableTools: mainCaps.supportsTools,
         externalTools: [
           ...baseTools,
           // 任务代理组只挂在主代理身上。
@@ -2674,32 +2692,33 @@ class ChatNotifier extends Notifier<ChatState> {
   static String _quote(String value) => "'${value.replaceAll("'", "'\\''")}'";
 
   /// 组装运行期扩展工具：元能力（记忆/技能/MCP 自管理）+ 技能读取 + MCP 工具。
-  List<ExternalTool> _buildExternalTools() {
+  List<ExternalTool> _buildExternalTools({bool includeImageTool = true}) {
     final tools = <ExternalTool>[
-      ExternalTool(
-        name: 'image_recognize',
-        description: '识别用户发来的图片/截图。当会话正文里有“用户发来图片：…”这样的标注，'
-            '或者用户问“图上是什么/图片里写了什么/识别这张图”时，调用这个工具。'
-            '把标注里的 path 和 scope 传进来，可带 question 指定要问图片的具体问题。',
-        parameters: const {
-          'type': 'object',
-          'properties': {
-            'path': {'type': 'string', 'description': '图片路径，来自“用户发来图片：…”标注'},
-            'scope': {
-              'type': 'string',
-              'enum': ['shell', 'app'],
-              'description': '图片所在侧，默认 shell'
+      if (includeImageTool)
+        ExternalTool(
+          name: 'image_recognize',
+          description: '识别用户发来的图片/截图。当会话正文里有“用户发来图片：…”这样的标注，'
+              '或者用户问“图上是什么/图片里写了什么/识别这张图”时，调用这个工具。'
+              '把标注里的 path 和 scope 传进来，可带 question 指定要问图片的具体问题。',
+          parameters: const {
+            'type': 'object',
+            'properties': {
+              'path': {'type': 'string', 'description': '图片路径，来自“用户发来图片：…”标注'},
+              'scope': {
+                'type': 'string',
+                'enum': ['shell', 'app'],
+                'description': '图片所在侧，默认 shell'
+              },
+              'question': {
+                'type': 'string',
+                'description': '用户想针对图片问的具体问题；不填则让工具概括图片内容'
+              },
             },
-            'question': {
-              'type': 'string',
-              'description': '用户想针对图片问的具体问题；不填则让工具概括图片内容'
-            },
+            'required': ['path'],
           },
-          'required': ['path'],
-        },
-        origin: '图片识别',
-        invoke: _recognizeImage,
-      ),
+          origin: '图片识别',
+          invoke: _recognizeImage,
+        ),
       ...MetaTools.build(
         memory: ref.read(memoryProvider.notifier),
         skills: ref.read(skillProvider.notifier),

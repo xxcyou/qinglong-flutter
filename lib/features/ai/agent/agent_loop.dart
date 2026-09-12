@@ -164,11 +164,15 @@ class AgentLoop {
     this.onUsage,
     this.requestTransformer,
     this.responseTransformer,
+    this.enableTools = true,
   });
 
   final LlmConfig config;
   final QlToolRegistry registry;
   final Set<String> confirmedActionKeys;
+
+  /// 模型不支持工具时置 false：不给模型声明任何 function calling。
+  final bool enableTools;
 
   /// 运行期注入的扩展工具（MCP / 技能）。与内置工具同等参与确认策略。
   final List<ExternalTool> externalTools;
@@ -870,25 +874,27 @@ class AgentLoop {
             messages: messages,
             cancelToken: httpToken,
             onDelta: onDelta == null ? null : pipe,
-            tools: [
-              for (final t in registry.definitions)
-                LlmFunctionSpec(
-                  name: t.name,
-                  description: t.description,
-                  parameters: t.parameters,
-                ),
-              for (final t in externalTools)
-                LlmFunctionSpec(
-                  name: t.name,
-                  description: t.description,
-                  parameters: t.parameters,
-                ),
-              _askUserSpec,
-              _taskCompleteSpec,
-              _taskPlanSpec,
-              _taskStepSpec,
-              _canvasSpec,
-            ],
+            tools: enableTools
+                ? [
+                    for (final t in registry.definitions)
+                      LlmFunctionSpec(
+                        name: t.name,
+                        description: t.description,
+                        parameters: t.parameters,
+                      ),
+                    for (final t in externalTools)
+                      LlmFunctionSpec(
+                        name: t.name,
+                        description: t.description,
+                        parameters: t.parameters,
+                      ),
+                    _askUserSpec,
+                    _taskCompleteSpec,
+                    _taskPlanSpec,
+                    _taskStepSpec,
+                    _canvasSpec,
+                  ]
+                : null,
           );
         } on ApiException catch (e) {
           // 取消导致的失败不算错误：翻译成中断，走统一的中断收尾。
