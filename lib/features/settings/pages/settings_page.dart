@@ -503,6 +503,28 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
     }
   }
 
+  Future<void> _deleteTheme(ThemeConfig theme) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除主题包'),
+        content: Text('确定删除“${theme.name}”吗？删除后主题包目录会被移除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await ref.read(themeProvider.notifier).remove(theme.id);
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(themeProvider);
@@ -560,6 +582,12 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
                     visualDensity: VisualDensity.compact,
                     onPressed: () => _exportZip(theme),
                     icon: const Icon(Icons.archive_outlined),
+                  ),
+                  IconButton(
+                    tooltip: '删除',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _deleteTheme(theme),
+                    icon: const Icon(Icons.delete_outline),
                   ),
                 ],
               ),

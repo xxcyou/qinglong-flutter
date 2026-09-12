@@ -59,6 +59,7 @@ class ThemeNotifier extends Notifier<ThemeState> {
   static const packagesRoot = '/workspace/.ql_themes/packages';
   static const exportsRoot = '/workspace/.ql_themes/exports';
   static const activeKey = 'activeThemeId';
+  static const deletedDefaultsKey = 'deletedThemeIds';
 
   final _bridge = ProotBridge();
   bool _loading = false;
@@ -113,6 +114,8 @@ class ThemeNotifier extends Notifier<ThemeState> {
   }
 
   Future<void> _ensureDefaults() async {
+    final prefs = await SharedPreferences.getInstance();
+    final deleted = prefs.getStringList(deletedDefaultsKey) ?? const [];
     final defaults = [
       ThemeConfig(
         id: 'default-dark',
@@ -130,6 +133,7 @@ class ThemeNotifier extends Notifier<ThemeState> {
       ),
     ];
     for (final t in defaults) {
+      if (deleted.contains(t.id)) continue;
       await _ensurePackageDir(t);
     }
   }
@@ -291,6 +295,13 @@ class ThemeNotifier extends Notifier<ThemeState> {
   }
 
   Future<void> remove(String id) async {
+    if (id.startsWith('default-')) {
+      final prefs = await SharedPreferences.getInstance();
+      final deleted = prefs.getStringList(deletedDefaultsKey) ?? const [];
+      if (!deleted.contains(id)) {
+        await prefs.setStringList(deletedDefaultsKey, [...deleted, id]);
+      }
+    }
     try {
       final hostDir =
           await _bridge.hostPath(path: '$packagesRoot/$id', scope: 'shell');
@@ -335,11 +346,11 @@ class ThemeNotifier extends Notifier<ThemeState> {
       await hostTarget.parent.create(recursive: true);
       await hostTarget.writeAsBytes(f.content as List<int>, flush: true);
     }
-    _deleteJsonThemeFiles(packageHost);
-
-    if (!File('$packageHost/controller.js').existsSync()) {
+    try {
+      await _upgradePackageStructure(packageHost, themeId);
+    } catch (e) {
       Directory(packageHost).deleteSync(recursive: true);
-      throw Exception('ZIP 里没有 controller.js，不是有效的主题包');
+      rethrow;
     }
 
     final config = await _readPackageConfig(themeId);
@@ -399,17 +410,108 @@ class ThemeNotifier extends Notifier<ThemeState> {
     }
   }
 
+  /// 旧结构升级：补齐新目录骨架、把旧 theme.json 转成 controller.js、
+  /// 把根目录 index.html 挪进 html/。
+  Future<void> _upgradePackageStructure(
+    String hostDir,
+    String id,
+  ) async {
+    _ensurePackageStructure(hostDir);
+    final controllerFile = File('$hostDir/controller.js');
+    if (!controllerFile.existsSync()) {
+      final legacy = File('$hostDir/theme.json');
+      if (legacy.existsSync()) {
+        final decoded = jsonDecode(legacy.readAsStringSync());
+        final map = decoded is Map ? decoded : <String, dynamic>{};
+        final brightness =
+            map['brightness']?.toString() == 'light' ? 'light' : 'dark';
+        final colors = <String, String>{
+          ...ThemeConfig.defaultColorsForBrightness(brightness),
+          if (map['colors'] is Map)
+            for (final e in (map['colors'] as Map).entries)
+              e.key.toString(): e.value.toString(),
+        };
+        final effects = <String, double>{
+          ...ThemeConfig.defaultEffects,
+          if (map['effects'] is Map)
+            for (final e in (map['effects'] as Map).entries)
+              e.key.toString(): (e.value as num?)?.toDouble() ??
+                  ThemeConfig.defaultEffects[e.key.toString()] ??
+                  0,
+        };
+        await _writeController(
+          hostDir,
+          ThemeConfig(
+            id: id,
+            name: map['name']?.toString() ?? id,
+            brightness: brightness,
+            backgroundImage: map['backgroundImage']?.toString() ?? '',
+            backgroundHtml: map['backgroundHtml']?.toString() ?? '',
+            colors: colors,
+            effects: effects,
+          ),
+        );
+      } else {
+        throw Exception('主题包 $id 缺少 controller.js');
+      }
+    } else {
+      final text = await controllerFile.readAsString();
+      if (!text.contains('themeResources')) {
+        final data = _parseJsObject(text);
+        final brightness =
+            data['brightness']?.toString() == 'light' ? 'light' : 'dark';
+        final colors = <String, String>{
+          ...ThemeConfig.defaultColorsForBrightness(brightness),
+          if (data['colors'] is Map)
+            for (final e in (data['colors'] as Map).entries)
+              e.key.toString(): e.value.toString(),
+        };
+        final effects = <String, double>{
+          ...ThemeConfig.defaultEffects,
+          if (data['effects'] is Map)
+            for (final e in (data['effects'] as Map).entries)
+              e.key.toString(): (e.value as num?)?.toDouble() ??
+                  ThemeConfig.defaultEffects[e.key.toString()] ??
+                  0,
+        };
+        await _writeController(
+          hostDir,
+          ThemeConfig(
+            id: id,
+            name: data['name']?.toString() ?? id,
+            brightness: brightness,
+            backgroundImage: data['backgroundImage']?.toString() ?? '',
+            backgroundHtml: data['backgroundHtml']?.toString() ?? '',
+            colors: colors,
+            effects: effects,
+          ),
+        );
+      }
+    }
+
+    // 根目录旧 index.html 挪到 html/。
+    final pairs = [
+      ('index.html', 'html/index.html'),
+      ('index.htm', 'html/index.htm'),
+    ];
+    for (final pair in pairs) {
+      final src = File('$hostDir/${pair.$1}');
+      final dst = File('$hostDir/${pair.$2}');
+      if (src.existsSync() && !dst.existsSync()) {
+        src.renameSync(dst.path);
+      }
+    }
+
+    _deleteJsonThemeFiles(hostDir);
+  }
+
   /// 确保主题有 package 目录；没有就生成最小纯色包（默认主题导出用这个）。
   Future<String> _ensurePackageDir(ThemeConfig theme) async {
     final rootHost = await _bridge.hostPath(path: packagesRoot, scope: 'shell');
     final packageGuest = '$packagesRoot/${theme.id}';
     final hostDir = '$rootHost/${theme.id}';
     Directory(hostDir).createSync(recursive: true);
-    _ensurePackageStructure(hostDir);
-    if (!File('$hostDir/controller.js').existsSync()) {
-      await _writeController(hostDir, theme);
-    }
-    _deleteJsonThemeFiles(hostDir);
+    await _upgradePackageStructure(hostDir, theme.id);
     final readme = File('$hostDir/README.md');
     if (!readme.existsSync()) {
       await readme.writeAsString(
