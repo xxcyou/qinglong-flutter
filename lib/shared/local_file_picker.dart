@@ -89,6 +89,8 @@ class LocalFilePicker extends StatefulWidget {
     super.key,
     this.maxChars = 20000,
     this.mode = LocalFilePickerMode.attachment,
+    this.title,
+    this.extensionFilter,
   });
 
   /// 附件正文上限。超过就截断——一份 500KB 的日志灌进去只会挤掉真正的对话。
@@ -96,6 +98,12 @@ class LocalFilePicker extends StatefulWidget {
 
   /// attachment=挑文本/图片附件；anyFile=挑任意文件（ZIP/APK/二进制都行）。
   final LocalFilePickerMode mode;
+
+  /// 面板标题；不传时按附件模式显示“选一个文件当附件”。
+  final String? title;
+
+  /// 后缀过滤（不带点，如 zip）。anyFile 模式下只允许该后缀的文件。
+  final String? extensionFilter;
 
   /// 弹出选择器，返回用户挑中的文件；取消返回 null。
   static Future<PickedLocalFile?> pick(
@@ -149,6 +157,37 @@ class LocalFilePicker extends StatefulWidget {
                   Theme.of(context).colorScheme.surface.withValues(alpha: 0.86),
               child: const LocalFilePicker(
                 mode: LocalFilePickerMode.anyFile,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 挑 ZIP 主题包：标题明确、只显示 .zip 文件、返回路径不读内容。
+  static Future<PickedLocalFile?> pickZip(BuildContext context) {
+    return showModalBottomSheet<PickedLocalFile>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.86,
+        minChildSize: 0.5,
+        maxChildSize: 0.94,
+        builder: (context, _) => ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(
+                sigmaX: Glass.blurStrong, sigmaY: Glass.blurStrong),
+            child: Material(
+              color:
+                  Theme.of(context).colorScheme.surface.withValues(alpha: 0.86),
+              child: const LocalFilePicker(
+                mode: LocalFilePickerMode.anyFile,
+                title: '选择 ZIP 主题包',
+                extensionFilter: 'zip',
               ),
             ),
           ),
@@ -229,6 +268,11 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
   Future<void> _choose(ShellFileEntry entry, FileKind kind) async {
     if (_reading) return;
     if (widget.mode == LocalFilePickerMode.anyFile) {
+      if (widget.extensionFilter != null &&
+          !entry.name.toLowerCase().endsWith('.${widget.extensionFilter!}')) {
+        _rejectNotAllowed();
+        return;
+      }
       Navigator.of(context).pop(
         PickedLocalFile(
           path: entry.path,
@@ -333,6 +377,16 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
     );
   }
 
+  void _rejectNotAllowed() {
+    final ext = widget.extensionFilter ?? '该类型';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('只能选择 .$ext 文件'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -359,13 +413,19 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
             padding: const EdgeInsets.fromLTRB(16, 2, 4, 0),
             child: Row(
               children: [
-                Icon(Icons.attach_file_rounded,
-                    size: 18, color: scheme.primary),
+                Icon(
+                  widget.title == null
+                      ? Icons.attach_file_rounded
+                      : Icons.folder_open_rounded,
+                  size: 18,
+                  color: scheme.primary,
+                ),
                 const SizedBox(width: 6),
-                const Expanded(
+                Expanded(
                   child: Text(
-                    '选一个文件当附件',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                    widget.title ?? '选一个文件当附件',
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w700),
                   ),
                 ),
                 IconButton(
@@ -499,8 +559,14 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
                             entry.name,
                             isDirectory: entry.isDirectory,
                           );
+                          final extensionAllowed = widget.mode ==
+                                  LocalFilePickerMode.anyFile &&
+                              (widget.extensionFilter == null ||
+                                  entry.name
+                                      .toLowerCase()
+                                      .endsWith('.${widget.extensionFilter!}'));
                           final usable = entry.isDirectory ||
-                              widget.mode == LocalFilePickerMode.anyFile ||
+                              extensionAllowed ||
                               kind.isTextLike ||
                               kind.category == FileCategory.image;
                           return _Tile(
@@ -512,7 +578,13 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
                                 _load(entry.path);
                               } else if (widget.mode ==
                                   LocalFilePickerMode.anyFile) {
-                                _choose(entry, kind);
+                                if (widget.extensionFilter != null &&
+                                    !entry.name.toLowerCase().endsWith(
+                                        '.${widget.extensionFilter!}')) {
+                                  _rejectNotAllowed();
+                                } else {
+                                  _choose(entry, kind);
+                                }
                               } else if (kind.isTextLike ||
                                   kind.category == FileCategory.image) {
                                 _choose(entry, kind);

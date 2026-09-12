@@ -448,7 +448,7 @@ class _ThemeSchemeCard extends ConsumerStatefulWidget {
 
 class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
   Future<void> _importZip() async {
-    final picked = await LocalFilePicker.pickFile(context);
+    final picked = await LocalFilePicker.pickZip(context);
     if (picked == null || !mounted) return;
     try {
       final theme =

@@ -20,6 +20,14 @@ import '../providers/shell_files_provider.dart';
 import '../widgets/file_action_sheet.dart';
 import '../../../shared/mono_text.dart';
 
+/// 长按文件/文件夹后拖拽到 AI 正文区附件的载荷。
+class ShellFileDragData {
+  const ShellFileDragData({required this.entry, required this.scope});
+
+  final ShellFileEntry entry;
+  final String scope;
+}
+
 /// 完整文件管理器：终端（PRoot guest，含 rootfs 根目录）与 APP 沙箱两套根，
 /// 支持新建/重命名/复制/剪切/粘贴/删除/权限/属性/搜索/排序/多选。
 ///
@@ -32,10 +40,14 @@ class ShellFilesPage extends ConsumerStatefulWidget {
     this.floatingEditor = false,
     this.onClose,
     this.closeIcon,
+    this.dragToAttachEnabled = false,
   });
 
   /// 以底部面板形式出现时自带拖动把手与关闭按钮，不画返回箭头。
   final bool asSheet;
+
+  /// 在 AI 半屏面板里开启：长按文件/文件夹拖到 AI 正文区作为附件。
+  final bool dragToAttachEnabled;
 
   /// 在 AI 半屏文件面板里使用时，点文本/代码文件弹出悬浮编辑器，
   /// 而不是全屏跳转。
@@ -424,7 +436,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
         separatorBuilder: (_, __) => const SizedBox(height: 8),
         itemBuilder: (context, index) {
           final entry = entries[index];
-          return _FileTile(
+          final tile = _FileTile(
             entry: entry,
             selected: state.selected.contains(entry.path),
             selecting: state.isSelecting,
@@ -437,9 +449,19 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                 _open(entry);
               }
             },
-            onLongPress: () => _showActions(entry),
+            onLongPress:
+                widget.dragToAttachEnabled ? () {} : () => _showActions(entry),
             onAction: (action) => _handleAction(action, entry),
+            onMore: () => _showActions(entry),
             hostPathResolver: (path) => _notifier.hostPath(path),
+          );
+          if (!widget.dragToAttachEnabled) return tile;
+          return _DraggableFileTile(
+            data: ShellFileDragData(
+              entry: entry,
+              scope: state.scope.name,
+            ),
+            child: tile,
           );
         },
       ),
@@ -460,7 +482,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
         itemCount: entries.length,
         itemBuilder: (context, index) {
           final entry = entries[index];
-          return _FileGridTile(
+          final tile = _FileGridTile(
             entry: entry,
             selected: state.selected.contains(entry.path),
             selecting: state.isSelecting,
@@ -471,8 +493,17 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                 _open(entry);
               }
             },
-            onLongPress: () => _showActions(entry),
+            onLongPress:
+                widget.dragToAttachEnabled ? () {} : () => _showActions(entry),
             hostPathResolver: (path) => _notifier.hostPath(path),
+          );
+          if (!widget.dragToAttachEnabled) return tile;
+          return _DraggableFileTile(
+            data: ShellFileDragData(
+              entry: entry,
+              scope: state.scope.name,
+            ),
+            child: tile,
           );
         },
       ),
@@ -1172,6 +1203,62 @@ class _ImageThumbnail extends StatelessWidget {
       );
 }
 
+/// 长按可拖拽的文件条目；在 AI 半屏面板里拖到正文区作为附件。
+class _DraggableFileTile extends StatelessWidget {
+  const _DraggableFileTile({
+    required this.data,
+    required this.child,
+  });
+
+  final ShellFileDragData data;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return LongPressDraggable<ShellFileDragData>(
+      data: data,
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      feedback: Material(
+        color: Colors.transparent,
+        child: GlassPanel(
+          radius: 14,
+          blur: 12,
+          shadowY: 6,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                data.entry.isDirectory
+                    ? Icons.folder_open_rounded
+                    : Icons.insert_drive_file_outlined,
+                size: 20,
+                color: scheme.primary,
+              ),
+              const SizedBox(width: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 180),
+                child: Text(
+                  data.entry.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.35, child: child),
+      child: child,
+    );
+  }
+}
+
 /// 网格视图的格子：大缩略图/图标在上，名称在下。
 class _FileGridTile extends StatelessWidget {
   const _FileGridTile({
@@ -1258,6 +1345,7 @@ class _FileTile extends StatelessWidget {
     required this.onTap,
     required this.onLongPress,
     required this.onAction,
+    this.onMore,
     this.hostPathResolver,
     this.compact = false,
   });
@@ -1271,6 +1359,9 @@ class _FileTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onLongPress;
   final ValueChanged<String> onAction;
+
+  /// 列表右侧“更多”按钮；不传时复用 [onLongPress]（拖拽模式下长按被占用）。
+  final VoidCallback? onMore;
   final Future<String?> Function(String path)? hostPathResolver;
   final bool compact;
 
@@ -1419,7 +1510,7 @@ class _FileTile extends StatelessWidget {
             tooltip: '更多',
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-            onPressed: onLongPress,
+            onPressed: onMore ?? onLongPress,
             icon: Icon(
               Icons.more_vert,
               size: 19,

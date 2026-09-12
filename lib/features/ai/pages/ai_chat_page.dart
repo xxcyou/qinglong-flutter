@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/llm/llm_config_provider.dart';
 import '../../../core/llm/llm_registry_provider.dart';
+import '../../../core/local_shell/proot_bridge.dart';
 import '../../../core/theme/glass.dart';
 import '../../../core/theme/theme_effects_controller.dart';
 import '../../../core/utils/formatter.dart';
@@ -17,6 +19,7 @@ import '../models/ai_message.dart';
 import '../models/ai_plan.dart';
 import '../providers/chat_provider.dart';
 import '../providers/audit_provider.dart';
+import '../../../shared/file_kinds.dart';
 import '../../../shared/glass_scaffold.dart';
 import '../../../shared/local_file_picker.dart';
 import '../floating/ai_dock_provider.dart';
@@ -933,269 +936,374 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                 ],
               ),
             ],
-            body: Column(
-              children: [
-                Expanded(
-                  child: state.messages.isEmpty
-                      ? _WelcomeView(
-                          onTap: (text) {
-                            // 走 _send 而不是直接 send：不然示例问句会把已挂的附件丢掉。
-                            _controller.text = text;
-                            _send();
-                          },
-                        )
-                      : Builder(
-                          builder: (context) {
-                            final hasLive = state.liveAgentEvents.isNotEmpty;
-                            final hasLivePlan = state.livePlan.isNotEmpty;
-                            // 请求已发出但一个字都还没回来时也占一格：那正是最需要
-                            // "它在动"这个信号的几秒钟。
-                            final hasStream = state.isLoading;
-                            final extraCount = (hasLivePlan ? 1 : 0) +
-                                (hasLive ? 1 : 0) +
-                                (hasStream ? 1 : 0) +
-                                1;
-                            return ListView.builder(
-                              key: _listKey,
-                              controller: _scrollController,
-                              padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-                              itemCount: state.messages.length + extraCount,
-                              itemBuilder: (context, index) {
-                                if (index < state.messages.length) {
-                                  return RepaintBoundary(
-                                    key: _bubbleKeyAt(index),
-                                    child: _MessageBubble(
-                                      message: state.messages[index],
-                                      anchorIndex: index,
-                                      onResend: state.isLoading
-                                          ? null
-                                          : () => notifier.resendAt(index),
-                                      onRollback: state.isLoading
-                                          ? null
-                                          : () => _rollbackTo(index),
-                                    ),
-                                  );
-                                }
-                                var slot = index - state.messages.length;
-                                if (hasLivePlan) {
-                                  if (slot == 0) {
-                                    // 下面紧跟过程卡（它只有 bottom margin），
-                                    // 所以这里必须自己留下边距，否则两张卡贴在一起。
-                                    return TaskPlanCard(
-                                      plan: state.livePlan,
-                                      margin: const EdgeInsets.only(bottom: 8),
+            body: DragTarget<ShellFileDragData>(
+              onAcceptWithDetails: (details) =>
+                  _attachDraggedFile(details.data),
+              builder: (context, candidate, rejected) => Column(
+                children: [
+                  Expanded(
+                    child: state.messages.isEmpty
+                        ? _WelcomeView(
+                            onTap: (text) {
+                              // 走 _send 而不是直接 send：不然示例问句会把已挂的附件丢掉。
+                              _controller.text = text;
+                              _send();
+                            },
+                          )
+                        : Builder(
+                            builder: (context) {
+                              final hasLive = state.liveAgentEvents.isNotEmpty;
+                              final hasLivePlan = state.livePlan.isNotEmpty;
+                              // 请求已发出但一个字都还没回来时也占一格：那正是最需要
+                              // "它在动"这个信号的几秒钟。
+                              final hasStream = state.isLoading;
+                              final extraCount = (hasLivePlan ? 1 : 0) +
+                                  (hasLive ? 1 : 0) +
+                                  (hasStream ? 1 : 0) +
+                                  1;
+                              return ListView.builder(
+                                key: _listKey,
+                                controller: _scrollController,
+                                padding:
+                                    const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                                itemCount: state.messages.length + extraCount,
+                                itemBuilder: (context, index) {
+                                  if (index < state.messages.length) {
+                                    return RepaintBoundary(
+                                      key: _bubbleKeyAt(index),
+                                      child: _MessageBubble(
+                                        message: state.messages[index],
+                                        anchorIndex: index,
+                                        onResend: state.isLoading
+                                            ? null
+                                            : () => notifier.resendAt(index),
+                                        onRollback: state.isLoading
+                                            ? null
+                                            : () => _rollbackTo(index),
+                                      ),
                                     );
                                   }
-                                  slot -= 1;
-                                }
-                                if (hasLive) {
-                                  if (slot == 0) {
-                                    return AgentProcessCard(
-                                      events: state.liveAgentEvents,
-                                      running: state.isLoading,
-                                      initiallyExpanded: state.isLoading,
-                                      totalTokens: state.lastTokens,
+                                  var slot = index - state.messages.length;
+                                  if (hasLivePlan) {
+                                    if (slot == 0) {
+                                      // 下面紧跟过程卡（它只有 bottom margin），
+                                      // 所以这里必须自己留下边距，否则两张卡贴在一起。
+                                      return TaskPlanCard(
+                                        plan: state.livePlan,
+                                        margin:
+                                            const EdgeInsets.only(bottom: 8),
+                                      );
+                                    }
+                                    slot -= 1;
+                                  }
+                                  if (hasLive) {
+                                    if (slot == 0) {
+                                      return AgentProcessCard(
+                                        events: state.liveAgentEvents,
+                                        running: state.isLoading,
+                                        initiallyExpanded: state.isLoading,
+                                        totalTokens: state.lastTokens,
+                                      );
+                                    }
+                                    slot -= 1;
+                                  }
+                                  if (hasStream && slot == 0) {
+                                    return AgentStreamCard(
+                                      reasoning: state.liveReasoning,
+                                      content: state.liveContent,
+                                      reasoningChars: state.liveReasoningChars,
+                                      contentChars: state.liveContentChars,
+                                      tool: state.liveTool,
                                     );
                                   }
-                                  slot -= 1;
-                                }
-                                if (hasStream && slot == 0) {
-                                  return AgentStreamCard(
-                                    reasoning: state.liveReasoning,
-                                    content: state.liveContent,
-                                    reasoningChars: state.liveReasoningChars,
-                                    contentChars: state.liveContentChars,
-                                    tool: state.liveTool,
-                                  );
-                                }
-                                return _buildTail(context, state);
-                              },
-                            );
+                                  return _buildTail(context, state);
+                                },
+                              );
+                            },
+                          ),
+                  ),
+                  // 往上翻过就出现这个按钮：不用一路滑回去。
+                  if (!_pinned && state.messages.isNotEmpty)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(0, 0, 14, 6),
+                        child: GlassPill(
+                          icon: Icons.arrow_downward_rounded,
+                          label: state.isLoading ? '跟随最新' : '回到最新',
+                          color: scheme.primary,
+                          dense: true,
+                          onTap: () {
+                            setState(() => _pinned = true);
+                            _scrollToBottom();
                           },
                         ),
-                ),
-                // 往上翻过就出现这个按钮：不用一路滑回去。
-                if (!_pinned && state.messages.isNotEmpty)
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(0, 0, 14, 6),
-                      child: GlassPill(
-                        icon: Icons.arrow_downward_rounded,
-                        label: state.isLoading ? '跟随最新' : '回到最新',
-                        color: scheme.primary,
-                        dense: true,
+                      ),
+                    ),
+                  // 错误条只在"错误没能挂到某条消息上"时才出现（比如拉模型列表失败）。
+                  // 发送失败已经在那条用户消息下面标红了，两处都画等于报两次错。
+                  if (state.error != null &&
+                      !(state.currentSession?.messages
+                              .any((m) => m.failedToSend) ??
+                          false))
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: scheme.errorContainer,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.error_outline,
+                              size: 17, color: scheme.onErrorContainer),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              errorText(state.error!),
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                color: scheme.onErrorContainer,
+                              ),
+                              maxLines: 3,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  // "AI 在等你回答"常驻条：提问卡在列表末尾，用户往上翻就看不见了，
+                  // 而这时候不答任务就一直挂着。点一下跳到那张卡。
+                  if (state.pendingQuestion != null && !_pinned)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
                         onTap: () {
                           setState(() => _pinned = true);
                           _scrollToBottom();
                         },
-                      ),
-                    ),
-                  ),
-                // 错误条只在"错误没能挂到某条消息上"时才出现（比如拉模型列表失败）。
-                // 发送失败已经在那条用户消息下面标红了，两处都画等于报两次错。
-                if (state.error != null &&
-                    !(state.currentSession?.messages
-                            .any((m) => m.failedToSend) ??
-                        false))
-                  Container(
-                    width: double.infinity,
-                    margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: scheme.errorContainer,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.error_outline,
-                            size: 17, color: scheme.onErrorContainer),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            errorText(state.error!),
-                            style: TextStyle(
-                              fontSize: 12.5,
-                              color: scheme.onErrorContainer,
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: scheme.primary.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: scheme.primary.withValues(alpha: 0.45),
                             ),
-                            maxLines: 3,
                           ),
-                        ),
-                      ],
-                    ),
-                  ),
-                // "AI 在等你回答"常驻条：提问卡在列表末尾，用户往上翻就看不见了，
-                // 而这时候不答任务就一直挂着。点一下跳到那张卡。
-                if (state.pendingQuestion != null && !_pinned)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(10),
-                      onTap: () {
-                        setState(() => _pinned = true);
-                        _scrollToBottom();
-                      },
-                      child: Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: scheme.primary.withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: scheme.primary.withValues(alpha: 0.45),
-                          ),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(Icons.help_outline,
-                                size: 16, color: scheme.primary),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(
-                                'AI 在等你回答：${state.pendingQuestion!.question}',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: scheme.primary,
+                          child: Row(
+                            children: [
+                              Icon(Icons.help_outline,
+                                  size: 16, color: scheme.primary),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  'AI 在等你回答：${state.pendingQuestion!.question}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: scheme.primary,
+                                  ),
                                 ),
                               ),
-                            ),
-                            Icon(Icons.arrow_downward_rounded,
-                                size: 15, color: scheme.primary),
+                              Icon(Icons.arrow_downward_rounded,
+                                  size: 15, color: scheme.primary),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  // 清单常驻在输入框上方：跑长任务时不用往上翻就知道到第几步。
+                  if (state.livePlan.isNotEmpty)
+                    TaskPlanStrip(
+                        plan: state.livePlan, running: state.isLoading),
+                  if (state.interruptedRun != null)
+                    ResumeStrip(
+                      run: state.interruptedRun!,
+                      onResume: notifier.resumeInterruptedRun,
+                      onDiscard: notifier.discardInterruptedRun,
+                    ),
+                  QueueStrip(
+                    queue: [
+                      for (final q in state.queue)
+                        if (q.sessionId == state.currentSessionId) q,
+                    ],
+                    onReorder: notifier.reorderQueue,
+                    onRemove: notifier.dequeue,
+                    onInterruptSend: notifier.interruptAndSend,
+                  ),
+                  // 待发送图片条。
+                  PendingImageBar(
+                    images: state.pendingImages,
+                    onRemove: notifier.removePendingImage,
+                  ),
+                  // 附件条。用的是悬浮窗那份 chips：两边共享同一个会话，
+                  // 附件当然也得是同一份，否则在这里加的附件发出去不带上。
+                  if (chips.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(14, 0, 14, 4),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (var i = 0; i < chips.length; i++)
+                              InputChip(
+                                visualDensity: VisualDensity.compact,
+                                avatar: Icon(
+                                  chips[i].readOnly
+                                      ? Icons.visibility_outlined
+                                      : Icons.attachment,
+                                  size: 14,
+                                ),
+                                label: Text(
+                                  chips[i].label,
+                                  style: const TextStyle(fontSize: 11.5),
+                                ),
+                                onDeleted: () => ref
+                                    .read(aiDockProvider.notifier)
+                                    .removeChip(i),
+                              ),
                           ],
                         ),
                       ),
                     ),
-                  ),
-                // 清单常驻在输入框上方：跑长任务时不用往上翻就知道到第几步。
-                if (state.livePlan.isNotEmpty)
-                  TaskPlanStrip(plan: state.livePlan, running: state.isLoading),
-                if (state.interruptedRun != null)
-                  ResumeStrip(
-                    run: state.interruptedRun!,
-                    onResume: notifier.resumeInterruptedRun,
-                    onDiscard: notifier.discardInterruptedRun,
-                  ),
-                QueueStrip(
-                  queue: [
-                    for (final q in state.queue)
-                      if (q.sessionId == state.currentSessionId) q,
-                  ],
-                  onReorder: notifier.reorderQueue,
-                  onRemove: notifier.dequeue,
-                  onInterruptSend: notifier.interruptAndSend,
-                ),
-                // 待发送图片条。
-                PendingImageBar(
-                  images: state.pendingImages,
-                  onRemove: notifier.removePendingImage,
-                ),
-                // 附件条。用的是悬浮窗那份 chips：两边共享同一个会话，
-                // 附件当然也得是同一份，否则在这里加的附件发出去不带上。
-                if (chips.isNotEmpty)
+                  // 不用 SafeArea：它会照系统小白条的完整高度（这台机 ~48px）
+                  // 往上垫一整条，输入框下面就空出一条谁也用不上的带子。
+                  // 手势条本身是半透明浮层，压在它上面并不影响操作，
+                  // 所以只留它的 1/4 作为呼吸位。
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(14, 0, 14, 4),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: [
-                          for (var i = 0; i < chips.length; i++)
-                            InputChip(
-                              visualDensity: VisualDensity.compact,
-                              avatar: Icon(
-                                chips[i].readOnly
-                                    ? Icons.visibility_outlined
-                                    : Icons.attachment,
-                                size: 14,
-                              ),
-                              label: Text(
-                                chips[i].label,
-                                style: const TextStyle(fontSize: 11.5),
-                              ),
-                              onDeleted: () => ref
-                                  .read(aiDockProvider.notifier)
-                                  .removeChip(i),
-                            ),
-                        ],
-                      ),
+                    padding: EdgeInsets.only(
+                      bottom: MediaQuery.paddingOf(context).bottom * 0.25,
+                    ),
+                    child: AiComposer(
+                      state: state,
+                      controller: _controller,
+                      onSend: _send,
+                      onStop: notifier.stopAgent,
+                      onModelTap: () =>
+                          AiControlSheets.showModelPicker(context),
+                      onStrengthTap: () =>
+                          AiControlSheets.showStrength(context),
+                      onContextTap: () =>
+                          AiControlSheets.showContext(context, ref),
+                      onApprovalTap: () =>
+                          AiControlSheets.showApproval(context),
+                      onAttach: _pickFile,
                     ),
                   ),
-                // 不用 SafeArea：它会照系统小白条的完整高度（这台机 ~48px）
-                // 往上垫一整条，输入框下面就空出一条谁也用不上的带子。
-                // 手势条本身是半透明浮层，压在它上面并不影响操作，
-                // 所以只留它的 1/4 作为呼吸位。
-                Padding(
-                  padding: EdgeInsets.only(
-                    bottom: MediaQuery.paddingOf(context).bottom * 0.25,
-                  ),
-                  child: AiComposer(
-                    state: state,
-                    controller: _controller,
-                    onSend: _send,
-                    onStop: notifier.stopAgent,
-                    onModelTap: () => AiControlSheets.showModelPicker(context),
-                    onStrengthTap: () => AiControlSheets.showStrength(context),
-                    onContextTap: () =>
-                        AiControlSheets.showContext(context, ref),
-                    onApprovalTap: () => AiControlSheets.showApproval(context),
-                    onAttach: _pickFile,
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
         _buildFilePanel(),
       ],
     );
+  }
+
+  /// 从左侧文件管理面板拖进来的文件/文件夹，按附件处理。
+  Future<void> _attachDraggedFile(ShellFileDragData data) async {
+    final entry = data.entry;
+    final scope = data.scope;
+    try {
+      if (entry.isDirectory) {
+        ref.read(aiDockProvider.notifier).pushFile(
+              path: entry.path,
+              name: entry.name,
+              content: '文件夹路径：${entry.path}\n',
+              language: null,
+              truncated: false,
+              open: false,
+            );
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已附上文件夹引用 ${entry.name}'),
+            duration: const Duration(seconds: 1),
+          ),
+        );
+        return;
+      }
+      final kind = FileKinds.of(entry.name);
+      if (kind.category == FileCategory.image) {
+        final bridge = ProotBridge();
+        final host = await bridge.hostPath(path: entry.path, scope: scope);
+        final bytes = await File(host).readAsBytes();
+        if (bytes.isEmpty) {
+          throw Exception('图片内容为空');
+        }
+        final image = AiImageAttachment(
+          name: entry.name,
+          mime: FileKinds.mimeOf(entry.name),
+          dataUri:
+              'data:${FileKinds.mimeOf(entry.name)};base64,${base64Encode(bytes)}',
+          path: entry.path,
+          scope: scope,
+        );
+        ref.read(chatProvider.notifier).addPendingImage(image);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已附上图片 ${entry.name}'),
+            duration: const Duration(seconds: 1),
+          ),
+        );
+        return;
+      }
+      if (!kind.isTextLike) {
+        // 二进制文件（ZIP/APK/可执行等）不能当正文喂给 AI，附路径引用。
+        ref.read(aiDockProvider.notifier).pushFile(
+              path: entry.path,
+              name: entry.name,
+              content: '文件路径：${entry.path}\n'
+                  '（二进制文件，未读取内容）',
+              language: null,
+              truncated: false,
+              open: false,
+            );
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已附上文件引用 ${entry.name}'),
+            duration: const Duration(seconds: 1),
+          ),
+        );
+        return;
+      }
+      final bridge = ProotBridge();
+      final raw = await bridge.readFile(path: entry.path, scope: scope);
+      final truncated = raw.length > 20000;
+      ref.read(aiDockProvider.notifier).pushFile(
+            path: entry.path,
+            name: entry.name,
+            content: truncated ? raw.substring(0, 20000) : raw,
+            language: kind.language,
+            truncated: truncated,
+            open: false,
+          );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已附上 ${entry.name}'),
+          duration: const Duration(seconds: 1),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('附件添加失败：$e')),
+      );
+    }
   }
 
   /// 左侧半屏文件管理面板：右滑出来、左滑/右上角收起。
@@ -1235,6 +1343,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                     child: ShellFilesPage(
                       asSheet: true,
                       floatingEditor: true,
+                      dragToAttachEnabled: true,
                       onClose: _closeFilePanel,
                       closeIcon: Icons.arrow_back_ios_new_rounded,
                     ),
