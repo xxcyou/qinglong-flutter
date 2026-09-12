@@ -719,6 +719,8 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   }
 
   Future<void> _load() async {
+    // 换主题/重载背景时清掉旧主题留下的覆盖层特效，避免串台。
+    ThemeEffectsController.instance.clear();
     try {
       final host =
           await ProotBridge().hostPath(path: widget.htmlPath, scope: 'shell');
