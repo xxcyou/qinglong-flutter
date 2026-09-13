@@ -703,7 +703,7 @@ class AgentLoop {
         '不适合：能用文字说清的结论（那样只是浪费）。'
         '三种内容来源任选其一：html=内联完整HTML；url=远程网页地址'
         '（联网资源、外部CSS/JS/图片/接口请求都可用）；'
-        'html_path=本地 HTML 文件绝对路径（同目录/子目录的 css/js/图片'
+        'html_path/ path=本地 HTML 文件绝对路径（同目录/子目录的 css/js/图片'
         '会自动经本地服务加载）。内联 html 也可配 base_dir 指定资源根目录。'
         '需要回传结果时 expect_result=true，页面里调用 window.aiSubmit(值)。'
         '需要拿用户的操作结果时把 expect_result 设为 true，'
@@ -735,6 +735,10 @@ class AgentLoop {
           'type': 'string',
           'description': '本地 HTML 文件绝对路径，例如 /sdcard/Download/game/index.html；'
               '该文件同目录/子目录下的 css/js/图片等资源会自动通过本地服务提供',
+        },
+        'path': {
+          'type': 'string',
+          'description': 'html_path 的别名，一样填本地 HTML 文件绝对路径',
         },
         'base_dir': {
           'type': 'string',
@@ -1495,13 +1499,16 @@ class AgentLoop {
             final html = call.arguments['html']?.toString() ?? '';
             final url = call.arguments['url']?.toString().trim() ?? '';
             final htmlPath =
-                call.arguments['html_path']?.toString().trim() ?? '';
+                (call.arguments['html_path']?.toString().trim() ?? '')
+                        .isNotEmpty
+                    ? call.arguments['html_path']!.toString().trim()
+                    : call.arguments['path']?.toString().trim() ?? '';
             if (html.trim().isEmpty && url.isEmpty && htmlPath.isEmpty) {
               toolMessages.add(
                 _toolReply(
                   call,
                   '内容为空：请提供 html（内联HTML）、url（远程网页）或 '
-                  'html_path（本地HTML路径）三者之一。',
+                  'html_path/path（本地HTML路径）三者之一。',
                 ),
               );
               continue;

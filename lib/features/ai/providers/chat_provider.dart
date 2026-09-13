@@ -2607,6 +2607,7 @@ class ChatNotifier extends Notifier<ChatState> {
               'type': 'string',
               'description': '本地 HTML 文件绝对路径，资源从同目录/子目录加载'
             },
+            'path': {'type': 'string', 'description': 'html_path 的别名'},
             'base_dir': {
               'type': 'string',
               'description': '资源根目录绝对路径，配合内联 html 使用'
@@ -2638,10 +2639,13 @@ class ChatNotifier extends Notifier<ChatState> {
           }
           final html = args['html']?.toString() ?? '';
           final url = args['url']?.toString().trim() ?? '';
-          final htmlPath = args['html_path']?.toString().trim() ?? '';
+          final htmlPath =
+              (args['html_path']?.toString().trim() ?? '').isNotEmpty
+                  ? args['html_path']!.toString().trim()
+                  : args['path']?.toString().trim() ?? '';
           if (html.trim().isEmpty && url.isEmpty && htmlPath.isEmpty) {
             return '内容为空：请提供 html（内联HTML）、url（远程网页）或 '
-                'html_path（本地HTML路径）三者之一。';
+                'html_path/path（本地HTML路径）三者之一。';
           }
           final expectResult = args['expect_result'] == true;
           final rawRect = args['rect'];
