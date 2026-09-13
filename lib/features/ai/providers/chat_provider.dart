@@ -2595,23 +2595,36 @@ class ChatNotifier extends Notifier<ChatState> {
       // 处理，所以这个不进外露工具表，只进 DSL 的 tools 表。
       final canvasTool = ExternalTool(
         name: 'ui_canvas',
-        description: '生成 HTML 互动画布，可等用户回传结果。',
+        description: '生成 HTML 互动画布，支持内联HTML/远程URL/本地HTML路径，可等用户回传结果。',
         parameters: const {
           'type': 'object',
           'properties': {
-            'title': {'type': 'string'},
-            'description': {'type': 'string'},
-            'html': {'type': 'string'},
-            'expect_result': {'type': 'boolean'},
-            'result_hint': {'type': 'string'},
-            'window': {'type': 'string'},
-            'chromeless': {'type': 'boolean'},
-            'position': {'type': 'string'},
+            'title': {'type': 'string', 'description': '卡片标题'},
+            'description': {'type': 'string', 'description': '一句话说明'},
+            'html': {'type': 'string', 'description': '内联完整 HTML'},
+            'url': {'type': 'string', 'description': '远程网页 URL，外链资源/请求可用'},
+            'html_path': {
+              'type': 'string',
+              'description': '本地 HTML 文件绝对路径，资源从同目录/子目录加载'
+            },
+            'base_dir': {
+              'type': 'string',
+              'description': '资源根目录绝对路径，配合内联 html 使用'
+            },
+            'expect_result': {'type': 'boolean', 'description': 'true=等用户提交结果'},
+            'result_hint': {
+              'type': 'string',
+              'description': 'expect_result 为 true 时提示用户做什么'
+            },
+            'window': {'type': 'string', 'description': '窗口名'},
+            'chromeless': {'type': 'boolean', 'description': 'true=无标题栏'},
+            'position': {'type': 'string', 'description': 'center/top/...'},
             'rect': {
               'type': 'array',
               'items': {'type': 'number'},
+              'description': '[left,top,width,height] 0~1 占比',
             },
-            'close': {'type': 'string'},
+            'close': {'type': 'string', 'description': '关窗参数，填窗口名或 *'},
           },
         },
         origin: '互动画布',
@@ -2624,8 +2637,11 @@ class ChatNotifier extends Notifier<ChatState> {
                 : '已关闭窗口「$closeTarget」（不存在的话就什么都没发生）。';
           }
           final html = args['html']?.toString() ?? '';
-          if (html.trim().isEmpty) {
-            return 'html 是空的，卡片没生成。';
+          final url = args['url']?.toString().trim() ?? '';
+          final htmlPath = args['html_path']?.toString().trim() ?? '';
+          if (html.trim().isEmpty && url.isEmpty && htmlPath.isEmpty) {
+            return '内容为空：请提供 html（内联HTML）、url（远程网页）或 '
+                'html_path（本地HTML路径）三者之一。';
           }
           final expectResult = args['expect_result'] == true;
           final rawRect = args['rect'];
@@ -2634,6 +2650,9 @@ class ChatNotifier extends Notifier<ChatState> {
             title: args['title']?.toString().trim() ?? '互动卡片',
             description: args['description']?.toString().trim() ?? '',
             html: html,
+            url: url,
+            htmlPath: htmlPath,
+            baseDir: args['base_dir']?.toString().trim() ?? '',
             expectResult: expectResult,
             resultHint: args['result_hint']?.toString().trim() ?? '',
             createdAt: DateTime.now(),
@@ -2649,7 +2668,10 @@ class ChatNotifier extends Notifier<ChatState> {
           );
           showCanvas(canvas);
           if (!expectResult) {
-            return '卡片「${canvas.title}」已经弹给用户了（${html.length} 字符）。'
+            final sourceDesc = url.isNotEmpty
+                ? url
+                : (htmlPath.isNotEmpty ? htmlPath : '${html.length} 字符 HTML');
+            return '卡片「${canvas.title}」已经弹给用户了（$sourceDesc）。'
                 '不要把 HTML 再贴进回复正文，用户已经能看到实物。'
                 '${canvas.window.isEmpty ? '' : '窗口名：${canvas.window}。'}';
           }

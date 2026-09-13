@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,6 +8,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import '../../../core/theme/glass.dart';
 import '../models/agent_task_plan.dart';
 import '../models/canvas_result_bus.dart';
+import 'canvas_file_server.dart';
 
 /// AI 生成的 HTML 互动卡片弹窗。
 ///
@@ -18,9 +20,9 @@ import '../models/canvas_result_bus.dart';
 /// 一个 200 像素高的表单撑成全屏很丑。用户想看大就点最大化。
 ///
 /// 安全边界（重要）：
-/// - `loadHtmlString` 走 about:blank，页面读不到 APP 的任何数据；
+/// - 内联/本地 HTML 走 `http://127.0.0.1` 本地服务，页面仍读不到 APP 的任何数据；
 /// - 只注入一个单向通道 `window.aiSubmit(value)`，页面只能"往外说一句话"；
-/// - 拦掉所有导航：页面里点外链不会跳走，也不会偷偷加载远端内容。
+/// - 内联/本地模式拦掉外部导航；只有显式 `url` 远程模式才允许页面自身跳转。
 /// 画布视图的外部句柄：宿主（弹窗/悬浮窗）用它触发重新加载。
 class AiCanvasViewController {
   VoidCallback? _reload;
@@ -62,6 +64,7 @@ class AiCanvasView extends StatefulWidget {
 
 class _AiCanvasViewState extends State<AiCanvasView> {
   late final WebViewController _controller;
+  CanvasFileServer? _server;
   bool _loading = true;
   bool _submitted = false;
 
@@ -87,13 +90,12 @@ class _AiCanvasViewState extends State<AiCanvasView> {
             setState(() => _loading = false);
             _measure();
           },
-          // 内容里的链接一律不放行：这是个展示容器，不是浏览器。
-          onNavigationRequest: (request) => request.url.startsWith('about:')
-              ? NavigationDecision.navigate
-              : NavigationDecision.prevent,
+          // 普通内联画布仍拦截外跳；远程 URL 模式放行页面自身跳转；
+          // 本地文件模式只放行 localhost 内部资源。
+          onNavigationRequest: _onNavigationRequest,
         ),
-      )
-      ..loadHtmlString(_wrap(widget.canvas.html));
+      );
+    _start();
   }
 
   @override
@@ -101,6 +103,7 @@ class _AiCanvasViewState extends State<AiCanvasView> {
     if (widget.controller?._reload == _reload) {
       widget.controller?._reload = null;
     }
+    _server?.close();
     CanvasBus.unregister(_busName);
     super.dispose();
   }
@@ -117,7 +120,60 @@ class _AiCanvasViewState extends State<AiCanvasView> {
   void _reload() {
     if (!mounted) return;
     setState(() => _loading = true);
-    _controller.loadHtmlString(_wrap(widget.canvas.html));
+    _start();
+  }
+
+  NavigationDecision _onNavigationRequest(NavigationRequest request) {
+    final url = request.url;
+    if (widget.canvas.url.trim().isNotEmpty) {
+      // 远程 URL 模式就是为了联网加载，跟随页面自身跳转。
+      return NavigationDecision.navigate;
+    }
+    if (url.startsWith('http://127.0.0.1:') || url.startsWith('about:')) {
+      return NavigationDecision.navigate;
+    }
+    // 内容里的链接不放行：这是个展示容器，不是浏览器。
+    return NavigationDecision.prevent;
+  }
+
+  Future<void> _start() async {
+    final old = _server;
+    _server = null;
+    if (old != null) {
+      await old.close();
+    }
+    final canvas = widget.canvas;
+    try {
+      // 远程 URL：直接加载，外链资源/接口由页面自己访问。
+      final remote = canvas.url.trim();
+      if (remote.isNotEmpty) {
+        _controller.loadRequest(Uri.parse(remote));
+        return;
+      }
+      // 本地文件 / 资源目录 / 纯内联：统一走 localhost 服务承载。
+      // 给页面一个真正的 http origin，外链 CSS/JS/图片和 fetch 请求
+      // 都跟普通网页一样工作，本地相对路径也能照常解析。
+      final filePath = canvas.htmlPath.trim();
+      final baseDir = canvas.baseDir.trim();
+      final rootPath =
+          filePath.isNotEmpty ? Directory(filePath).parent.path : baseDir;
+      final source = filePath.isNotEmpty
+          ? await File(filePath).readAsString()
+          : canvas.html;
+      final server = await CanvasFileServer.start(
+        htmlContent: _wrap(source),
+        rootPath: rootPath,
+      );
+      if (!mounted) {
+        await server.close();
+        return;
+      }
+      _server = server;
+      _controller.loadRequest(Uri.parse(server.baseUrl));
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
   }
 
   void _onBridgeMessage(JavaScriptMessage message) {

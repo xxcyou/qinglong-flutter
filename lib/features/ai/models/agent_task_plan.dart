@@ -148,6 +148,9 @@ class AiCanvas {
     this.chromeless = false,
     this.position = '',
     this.rect,
+    this.url = '',
+    this.htmlPath = '',
+    this.baseDir = '',
   });
 
   final String id;
@@ -174,6 +177,15 @@ class AiCanvas {
   /// 完整的 HTML（可内联 <style>/<script>）。
   final String html;
 
+  /// 远程网页地址。填了它就直接加载这个 URL，页面里可以用外链资源/请求。
+  final String url;
+
+  /// 本地 HTML 文件绝对路径。加载它，并把同目录/子目录资源通过本地服务提供。
+  final String htmlPath;
+
+  /// 资源根目录。html 是内联内容时填它，相对路径资源会从该目录读取。
+  final String baseDir;
+
   /// 是否等用户操作结果回传（滑块验证、填表、选择器都属于这种）。
   final bool expectResult;
 
@@ -186,6 +198,9 @@ class AiCanvas {
         'title': title,
         'description': description,
         'html': html,
+        'url': url,
+        'htmlPath': htmlPath,
+        'baseDir': baseDir,
         if (expectResult) 'expectResult': true,
         if (resultHint.isNotEmpty) 'resultHint': resultHint,
         'createdAt': (createdAt ?? DateTime.now()).toIso8601String(),
@@ -200,6 +215,9 @@ class AiCanvas {
         title: json['title']?.toString() ?? '互动卡片',
         description: json['description']?.toString() ?? '',
         html: json['html']?.toString() ?? '',
+        url: json['url']?.toString() ?? '',
+        htmlPath: json['htmlPath']?.toString() ?? '',
+        baseDir: json['baseDir']?.toString() ?? '',
         expectResult: json['expectResult'] == true,
         resultHint: json['resultHint']?.toString() ?? '',
         createdAt: DateTime.tryParse(json['createdAt']?.toString() ?? ''),

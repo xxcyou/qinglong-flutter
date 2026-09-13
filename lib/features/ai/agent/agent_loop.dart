@@ -701,8 +701,11 @@ class AgentLoop {
     description: '生成一个 HTML 页面在弹窗里展示，可以带 CSS 和 JS。'
         '适合：小游戏、图表、动画演示、滑块验证、填表、需要用户点选的交互。'
         '不适合：能用文字说清的结论（那样只是浪费）。'
-        'html 必须是完整自包含的一页，不能引用外部网址的脚本、样式、图片或字体'
-        '（弹窗里没有网络，外链一律加载不出来，要图形就自己画 canvas/SVG）。'
+        '三种内容来源任选其一：html=内联完整HTML；url=远程网页地址'
+        '（联网资源、外部CSS/JS/图片/接口请求都可用）；'
+        'html_path=本地 HTML 文件绝对路径（同目录/子目录的 css/js/图片'
+        '会自动经本地服务加载）。内联 html 也可配 base_dir 指定资源根目录。'
+        '需要回传结果时 expect_result=true，页面里调用 window.aiSubmit(值)。'
         '需要拿用户的操作结果时把 expect_result 设为 true，'
         '页面里调用 window.aiSubmit(值) 把结果交回来，本次调用会等到结果再继续。\n'
         '多窗口（只在悬浮窗模式下生效）：给 window 起个名字就能同时摆好几个窗口'
@@ -720,8 +723,23 @@ class AgentLoop {
         'description': {'type': 'string', 'description': '一句话说明这是什么、怎么玩'},
         'html': {
           'type': 'string',
-          'description': '完整 HTML（含内联 <style>/<script>），不要外链资源。'
+          'description': '内联完整 HTML（含内联 <style>/<script>）。'
               '需要回传结果时页面里调用 window.aiSubmit("字符串或JSON")',
+        },
+        'url': {
+          'type': 'string',
+          'description': '远程网页 URL，直接加载该页面；外链 CSS/JS/图片/'
+              'fetch 请求都可用（接口需要目标服务允许跨域，页面自身同源不受限）',
+        },
+        'html_path': {
+          'type': 'string',
+          'description': '本地 HTML 文件绝对路径，例如 /sdcard/Download/game/index.html；'
+              '该文件同目录/子目录下的 css/js/图片等资源会自动通过本地服务提供',
+        },
+        'base_dir': {
+          'type': 'string',
+          'description': '资源根目录绝对路径。html 内联内容里有相对路径'
+              ' ./style.css、./img/a.png 时用它指定从哪个目录读',
         },
         'expect_result': {
           'type': 'boolean',
@@ -759,7 +777,7 @@ class AgentLoop {
               '填了这个就不需要 title/html',
         },
       },
-      'required': ['title', 'html'],
+      'required': ['title'],
     },
   );
 
@@ -1475,8 +1493,17 @@ class AgentLoop {
               continue;
             }
             final html = call.arguments['html']?.toString() ?? '';
-            if (html.trim().isEmpty) {
-              toolMessages.add(_toolReply(call, 'html 是空的，卡片没生成。'));
+            final url = call.arguments['url']?.toString().trim() ?? '';
+            final htmlPath =
+                call.arguments['html_path']?.toString().trim() ?? '';
+            if (html.trim().isEmpty && url.isEmpty && htmlPath.isEmpty) {
+              toolMessages.add(
+                _toolReply(
+                  call,
+                  '内容为空：请提供 html（内联HTML）、url（远程网页）或 '
+                  'html_path（本地HTML路径）三者之一。',
+                ),
+              );
               continue;
             }
             final expectResult = call.arguments['expect_result'] == true;
@@ -1487,6 +1514,9 @@ class AgentLoop {
               description:
                   call.arguments['description']?.toString().trim() ?? '',
               html: html,
+              url: url,
+              htmlPath: htmlPath,
+              baseDir: call.arguments['base_dir']?.toString().trim() ?? '',
               expectResult: expectResult,
               resultHint:
                   call.arguments['result_hint']?.toString().trim() ?? '',
