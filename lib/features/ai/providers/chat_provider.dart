@@ -2870,6 +2870,9 @@ class ChatNotifier extends Notifier<ChatState> {
             maxTurns: plan.maxTurns,
             enableTools: mainCaps.supportsTools,
             enableImageInjection: mainCaps.supportsImage,
+            // 子代理只做单点小事，不需要拆任务清单；关了避免它为了“像 agent”
+            // 硬拆清单卡流程。
+            enableTaskPlan: false,
             cancelToken: token,
             requestTransformer: _requestTransformerFor(
               plan.overridesModel ? plan.providerId : activeProviderId,

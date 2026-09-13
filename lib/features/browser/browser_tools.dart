@@ -50,16 +50,23 @@ class BrowserTools {
             '比 web_fetch 强的地方：它是真浏览器，会执行 JS、保留登录态和 Cookie，'
             '所以能拿到前端渲染出来的内容。遇到 Cloudflare 人机验证/登录墙时，'
             '配合 browser_wait_user 让用户点一下即可。'
-            '这个工具只负责访问网页，不会自动弹出浏览器悬浮窗；'
-            '需要把浏览器显示给用户时，请单独调用 browser_control action=show。'
-            '也能打开本地文件：url 传 /workspace/x.html（或 file:///…）'
-            '就会渲染终端工作目录里的网页。',
+            '**展示意图自动弹窗**：打开本地 HTML（/workspace/…html、file://…）'
+            '这类生成出来给用户看的页面，会自动把浏览器悬浮窗显示出来；'
+            '如果打开普通网址也是为了让用户看（给人机验证、展示站点、让用户查看结果），'
+            '请显式传 show=true，系统会立刻弹出悬浮窗。'
+            '如果只是自己抓取/操作页面（后台访问、读取数据、填写表单），不要传 show=true，'
+            '浏览器会保持隐藏，不打扰用户。',
         parameters: obj([
           'url'
         ], {
           'url': {
             'type': 'string',
             'description': '网址，或本地网页路径（/workspace/x.html、file:///…）',
+          },
+          'show': {
+            'type': 'boolean',
+            'description': '可选：true=打开后立刻把浏览器悬浮窗显示给用户。'
+                '本地 HTML 文件不传也会自动显示；普通网址需要展示给用户时请传 true。'
           },
           'wait_selector': {
             'type': 'string',
@@ -72,6 +79,15 @@ class BrowserTools {
           final url = args['url']?.toString().trim() ?? '';
           if (url.isEmpty) return '网址为空。';
           await engine.open(url);
+          // 展示意图：本地 HTML / 显式 show=true 时自动弹给用户看。
+          final explicitShow = args['show'] == true;
+          final looksLocalHtml = url.startsWith('/workspace/') ||
+              url.startsWith('file://') ||
+              url.toLowerCase().endsWith('.html') ||
+              url.toLowerCase().endsWith('.htm');
+          if (explicitShow || looksLocalHtml) {
+            engine.show(byAgent: true);
+          }
           final selector = args['wait_selector']?.toString() ?? '';
           if (selector.isNotEmpty) {
             final ok = await engine.waitFor(

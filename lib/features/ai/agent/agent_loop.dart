@@ -265,6 +265,7 @@ class AgentLoop {
     this.responseTransformer,
     this.enableTools = true,
     this.enableImageInjection = false,
+    this.enableTaskPlan = true,
     this.inbox,
     this.onInboxMessage,
     this.subagentSink,
@@ -280,6 +281,10 @@ class AgentLoop {
   /// 主模型支持图片时置 true：截图/图片工具产生的附件会以 user 图片消息
   /// 注入回对话，让主模型直接看图。
   final bool enableImageInjection;
+
+  /// 是否允许 task_plan / task_step（任务清单）。子代理不需要清单，
+  /// 关掉能避免它为了“看起来像 agent”而拆清单、卡流程。
+  final bool enableTaskPlan;
 
   /// 运行期待插入的用户消息；在每轮之间的安全点消费。
   final AgentInbox? inbox;
@@ -957,8 +962,8 @@ class AgentLoop {
       for (final t in externalTools) t.name,
       _askUserSpec.name,
       _taskCompleteSpec.name,
-      _taskPlanSpec.name,
-      _taskStepSpec.name,
+      if (enableTaskPlan) _taskPlanSpec.name,
+      if (enableTaskPlan) _taskStepSpec.name,
       _canvasSpec.name,
     };
     var lastPromptTokens = 0;
@@ -1119,8 +1124,8 @@ class AgentLoop {
                       ),
                     _askUserSpec,
                     _taskCompleteSpec,
-                    _taskPlanSpec,
-                    _taskStepSpec,
+                    if (enableTaskPlan) _taskPlanSpec,
+                    if (enableTaskPlan) _taskStepSpec,
                     _canvasSpec,
                   ]
                 : null,
@@ -2272,7 +2277,8 @@ class AgentLoop {
         // 提示词里写了"3 个以上工具调用就先 task_plan"，但模型经常一头扎进
         // 细节里忘了拆——用户的原话是"工具和技能不是摆设"。这里只推一次，
         // 而且是在它已经证明"这活确实不止一步"之后推，不会去烦一问一答。
-        if (!planNudged &&
+        if (enableTaskPlan &&
+            !planNudged &&
             plan.isEmpty &&
             records.length >= _planNudgeToolCalls &&
             turnsUsed >= 2 &&
