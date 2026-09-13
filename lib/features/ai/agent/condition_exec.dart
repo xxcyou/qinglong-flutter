@@ -195,6 +195,12 @@ class ConditionExecEngine {
           await _while(step, id, indent, depth);
         case 'try':
           await _try(step, id, indent, depth);
+        case 'assert':
+          await _assert(step, id, indent, depth);
+        case 'do':
+          await _do(step, id, indent, depth);
+        case 'repeat':
+          await _repeat(step, id, indent, depth);
         case 'switch':
           await _switch(step, id, indent, depth);
         case 'break':
@@ -210,6 +216,7 @@ class ConditionExecEngine {
           throw const _ContinueSignal();
         case 'throw':
         case 'raise':
+        case 'fail':
           throw _DslException(
             step['value'] == null ? 'DSL 主动抛出错误' : await _eval(step['value']!),
           );
@@ -613,6 +620,134 @@ class ConditionExecEngine {
     if (pending case final _ContinueSignal c) throw c;
   }
 
+  Future<void> _assert(
+    Map<String, dynamic> step,
+    String id,
+    String indent,
+    int depth,
+  ) async {
+    final condition = (step['if'] ?? step['condition'] ?? 'false').toString();
+    final ok = _truthy(await _eval(condition));
+    final message = (step['message'] ?? '断言失败: $condition').toString();
+    if (!ok) throw _DslException(message);
+    _out.writeln('$indent- $id · 断言通过');
+    _emit(
+      message: '条件执行 · $id · 断言通过',
+      args: {'step': id, 'condition': condition},
+      result: '断言通过',
+      ok: true,
+      depth: depth,
+    );
+  }
+
+  Future<void> _repeat(
+    Map<String, dynamic> step,
+    String id,
+    String indent,
+    int depth,
+  ) async {
+    final times =
+        (await _evalNum(step['times'] ?? 0)).toInt().clamp(0, 1000000);
+    final varName = (step['var'] ?? step['index'] ?? '').toString().trim();
+    final saveTo = (step['save_to'] ?? step['as'] ?? '').toString().trim();
+    _out.writeln('$indent- $id · 重复 $times 次');
+    _emit(
+      message: '条件执行 · $id · 重复',
+      args: {'step': id, 'times': times},
+      result: '重复 $times 次',
+      ok: true,
+      depth: depth,
+    );
+    if (step['body'] is! List) return;
+    final body = (step['body'] as List).cast<dynamic>();
+    for (var i = 0; i < times; i++) {
+      if (varName.isNotEmpty) _vars[varName] = i;
+      try {
+        await _runSteps(body, depth: depth + 1);
+      } on _ContinueSignal {
+        continue;
+      } on _BreakSignal catch (b) {
+        final myLabel = step['label']?.toString();
+        if (b.label != null) {
+          if (b.label == myLabel) {
+            if (b.hasValue) _captureBreakValue(b.value, saveTo, indent, id);
+            _out.writeln('$indent- $id · break $myLabel');
+            break;
+          }
+          rethrow;
+        }
+        if (b.level > 1) {
+          throw _BreakSignal(
+            level: b.level - 1,
+            label: b.label,
+            value: b.value,
+            hasValue: b.hasValue,
+          );
+        }
+        if (b.hasValue) _captureBreakValue(b.value, saveTo, indent, id);
+        _out.writeln('$indent- $id · break');
+        break;
+      }
+    }
+  }
+
+  Future<void> _do(
+    Map<String, dynamic> step,
+    String id,
+    String indent,
+    int depth,
+  ) async {
+    final condition =
+        (step['while'] ?? step['condition'] ?? 'false').toString();
+    final max = (await _evalNum(step['max'] ?? 1000)).toInt().clamp(1, 100000);
+    final saveTo = (step['save_to'] ?? step['as'] ?? '').toString().trim();
+    var count = 0;
+    do {
+      count++;
+      _out.writeln('$indent- $id · 第 $count 次循环');
+      _emit(
+        message: '条件执行 · $id · 循环 $count',
+        args: {'step': id, 'iteration': count},
+        result: '第 $count 次循环',
+        ok: true,
+        depth: depth,
+      );
+      if (step['body'] is! List) break;
+      try {
+        await _runSteps(
+          (step['body'] as List).cast<dynamic>(),
+          depth: depth + 1,
+        );
+      } on _ContinueSignal {
+        if (count >= max) break;
+        continue;
+      } on _BreakSignal catch (b) {
+        final myLabel = step['label']?.toString();
+        if (b.label != null) {
+          if (b.label == myLabel) {
+            if (b.hasValue) _captureBreakValue(b.value, saveTo, indent, id);
+            _out.writeln('$indent- $id · break $myLabel');
+            break;
+          }
+          rethrow;
+        }
+        if (b.level > 1) {
+          throw _BreakSignal(
+            level: b.level - 1,
+            label: b.label,
+            value: b.value,
+            hasValue: b.hasValue,
+          );
+        }
+        if (b.hasValue) _captureBreakValue(b.value, saveTo, indent, id);
+        _out.writeln('$indent- $id · break');
+        break;
+      }
+      if (count >= max) break;
+    } while (_truthy(await _eval(condition)));
+    if (count == max) _out.writeln('$indent- $id · 达到最大次数 $max');
+  }
+
   Future<void> _log(
     Map<String, dynamic> step,
     String id,
@@ -894,7 +1029,8 @@ class _Lexer {
           two == '<=' ||
           two == '>=' ||
           two == '&&' ||
-          two == '||') {
+          two == '||' ||
+          two == '::') {
         tokens.add(_Token(_TokType.op, two, start));
         _pos += 2;
         continue;
@@ -1135,7 +1271,15 @@ class _Parser {
         }
         return _vars[varName];
       case _TokType.ident:
-        final name = t.value.toString();
+        var name = t.value.toString();
+        if (_peekOp('::')) {
+          _take();
+          final ns = _take();
+          if (ns.type != _TokType.ident) {
+            throw const FormatException('命名空间后必须是函数名');
+          }
+          name = '$name::${ns.value}';
+        }
         if (name == 'true') return true;
         if (name == 'false') return false;
         if (name == 'null') return null;
@@ -1430,6 +1574,214 @@ class _Parser {
       case 'is_err':
         final errV = a(0);
         return errV is Map && errV['ok'] != true;
+      case 'flat_map':
+        final fmList = a(0);
+        final fmSpec = _stringify(a(1));
+        if (fmList is! List) {
+          throw FormatException('flat_map 第一个参数必须是数组，实际是 ${_typeName(fmList)}');
+        }
+        return await _runWithCollectionTarget(fmSpec, 1, (target) async {
+          final fmOut = <dynamic>[];
+          for (final item in fmList) {
+            final r = await _invokeDslFn(
+              target.name,
+              {target.params[0]: item},
+              1,
+            );
+            if (r is List) {
+              fmOut.addAll(r);
+            } else {
+              fmOut.add(r);
+            }
+          }
+          return fmOut;
+        });
+      case 'sort_by':
+        final sortList = a(0);
+        if (sortList is! List) {
+          throw FormatException(
+              'sort_by 第一个参数必须是数组，实际是 ${_typeName(sortList)}');
+        }
+        final sortSpec = args.length >= 2 ? _stringify(a(1)) : '';
+        final desc = args.length >= 3 &&
+            ((a(2) is bool && a(2) == true) ||
+                _stringify(a(2)).toLowerCase() == 'desc');
+        final sortPairs = <MapEntry<Object?, Object?>>[];
+        for (final item in sortList) {
+          final key =
+              sortSpec.isEmpty ? item : await _specValue(sortSpec, item);
+          sortPairs.add(MapEntry(key, item));
+        }
+        sortPairs.sort((x, y) => _compareValues(x.key, y.key));
+        final sorted = [for (final e in sortPairs) e.value];
+        return desc ? sorted.reversed.toList() : sorted;
+      case 'pipe':
+        dynamic pipeAcc = a(0);
+        for (var i = 1; i < args.length; i++) {
+          final pipeSpec = _stringify(a(i));
+          pipeAcc = await _runWithCollectionTarget(
+            pipeSpec,
+            1,
+            (target) async {
+              return await _invokeDslFn(
+                target.name,
+                {target.params[0]: pipeAcc},
+                1,
+              );
+            },
+          );
+        }
+        return pipeAcc;
+      case 'distinct':
+        final disList = a(0);
+        if (disList is! List) {
+          throw FormatException(
+              'distinct 第一个参数必须是数组，实际是 ${_typeName(disList)}');
+        }
+        final disSpec = args.length >= 2 ? _stringify(a(1)) : '';
+        final disOut = <dynamic>[];
+        final disSeen = <dynamic>[];
+        for (final item in disList) {
+          final key = disSpec.isEmpty ? item : await _specValue(disSpec, item);
+          final exists = disSeen.any((x) => _equals(x, key));
+          if (!exists) {
+            disSeen.add(key);
+            disOut.add(item);
+          }
+        }
+        return disOut;
+      case 'sum':
+      case 'avg':
+      case 'min':
+      case 'max':
+        final aggList = a(0);
+        if (aggList is! List) {
+          throw FormatException('$name 第一个参数必须是数组，实际是 ${_typeName(aggList)}');
+        }
+        final aggSpec = args.length >= 2 ? _stringify(a(1)) : '';
+        final aggNums = <num>[];
+        for (final item in aggList) {
+          final key = aggSpec.isEmpty ? item : await _specValue(aggSpec, item);
+          aggNums.add(_num(key));
+        }
+        if (aggNums.isEmpty) return name == 'sum' ? 0 : null;
+        if (name == 'sum') {
+          var total = 0.0;
+          for (final n in aggNums) {
+            total += n;
+          }
+          return aggNums.every((n) => n is int && n.toInt() == n)
+              ? total.toInt()
+              : total;
+        }
+        if (name == 'avg') {
+          var total = 0.0;
+          for (final n in aggNums) {
+            total += n;
+          }
+          final avg = total / aggNums.length;
+          return avg % 1 == 0 ? avg.toInt() : avg;
+        }
+        var best = aggNums.first;
+        for (final n in aggNums) {
+          best = name == 'min' ? (n < best ? n : best) : (n > best ? n : best);
+        }
+        return best;
+      case 'any':
+      case 'all':
+      case 'none':
+        final predList = a(0);
+        if (predList is! List) {
+          throw FormatException('$name 第一个参数必须是数组，实际是 ${_typeName(predList)}');
+        }
+        final predSpec = args.length >= 2 ? _stringify(a(1)) : '';
+        for (final item in predList) {
+          final match = predSpec.isEmpty
+              ? _truthy(item)
+              : _truthy(await _specValue(predSpec, item));
+          if (name == 'any' && match) return true;
+          if (name == 'all' && !match) return false;
+          if (name == 'none' && match) return false;
+        }
+        return name == 'all';
+      case 'find':
+        final findList = a(0);
+        if (findList is! List) {
+          throw FormatException('find 第一个参数必须是数组，实际是 ${_typeName(findList)}');
+        }
+        final findSpec = args.length >= 2 ? _stringify(a(1)) : '';
+        for (final item in findList) {
+          final match = findSpec.isEmpty
+              ? _truthy(item)
+              : _truthy(await _specValue(findSpec, item));
+          if (match) return item;
+        }
+        return null;
+      case 'first':
+      case 'last':
+        final edge = a(0);
+        if (edge is List) {
+          return name == 'first'
+              ? (edge.isEmpty ? (args.length >= 2 ? a(1) : null) : edge.first)
+              : (edge.isEmpty ? (args.length >= 2 ? a(1) : null) : edge.last);
+        }
+        if (edge is String) {
+          return name == 'first'
+              ? (edge.isEmpty ? (args.length >= 2 ? a(1) : null) : edge[0])
+              : (edge.isEmpty
+                  ? (args.length >= 2 ? a(1) : null)
+                  : edge[edge.length - 1]);
+        }
+        throw FormatException('$name 参数必须是数组或字符串，实际是 ${_typeName(edge)}');
+      case 'take':
+      case 'drop':
+        final sliceList = a(0);
+        final sliceN = _num(a(1)).toInt().clamp(0, 999999);
+        if (sliceList is List) {
+          return name == 'take'
+              ? sliceList.take(sliceN).toList()
+              : sliceList.skip(sliceN).toList();
+        }
+        if (sliceList is String) {
+          return name == 'take'
+              ? sliceList.substring(0, sliceN.clamp(0, sliceList.length))
+              : sliceList.substring(sliceN.clamp(0, sliceList.length));
+        }
+        throw FormatException('$name 参数必须是数组或字符串，实际是 ${_typeName(sliceList)}');
+      case 'flatten':
+        final flatList = a(0);
+        if (flatList is! List) {
+          throw FormatException(
+              'flatten 第一个参数必须是数组，实际是 ${_typeName(flatList)}');
+        }
+        final flatOut = <dynamic>[];
+        for (final item in flatList) {
+          if (item is List) {
+            flatOut.addAll(item);
+          } else {
+            flatOut.add(item);
+          }
+        }
+        return flatOut;
+      case 'zip':
+        final zipA = a(0);
+        final zipB = a(1);
+        if (zipA is! List || zipB is! List) {
+          throw const FormatException('zip 参数必须是两个数组');
+        }
+        final zipOut = <dynamic>[
+          for (var i = 0; i < zipA.length && i < zipB.length; i++)
+            {'a': zipA[i], 'b': zipB[i]},
+        ];
+        return zipOut;
+      case 'range':
+        final rangeStart = args.isNotEmpty ? _num(a(0)).toInt() : 0;
+        final rangeEnd = args.length >= 2 ? _num(a(1)).toInt() : rangeStart + 1;
+        final rangeStep =
+            args.length >= 3 ? _num(a(2)).toInt().abs().clamp(1, 1000000) : 1;
+        return [
+          for (var i = rangeStart; i < rangeEnd; i += rangeStep) i,
+        ];
       case 'type':
         final v = a(0);
         if (v is num) return 'number';
@@ -1505,6 +1857,29 @@ class _Parser {
     } finally {
       if (existing == null) _functions.remove(target.name);
     }
+  }
+
+  bool _isCallableSpec(String spec) {
+    return _functions.containsKey(spec) ||
+        spec.contains('=>') ||
+        RegExp(r'\$[A-Za-z_]').hasMatch(spec);
+  }
+
+  Future<dynamic> _specValue(String spec, Object? item) async {
+    if (!_isCallableSpec(spec)) return _getField(item, spec);
+    return _runWithCollectionTarget(spec, 1, (target) async {
+      return await _invokeDslFn(
+        target.name,
+        {target.params[0]: item},
+        1,
+      );
+    });
+  }
+
+  int _compareValues(Object? a, Object? b) {
+    if (a is num && b is num) return a.compareTo(b);
+    if (a is String && b is String) return a.compareTo(b);
+    return _stringify(a).compareTo(_stringify(b));
   }
 
   Object? _getField(Object? v, String name) {

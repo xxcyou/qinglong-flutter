@@ -3896,8 +3896,11 @@ class ChatNotifier extends Notifier<ChatState> {
             '- {"type":"break"}、{"type":"break","level":2}、{"type":"break","label":"outer"} 或 {"type":"break","value":"表达式"}: 跳出循环并返回结果；'
             '{"type":"continue"}: 跳到本轮循环结尾\n'
             '- {"type":"switch","value":"表达式","cases":[{"match":"a","body":[...]}],"default":[...]}: 多路分支\n'
-            '- {"type":"throw","value":"表达式"}：主动抛错，可被 try/catch 捕获；'
+            '- {"type":"throw"}、{"type":"raise"} 或 {"type":"fail","value":"表达式"}：主动抛错，可被 try/catch 捕获；'
             '{"type":"return","value":"表达式"}: 提前结束流程/函数并返回值\n'
+            '- {"type":"assert","if":"表达式","message":"提示"}: 断言失败会抛错\n'
+            '- {"type":"repeat","times":5,"var":"i","body":[...]}: 重复 N 次\n'
+            '- {"type":"do","body":[...],"while":"表达式"}: 至少执行一次的条件循环\n'
             '- {"type":"try","try":[...],"catch":[...],"error_var":"e","finally":[...]}: 异常捕获 + 必定执行收尾\n'
             '- {"type":"log","message":"文本 \$var 模板"} 或 {"type":"log","value":"表达式"}: 日志\n'
             '- {"type":"function","name":"foo","params":["a","b"]、{"a":0,"b":"x"} 或 {"user":["name","age"]},"body":[...]}: 定义函数；'
@@ -3910,8 +3913,13 @@ class ChatNotifier extends Notifier<ChatState> {
             'num/str/get/json/json_encode/type；变量用 \$name 或 \${name}，'
             '对象/列表可用 \$data.key、\$list[0] 取值；表达式支持 {} 字面量对象，如 {"a":1,"b":\$x}；'
             '已定义的 DSL 函数也可以直接在表达式里调用，如 even(\$n)、double(2)；'
+            '函数名支持命名空间，定义/调用用 ::，如 math::double(2)；'
             'map/filter/reduce 可使用函数名或匿名 lambda：map(\$list,"\$x * 2")、filter(\$list,"\$n % 2 == 0")、reduce(\$list,"\$acc + \$item")；'
-            'group_by(\$list,"cat") 按字段分组、group_by(\$list,"len(\$name)") 按 lambda 分组；'
+            'flat_map(\$list,"\$x") 拍平、sort_by(\$list,"field"[,desc])/sort_by(\$list,"\$x.n") 排序、'
+            'pipe(\$v,"fn1","fn2") 链式传递、distinct(\$list) 去重、'
+            'sum/avg/min/max(\$list,"field") 聚合、any/all/none(\$list,"predicate")/find 查询、'
+            'first/last/take/drop/flatten/zip/range(0,5,2) 常用集合函数、'
+            'group_by(\$list,"cat") 按字段分组、group_by(\$list,"\$x.name") 按 lambda 分组；'
             'keys(\$obj)/values(\$obj)/entries(\$obj) 取对象信息；'
             'safe("表达式","兜底值") 安全求值（出错返回兜底）；'
             'ok(value)/err(msg)/is_ok(r)/is_err(r) 生成和判断标准结果对象 {ok,value,error}。'
@@ -3925,7 +3933,7 @@ class ChatNotifier extends Notifier<ChatState> {
             'steps': {
               'type': 'array',
               'description':
-                  '步骤数组，每步为 {type: tool|set|delay|if|for|while|try|switch|break|continue|return|throw|log|function|call, ...}，'
+                  '步骤数组，每步为 {type: tool|set|delay|if|for|while|do|repeat|try|switch|assert|break|continue|return|throw|fail|log|function|call, ...}，'
                       '控制流步骤的 then/else/body 仍然是步骤数组',
             },
             'variables': {
