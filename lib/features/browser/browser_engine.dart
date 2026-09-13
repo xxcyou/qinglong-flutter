@@ -1230,9 +1230,24 @@ return JSON.stringify({
     String? sourceUrl,
   }) async {
     if (url.isEmpty) return NavigationDecision.prevent;
-    // 不再弹 APP 自己的“允许跳转”确认框：直接把 URL 交给系统，
-    // 由 Android 自带的选择器/浏览器弹窗决定用哪个应用打开。
-    // 这样第三方登录、拉起微信/QQ/支付宝时表现更接近原生浏览器。
+    // 优先把“网页版登录/回调页”留在内置浏览器里打开：
+    // 很多第三方登录（QQ/微信/支付宝）会用一个 intent:// 或
+    // S.browser_fallback_url 指向网页版授权地址，直接交给系统启动外部 App
+    // 的话，登录完容易跑到手机默认浏览器。这里先解析回网页地址，
+    // 在内置 WebView 里继续走，全程不离开本 APP。
+    final webUrl = _webFallbackUrl(url);
+    final controller = _controller;
+    if (webUrl != null && controller != null) {
+      try {
+        await controller.loadRequest(Uri.parse(webUrl));
+        return NavigationDecision.prevent;
+      } catch (_) {
+        // 网页回退失败再走系统拉起。
+      }
+    }
+
+    // 确实没有网页版可走时，才交给系统打开外部 App，
+    // 由 Android 自带的选择器/浏览器弹窗决定。
     final uri = Uri.tryParse(url);
     _lastExternalJump = ExternalJumpRequest(
       id: 'jump${++_jumpSeq}',
@@ -1263,6 +1278,34 @@ return JSON.stringify({
       }
     }
     return NavigationDecision.prevent;
+  }
+
+  /// 从外部跳转 URL 里解析出可在内置浏览器打开的网页地址。
+  ///
+  /// 优先取 `S.browser_fallback_url=`（URL 编码），退而求其次：
+  /// 把 `intent://host/path?...` 按 `#Intent` 中的 `scheme=https`
+  /// 还原成 `https://host/path?...`。
+  static String? _webFallbackUrl(String url) {
+    const marker = 'S.browser_fallback_url=';
+    final markerIndex = url.indexOf(marker);
+    if (markerIndex >= 0) {
+      final start = markerIndex + marker.length;
+      final end = url.indexOf(';', start);
+      final raw = end < 0 ? url.substring(start) : url.substring(start, end);
+      final decoded = Uri.decodeComponent(raw.trim());
+      if (decoded.isNotEmpty) return decoded;
+    }
+    final intentHash = url.indexOf('#Intent');
+    if (intentHash >= 0 && url.startsWith('intent://')) {
+      final base = url.substring('intent://'.length, intentHash);
+      final schemeMatch =
+          RegExp(r'scheme=([a-zA-Z][a-zA-Z0-9+.-]*)').firstMatch(url);
+      final scheme = schemeMatch?.group(1)?.toLowerCase();
+      if ((scheme == 'http' || scheme == 'https') && base.isNotEmpty) {
+        return '$scheme://$base';
+      }
+    }
+    return null;
   }
 
   /// 用户从外部 App（微信/QQ/支付宝等）回到 APP 后，把内置浏览器
