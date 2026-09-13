@@ -216,6 +216,23 @@ class _TimelineRowState extends State<_TimelineRow> {
   /// 弹详情页太重。点一下就地铺开、再点收起，是最省事的看法。
   bool _expanded = false;
 
+  /// 图片字节缓存：同一个 data URI 只在 State 里解一次码，
+  /// 避免每次 live 事件刷新都重新解码/重建 Image，造成闪烁。
+  Uint8List? _imageBytes;
+
+  @override
+  void initState() {
+    super.initState();
+    final uri = widget.event.imageDataUri;
+    if (uri != null && uri.contains(',')) {
+      try {
+        _imageBytes = base64Decode(uri.split(',').last);
+      } catch (_) {
+        _imageBytes = null;
+      }
+    }
+  }
+
   AgentEvent get event => widget.event;
 
   bool get isLast => widget.isLast;
@@ -389,23 +406,24 @@ class _TimelineRowState extends State<_TimelineRow> {
                             overflow: TextOverflow.ellipsis,
                           ),
                   ),
-                  if (event.imageDataUri != null)
+                  if (_imageBytes != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 6),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxHeight: 160),
-                          child: Image.memory(
-                            base64Decode(
-                              event.imageDataUri!.split(',').last,
-                            ),
-                            fit: BoxFit.contain,
-                            errorBuilder: (_, __, ___) => Text(
-                              '图片预览加载失败',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: scheme.error,
+                      child: RepaintBoundary(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 160),
+                            child: Image.memory(
+                              _imageBytes!,
+                              fit: BoxFit.contain,
+                              gaplessPlayback: true,
+                              errorBuilder: (_, __, ___) => Text(
+                                '图片预览加载失败',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: scheme.error,
+                                ),
                               ),
                             ),
                           ),
