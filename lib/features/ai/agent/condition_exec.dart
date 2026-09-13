@@ -72,14 +72,22 @@ class ConditionExecEngine {
     final params = step['params'];
     final names = <String>[];
     final defaults = <String, Object?>{};
+    final destructures = <String, List<String>>{};
     if (params is List) {
       for (final p in params) {
         names.add(p.toString());
       }
     } else if (params is Map) {
       for (final e in params.entries) {
-        names.add(e.key.toString());
-        defaults[e.key.toString()] = e.value;
+        final pname = e.key.toString();
+        names.add(pname);
+        if (e.value is List) {
+          destructures[pname] = [
+            for (final f in (e.value as List)) f.toString(),
+          ];
+        } else {
+          defaults[pname] = e.value;
+        }
       }
     } else if (params != null) {
       throw FormatException('函数 $name 的 params 必须是数组或对象');
@@ -89,6 +97,7 @@ class ConditionExecEngine {
       params: names,
       defaults: defaults,
       body: (step['body'] as List).cast<dynamic>(),
+      destructures: destructures,
     );
   }
 
@@ -108,6 +117,17 @@ class ConditionExecEngine {
         local[p] = await _eval(fn.defaults[p]);
       } else {
         local[p] = null;
+      }
+    }
+    for (final entry in fn.destructures.entries) {
+      final source = local[entry.key];
+      if (source is! Map) {
+        throw FormatException(
+          '函数 ${fn.name} 参数 ${entry.key} 需要对象用于解构，实际是 ${source.runtimeType}',
+        );
+      }
+      for (final field in entry.value) {
+        local[field] = source[field];
       }
     }
     final saved = _vars;
@@ -179,9 +199,12 @@ class ConditionExecEngine {
           await _switch(step, id, indent, depth);
         case 'break':
           final rawLevel = step['level'] ?? step['times'] ?? 1;
+          final hasBreakValue = step.containsKey('value');
           throw _BreakSignal(
-            rawLevel is num ? rawLevel.toInt().clamp(1, 12) : 1,
-            step['label']?.toString(),
+            level: rawLevel is num ? rawLevel.toInt().clamp(1, 12) : 1,
+            label: step['label']?.toString(),
+            value: hasBreakValue ? await _eval(step['value']) : null,
+            hasValue: hasBreakValue,
           );
         case 'continue':
           throw const _ContinueSignal();
@@ -399,6 +422,17 @@ class ConditionExecEngine {
     }
   }
 
+  void _captureBreakValue(
+    Object? value,
+    String saveTo,
+    String indent,
+    String id,
+  ) {
+    _vars['last'] = value;
+    if (saveTo.isNotEmpty) _vars[saveTo] = value;
+    _out.writeln('$indent- $id · break 值 = ${_snippet(_stringify(value))}');
+  }
+
   Future<void> _for(
     Map<String, dynamic> step,
     String id,
@@ -437,6 +471,7 @@ class ConditionExecEngine {
     );
     if (step['body'] is! List) return;
     final body = (step['body'] as List).cast<dynamic>();
+    final saveTo = (step['save_to'] ?? step['as'] ?? '').toString().trim();
     for (final item in items) {
       _vars[varName] = item;
       try {
@@ -447,12 +482,23 @@ class ConditionExecEngine {
         final myLabel = step['label']?.toString();
         if (b.label != null) {
           if (b.label == myLabel) {
+            if (b.hasValue) {
+              _captureBreakValue(b.value, saveTo, indent, id);
+            }
             _out.writeln('$indent- $id · break $myLabel');
             break;
           }
           rethrow;
         }
-        if (b.level > 1) throw _BreakSignal(b.level - 1);
+        if (b.level > 1) {
+          throw _BreakSignal(
+            level: b.level - 1,
+            label: b.label,
+            value: b.value,
+            hasValue: b.hasValue,
+          );
+        }
+        if (b.hasValue) _captureBreakValue(b.value, saveTo, indent, id);
         _out.writeln('$indent- $id · break');
         break;
       }
@@ -489,14 +535,26 @@ class ConditionExecEngine {
         continue;
       } on _BreakSignal catch (b) {
         final myLabel = step['label']?.toString();
+        final saveTo = (step['save_to'] ?? step['as'] ?? '').toString().trim();
         if (b.label != null) {
           if (b.label == myLabel) {
+            if (b.hasValue) {
+              _captureBreakValue(b.value, saveTo, indent, id);
+            }
             _out.writeln('$indent- $id · break $myLabel');
             break;
           }
           rethrow;
         }
-        if (b.level > 1) throw _BreakSignal(b.level - 1);
+        if (b.level > 1) {
+          throw _BreakSignal(
+            level: b.level - 1,
+            label: b.label,
+            value: b.value,
+            hasValue: b.hasValue,
+          );
+        }
+        if (b.hasValue) _captureBreakValue(b.value, saveTo, indent, id);
         _out.writeln('$indent- $id · break');
         break;
       }
@@ -702,18 +760,29 @@ class _DslFunction {
     required this.params,
     required this.defaults,
     required this.body,
+    this.destructures = const {},
   });
 
   final String name;
   final List<String> params;
   final Map<String, Object?> defaults;
   final List<dynamic> body;
+
+  /// 参数名 -> 要解构出来的字段名。调用时该参数必须是对象。
+  final Map<String, List<String>> destructures;
 }
 
 class _BreakSignal implements Exception {
-  const _BreakSignal([this.level = 1, this.label]);
+  _BreakSignal({
+    this.level = 1,
+    this.label,
+    this.value,
+    this.hasValue = false,
+  });
   final int level;
   final String? label;
+  final Object? value;
+  final bool hasValue;
 }
 
 class _ContinueSignal implements Exception {
@@ -1135,6 +1204,14 @@ class _Parser {
       throw FormatException('$fn 第 ${i + 1} 个参数必须是字符串，实际是 ${_typeName(v)}');
     }
 
+    _DslFunction requireFn(String fnName) {
+      final fn = _functions[fnName];
+      if (fn == null) {
+        throw FormatException('集合函数引用的 DSL 函数未定义：$fnName');
+      }
+      return fn;
+    }
+
     switch (name) {
       case 'contains':
         return reqString('contains', 0).contains(reqString('contains', 1));
@@ -1190,6 +1267,113 @@ class _Parser {
           }
         }
         return fallback;
+      case 'map':
+        final mapList = a(0);
+        final mapFn = _stringify(a(1));
+        if (mapList is! List) {
+          throw FormatException('map 第一个参数必须是数组，实际是 ${_typeName(mapList)}');
+        }
+        final mapTarget = requireFn(mapFn);
+        if (mapTarget.params.isEmpty) {
+          throw FormatException('map 引用的函数 $mapFn 至少需要一个参数');
+        }
+        final mapped = <dynamic>[];
+        for (final item in mapList) {
+          mapped.add(
+            await _invokeDslFn(
+              mapFn,
+              {mapTarget.params[0]: item},
+              1,
+            ),
+          );
+        }
+        return mapped;
+      case 'filter':
+        final filterList = a(0);
+        final filterFn = _stringify(a(1));
+        if (filterList is! List) {
+          throw FormatException(
+              'filter 第一个参数必须是数组，实际是 ${_typeName(filterList)}');
+        }
+        final filterTarget = requireFn(filterFn);
+        if (filterTarget.params.isEmpty) {
+          throw FormatException('filter 引用的函数 $filterFn 至少需要一个参数');
+        }
+        final filtered = <dynamic>[];
+        for (final item in filterList) {
+          if (_truthy(
+            await _invokeDslFn(
+              filterFn,
+              {filterTarget.params[0]: item},
+              1,
+            ),
+          )) {
+            filtered.add(item);
+          }
+        }
+        return filtered;
+      case 'reduce':
+        final reduceList = a(0);
+        final reduceFn = _stringify(a(1));
+        if (reduceList is! List) {
+          throw FormatException(
+              'reduce 第一个参数必须是数组，实际是 ${_typeName(reduceList)}');
+        }
+        final reduceTarget = requireFn(reduceFn);
+        if (reduceTarget.params.length < 2) {
+          throw FormatException('reduce 引用的函数 $reduceFn 需要两个参数 (acc, item)');
+        }
+        dynamic acc;
+        var startIndex = 0;
+        if (args.length >= 3) {
+          acc = a(2);
+        } else if (reduceList.isNotEmpty) {
+          acc = reduceList[0];
+          startIndex = 1;
+        }
+        for (var i = startIndex; i < reduceList.length; i++) {
+          acc = await _invokeDslFn(
+            reduceFn,
+            {
+              reduceTarget.params[0]: acc,
+              reduceTarget.params[1]: reduceList[i],
+            },
+            1,
+          );
+        }
+        return acc;
+      case 'keys':
+        final keySrc = a(0);
+        if (keySrc is Map) return keySrc.keys.toList();
+        if (keySrc is String) {
+          final decoded = _tryParse(keySrc);
+          if (decoded is Map) return decoded.keys.toList();
+        }
+        throw FormatException('keys 参数必须是对象，实际是 ${_typeName(keySrc)}');
+      case 'values':
+        final valSrc = a(0);
+        if (valSrc is Map) return valSrc.values.toList();
+        if (valSrc is String) {
+          final decoded = _tryParse(valSrc);
+          if (decoded is Map) return decoded.values.toList();
+        }
+        throw FormatException('values 参数必须是对象，实际是 ${_typeName(valSrc)}');
+      case 'entries':
+        final entSrc = a(0);
+        if (entSrc is Map) {
+          return [
+            for (final e in entSrc.entries) {'key': e.key, 'value': e.value},
+          ];
+        }
+        if (entSrc is String) {
+          final decoded = _tryParse(entSrc);
+          if (decoded is Map) {
+            return [
+              for (final e in decoded.entries) {'key': e.key, 'value': e.value},
+            ];
+          }
+        }
+        throw FormatException('entries 参数必须是对象，实际是 ${_typeName(entSrc)}');
       case 'type':
         final v = a(0);
         if (v is num) return 'number';
