@@ -2386,6 +2386,24 @@ class ChatNotifier extends Notifier<ChatState> {
     run.liveTool = '';
   }
 
+  /// 记录本轮展示过的截图/图片，按 dataUri 或宿主路径去重。
+  ///
+  /// browser_screenshot 和 show_image 会先后记录同一张图，如果不查重，
+  /// 结尾正文会把同一张图挂出两份。
+  void _rememberToolScreenshot(
+    String sessionId,
+    AiImageAttachment img,
+  ) {
+    _lastToolScreenshot = img;
+    final list = _toolScreenshotsBySession.putIfAbsent(sessionId, () => []);
+    final exists = list.any(
+      (e) =>
+          e.dataUri == img.dataUri ||
+          (e.path.isNotEmpty && img.path.isNotEmpty && e.path == img.path),
+    );
+    if (!exists) list.add(img);
+  }
+
   void _appendAgentEvent(String sessionId, AgentEvent event) {
     final run = _runs[sessionId];
     if (run == null) return;
@@ -2912,10 +2930,7 @@ class ChatNotifier extends Notifier<ChatState> {
               path: shotFile.path,
               scope: 'app',
             );
-            _lastToolScreenshot = img;
-            _toolScreenshotsBySession
-                .putIfAbsent(state.currentSessionId, () => [])
-                .add(img);
+            _rememberToolScreenshot(state.currentSessionId, img);
             return '已截取内置浏览器画面。\n'
                 'path: ${img.path}\nscope: app'
                 '${label == null ? '' : '\n用途：$label'}\n'
@@ -2992,10 +3007,7 @@ class ChatNotifier extends Notifier<ChatState> {
                   ? 'base64 图片解码失败或内容为空。'
                   : '图片读取失败或文件为空：$path';
             }
-            _lastToolScreenshot = img;
-            _toolScreenshotsBySession
-                .putIfAbsent(state.currentSessionId, () => [])
-                .add(img);
+            _rememberToolScreenshot(state.currentSessionId, img);
             // show_image 一加载完就推进工具链，不用等整个工具结束才看到图。
             _appendAgentEvent(
               state.currentSessionId,
