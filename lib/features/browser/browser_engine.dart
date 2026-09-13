@@ -81,7 +81,6 @@ class BrowserEngine {
   /// 宿主注册的“外部跳转确认框”回调，返回是否允许。
   Future<bool> Function(ExternalJumpRequest request)? externalJumpPrompt;
 
-  bool _promptingJump = false;
   int _jumpSeq = 0;
 
   /// 有没有上一页：界面上的返回键靠它决定灰不灰。
@@ -1230,14 +1229,38 @@ return JSON.stringify({
     String? sourceUrl,
   }) async {
     if (url.isEmpty) return NavigationDecision.prevent;
-    final req = ExternalJumpRequest(
-      id: 'jump${++_jumpSeq}',
-      url: url,
-      sourceUrl: sourceUrl ?? currentUrl.value,
-      createdAt: DateTime.now(),
-    );
-    pendingExternalJumps.value = [...pendingExternalJumps.value, req];
-    _pumpExternalJumpPrompt();
+    // 不再弹 APP 自己的“允许跳转”确认框：直接把 URL 交给系统，
+    // 由 Android 自带的选择器/浏览器弹窗决定用哪个应用打开。
+    // 这样第三方登录、拉起微信/QQ/支付宝时表现更接近原生浏览器。
+    final uri = Uri.tryParse(url);
+    if (uri != null) {
+      try {
+        final opened = await launchUrl(
+          uri,
+          mode: LaunchMode.platformDefault,
+        );
+        if (!opened) {
+          // 系统没有能处理这个 scheme 的应用：记录下来供 AI 排查，
+          // 但不弹 APP 确认框打扰用户。
+          final req = ExternalJumpRequest(
+            id: 'jump${++_jumpSeq}',
+            url: url,
+            sourceUrl: sourceUrl ?? currentUrl.value,
+            createdAt: DateTime.now(),
+          );
+          pendingExternalJumps.value = [...pendingExternalJumps.value, req];
+        }
+      } catch (_) {
+        // 同上：打不开时不弹 APP 弹窗，只留一条记录。
+        final req = ExternalJumpRequest(
+          id: 'jump${++_jumpSeq}',
+          url: url,
+          sourceUrl: sourceUrl ?? currentUrl.value,
+          createdAt: DateTime.now(),
+        );
+        pendingExternalJumps.value = [...pendingExternalJumps.value, req];
+      }
+    }
     return NavigationDecision.prevent;
   }
 
@@ -1261,10 +1284,7 @@ return JSON.stringify({
       bool opened = false;
       if (uri != null) {
         try {
-          final can = await canLaunchUrl(uri);
-          if (can) {
-            opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
-          }
+          opened = await launchUrl(uri, mode: LaunchMode.platformDefault);
         } catch (_) {
           opened = false;
         }
@@ -1275,29 +1295,6 @@ return JSON.stringify({
       }
     }
     return true;
-  }
-
-  Future<void> _pumpExternalJumpPrompt() async {
-    if (_promptingJump || pendingExternalJumps.value.isEmpty) return;
-    _promptingJump = true;
-    try {
-      final req = pendingExternalJumps.value.first;
-      final list = pendingExternalJumps.value;
-      // AI 可能已经先把这条处理掉了（browser_jump 工具），就不弹第二次。
-      if (!list.any((r) => r.id == req.id)) return;
-      final prompt = externalJumpPrompt;
-      final allow = prompt == null ? false : await prompt(req);
-      if (pendingExternalJumps.value.any((r) => r.id == req.id)) {
-        await resolveExternalJump(req.id, allow: allow);
-      } else {
-        // AI 已经在弹窗期间处理过了，什么都不做。
-      }
-    } finally {
-      _promptingJump = false;
-      if (pendingExternalJumps.value.isNotEmpty) {
-        unawaited(_pumpExternalJumpPrompt());
-      }
-    }
   }
 
   bool get isWaitingUser => waitingHint.value.isNotEmpty;
