@@ -358,7 +358,6 @@ class ChatNotifier extends Notifier<ChatState> {
   AiImageAttachment? _lastToolScreenshot;
 
   /// 最近一次截图顺带的 Android UI 文字提取（uiautomator dump），没配图片模型时可当文字识别用。
-  String _lastScreenshotText = '';
 
   @override
   ChatState build() {
@@ -2531,7 +2530,6 @@ class ChatNotifier extends Notifier<ChatState> {
     }
     _toolScreenshotsBySession.remove(run?.sessionId ?? state.currentSessionId);
     _lastToolScreenshot = null;
-    _lastScreenshotText = '';
     final config = await ref.read(llmConfigProvider.future);
     final activeProviderId = ref.read(llmRegistryProvider).active.id;
     final mainProvider = ref.read(llmRegistryProvider).active;
@@ -2746,76 +2744,6 @@ class ChatNotifier extends Notifier<ChatState> {
     }
   }
 
-  /// 通过 adb 截取目标设备屏幕，读成 AiImageAttachment 并缓存到 [_lastToolScreenshot]。
-  Future<AiImageAttachment?> _captureAdbScreenshot(
-      Map<String, dynamic> args) async {
-    _lastToolScreenshot = null;
-    _lastScreenshotText = '';
-    final serial = args['serial']?.toString().trim() ?? '';
-    final bridge = ProotBridge();
-    final stamp = DateTime.now().millisecondsSinceEpoch;
-    final out = '/cache/ai_screenshots/shot_$stamp.png';
-    final adb = serial.isNotEmpty
-        ? 'adb -s ${_quote(serial)} exec-out screencap -p'
-        : 'adb exec-out screencap -p';
-    final result = await bridge.exec(
-      command: 'mkdir -p /cache/ai_screenshots && $adb > ${_quote(out)}',
-      timeoutSeconds: 60,
-    );
-    if (result.exitCode != 0) {
-      final err = result.stderr.trim().isNotEmpty
-          ? result.stderr.trim()
-          : result.stdout.trim();
-      throw Exception('adb 执行失败（exit=${result.exitCode}）：$err');
-    }
-    final host = await bridge.hostPath(path: out, scope: 'shell');
-    final bytes = await File(host).readAsBytes();
-    if (bytes.isEmpty) throw Exception('截图文件为空：$out');
-    final img = AiImageAttachment(
-      name: 'adb_$stamp.png',
-      mime: 'image/png',
-      dataUri: 'data:image/png;base64,${base64Encode(bytes)}',
-      path: out,
-      scope: 'shell',
-    );
-    _lastToolScreenshot = img;
-
-    // 尽力提取界面文字：uiautomator dump 不是每次都能成功（页面在动画、WebView
-    // 不暴露 accessibility 树），但成功时即使没配图片识别模型，也能用文字回答。
-    final pre =
-        serial.isNotEmpty ? 'adb -s ${_quote(serial)} shell' : 'adb shell';
-    final dump = await bridge.exec(
-      command: '$pre uiautomator dump /sdcard/ql_ui_dump.xml >/dev/null 2>&1 '
-          '&& $pre cat /sdcard/ql_ui_dump.xml',
-      timeoutSeconds: 30,
-    );
-    if (dump.exitCode == 0 && dump.stdout.trim().isNotEmpty) {
-      _lastScreenshotText = _extractAndroidUiText(dump.stdout);
-      if (_lastScreenshotText.isNotEmpty) {
-        // 顺手清掉临时文件，别在设备上留垃圾。
-        await bridge.exec(
-          command: '$pre rm -f /sdcard/ql_ui_dump.xml',
-          timeoutSeconds: 10,
-        );
-      }
-    }
-    return img;
-  }
-
-  static String _extractAndroidUiText(String xml) {
-    final seen = <String>{};
-    final lines = <String>[];
-    for (final m
-        in RegExp(r'(?:text|content-desc)="([^"]*)"').allMatches(xml)) {
-      final v = m.group(1)!.trim();
-      if (v.isNotEmpty && seen.add(v)) {
-        lines.add(v);
-        if (lines.length >= 200) break;
-      }
-    }
-    return lines.join('\n');
-  }
-
   /// 读取一张图片文件，自动在 shell/app 两种作用域间兜底。
   ///
   /// 有的模型把 scope 填成 'app'，但传进来的其实是 /workspace/... 的 guest 路径，
@@ -2967,16 +2895,25 @@ class ChatNotifier extends Notifier<ChatState> {
           await Future<void>.delayed(const Duration(milliseconds: 350));
           final label = args['label']?.toString().trim();
           try {
-            final img = await _captureAdbScreenshot(args);
-            if (img == null) return '浏览器截图失败：没有生成图片。';
-            final uiText = _lastScreenshotText.trim();
-            return '已截取浏览器画面。\n'
-                'path: ${img.path}\nscope: ${img.scope}'
+            final bytes = await BrowserEngine.instance.captureWebViewPng();
+            if (bytes == null) return '浏览器截图失败：未能截取内置浏览器画面。';
+            final stamp = DateTime.now().millisecondsSinceEpoch;
+            final img = AiImageAttachment(
+              name: label ?? 'browser_$stamp.png',
+              mime: 'image/png',
+              dataUri: 'data:image/png;base64,${base64Encode(bytes)}',
+              path: '',
+              scope: 'app',
+            );
+            _lastToolScreenshot = img;
+            _toolScreenshotsBySession
+                .putIfAbsent(state.currentSessionId, () => [])
+                .add(img);
+            return '已截取内置浏览器画面。\n'
+                'name: ${img.name}\nscope: app'
                 '${label == null ? '' : '\n用途：$label'}\n'
-                '${uiText.isEmpty ? '' : '界面文字提取（uiautomator）：\n$uiText\n'}'
-                '需要显示到聊天：调用 show_image 传 path/scope。'
-                '需要识别：调用 image_recognize 传 path/scope；没有图片模型时'
-                '可用 browser_read 读页面文本${uiText.isEmpty ? '' : '，或直接使用上面提取到的界面文字'}。';
+                '需要显示到聊天：调用 show_image 传这个图片/直接后续说已截图。'
+                '需要识别：调用 image_recognize。';
           } catch (e) {
             _lastToolScreenshot = null;
             return '浏览器截图失败：$e';

@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -57,6 +60,9 @@ class BrowserEngine {
 
   WebViewController? _controller;
   WebViewController? get controller => _controller;
+
+  /// 内置浏览器 WebView 的 RepaintBoundary key，用于截取网页画面。
+  final GlobalKey webViewBoundaryKey = GlobalKey();
 
   /// 面板是否显示给用户看。宿主部件监听它。
   final ValueNotifier<bool> visible = ValueNotifier(false);
@@ -115,14 +121,12 @@ class BrowserEngine {
       ..setNavigationDelegate(
         NavigationDelegate(
           onNavigationRequest: (request) async {
+            if (!request.isMainFrame) return NavigationDecision.navigate;
             final uri = Uri.tryParse(request.url);
             if (uri == null) return NavigationDecision.prevent;
             final scheme = uri.scheme.toLowerCase();
-            // 普通网页/本地文件照常放行；外部协议（微信/QQ/支付宝/intent/market…）
-            // 一律拦下来，优先在 APP 内置浏览器里打开网页回退地址。
-            // 注意：QQ 登录常发生在 iframe 里，iframe 的 intent:// 跳转如果
-            // 因为 isMainFrame=false 直接放行，就会落到系统浏览器。所以这里
-            // 不再按主/子 frame 区分，外部协议统一处理。
+            // 普通网页/本地文件照常放行；外部协议由系统默认方式处理，
+            // 不强制留在 APP 内。
             if (scheme == 'http' ||
                 scheme == 'https' ||
                 scheme == 'about' ||
@@ -389,6 +393,22 @@ class BrowserEngine {
       await _pushScripts();
     } catch (e) {
       Logger.e('browser', 'inject hooks failed', e);
+    }
+  }
+
+  /// 截取内置浏览器当前网页画面（不依赖 ADB/系统截屏）。
+  Future<Uint8List?> captureWebViewPng() async {
+    final ctx = webViewBoundaryKey.currentContext;
+    if (ctx == null) return null;
+    final render = ctx.findRenderObject();
+    if (render is! RenderRepaintBoundary || !render.hasSize) return null;
+    try {
+      final image = await render.toImage();
+      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      return data?.buffer.asUint8List();
+    } catch (_) {
+      return null;
     }
   }
 
@@ -1226,33 +1246,14 @@ return JSON.stringify({
 
   /// 拦截一次外部跳转（非 http/https，或明确的外部协议）。
   ///
-  /// 返回 prevent：网页本身不再加载这个地址，先等用户/AI 决定是否放行。
+  /// 返回 prevent：网页本身不再加载这个地址，交给系统默认方式处理。
   Future<NavigationDecision> interceptExternalJump(
     String url, {
     String? sourceUrl,
   }) async {
     if (url.isEmpty) return NavigationDecision.prevent;
-    // 优先把“网页版登录/回调页”留在内置浏览器里打开：
-    // 很多第三方登录（QQ/微信/支付宝）会用一个 intent:// 或
-    // S.browser_fallback_url 指向网页版授权地址，直接交给系统启动外部 App
-    // 的话，登录完容易跑到手机默认浏览器。这里先解析回网页地址，
-    // 在内置 WebView 里继续走，全程不离开本 APP。
-    final webUrl = _webFallbackUrl(url);
-    final controller = _controller;
-    if (webUrl != null && controller != null) {
-      try {
-        await controller.loadRequest(Uri.parse(webUrl));
-        return NavigationDecision.prevent;
-      } catch (_) {
-        // 网页回退失败再走系统拉起。
-      }
-    }
-
-    // 确实没有网页版可走时，才交给系统打开外部 App，
-    // 由 Android 自带的选择器/浏览器弹窗决定。
-    if (webUrl == null) {
-      _log('warn', '外部跳转没有网页回退，转系统打开：$url');
-    }
+    // 第三方登录不再强制留在 APP 内置浏览器：交给 Android 系统默认方式处理，
+    // 该调默认浏览器就调默认浏览器。
     final uri = Uri.tryParse(url);
     _lastExternalJump = ExternalJumpRequest(
       id: 'jump${++_jumpSeq}',
@@ -1283,57 +1284,6 @@ return JSON.stringify({
       }
     }
     return NavigationDecision.prevent;
-  }
-
-  /// 从外部跳转 URL 里解析出可在内置浏览器打开的网页地址。
-  ///
-  /// 优先取 `S.browser_fallback_url=`（URL 编码），退而求其次：
-  /// 把 `intent://host/path?...` 按 `#Intent` 中的 `scheme=https`
-  /// 还原成 `https://host/path?...`。
-  static String? _webFallbackUrl(String url) {
-    // QQ 系登录回调经常把目标网址放在 s_url / url / redirect_uri 等参数里
-    // （mqqapi://card/...?s_url=https%3A%2F%2F...）。先把这些 http(s) 参数
-    // 解析出来，让回调留在内置浏览器。
-    if (url.isNotEmpty) {
-      final uri = Uri.tryParse(url);
-      if (uri != null) {
-        for (final key in [
-          's_url',
-          'url',
-          'target',
-          'redirect_uri',
-          'jump_url',
-          'callback',
-          'browser_fallback_url'
-        ]) {
-          final value = uri.queryParameters[key];
-          if (value != null &&
-              (value.startsWith('http://') || value.startsWith('https://'))) {
-            return value;
-          }
-        }
-      }
-    }
-    const marker = 'S.browser_fallback_url=';
-    final markerIndex = url.indexOf(marker);
-    if (markerIndex >= 0) {
-      final start = markerIndex + marker.length;
-      final end = url.indexOf(';', start);
-      final raw = end < 0 ? url.substring(start) : url.substring(start, end);
-      final decoded = Uri.decodeComponent(raw.trim());
-      if (decoded.isNotEmpty) return decoded;
-    }
-    final intentHash = url.indexOf('#Intent');
-    if (intentHash >= 0 && url.startsWith('intent://')) {
-      final base = url.substring('intent://'.length, intentHash);
-      final schemeMatch =
-          RegExp(r'scheme=([a-zA-Z][a-zA-Z0-9+.-]*)').firstMatch(url);
-      final scheme = schemeMatch?.group(1)?.toLowerCase();
-      if ((scheme == 'http' || scheme == 'https') && base.isNotEmpty) {
-        return '$scheme://$base';
-      }
-    }
-    return null;
   }
 
   /// 用户从外部 App（微信/QQ/支付宝等）回到 APP 后，把内置浏览器

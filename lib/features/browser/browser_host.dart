@@ -276,11 +276,14 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                 child: Offstage(
                   // 切到抓包/日志时把网页藏起来但不卸载：定时器继续跑。
                   offstage: visible && _tab != 0,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.vertical(
-                      bottom: Radius.circular(radius),
+                  child: RepaintBoundary(
+                    key: _engine.webViewBoundaryKey,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.vertical(
+                        bottom: Radius.circular(radius),
+                      ),
+                      child: WebViewWidget(controller: web),
                     ),
-                    child: WebViewWidget(controller: web),
                   ),
                 ),
               ),
