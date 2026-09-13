@@ -1204,14 +1204,6 @@ class _Parser {
       throw FormatException('$fn 第 ${i + 1} 个参数必须是字符串，实际是 ${_typeName(v)}');
     }
 
-    _DslFunction requireFn(String fnName) {
-      final fn = _functions[fnName];
-      if (fn == null) {
-        throw FormatException('集合函数引用的 DSL 函数未定义：$fnName');
-      }
-      return fn;
-    }
-
     switch (name) {
       case 'contains':
         return reqString('contains', 0).contains(reqString('contains', 1));
@@ -1273,21 +1265,22 @@ class _Parser {
         if (mapList is! List) {
           throw FormatException('map 第一个参数必须是数组，实际是 ${_typeName(mapList)}');
         }
-        final mapTarget = requireFn(mapFn);
-        if (mapTarget.params.isEmpty) {
-          throw FormatException('map 引用的函数 $mapFn 至少需要一个参数');
-        }
-        final mapped = <dynamic>[];
-        for (final item in mapList) {
-          mapped.add(
-            await _invokeDslFn(
-              mapFn,
-              {mapTarget.params[0]: item},
-              1,
-            ),
-          );
-        }
-        return mapped;
+        return await _runWithCollectionTarget(mapFn, 1, (mapTarget) async {
+          if (mapTarget.params.isEmpty) {
+            throw FormatException('map 引用的函数/lambda $mapFn 至少需要一个参数');
+          }
+          final mapped = <dynamic>[];
+          for (final item in mapList) {
+            mapped.add(
+              await _invokeDslFn(
+                mapTarget.name,
+                {mapTarget.params[0]: item},
+                1,
+              ),
+            );
+          }
+          return mapped;
+        });
       case 'filter':
         final filterList = a(0);
         final filterFn = _stringify(a(1));
@@ -1295,23 +1288,25 @@ class _Parser {
           throw FormatException(
               'filter 第一个参数必须是数组，实际是 ${_typeName(filterList)}');
         }
-        final filterTarget = requireFn(filterFn);
-        if (filterTarget.params.isEmpty) {
-          throw FormatException('filter 引用的函数 $filterFn 至少需要一个参数');
-        }
-        final filtered = <dynamic>[];
-        for (final item in filterList) {
-          if (_truthy(
-            await _invokeDslFn(
-              filterFn,
-              {filterTarget.params[0]: item},
-              1,
-            ),
-          )) {
-            filtered.add(item);
+        return await _runWithCollectionTarget(filterFn, 1,
+            (filterTarget) async {
+          if (filterTarget.params.isEmpty) {
+            throw FormatException('filter 引用的函数/lambda $filterFn 至少需要一个参数');
           }
-        }
-        return filtered;
+          final filtered = <dynamic>[];
+          for (final item in filterList) {
+            if (_truthy(
+              await _invokeDslFn(
+                filterTarget.name,
+                {filterTarget.params[0]: item},
+                1,
+              ),
+            )) {
+              filtered.add(item);
+            }
+          }
+          return filtered;
+        });
       case 'reduce':
         final reduceList = a(0);
         final reduceFn = _stringify(a(1));
@@ -1319,29 +1314,32 @@ class _Parser {
           throw FormatException(
               'reduce 第一个参数必须是数组，实际是 ${_typeName(reduceList)}');
         }
-        final reduceTarget = requireFn(reduceFn);
-        if (reduceTarget.params.length < 2) {
-          throw FormatException('reduce 引用的函数 $reduceFn 需要两个参数 (acc, item)');
-        }
-        dynamic acc;
-        var startIndex = 0;
-        if (args.length >= 3) {
-          acc = a(2);
-        } else if (reduceList.isNotEmpty) {
-          acc = reduceList[0];
-          startIndex = 1;
-        }
-        for (var i = startIndex; i < reduceList.length; i++) {
-          acc = await _invokeDslFn(
-            reduceFn,
-            {
-              reduceTarget.params[0]: acc,
-              reduceTarget.params[1]: reduceList[i],
-            },
-            1,
-          );
-        }
-        return acc;
+        return await _runWithCollectionTarget(reduceFn, 2,
+            (reduceTarget) async {
+          if (reduceTarget.params.length < 2) {
+            throw FormatException(
+                'reduce 引用的函数/lambda $reduceFn 需要两个参数 (acc, item)');
+          }
+          dynamic acc;
+          var startIndex = 0;
+          if (args.length >= 3) {
+            acc = a(2);
+          } else if (reduceList.isNotEmpty) {
+            acc = reduceList[0];
+            startIndex = 1;
+          }
+          for (var i = startIndex; i < reduceList.length; i++) {
+            acc = await _invokeDslFn(
+              reduceTarget.name,
+              {
+                reduceTarget.params[0]: acc,
+                reduceTarget.params[1]: reduceList[i],
+              },
+              1,
+            );
+          }
+          return acc;
+        });
       case 'keys':
         final keySrc = a(0);
         if (keySrc is Map) return keySrc.keys.toList();
@@ -1374,6 +1372,64 @@ class _Parser {
           }
         }
         throw FormatException('entries 参数必须是对象，实际是 ${_typeName(entSrc)}');
+      case 'group_by':
+        final groupList = a(0);
+        final groupBy = _stringify(a(1));
+        if (groupList is! List) {
+          throw FormatException(
+              'group_by 第一个参数必须是数组，实际是 ${_typeName(groupList)}');
+        }
+        final useLambda = _functions.containsKey(groupBy) ||
+            groupBy.contains('=>') ||
+            RegExp(r'\$[A-Za-z_]').hasMatch(groupBy);
+        if (!useLambda) {
+          final groups = <String, List<dynamic>>{};
+          for (final item in groupList) {
+            final key = _stringify(_getField(item, groupBy));
+            groups.putIfAbsent(key, () => []).add(item);
+          }
+          return groups;
+        }
+        return await _runWithCollectionTarget(groupBy, 1, (target) async {
+          final groups = <String, List<dynamic>>{};
+          for (final item in groupList) {
+            final key = await _invokeDslFn(
+              target.name,
+              {target.params[0]: item},
+              1,
+            );
+            groups.putIfAbsent(_stringify(key), () => []).add(item);
+          }
+          return groups;
+        });
+      case 'safe':
+      case 'try':
+        final safeSrc = a(0);
+        if (safeSrc is String) {
+          try {
+            final lexer = _Lexer(safeSrc.trim());
+            final parser = _Parser(
+              lexer.tokens,
+              _vars,
+              _functions,
+              _invokeDslFn,
+            );
+            return await parser.parse();
+          } catch (_) {
+            return args.length >= 2 ? a(1) : null;
+          }
+        }
+        return safeSrc;
+      case 'ok':
+        return {'ok': true, 'value': a(0)};
+      case 'err':
+        return {'ok': false, 'value': null, 'error': a(0)};
+      case 'is_ok':
+        final okV = a(0);
+        return okV is Map && okV['ok'] == true;
+      case 'is_err':
+        final errV = a(0);
+        return errV is Map && errV['ok'] != true;
       case 'type':
         final v = a(0);
         if (v is num) return 'number';
@@ -1397,6 +1453,57 @@ class _Parser {
           }
         }
         return await _invokeDslFn(name, callArgs, 1);
+    }
+  }
+
+  int _lambdaSeq = 0;
+
+  _DslFunction _lambdaFunction(String spec, int minParams) {
+    String expr;
+    final params = <String>[];
+    final arrow = spec.indexOf('=>');
+    if (arrow >= 0) {
+      final left = spec.substring(0, arrow).trim();
+      expr = spec.substring(arrow + 2).trim();
+      for (final part in left.split(RegExp(r'[,\s]+'))) {
+        final p = part.replaceAll('\$', '').trim();
+        if (p.isNotEmpty) params.add(p);
+      }
+    } else {
+      expr = spec;
+      final seen = <String>{};
+      for (final m in RegExp(r'\$([A-Za-z_][A-Za-z0-9_]*)').allMatches(expr)) {
+        final name = m.group(1)!;
+        if (seen.add(name)) params.add(name);
+      }
+      if (params.isEmpty) params.add('item');
+    }
+    if (params.length < minParams) {
+      throw FormatException(
+          'lambda 需要至少 $minParams 个参数，实际是 ${params.join(", ")}');
+    }
+    return _DslFunction(
+      name: '__lambda${_lambdaSeq++}__',
+      params: params,
+      defaults: const {},
+      body: [
+        {'type': 'return', 'value': expr},
+      ],
+    );
+  }
+
+  Future<dynamic> _runWithCollectionTarget(
+    String spec,
+    int minParams,
+    Future<dynamic> Function(_DslFunction fn) body,
+  ) async {
+    final existing = _functions[spec];
+    final target = existing ?? _lambdaFunction(spec, minParams);
+    if (existing == null) _functions[target.name] = target;
+    try {
+      return await body(target);
+    } finally {
+      if (existing == null) _functions.remove(target.name);
     }
   }
 
