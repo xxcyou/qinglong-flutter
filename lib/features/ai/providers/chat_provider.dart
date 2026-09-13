@@ -44,6 +44,7 @@ import '../models/agent_task_plan.dart';
 import '../models/approval_mode.dart';
 import '../models/ai_plan.dart';
 import '../models/audit_log.dart';
+import '../models/canvas_result_bus.dart';
 import '../models/chat_runtime.dart';
 import '../models/tool_call_record.dart';
 import '../plugins/output_plugin.dart';
@@ -2570,11 +2571,104 @@ class ChatNotifier extends Notifier<ChatState> {
     run?.cancelToken = token;
     _cancelToken = token;
     try {
+      // 画布显示/关闭：供 AgentLoop 与 DSL 内部 ui_canvas 共用。
+      void showCanvas(AiCanvas canvas) {
+        final dock = ref.read(aiDockProvider);
+        if (dock.expanded || dock.quickOpen || dock.quickBusy) {
+          ref.read(aiDockProvider.notifier).showCanvas(canvas);
+          return;
+        }
+        final context = appNavigatorKey.currentContext;
+        if (context != null) AiCanvasSheet.show(context, canvas);
+      }
+
+      void closeCanvas(String window) {
+        final notifier = ref.read(aiDockProvider.notifier);
+        if (window == '*') {
+          notifier.closeAllCanvases();
+        } else {
+          notifier.closeCanvas(window);
+        }
+      }
+
+      // 给 condition_exec 内部调用的 ui_canvas：AgentLoop 自己也有同名内置
+      // 处理，所以这个不进外露工具表，只进 DSL 的 tools 表。
+      final canvasTool = ExternalTool(
+        name: 'ui_canvas',
+        description: '生成 HTML 互动画布，可等用户回传结果。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'title': {'type': 'string'},
+            'description': {'type': 'string'},
+            'html': {'type': 'string'},
+            'expect_result': {'type': 'boolean'},
+            'result_hint': {'type': 'string'},
+            'window': {'type': 'string'},
+            'chromeless': {'type': 'boolean'},
+            'position': {'type': 'string'},
+            'rect': {
+              'type': 'array',
+              'items': {'type': 'number'},
+            },
+            'close': {'type': 'string'},
+          },
+        },
+        origin: '互动画布',
+        invoke: (args) async {
+          final closeTarget = args['close']?.toString().trim() ?? '';
+          if (closeTarget.isNotEmpty) {
+            closeCanvas(closeTarget);
+            return closeTarget == '*'
+                ? '已关闭全部画布窗口。'
+                : '已关闭窗口「$closeTarget」（不存在的话就什么都没发生）。';
+          }
+          final html = args['html']?.toString() ?? '';
+          if (html.trim().isEmpty) {
+            return 'html 是空的，卡片没生成。';
+          }
+          final expectResult = args['expect_result'] == true;
+          final rawRect = args['rect'];
+          final canvas = AiCanvas(
+            id: 'canvas${DateTime.now().microsecondsSinceEpoch}',
+            title: args['title']?.toString().trim() ?? '互动卡片',
+            description: args['description']?.toString().trim() ?? '',
+            html: html,
+            expectResult: expectResult,
+            resultHint: args['result_hint']?.toString().trim() ?? '',
+            createdAt: DateTime.now(),
+            window: args['window']?.toString().trim() ?? '',
+            chromeless: args['chromeless'] == true,
+            position: args['position']?.toString().trim() ?? '',
+            rect: rawRect is List && rawRect.length >= 4
+                ? [
+                    for (final v in rawRect.take(4))
+                      (v is num) ? v.toDouble() : 0.0,
+                  ]
+                : null,
+          );
+          showCanvas(canvas);
+          if (!expectResult) {
+            return '卡片「${canvas.title}」已经弹给用户了（${html.length} 字符）。'
+                '不要把 HTML 再贴进回复正文，用户已经能看到实物。'
+                '${canvas.window.isEmpty ? '' : '窗口名：${canvas.window}。'}';
+          }
+          final payload = await CanvasResultBus.wait(
+            canvas.id,
+            isCancelled: () => token.isCancelled,
+          );
+          return payload == null
+              ? '用户没有提交结果（关掉了或超时）。别干等，换个思路或者问用户想怎么办。'
+              : '用户在卡片「${canvas.title}」里提交了：\n$payload';
+        },
+      );
+
       // 基础工具集：子代理拿的就是这一份（不含任务代理工具，防止无限分裂）。
       // 主模型支持图片时不需要 image_recognize 工具。
       final baseTools = _buildExternalTools(
         includeImageTool: !mainCaps.supportsImage,
         registry: registry,
+        extraTools: [canvasTool],
       );
       // 主模型始终是主线。支持图片的主模型直接看多模态图片；
       // 不支持的走 image_recognize 工具识别。
@@ -2657,29 +2751,8 @@ class ChatNotifier extends Notifier<ChatState> {
             state = state.copyWith(livePlan: plan);
           }
         },
-        onCanvas: (canvas) {
-          // 生成即弹：用户等了半天，不该还要自己去点一下才看到成品。
-          //
-          // 分两种落点：悬浮窗模式下弹成同层的浮动窗口，AI 页里还是底部弹窗。
-          // 原因是悬浮层画在路由 Navigator 之上，底部弹窗会被它整块盖住——
-          // 用户只会看到"AI 说弹了个卡片，但屏幕上什么都没有"。
-          final dock = ref.read(aiDockProvider);
-          if (dock.expanded || dock.quickOpen || dock.quickBusy) {
-            // 完整悬浮窗、快问模式都走浮动画布窗；只有 AI 页正文才用底部弹窗。
-            ref.read(aiDockProvider.notifier).showCanvas(canvas);
-            return;
-          }
-          final context = appNavigatorKey.currentContext;
-          if (context != null) AiCanvasSheet.show(context, canvas);
-        },
-        onCanvasClose: (window) {
-          final notifier = ref.read(aiDockProvider.notifier);
-          if (window == '*') {
-            notifier.closeAllCanvases();
-          } else {
-            notifier.closeCanvas(window);
-          }
-        },
+        onCanvas: showCanvas,
+        onCanvasClose: closeCanvas,
       );
     } finally {
       if (_cancelToken == token) _cancelToken = null;
@@ -2897,8 +2970,8 @@ class ChatNotifier extends Notifier<ChatState> {
           );
         }
         throw StateError(
-          '找不到工具 $name（condition_exec 能调当前工具表里的扩展工具，'
-          '也能调青龙/终端 shell_* 等内置工具）',
+          '找不到工具 $name（condition_exec 能调当前工具表里的扩展工具、'
+          '青龙/终端 shell_* 内置工具、ui_canvas 互动画布）',
         );
       },
       emitStep: ({
@@ -2961,6 +3034,7 @@ class ChatNotifier extends Notifier<ChatState> {
   List<ExternalTool> _buildExternalTools({
     bool includeImageTool = true,
     QlToolRegistry? registry,
+    List<ExternalTool> extraTools = const [],
   }) {
     final tools = <ExternalTool>[
       if (includeImageTool)
@@ -3877,13 +3951,16 @@ class ChatNotifier extends Notifier<ChatState> {
       );
     }
 
+    // 需要 DSL 也能调用的内部工具（如 ui_canvas）在最后统一注入。
+    tools.addAll(extraTools);
+
     // 通用条件执行/微流程编排：在一条工具调用里顺序跑多个工具、延迟、
     // 按结果分支。结果同时作为 workflowStep 事件展示在思维链里。
     tools.add(
       ExternalTool(
         name: 'condition_exec',
         description: '通用条件执行/微流程引擎 v2。一次调用按顺序执行多个步骤，'
-            '支持工具调用（扩展工具 + shell_* 终端等内置工具）、延迟、变量、'
+            '支持工具调用（扩展工具 + shell_* 终端 + ui_canvas 互动画布等全部当前工具）、延迟、变量、'
             '完整表达式、if/for/while/try/break/return，'
             '适合把固定流程交给 DSL 一次跑完，省去 AI 多次来回调用。'
             '参数 steps 是数组，每步是对象：\n'
@@ -3962,7 +4039,9 @@ class ChatNotifier extends Notifier<ChatState> {
     // 工具多时只挂 3 个网关入口，目录走提示词（省下每轮几万 token 的 schema）。
     if (McpGateway.shouldCollapse(mcp.tools.length)) {
       tools.addAll(McpGateway.build(state: mcp, notifier: mcpNotifier));
-      return tools;
+      // extraTools 只给 condition_exec 内部调用，不暴露给 LLM，避免与
+      // AgentLoop 内置同名工具（ui_canvas）重复进 schema。
+      return List<ExternalTool>.from(tools)..removeWhere(extraTools.contains);
     }
     for (final tool in mcp.tools) {
       final server = mcp.servers.where((s) => s.id == tool.serverId);
@@ -3985,7 +4064,8 @@ class ChatNotifier extends Notifier<ChatState> {
         ),
       );
     }
-    return tools;
+    // 同上：内部工具（ui_canvas）只在 DSL 的 tools 表里，不进外露工具表。
+    return List<ExternalTool>.from(tools)..removeWhere(extraTools.contains);
   }
 
   /// 把一次运行里所有工具调用写进审计。
