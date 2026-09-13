@@ -90,6 +90,10 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
       languageName: languageNameForPath('hook.js'),
     );
     _engine.externalJumpPrompt = _promptExternalJump;
+    // WebView 第一次 created 后必须让 BrowserView 自己 setState 重建：
+    // BrowserHost 外层重建不会穿透 OverlayEntry，只有这里的监听能保证
+    // WebViewWidget 第一时间挂出来。
+    _engine.controllerRevision.addListener(_onControllerRevision);
     // 接管系统返回键。
     //
     // 浏览器窗口挂在路由 Navigator **之上**，不属于任何 route，所以 PopScope
@@ -102,12 +106,17 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
   @override
   void dispose() {
     _engine.externalJumpPrompt = null;
+    _engine.controllerRevision.removeListener(_onControllerRevision);
     WidgetsBinding.instance.removeObserver(this);
     _detachBus();
     _urlController.dispose();
     _nameController.dispose();
     _codeController.dispose();
     super.dispose();
+  }
+
+  void _onControllerRevision() {
+    if (mounted) setState(() {});
   }
 
   /// 脚本编辑器开着时编辑的是谁。null = 编辑器没开。
