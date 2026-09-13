@@ -989,39 +989,47 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                     if (slot == 0) {
                                       // 下面紧跟过程卡（它只有 bottom margin），
                                       // 所以这里必须自己留下边距，否则两张卡贴在一起。
-                                      return TaskPlanCard(
-                                        plan: state.livePlan,
-                                        margin:
-                                            const EdgeInsets.only(bottom: 8),
+                                      return RepaintBoundary(
+                                        child: TaskPlanCard(
+                                          plan: state.livePlan,
+                                          margin: const EdgeInsets.only(
+                                            bottom: 8,
+                                          ),
+                                        ),
                                       );
                                     }
                                     slot -= 1;
                                   }
                                   if (hasLive) {
                                     if (slot == 0) {
-                                      return AgentProcessCard(
-                                        events: state.liveAgentEvents,
-                                        running: state.isLoading,
-                                        initiallyExpanded: state.isLoading ||
-                                            state.liveAgentEvents.any(
-                                              (e) =>
-                                                  e.kind ==
-                                                      AgentEventKind
-                                                          .toolImage &&
-                                                  e.imageDataUri != null,
-                                            ),
-                                        totalTokens: state.lastTokens,
+                                      return RepaintBoundary(
+                                        child: AgentProcessCard(
+                                          events: state.liveAgentEvents,
+                                          running: state.isLoading,
+                                          initiallyExpanded: state.isLoading ||
+                                              state.liveAgentEvents.any(
+                                                (e) =>
+                                                    e.kind ==
+                                                        AgentEventKind
+                                                            .toolImage &&
+                                                    e.imageDataUri != null,
+                                              ),
+                                          totalTokens: state.lastTokens,
+                                        ),
                                       );
                                     }
                                     slot -= 1;
                                   }
                                   if (hasStream && slot == 0) {
-                                    return AgentStreamCard(
-                                      reasoning: state.liveReasoning,
-                                      content: state.liveContent,
-                                      reasoningChars: state.liveReasoningChars,
-                                      contentChars: state.liveContentChars,
-                                      tool: state.liveTool,
+                                    return RepaintBoundary(
+                                      child: AgentStreamCard(
+                                        reasoning: state.liveReasoning,
+                                        content: state.liveContent,
+                                        reasoningChars:
+                                            state.liveReasoningChars,
+                                        contentChars: state.liveContentChars,
+                                        tool: state.liveTool,
+                                      ),
                                     );
                                   }
                                   return _buildTail(context, state);

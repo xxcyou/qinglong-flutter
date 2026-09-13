@@ -601,7 +601,8 @@ class _Parser {
     while (_peekOp('||')) {
       _take();
       final right = _parseAnd();
-      left = _truthy(left) || _truthy(right);
+      // JS 语义：返回实际选中的操作数，允许 `$x || '默认值'` 这种兜底写法。
+      left = _truthy(left) ? left : right;
     }
     return left;
   }
@@ -611,7 +612,7 @@ class _Parser {
     while (_peekOp('&&')) {
       _take();
       final right = _parseEquality();
-      left = _truthy(left) && _truthy(right);
+      left = _truthy(left) ? right : left;
     }
     return left;
   }
@@ -861,12 +862,18 @@ class _Parser {
         return const JsonEncoder().convert(a(0));
       case 'get':
         final src = a(0);
-        if (src is Map) return src[_stringify(a(1))];
+        final key = _stringify(a(1));
+        final fallback = args.length >= 3 ? a(2) : null;
+        if (src is Map) {
+          return src.containsKey(key) ? src[key] : fallback;
+        }
         if (src is String) {
           final decoded = _tryParse(src);
-          if (decoded is Map) return decoded[_stringify(a(1))];
+          if (decoded is Map) {
+            return decoded.containsKey(key) ? decoded[key] : fallback;
+          }
         }
-        return null;
+        return fallback;
       case 'type':
         final v = a(0);
         if (v is num) return 'number';
@@ -881,20 +888,44 @@ class _Parser {
   }
 
   Object? _getField(Object? v, String name) {
-    if (v is Map) return v[name];
+    if (v is Map) {
+      if (!v.containsKey(name)) {
+        throw FormatException(
+            '字段不存在：$name（可用 get(${_stringify(v)}, \'$name\', 默认值) 带兜底）');
+      }
+      return v[name];
+    }
     if (v is String) {
       final decoded = _tryParse(v);
-      if (decoded is Map) return decoded[name];
+      if (decoded is Map) {
+        if (!decoded.containsKey(name)) {
+          throw FormatException(
+              '字段不存在：$name（可用 get(${_stringify(v)}, \'$name\', 默认值) 带兜底）');
+        }
+        return decoded[name];
+      }
     }
-    return null;
+    throw FormatException('不能对 ${_typeName(v)} 取字段 $name');
   }
 
   num _num(Object? v) {
     if (v is num) return v;
     if (v is String) {
-      final n = num.tryParse(v.trim());
+      final t = v.trim();
+      num? n;
+      if (t.startsWith('0x') || t.startsWith('0X')) {
+        n = num.tryParse(t);
+      } else if (t.startsWith('0b') || t.startsWith('0B')) {
+        n = int.tryParse(t.substring(2), radix: 2);
+      } else if (t.startsWith('0o') || t.startsWith('0O')) {
+        n = int.tryParse(t.substring(2), radix: 8);
+      } else {
+        n = num.tryParse(t);
+      }
       if (n != null) return n;
-      throw FormatException('无法把字符串 "$v" 转成数字');
+      throw FormatException(
+        '无法把字符串 "$v" 转成数字（支持十进制、0x 十六进制、0b 二进制、0o 八进制）',
+      );
     }
     throw FormatException('无法把 ${_typeName(v)} 转成数字');
   }
