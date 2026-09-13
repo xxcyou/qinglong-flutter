@@ -1243,6 +1243,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
         AgentEventKind.toolEnd => '处理结果',
         AgentEventKind.taskPlan => '规划任务',
         AgentEventKind.canvas => '生成卡片',
+        AgentEventKind.workflowStep => '条件执行',
         AgentEventKind.question => '等你回答',
         AgentEventKind.planPending => '等你确认',
         AgentEventKind.error => '出错了',

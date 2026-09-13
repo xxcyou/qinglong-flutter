@@ -114,6 +114,7 @@ class _ToolDetailSheetState extends State<ToolDetailSheet> {
         AgentEventKind.question => '向用户提问',
         AgentEventKind.taskPlan => '任务清单更新',
         AgentEventKind.canvas => '互动卡片',
+        AgentEventKind.workflowStep => '条件执行步骤',
         AgentEventKind.answer => '正文',
         AgentEventKind.error => '出错',
         AgentEventKind.done => '收尾',

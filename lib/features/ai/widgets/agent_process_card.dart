@@ -545,6 +545,12 @@ class _TimelineRowState extends State<_TimelineRow> {
             Icons.chat_bubble_outline_rounded, scheme.onSurface, '正文');
       case AgentEventKind.canvas:
         return _Visual(Icons.widgets_outlined, scheme.tertiary, '卡片');
+      case AgentEventKind.workflowStep:
+        return _Visual(
+          Icons.account_tree_outlined,
+          Colors.lightBlue.shade600,
+          '条件执行',
+        );
       case AgentEventKind.done:
         return _Visual(Icons.flag_rounded, scheme.primary, '收尾');
       case AgentEventKind.error:

@@ -101,6 +101,25 @@ class BrowserTools {
         },
       ),
       ExternalTool(
+        name: 'browser_status',
+        description: '查看内置浏览器当前是显示还是隐藏状态，以及当前网页地址/标题。'
+            '需要知道浏览器是否弹出来、或判断要不要用 browser_control show/hide 时调用。',
+        parameters: obj([], {}),
+        origin: origin,
+        invoke: (args) async {
+          final visible = engine.visible.value;
+          final url = engine.currentUrl.value.trim();
+          final title = engine.title.value.trim();
+          final ready = engine.isReady;
+          return [
+            '浏览器当前：${visible ? '可见（悬浮窗已显示）' : '隐藏'}',
+            if (!ready) '内核尚未创建（还没打开过网页）',
+            if (url.isNotEmpty) '地址：$url',
+            if (title.isNotEmpty) '标题：$title',
+          ].join('\n');
+        },
+      ),
+      ExternalTool(
         name: 'browser_read',
         description: '读当前页面的文本或 HTML（可指定 CSS 选择器）。页面变化后重新读用它，'
             '不用重新打开。',
