@@ -87,7 +87,12 @@ class BrowserTools {
                   '可以用 browser_capture 看抓到的请求，或 browser_wait_user 让用户看一眼。';
             }
           } else {
-            await engine.waitFor('document.readyState === "complete"');
+            // readyState 只要离开 loading 就先返回，避免站点有长连接/WebSocket
+            // 导致 complete 一直不触发、AI 干等 20 秒。
+            await engine.waitFor(
+              'document.readyState !== "loading"',
+              timeout: const Duration(seconds: 10),
+            );
           }
           final max = (args['max_chars'] as num?)?.toInt() ?? 8000;
           final text = await engine.text();

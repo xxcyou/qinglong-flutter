@@ -42,6 +42,28 @@
 const String interceptJs = r'''
 (function(){
   if (window.__qlHooked) return; window.__qlHooked = true;
+  // 第三方登录回调常见 target=_blank / window.open，默认会被 WebView
+  // 交给系统浏览器。这里把它们拉回当前 WebView，保持“全程在 APP 内”。
+  try {
+    var nativeOpen = window.open && window.open.bind(window);
+    window.open = function(url, name, features) {
+      if (url && /^https?:\/\//i.test(String(url))) {
+        window.location.href = String(url);
+        return null;
+      }
+      return nativeOpen ? nativeOpen(url, name, features) : null;
+    };
+    document.addEventListener('click', function(e) {
+      var a = e.target && e.target.closest ? e.target.closest('a') : null;
+      if (!a) return;
+      var href = a.getAttribute('href') || '';
+      var target = (a.getAttribute('target') || '').toLowerCase();
+      if ((target === '_blank' || target === '_new') && /^https?:\/\//i.test(href)) {
+        e.preventDefault();
+        window.location.href = href;
+      }
+    }, true);
+  } catch(e) {}
   var seq = 0;
   var nseq = 100000;
   var scripts = [];
