@@ -65,13 +65,21 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
       if (e.kind == AgentEventKind.workflowStep &&
           e.toolName == 'condition_exec') {
         final trace = StringBuffer();
+        final stepCards = <Map<String, dynamic>>[];
         var ok = true;
         final start = i;
         while (i < visible.length &&
             visible[i].kind == AgentEventKind.workflowStep &&
             visible[i].toolName == 'condition_exec') {
           ok = ok && visible[i].ok;
-          trace.writeln(_TimelineRowState._workflowLine(visible[i]));
+          final stepEvent = visible[i];
+          trace.writeln(_TimelineRowState._workflowLine(stepEvent));
+          stepCards.add({
+            'message': stepEvent.message,
+            'result': stepEvent.result,
+            'depth': _TimelineRowState._workflowDepth(stepEvent),
+            'ok': stepEvent.ok,
+          });
           i++;
         }
         grouped.add(
@@ -79,7 +87,11 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
             kind: AgentEventKind.workflowStep,
             message: '条件执行 · ${i - start} 步',
             toolName: 'condition_exec',
-            args: {'count': i - start, 'collapsed': true},
+            args: {
+              'count': i - start,
+              'collapsed': true,
+              'steps': stepCards,
+            },
             result: trace.toString().trim(),
             fullResult: trace.toString().trim(),
             ok: ok,
@@ -293,6 +305,15 @@ class _TimelineRowState extends State<_TimelineRow> {
   /// 所以不再拦。
   bool get _hasDetail => true;
 
+  List<Map<String, dynamic>>? get _workflowSteps {
+    if (event.kind != AgentEventKind.workflowStep) return null;
+    final steps = event.args?['steps'];
+    if (steps is List && steps.isNotEmpty) {
+      return steps.cast<Map<String, dynamic>>();
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -426,40 +447,44 @@ class _TimelineRowState extends State<_TimelineRow> {
                           ),
                       ],
                     ),
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      // 展开时用等宽字体 + 自动换行，参数/返回看起来是排版好的
-                      // JSON；同时可选中复制。收起时还是两行预览，时间线紧凑。
-                      child: _expanded
-                          ? Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.22),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: SelectableText(
-                                _full(event),
+                    if (_workflowSteps != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: _WorkflowFlowCard(steps: _workflowSteps!),
+                      )
+                    else
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: _expanded
+                            ? Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.22),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: SelectableText(
+                                  _full(event),
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    height: 1.5,
+                                    fontFamily: kMonoFamily,
+                                    fontFamilyFallback: kMonoFallback,
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              )
+                            : Text(
+                                _preview(event),
                                 style: TextStyle(
-                                  fontSize: 11.5,
-                                  height: 1.5,
-                                  fontFamily: kMonoFamily,
-                                  fontFamilyFallback: kMonoFallback,
+                                  fontSize: 11,
+                                  height: 1.35,
                                   color: scheme.onSurfaceVariant,
                                 ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                            )
-                          : Text(
-                              _preview(event),
-                              style: TextStyle(
-                                fontSize: 11,
-                                height: 1.35,
-                                color: scheme.onSurfaceVariant,
-                              ),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                    ),
+                      ),
                     if (_imageBytes != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 6),
@@ -618,6 +643,202 @@ class _TimelineRowState extends State<_TimelineRow> {
         return _Visual(Icons.error_outline, scheme.error, '错误');
     }
   }
+}
+
+class _WorkflowFlowCard extends StatelessWidget {
+  const _WorkflowFlowCard({required this.steps});
+
+  final List<Map<String, dynamic>> steps;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: scheme.outlineVariant.withValues(alpha: 0.35),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var i = 0; i < steps.length; i++)
+            TweenAnimationBuilder<double>(
+              key: ValueKey(
+                'wf_${i}_${steps[i]['message']}_${steps[i]['result']}',
+              ),
+              tween: Tween(begin: 0.0, end: 1.0),
+              duration: Duration(milliseconds: 160 + i * 45),
+              curve: Curves.easeOutCubic,
+              builder: (context, t, child) => Opacity(
+                opacity: t,
+                child: Transform.translate(
+                  offset: Offset(0, (1 - t) * 8),
+                  child: child,
+                ),
+              ),
+              child: _WorkflowStepNode(
+                index: i,
+                step: steps[i],
+                isLast: i == steps.length - 1,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WorkflowStepNode extends StatelessWidget {
+  const _WorkflowStepNode({
+    required this.index,
+    required this.step,
+    required this.isLast,
+  });
+
+  final int index;
+  final Map<String, dynamic> step;
+  final bool isLast;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final depth = (step['depth'] as num?)?.toInt() ?? 0;
+    final text = (step['message'] as String? ?? '').replaceFirst('条件执行 · ', '');
+    final result = (step['result'] as String? ?? '').trim();
+    final meta = _metaFor(text);
+    final branch = text.contains('→ then')
+        ? 'THEN'
+        : text.contains('→ else')
+            ? 'ELSE'
+            : null;
+    final resultLine = result.isEmpty || result == text
+        ? ''
+        : result.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final clipped = resultLine.length > 120
+        ? '${resultLine.substring(0, 120)}…'
+        : resultLine;
+
+    return Padding(
+      padding: EdgeInsets.only(
+        left: depth * 16.0,
+        bottom: isLast ? 0 : 8,
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 22,
+            height: 22,
+            margin: const EdgeInsets.only(top: 1),
+            decoration: BoxDecoration(
+              color: meta.color.withValues(alpha: 0.16),
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: Icon(meta.icon, size: 13, color: meta.color),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        text,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          height: 1.3,
+                          fontWeight: FontWeight.w600,
+                          color: scheme.onSurface,
+                        ),
+                      ),
+                    ),
+                    if (branch != null)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 6),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color:
+                                (branch == 'THEN' ? Colors.green : Colors.red)
+                                    .shade600
+                                    .withValues(alpha: 0.18),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            branch,
+                            style: TextStyle(
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.w800,
+                              color: branch == 'THEN'
+                                  ? Colors.green.shade700
+                                  : Colors.red.shade700,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                if (clipped.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      clipped,
+                      style: TextStyle(
+                        fontSize: 10,
+                        height: 1.25,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static _WorkflowMeta _metaFor(String text) {
+    if (text.contains('分支')) {
+      return const _WorkflowMeta(
+        Icons.account_tree_outlined,
+        Colors.orange,
+      );
+    }
+    if (text.contains('循环')) {
+      return const _WorkflowMeta(Icons.repeat_rounded, Colors.purple);
+    }
+    if (text.contains('延迟')) {
+      return const _WorkflowMeta(Icons.hourglass_top_rounded, Colors.amber);
+    }
+    if (text.contains('捕获错误')) {
+      return const _WorkflowMeta(Icons.error_outline_rounded, Colors.red);
+    }
+    if (text.contains('赋值')) {
+      return const _WorkflowMeta(Icons.edit_note_rounded, Colors.blue);
+    }
+    return const _WorkflowMeta(Icons.play_arrow_rounded, Colors.teal);
+  }
+}
+
+class _WorkflowMeta {
+  const _WorkflowMeta(this.icon, this.color);
+
+  final IconData icon;
+  final Color color;
 }
 
 class _Visual {
