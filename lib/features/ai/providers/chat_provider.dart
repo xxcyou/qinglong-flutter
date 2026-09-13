@@ -2574,6 +2574,7 @@ class ChatNotifier extends Notifier<ChatState> {
       // 主模型支持图片时不需要 image_recognize 工具。
       final baseTools = _buildExternalTools(
         includeImageTool: !mainCaps.supportsImage,
+        registry: registry,
       );
       // 主模型始终是主线。支持图片的主模型直接看多模态图片；
       // 不支持的走 image_recognize 工具识别。
@@ -2859,6 +2860,7 @@ class ChatNotifier extends Notifier<ChatState> {
   Future<String> _runConditionExec(
     Map<String, dynamic> args,
     List<ExternalTool> tools,
+    QlToolRegistry? registry,
   ) async {
     Object? rawSteps = args['steps'];
     if (rawSteps is String) {
@@ -2885,12 +2887,19 @@ class ChatNotifier extends Notifier<ChatState> {
             break;
           }
         }
-        if (target == null) {
-          throw StateError(
-            '找不到工具 $name（condition_exec 只能调用当前工具列表里的工具）',
+        if (target != null) return target.invoke(callArgs);
+        final regDef = registry?.find(name);
+        if (regDef != null && registry != null) {
+          return registry.execute(
+            toolName: name,
+            args: callArgs,
+            confirm: true,
           );
         }
-        return target.invoke(callArgs);
+        throw StateError(
+          '找不到工具 $name（condition_exec 能调当前工具表里的扩展工具，'
+          '也能调青龙/终端 shell_* 等内置工具）',
+        );
       },
       emitStep: ({
         required String message,
@@ -2898,6 +2907,7 @@ class ChatNotifier extends Notifier<ChatState> {
         String? result,
         required bool ok,
         int? durationMs,
+        required int depth,
       }) =>
           _emitWorkflowStep(
         message: message,
@@ -2943,7 +2953,10 @@ class ChatNotifier extends Notifier<ChatState> {
     return '${oneLine.substring(0, max)}…';
   }
 
-  List<ExternalTool> _buildExternalTools({bool includeImageTool = true}) {
+  List<ExternalTool> _buildExternalTools({
+    bool includeImageTool = true,
+    QlToolRegistry? registry,
+  }) {
     final tools = <ExternalTool>[
       if (includeImageTool)
         ExternalTool(
@@ -3864,7 +3877,8 @@ class ChatNotifier extends Notifier<ChatState> {
       ExternalTool(
         name: 'condition_exec',
         description: '通用条件执行/微流程引擎 v2。一次调用按顺序执行多个步骤，'
-            '支持工具调用、延迟、变量、完整表达式、if/for/while/try/break/return，'
+            '支持工具调用（扩展工具 + shell_* 终端等内置工具）、延迟、变量、'
+            '完整表达式、if/for/while/try/break/return，'
             '适合把固定流程交给 DSL 一次跑完，省去 AI 多次来回调用。'
             '参数 steps 是数组，每步是对象：\n'
             '- {"type":"tool","tool":"工具名","args":{...},"save_to":"变量"}: 调用工具；'
@@ -3872,7 +3886,7 @@ class ChatNotifier extends Notifier<ChatState> {
             '- {"type":"set","to":"变量","value":"表达式"}: 赋值\n'
             '- {"type":"delay","ms":1000}: 延迟\n'
             '- {"type":"if","if":"表达式","then":[...],"else":[...]}: 分支\n'
-            '- {"type":"for","var":"i","start":0,"end":5,"step":1,"body":[...]} 或 {"items":"\$list","body":[...]}: 循环\n'
+            '- {"type":"for","var":"i","start":0,"end":5,"step":1,"body":[...]} 或 {"items":"\$list","var":"item","body":[...]}: 循环（不写 var 默认 item）\n'
             '- {"type":"while","while":"表达式","max":1000,"body":[...]}: 条件循环\n'
             '- {"type":"break"}: 跳出循环；{"type":"return","value":"表达式"}: 提前结束\n'
             '- {"type":"try","try":[...],"catch":[...],"error_var":"e"}: 异常捕获\n'
@@ -3899,7 +3913,11 @@ class ChatNotifier extends Notifier<ChatState> {
           'required': ['steps'],
         },
         origin: '条件执行',
-        invoke: (args) => _runConditionExec(args, tools),
+        // 里面可能包含写/危险工具（例如 shell_exec），整体当写操作确认，
+        // 避免条件执行绕过外层确认策略。
+        isWrite: true,
+        danger: true,
+        invoke: (args) => _runConditionExec(args, tools, registry),
       ),
     );
 

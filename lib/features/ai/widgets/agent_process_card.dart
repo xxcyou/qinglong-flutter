@@ -291,167 +291,179 @@ class _TimelineRowState extends State<_TimelineRow> {
         ),
         const SizedBox(width: 8),
         Expanded(
-          child: InkWell(
-            // 点一行 = 就地展开全文（思考/正文常有几百字，两行看不出内容）。
-            // 想看参数/返回/原始 JSON 点右边那个 > 进详情页。
-            onTap: () {
-              HapticFeedback.selectionClick();
-              setState(() => _expanded = !_expanded);
-            },
-            borderRadius: BorderRadius.circular(10),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text.rich(
-                          TextSpan(
-                            children: [
-                              TextSpan(
-                                text: visual.label,
-                                style: TextStyle(
-                                  fontSize: 11.5,
-                                  fontWeight: FontWeight.w700,
-                                  color: visual.color,
-                                ),
-                              ),
-                              if (event.toolName != null &&
-                                  event.toolName!.isNotEmpty)
+          child: Padding(
+            padding: EdgeInsets.only(
+              left: _workflowDepth(event) * 14.0,
+            ),
+            child: InkWell(
+              // 点一行 = 就地展开全文（思考/正文常有几百字，两行看不出内容）。
+              // 想看参数/返回/原始 JSON 点右边那个 > 进详情页。
+              onTap: () {
+                HapticFeedback.selectionClick();
+                setState(() => _expanded = !_expanded);
+              },
+              borderRadius: BorderRadius.circular(10),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text.rich(
+                            TextSpan(
+                              children: [
                                 TextSpan(
-                                  text: '  ${event.toolName}',
-                                  style: const TextStyle(
+                                  text: visual.label,
+                                  style: TextStyle(
                                     fontSize: 11.5,
-                                    fontFamily: kMonoFamily,
-                                    fontFamilyFallback: kMonoFallback,
+                                    fontWeight: FontWeight.w700,
+                                    color: visual.color,
                                   ),
                                 ),
-                            ],
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      if ((event.durationMs ?? 0) > 0)
-                        Padding(
-                          padding: const EdgeInsets.only(left: 4),
-                          child: Text(
-                            _ms(event.durationMs!),
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: scheme.onSurfaceVariant,
+                                if (event.toolName != null &&
+                                    event.toolName!.isNotEmpty)
+                                  TextSpan(
+                                    text: '  ${event.toolName}',
+                                    style: const TextStyle(
+                                      fontSize: 11.5,
+                                      fontFamily: kMonoFamily,
+                                      fontFamilyFallback: kMonoFallback,
+                                    ),
+                                  ),
+                              ],
                             ),
-                          ),
-                        ),
-                      if (event.turn > 0)
-                        Padding(
-                          padding: const EdgeInsets.only(left: 4),
-                          child: Text(
-                            '#${event.turn}',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: scheme.onSurfaceVariant,
-                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                      // 展开/收起的方向提示：用户一眼知道点行会发生什么。
-                      Icon(
-                        _expanded
-                            ? Icons.expand_less_rounded
-                            : Icons.expand_more_rounded,
-                        size: 16,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                      if (_hasDetail)
-                        // 详情页入口单独一个可点区域：参数、返回、原始 JSON
-                        // 都在里面，还能搜。
-                        InkWell(
-                          onTap: () {
-                            HapticFeedback.selectionClick();
-                            ToolDetailSheet.show(context, event);
-                          },
-                          borderRadius: BorderRadius.circular(8),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 2,
-                              vertical: 4,
-                            ),
-                            child: Icon(
-                              Icons.chevron_right_rounded,
-                              size: 16,
-                              color: scheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    // 展开时用等宽字体 + 自动换行，参数/返回看起来是排版好的
-                    // JSON；同时可选中复制。收起时还是两行预览，时间线紧凑。
-                    child: _expanded
-                        ? Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.22),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: SelectableText(
-                              _full(event),
+                        if ((event.durationMs ?? 0) > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 4),
+                            child: Text(
+                              _ms(event.durationMs!),
                               style: TextStyle(
-                                fontSize: 11.5,
-                                height: 1.5,
-                                fontFamily: kMonoFamily,
-                                fontFamilyFallback: kMonoFallback,
+                                fontSize: 10,
                                 color: scheme.onSurfaceVariant,
                               ),
                             ),
-                          )
-                        : Text(
-                            _preview(event),
-                            style: TextStyle(
-                              fontSize: 11,
-                              height: 1.35,
-                              color: scheme.onSurfaceVariant,
-                            ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
                           ),
-                  ),
-                  if (_imageBytes != null)
+                        if (event.turn > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 4),
+                            child: Text(
+                              '#${event.turn}',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        // 展开/收起的方向提示：用户一眼知道点行会发生什么。
+                        Icon(
+                          _expanded
+                              ? Icons.expand_less_rounded
+                              : Icons.expand_more_rounded,
+                          size: 16,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                        if (_hasDetail)
+                          // 详情页入口单独一个可点区域：参数、返回、原始 JSON
+                          // 都在里面，还能搜。
+                          InkWell(
+                            onTap: () {
+                              HapticFeedback.selectionClick();
+                              ToolDetailSheet.show(context, event);
+                            },
+                            borderRadius: BorderRadius.circular(8),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 2,
+                                vertical: 4,
+                              ),
+                              child: Icon(
+                                Icons.chevron_right_rounded,
+                                size: 16,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
                     Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: RepaintBoundary(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 160),
-                            child: Image.memory(
-                              _imageBytes!,
-                              fit: BoxFit.contain,
-                              gaplessPlayback: true,
-                              errorBuilder: (_, __, ___) => Text(
-                                '图片预览加载失败',
+                      padding: const EdgeInsets.only(top: 2),
+                      // 展开时用等宽字体 + 自动换行，参数/返回看起来是排版好的
+                      // JSON；同时可选中复制。收起时还是两行预览，时间线紧凑。
+                      child: _expanded
+                          ? Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.22),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: SelectableText(
+                                _full(event),
                                 style: TextStyle(
-                                  fontSize: 11,
-                                  color: scheme.error,
+                                  fontSize: 11.5,
+                                  height: 1.5,
+                                  fontFamily: kMonoFamily,
+                                  fontFamilyFallback: kMonoFallback,
+                                  color: scheme.onSurfaceVariant,
+                                ),
+                              ),
+                            )
+                          : Text(
+                              _preview(event),
+                              style: TextStyle(
+                                fontSize: 11,
+                                height: 1.35,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                    ),
+                    if (_imageBytes != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: RepaintBoundary(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxHeight: 160),
+                              child: Image.memory(
+                                _imageBytes!,
+                                fit: BoxFit.contain,
+                                gaplessPlayback: true,
+                                errorBuilder: (_, __, ___) => Text(
+                                  '图片预览加载失败',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: scheme.error,
+                                  ),
                                 ),
                               ),
                             ),
                           ),
                         ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
         ),
       ],
     );
+  }
+
+  static int _workflowDepth(AgentEvent event) {
+    if (event.kind != AgentEventKind.workflowStep) return 0;
+    final d = event.args?['_depth'];
+    if (d is num) return d.toInt().clamp(0, 9);
+    return 0;
   }
 
   static String _ms(int ms) =>

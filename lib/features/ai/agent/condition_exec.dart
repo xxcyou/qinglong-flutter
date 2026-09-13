@@ -25,6 +25,7 @@ class ConditionExecEngine {
     String? result,
     required bool ok,
     int? durationMs,
+    required int depth,
   }) emitStep;
 
   final Map<String, dynamic> _vars = {};
@@ -48,6 +49,24 @@ class ConditionExecEngine {
     return text.isEmpty ? '条件执行：没有可执行步骤。' : text;
   }
 
+  void _emit({
+    required String message,
+    Map<String, dynamic>? args,
+    String? result,
+    bool ok = true,
+    int? durationMs,
+    required int depth,
+  }) {
+    emitStep(
+      message: message,
+      args: {...?args, '_depth': depth},
+      result: result,
+      ok: ok,
+      durationMs: durationMs,
+      depth: depth,
+    );
+  }
+
   Future<void> _runSteps(List<dynamic> steps, {required int depth}) async {
     if (depth > 12) throw StateError('条件执行嵌套超过 12 层');
     for (var i = 0; i < steps.length; i++) {
@@ -59,11 +78,11 @@ class ConditionExecEngine {
       final indent = List.filled(depth, '  ').join();
       switch (type) {
         case 'tool':
-          await _tool(step, id, indent);
+          await _tool(step, id, indent, depth);
         case 'set':
-          _set(step, id, indent);
+          _set(step, id, indent, depth);
         case 'delay':
-          await _delay(step, id, indent);
+          await _delay(step, id, indent, depth);
         case 'if':
           await _if(step, id, indent, depth);
         case 'for':
@@ -78,15 +97,16 @@ class ConditionExecEngine {
           throw _ReturnSignal(
               step['value'] == null ? null : _eval(step['value']!));
         case 'log':
-          _log(step, id, indent);
+          _log(step, id, indent, depth);
         default:
           final msg = '未知步骤类型 $type';
           _out.writeln('$indent- $id: $msg');
-          emitStep(
+          _emit(
             message: '条件执行 · $id · 未知类型',
             args: {'step': id, 'type': type},
             result: msg,
             ok: false,
+            depth: depth,
           );
       }
     }
@@ -96,6 +116,7 @@ class ConditionExecEngine {
     Map<String, dynamic> step,
     String id,
     String indent,
+    int depth,
   ) async {
     final name = (step['tool'] ?? step['name'] ?? '').toString().trim();
     if (name.isEmpty) {
@@ -127,30 +148,36 @@ class ConditionExecEngine {
     final saveTo = (step['save_to'] ?? step['as'] ?? '').toString().trim();
     if (saveTo.isNotEmpty) _vars[saveTo] = _tryParse(result);
     _out.writeln('$indent- $id · $name：${_snippet(result)}');
-    emitStep(
+    _emit(
       message: '条件执行 · $id · $name',
       args: {'step': id, 'tool': name, ...args},
       result: result,
       ok: ok,
       durationMs: sw.elapsedMilliseconds,
+      depth: depth,
     );
   }
 
-  void _set(Map<String, dynamic> step, String id, String indent) {
+  void _set(Map<String, dynamic> step, String id, String indent, int depth) {
     final to = (step['to'] ?? step['var'] ?? 'last').toString();
     final value = _eval(step['value'] ?? '');
     _vars[to] = value;
     _out.writeln('$indent- $id · 赋值 $to = ${_snippet(_stringify(value))}');
-    emitStep(
+    _emit(
       message: '条件执行 · $id · 赋值 $to',
       args: {'step': id, 'to': to, 'value': value},
       result: _stringify(value),
       ok: true,
+      depth: depth,
     );
   }
 
   Future<void> _delay(
-      Map<String, dynamic> step, String id, String indent) async {
+    Map<String, dynamic> step,
+    String id,
+    String indent,
+    int depth,
+  ) async {
     final value =
         _evalNum(step['ms'] ?? step['duration'] ?? step['duration_ms'] ?? 1000);
     final ms = value.toInt().clamp(0, 60000);
@@ -158,12 +185,13 @@ class ConditionExecEngine {
     await Future<void>.delayed(Duration(milliseconds: ms));
     sw.stop();
     _out.writeln('$indent- $id · 延迟 ${ms}ms');
-    emitStep(
+    _emit(
       message: '条件执行 · $id · 延迟 ${ms}ms',
       args: {'step': id, 'ms': ms},
       result: '已等待 ${ms}ms',
       ok: true,
       durationMs: sw.elapsedMilliseconds,
+      depth: depth,
     );
   }
 
@@ -177,11 +205,12 @@ class ConditionExecEngine {
     final picked = _truthy(_eval(condition));
     final branch = picked ? step['then'] : step['else'];
     _out.writeln('$indent- $id · 分支($condition) → ${picked ? 'then' : 'else'}');
-    emitStep(
+    _emit(
       message: '条件执行 · $id · 分支 ${picked ? 'then' : 'else'}',
       args: {'step': id, 'condition': condition},
       result: '命中 ${picked ? 'then' : 'else'}',
       ok: true,
+      depth: depth,
     );
     if (branch is List && branch.isNotEmpty) {
       await _runSteps(branch.cast<dynamic>(), depth: depth + 1);
@@ -194,7 +223,7 @@ class ConditionExecEngine {
     String indent,
     int depth,
   ) async {
-    final varName = (step['var'] ?? step['variable'] ?? 'i').toString();
+    final varName = (step['var'] ?? step['variable'] ?? 'item').toString();
     List<dynamic> items;
     if (step['items'] != null) {
       final v = _eval(step['items']!);
@@ -212,11 +241,12 @@ class ConditionExecEngine {
       ];
     }
     _out.writeln('$indent- $id · 循环 ${items.length} 次');
-    emitStep(
+    _emit(
       message: '条件执行 · $id · 循环',
       args: {'step': id, 'count': items.length},
       result: '循环 ${items.length} 次',
       ok: true,
+      depth: depth,
     );
     if (step['body'] is! List) return;
     final body = (step['body'] as List).cast<dynamic>();
@@ -242,11 +272,12 @@ class ConditionExecEngine {
     var count = 0;
     while (_truthy(_eval(condition)) && count < max) {
       _out.writeln('$indent- $id · 第 ${count + 1} 次循环');
-      emitStep(
+      _emit(
         message: '条件执行 · $id · 循环 ${count + 1}',
         args: {'step': id, 'iteration': count + 1},
         result: '第 ${count + 1} 次循环',
         ok: true,
+        depth: depth,
       );
       if (step['body'] is! List) break;
       try {
@@ -281,11 +312,12 @@ class ConditionExecEngine {
       if (e is _ReturnSignal || e is _BreakSignal) rethrow;
       _vars[errorVar] = e.toString();
       _out.writeln('$indent- $id · 捕获错误：${_snippet(e.toString())}');
-      emitStep(
+      _emit(
         message: '条件执行 · $id · 捕获错误',
         args: {'step': id},
         result: e.toString(),
         ok: false,
+        depth: depth,
       );
       if (step['catch'] is List) {
         await _runSteps(
@@ -296,14 +328,18 @@ class ConditionExecEngine {
     }
   }
 
-  void _log(Map<String, dynamic> step, String id, String indent) {
-    final msg = _stringify(_eval(step['message'] ?? step['value'] ?? ''));
+  void _log(Map<String, dynamic> step, String id, String indent, int depth) {
+    final raw = (step['message'] ?? step['value'] ?? '').toString();
+    final msg = raw.trim().startsWith('expr:')
+        ? _stringify(_eval(raw.trim().substring(5)))
+        : _template(raw);
     _out.writeln('$indent- $id · $msg');
-    emitStep(
+    _emit(
       message: '条件执行 · $id',
       args: {'step': id, 'message': msg},
       result: msg,
       ok: true,
+      depth: depth,
     );
   }
 
