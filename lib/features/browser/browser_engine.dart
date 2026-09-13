@@ -99,11 +99,6 @@ class BrowserEngine {
   /// 主框架导航失败后是否已自动重试过一次。
   bool _retriedFailedMainNav = false;
 
-  /// 新 WebView 第一次页面加载完成后，是否已触发过一次“补刷新”。
-  /// 首次加载页面虽然请求/地址都正常，但 Android 表面有时不显示；
-  /// 手动刷新能好，这里就自动等效刷新一次。
-  bool _firstPageFinishedScheduledReload = false;
-
   static const _maxRequests = 300;
   static const _maxConsole = 200;
 
@@ -126,7 +121,6 @@ class BrowserEngine {
       _scriptsLoaded = true;
       await loadScripts();
     }
-    _firstPageFinishedScheduledReload = false;
     final c = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..addJavaScriptChannel('QLBridge', onMessageReceived: _onBridge)
@@ -168,17 +162,6 @@ class BrowserEngine {
             // 登录 / 过验证之后 cookie 只在内存里，进程被杀就没了。
             // 每次加载完落一次盘，等于"关掉 APP 明天回来还是登录状态"。
             await WebBridge.flush();
-            if (!_firstPageFinishedScheduledReload) {
-              _firstPageFinishedScheduledReload = true;
-              Future<void>.delayed(
-                const Duration(milliseconds: 400),
-                () async {
-                  try {
-                    await _controller?.reload();
-                  } catch (_) {}
-                },
-              );
-            }
             _record(
               CapturedRequest(
                 id: ++_docSeq,
@@ -447,17 +430,6 @@ class BrowserEngine {
     }
   }
 
-  /// 等 WebView 平台视图挂载完成（第一次创建后最多等 5 秒）。
-  Future<void> _waitForWebViewAttached() async {
-    final deadline = DateTime.now().add(const Duration(seconds: 5));
-    while (DateTime.now().isBefore(deadline)) {
-      final ctx = webViewBoundaryKey.currentContext;
-      final render = ctx?.findRenderObject();
-      if (render is RenderBox && render.hasSize) return;
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-    }
-  }
-
   // -------------------------------------------------------------- 基本操作
 
   Future<void> open(String url) async {
@@ -467,7 +439,10 @@ class BrowserEngine {
     // 才会生效；否则第一次打开会黑屏，第二次才正常。这里不是摸黑等固定时长，
     // 而是轮询到 RepaintBoundary 已经出现在树上且有尺寸。
     if (firstBoot) {
-      await _waitForWebViewAttached();
+      // 只等一两帧，让 BrowserView 的 controllerRevision 监听把 WebViewWidget
+      // 挂出来；不再轮询/等待几秒，保持“秒开”。
+      await WidgetsBinding.instance.endOfFrame;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     }
     var target = url.trim();
     // 本地文件优先判断：AI 写了个 html 到工作目录，然后想让用户看效果。
