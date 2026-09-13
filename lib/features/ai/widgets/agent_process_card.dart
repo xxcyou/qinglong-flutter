@@ -7,6 +7,7 @@ import '../../../core/theme/glass.dart';
 
 import '../../../core/utils/formatter.dart';
 import '../models/agent_event.dart';
+import '../models/agent_task_plan.dart';
 import 'tool_detail_sheet.dart';
 import '../../../shared/mono_text.dart';
 
@@ -23,7 +24,10 @@ class AgentProcessCard extends StatefulWidget {
     this.turns = 0,
     this.totalTokens = 0,
     this.initiallyExpanded = false,
+    this.onOpenCanvas,
   });
+
+  final void Function(AiCanvas canvas)? onOpenCanvas;
 
   final List<AgentEvent> events;
   final bool running;
@@ -226,6 +230,7 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
                     _TimelineRow(
                       event: events[i],
                       isLast: i == events.length - 1,
+                      onOpenCanvas: widget.onOpenCanvas,
                     ),
                 ],
               ),
@@ -261,10 +266,17 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
 }
 
 class _TimelineRow extends StatefulWidget {
-  const _TimelineRow({required this.event, required this.isLast});
+  const _TimelineRow({
+    required this.event,
+    required this.isLast,
+    this.onOpenCanvas,
+  });
 
   final AgentEvent event;
   final bool isLast;
+
+  /// 给 canvas 时间线行加“重新打开悬浮画布”入口。
+  final void Function(AiCanvas canvas)? onOpenCanvas;
 
   @override
   State<_TimelineRow> createState() => _TimelineRowState();
@@ -304,6 +316,40 @@ class _TimelineRowState extends State<_TimelineRow> {
   /// 用户以为它们坏了。详情页现在对任何事件都有东西可显示（至少是说明），
   /// 所以不再拦。
   bool get _hasDetail => true;
+
+  AiCanvas? _canvasFromEvent() {
+    if (event.kind != AgentEventKind.canvas) return null;
+    final args = event.args ?? const <String, dynamic>{};
+    String valueOf(String key) => (args[key]?.toString() ?? '').trim();
+    final html = args['html']?.toString() ?? '';
+    final url = valueOf('url');
+    final htmlPath = valueOf('html_path').isNotEmpty
+        ? valueOf('html_path')
+        : valueOf('path');
+    if (html.isEmpty && url.isEmpty && htmlPath.isEmpty) return null;
+    final rawRect = args['rect'];
+    return AiCanvas(
+      id: args['id']?.toString() ??
+          'canvas${DateTime.now().microsecondsSinceEpoch}',
+      title: valueOf('title').isEmpty ? '互动卡片' : valueOf('title'),
+      description: valueOf('description'),
+      html: html,
+      url: url,
+      htmlPath: htmlPath,
+      baseDir: valueOf('base_dir'),
+      expectResult: args['expect_result'] == true,
+      resultHint: valueOf('result_hint'),
+      createdAt: DateTime.now(),
+      window: valueOf('window'),
+      chromeless: args['chromeless'] == true,
+      position: valueOf('position'),
+      rect: rawRect is List && rawRect.length >= 4
+          ? [
+              for (final v in rawRect.take(4)) (v is num) ? v.toDouble() : 0.0,
+            ]
+          : null,
+    );
+  }
 
   List<Map<String, dynamic>>? get _workflowSteps {
     if (event.kind != AgentEventKind.workflowStep) return null;
@@ -413,6 +459,29 @@ class _TimelineRowState extends State<_TimelineRow> {
                               style: TextStyle(
                                 fontSize: 10,
                                 color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        if (event.kind == AgentEventKind.canvas &&
+                            widget.onOpenCanvas != null)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 4),
+                            child: InkWell(
+                              onTap: () {
+                                HapticFeedback.selectionClick();
+                                final canvas = _canvasFromEvent();
+                                if (canvas != null) {
+                                  widget.onOpenCanvas!(canvas);
+                                }
+                              },
+                              borderRadius: BorderRadius.circular(8),
+                              child: Padding(
+                                padding: const EdgeInsets.all(2),
+                                child: Icon(
+                                  Icons.open_in_full_rounded,
+                                  size: 15,
+                                  color: scheme.primary,
+                                ),
                               ),
                             ),
                           ),

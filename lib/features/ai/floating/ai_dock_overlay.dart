@@ -1565,6 +1565,9 @@ class _WindowState extends ConsumerState<_Window> {
                                         running: false,
                                         turns: m.turns,
                                         totalTokens: m.totalTokens,
+                                        onOpenCanvas: (canvas) => ref
+                                            .read(aiDockProvider.notifier)
+                                            .showCanvas(canvas),
                                       ),
                                     ),
                                   _MiniBubble(
@@ -1621,6 +1624,9 @@ class _WindowState extends ConsumerState<_Window> {
                                         running: false,
                                         turns: m.turns,
                                         totalTokens: m.totalTokens,
+                                        onOpenCanvas: (canvas) => ref
+                                            .read(aiDockProvider.notifier)
+                                            .showCanvas(canvas),
                                       ),
                                     ),
                                 ],
@@ -1629,6 +1635,9 @@ class _WindowState extends ConsumerState<_Window> {
                                     events: chat.liveAgentEvents,
                                     running: chat.isLoading,
                                     totalTokens: chat.lastTokens,
+                                    onOpenCanvas: (canvas) => ref
+                                        .read(aiDockProvider.notifier)
+                                        .showCanvas(canvas),
                                   ),
                                 // 正在流的那一段：悬浮窗矮，用 dense 排版。
                                 if (chat.isLoading)
