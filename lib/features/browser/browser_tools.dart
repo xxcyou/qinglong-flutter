@@ -77,22 +77,38 @@ class BrowserTools {
           if (args['show'] == true) engine.show(byAgent: true);
           await engine.open(url);
           final selector = args['wait_selector']?.toString() ?? '';
+          bool ok = true;
           if (selector.isNotEmpty) {
-            final ok = await engine.waitFor(
+            ok = await engine.waitFor(
               'document.querySelector(${jsonEncode(selector)})',
             );
-            if (!ok) {
-              return '页面已打开（${engine.currentUrl.value}），但等不到 $selector。'
-                  '可能是被人机验证挡住了，或者选择器不对。'
-                  '可以用 browser_capture 看抓到的请求，或 browser_wait_user 让用户看一眼。';
-            }
           } else {
             // readyState 只要离开 loading 就先返回，避免站点有长连接/WebSocket
             // 导致 complete 一直不触发、AI 干等 20 秒。
-            await engine.waitFor(
+            ok = await engine.waitFor(
               'document.readyState !== "loading"',
               timeout: const Duration(seconds: 10),
             );
+          }
+          if (!ok) {
+            // 第一次打开经常会因为 WebView 刚挂载而黑屏/没到 readyState；
+            // 手动刷新或第二次 open 就好了。这里自动补一次，不用 AI 再开第二次。
+            await engine.open(url);
+            if (selector.isNotEmpty) {
+              ok = await engine.waitFor(
+                'document.querySelector(${jsonEncode(selector)})',
+              );
+            } else {
+              ok = await engine.waitFor(
+                'document.readyState !== "loading"',
+                timeout: const Duration(seconds: 10),
+              );
+            }
+            if (!ok) {
+              return '页面已打开（${engine.currentUrl.value}），但一直没到可读状态。'
+                  '可能是被人机验证挡住了，或者选择器不对。'
+                  '可以用 browser_capture 看抓到的请求，或 browser_wait_user 让用户看一眼。';
+            }
           }
           final max = (args['max_chars'] as num?)?.toInt() ?? 8000;
           final text = await engine.text();

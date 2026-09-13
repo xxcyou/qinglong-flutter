@@ -426,15 +426,27 @@ class BrowserEngine {
     }
   }
 
+  /// 等 WebView 平台视图挂载完成（第一次创建后最多等 5 秒）。
+  Future<void> _waitForWebViewAttached() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (DateTime.now().isBefore(deadline)) {
+      final ctx = webViewBoundaryKey.currentContext;
+      final render = ctx?.findRenderObject();
+      if (render is RenderBox && render.hasSize) return;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+  }
+
   // -------------------------------------------------------------- 基本操作
 
   Future<void> open(String url) async {
     final firstBoot = _controller == null;
     final c = await ensure();
     // 第一次 create 的 WebView 要等 Flutter 平台视图真正挂载后 loadRequest
-    // 才会生效；否则第一次打开会白转圈，第二次才正常。
+    // 才会生效；否则第一次打开会黑屏，第二次才正常。这里不是摸黑等固定时长，
+    // 而是轮询到 RepaintBoundary 已经出现在树上且有尺寸。
     if (firstBoot) {
-      await Future<void>.delayed(const Duration(milliseconds: 350));
+      await _waitForWebViewAttached();
     }
     var target = url.trim();
     // 本地文件优先判断：AI 写了个 html 到工作目录，然后想让用户看效果。
