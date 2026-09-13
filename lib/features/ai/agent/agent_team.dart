@@ -266,7 +266,9 @@ class _SubagentCoordinator {
     required this.onEvent,
     required this.sink,
     required this.maxParallel,
-  });
+  }) {
+    sink?.onWaitAll = waitAll;
+  }
 
   final AgentLoop Function() spawn;
   final List<LlmMessage> Function(String task) seed;
@@ -286,6 +288,7 @@ class _SubagentCoordinator {
         'sub_${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}_${_seq++}';
     final t = _Subtask(id: id, label: label, task: task);
     _tasks[id] = t;
+    sink?.addPending();
     _pending.add(t);
     _pump();
     return id;
@@ -341,6 +344,7 @@ class _SubagentCoordinator {
     } finally {
       t.done = true;
       if (!t.completer.isCompleted) t.completer.complete();
+      sink?.completePending();
       if (t.summary.isNotEmpty) {
         sink?.add(
           AgentSubagentResult(
@@ -352,6 +356,14 @@ class _SubagentCoordinator {
       }
       _active--;
       _pump();
+    }
+  }
+
+  /// 等所有已启动但还没结束的子代理跑完。
+  Future<void> waitAll() async {
+    final all = _tasks.values.toList();
+    for (final t in all.where((t) => !t.done)) {
+      await t.completer.future;
     }
   }
 

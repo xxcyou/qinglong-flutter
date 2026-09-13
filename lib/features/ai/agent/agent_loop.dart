@@ -121,6 +121,20 @@ class AgentSubagentResult {
 /// 以“【子代理已完成】”的 user 消息喂给主模型——主代理不用专门停下来等。
 class AgentSubagentSink {
   final List<AgentSubagentResult> _completed = [];
+  int _pendingCount = 0;
+
+  /// 由后台调度器注入：等所有尚未结束的子代理跑完。
+  Future<void> Function()? onWaitAll;
+
+  void addPending([int count = 1]) => _pendingCount += count;
+
+  void completePending([int count = 1]) {
+    _pendingCount = (_pendingCount - count).clamp(0, 1 << 31);
+  }
+
+  bool get hasPending => _pendingCount > 0;
+
+  bool get hasCompleted => _completed.isNotEmpty;
 
   void add(AgentSubagentResult result) => _completed.add(result);
 
@@ -133,6 +147,8 @@ class AgentSubagentSink {
     _completed.clear();
     return pending;
   }
+
+  Future<void> waitAll() => onWaitAll?.call() ?? Future.value();
 }
 
 enum AgentOutcome {
@@ -1007,10 +1023,11 @@ class AgentLoop {
 
     // 后台子代理跑完的结果自动并入上下文：同样是安全点消费，
     // 主代理下个请求就能看到“哪个子代理已经干完、结论是什么”。
-    void drainSubagentResults() {
+    List<AgentSubagentResult> drainSubagentResults() {
       final sink = subagentSink;
-      if (sink == null) return;
-      for (final r in sink.takeCompleted()) {
+      if (sink == null) return const [];
+      final results = sink.takeCompleted();
+      for (final r in results) {
         messages.add(
           LlmMessage(
             role: 'user',
@@ -1026,6 +1043,39 @@ class AgentLoop {
           ),
         );
       }
+      return results;
+    }
+
+    /// 收尾前的硬边界：只要还有子代理没跑完、或跑完结果还没并进上下文，
+    /// 就不允许主代理宣告完成。这里等完所有子代理、把结果注入消息列表，
+    /// 然后让循环再走一轮，逼主代理基于完整结果重新收尾。
+    Future<bool> collectSubagentsBeforeFinish() async {
+      final sink = subagentSink;
+      if (sink == null || (!sink.hasPending && !sink.hasCompleted)) {
+        return false;
+      }
+      await sink.waitAll();
+      final results = drainSubagentResults();
+      if (results.isEmpty) return false;
+      final text =
+          results.map((r) => '### ${r.label}\n${r.summary}').join('\n\n');
+      messages.add(
+        LlmMessage(
+          role: 'user',
+          content: '所有子代理已经跑完，结果如下。'
+              '你刚才的收尾没有包含这些结果，不能就这样结束。'
+              '请基于完整结果重新核对一遍：该补的补、该改的改，'
+              '确认没有遗漏后再给出最终总结/调用 task_complete。\n$text',
+        ),
+      );
+      emit(
+        AgentEvent(
+          kind: AgentEventKind.thinking,
+          message: '收尾前发现还有子代理未汇总，已等待并并入结果',
+          result: text,
+        ),
+      );
+      return true;
     }
 
     try {
@@ -1351,6 +1401,14 @@ class AgentLoop {
               turn >= maxTurns - 1 ||
               records.isEmpty ||
               !unfinished) {
+            // 收尾前硬边界：有子代理没跑完或结果没并入上下文，就不许现在收尾。
+            if (await collectSubagentsBeforeFinish()) {
+              // 保留主代理这次"以为做完了"的话，让下一轮基于完整结果补全。
+              if (content.isNotEmpty) {
+                messages.add(LlmMessage(role: 'assistant', content: content));
+              }
+              continue;
+            }
             outcome = AgentOutcome.completed;
             break;
           }
@@ -1517,6 +1575,16 @@ class AgentLoop {
                 turn: turnsUsed,
               ),
             );
+            continue;
+          }
+
+          // 收尾前硬边界：有子代理没跑完或结果没并入上下文，必须先等完并注入。
+          if (await collectSubagentsBeforeFinish()) {
+            // 模型刚才那次 task_complete 不会被执行；把它想说的话先留进历史，
+            // 下一次看到完整子代理结果后再重新收尾。
+            if (finishText.isNotEmpty) {
+              messages.add(LlmMessage(role: 'assistant', content: finishText));
+            }
             continue;
           }
 
