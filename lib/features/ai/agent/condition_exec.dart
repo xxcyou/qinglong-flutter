@@ -631,14 +631,20 @@ class _Parser {
     while (_peekOp('<') || _peekOp('>') || _peekOp('<=') || _peekOp('>=')) {
       final op = _take().value.toString();
       final right = _parseAdditive();
-      final l = _numOrString(left);
-      final r = _numOrString(right);
-      final o = (l.compareTo(r));
+      final int cmp;
+      if (left is num && right is num) {
+        cmp = left.compareTo(right);
+      } else if (left is String && right is String) {
+        cmp = left.compareTo(right);
+      } else {
+        throw FormatException(
+            '不能比较不同类型：${_stringify(left)} $op ${_stringify(right)}');
+      }
       left = switch (op) {
-        '<' => o < 0,
-        '>' => o > 0,
-        '<=' => o <= 0,
-        '>=' => o >= 0,
+        '<' => cmp < 0,
+        '>' => cmp > 0,
+        '<=' => cmp <= 0,
+        '>=' => cmp >= 0,
         _ => false,
       };
     }
@@ -653,13 +659,22 @@ class _Parser {
       if (op == '+') {
         if (left is num && right is num) {
           left = left + right;
+        } else if (left is String && right is String) {
+          left = left + right;
         } else if (left is List && right is List) {
           left = [...left, ...right];
         } else {
-          left = _stringify(left) + _stringify(right);
+          throw FormatException(
+            '不能直接相加不同类型：${_stringify(left)} + ${_stringify(right)}，请用 str()/num() 显式转换',
+          );
         }
       } else {
-        left = _num(left) - _num(right);
+        if (left is num && right is num) {
+          left = left - right;
+        } else {
+          throw FormatException(
+              '减法只支持数字：${_stringify(left)} - ${_stringify(right)}');
+        }
       }
     }
     return left;
@@ -672,10 +687,13 @@ class _Parser {
       final right = _parseUnary();
       final a = _num(left);
       final b = _num(right);
+      if (op != '*' && b == 0) {
+        throw const FormatException('除数为 0');
+      }
       left = switch (op) {
         '*' => a * b,
-        '/' => b == 0 ? 0 : a / b,
-        '%' => b == 0 ? 0 : a % b,
+        '/' => a / b,
+        '%' => a % b,
         _ => 0,
       };
     }
@@ -709,14 +727,25 @@ class _Parser {
         final idx = _parseTernary();
         _expect(']');
         if (v is List) {
-          v = idx is num && idx >= 0 && idx < v.length ? v[idx.toInt()] : null;
-        } else if (v is Map) {
-          v = v[_stringify(idx)];
-        } else if (v is String && idx is num) {
+          if (idx is! num) throw const FormatException('索引必须是数字');
           final i = idx.toInt();
-          v = i >= 0 && i < v.length ? v[i] : null;
+          if (i < 0 || i >= v.length) {
+            throw FormatException('索引越界：$i，长度 ${v.length}');
+          }
+          v = v[i];
+        } else if (v is Map) {
+          final key = _stringify(idx);
+          if (!v.containsKey(key)) throw FormatException('字段不存在：$key');
+          v = v[key];
+        } else if (v is String) {
+          if (idx is! num) throw const FormatException('索引必须是数字');
+          final i = idx.toInt();
+          if (i < 0 || i >= v.length) {
+            throw FormatException('索引越界：$i，长度 ${v.length}');
+          }
+          v = v[i];
         } else {
-          v = null;
+          throw FormatException('不能对 ${_stringify(v)} 做下标访问');
         }
       } else {
         break;
@@ -732,7 +761,11 @@ class _Parser {
       case _TokType.string:
         return t.value;
       case _TokType.variable:
-        return _vars[t.value.toString()] ?? '';
+        final varName = t.value.toString();
+        if (!_vars.containsKey(varName)) {
+          throw FormatException('未定义变量 $varName');
+        }
+        return _vars[varName];
       case _TokType.ident:
         final name = t.value.toString();
         if (name == 'true') return true;
@@ -779,31 +812,44 @@ class _Parser {
 
   dynamic _callFunction(String name, List<dynamic> args) {
     Object? a(int i) => i < args.length ? args[i] : null;
+    String reqString(String fn, int i) {
+      final v = a(i);
+      if (v is String) return v;
+      throw FormatException('$fn 第 ${i + 1} 个参数必须是字符串，实际是 ${_typeName(v)}');
+    }
+
     switch (name) {
       case 'contains':
-        return _stringify(a(0)).contains(_stringify(a(1)));
+        return reqString('contains', 0).contains(reqString('contains', 1));
       case 'starts':
-        return _stringify(a(0)).startsWith(_stringify(a(1)));
+        return reqString('starts', 0).startsWith(reqString('starts', 1));
       case 'ends':
-        return _stringify(a(0)).endsWith(_stringify(a(1)));
+        return reqString('ends', 0).endsWith(reqString('ends', 1));
       case 'len':
         final v = a(0);
-        return v is List ? v.length : _stringify(v).length;
+        if (v is String) return v.length;
+        if (v is List) return v.length;
+        if (v is Map) return v.length;
+        throw FormatException('len 参数必须是字符串/数组/对象，实际是 ${_typeName(v)}');
       case 'lower':
-        return _stringify(a(0)).toLowerCase();
+        return reqString('lower', 0).toLowerCase();
       case 'upper':
-        return _stringify(a(0)).toUpperCase();
+        return reqString('upper', 0).toUpperCase();
       case 'trim':
-        return _stringify(a(0)).trim();
+        return reqString('trim', 0).trim();
       case 'replace':
-        return _stringify(a(0)).replaceAll(_stringify(a(1)), _stringify(a(2)));
+        return reqString('replace', 0)
+            .replaceAll(reqString('replace', 1), reqString('replace', 2));
       case 'split':
-        return _stringify(a(0)).split(_stringify(a(1))).toList();
+        return reqString('split', 0).split(reqString('split', 1)).toList();
       case 'join':
         final list = a(0);
-        if (list is List) return list.map(_stringify).join(_stringify(a(1)));
-        return _stringify(list);
+        if (list is! List) {
+          throw FormatException('join 第一个参数必须是数组，实际是 ${_typeName(list)}');
+        }
+        return list.map(_stringify).join(reqString('join', 1));
       case 'num':
+        if (a(0) is num) return a(0);
         return _num(a(0));
       case 'str':
         return _stringify(a(0));
@@ -845,15 +891,22 @@ class _Parser {
 
   num _num(Object? v) {
     if (v is num) return v;
-    final n = num.tryParse(_stringify(v).trim());
-    return n ?? 0;
+    if (v is String) {
+      final n = num.tryParse(v.trim());
+      if (n != null) return n;
+      throw FormatException('无法把字符串 "$v" 转成数字');
+    }
+    throw FormatException('无法把 ${_typeName(v)} 转成数字');
   }
 
-  Comparable _numOrString(Object? v) {
-    if (v is num) return v;
-    final n = num.tryParse(_stringify(v).trim());
-    if (n != null) return n;
-    return _stringify(v);
+  String _typeName(Object? v) {
+    if (v == null) return 'null';
+    if (v is num) return 'number';
+    if (v is String) return 'string';
+    if (v is bool) return 'boolean';
+    if (v is List) return 'list';
+    if (v is Map) return 'object';
+    return v.runtimeType.toString();
   }
 
   bool _truthy(Object? v) {
@@ -868,7 +921,18 @@ class _Parser {
 
   bool _equals(Object? a, Object? b) {
     if (a is num && b is num) return a == b;
-    return _stringify(a) == _stringify(b);
+    if (a is String && b is String) return a == b;
+    if (a is bool && b is bool) return a == b;
+    if (a == null && b == null) return true;
+    if (a is List && b is List) {
+      if (a.length != b.length) return false;
+      for (var i = 0; i < a.length; i++) {
+        if (!_equals(a[i], b[i])) return false;
+      }
+      return true;
+    }
+    // 类型不同不相等，绝不隐式转换。
+    return false;
   }
 
   Object? _tryParse(String s) {

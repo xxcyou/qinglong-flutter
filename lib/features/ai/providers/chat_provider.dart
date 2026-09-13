@@ -3896,6 +3896,8 @@ class ChatNotifier extends Notifier<ChatState> {
             'num/str/get/json/json_encode/type；变量用 \$name 或 \${name}，'
             '对象/列表可用 \$data.key、\$list[0] 取值。'
             '工具 args 里的字符串支持 \$var 插值；写 expr:表达式 可传计算结果。'
+            '严格模式：除零、num() 解析失败、未定义变量、不同类型 +/比较 都会抛错；'
+            '数字和字符串拼接/相加请显式用 str()/num()，不要直接 \$num + "文本"。'
             '执行路径和每步结果会作为 条件执行 事件展示在思维链，可点击查看完整结果。',
         parameters: const {
           'type': 'object',
