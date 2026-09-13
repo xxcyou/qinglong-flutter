@@ -23,6 +23,7 @@ import '../../panels/providers/panel_list_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../agent/agent_loop.dart';
 import '../agent/agent_team.dart';
+import '../agent/condition_exec.dart';
 import '../agent/web_search.dart';
 import '../agent/external_tool.dart';
 import '../agent/mcp_gateway.dart';
@@ -2868,161 +2869,45 @@ class ChatNotifier extends Notifier<ChatState> {
       }
     }
     if (rawSteps is! List) return '条件执行失败：steps 必须是数组。';
-    final vars = <String, String>{'last': ''};
-    final initial = args['variables'];
-    if (initial is Map) {
-      for (final e in initial.entries) {
-        vars[e.key.toString()] = e.value?.toString() ?? '';
+    final initial = <String, dynamic>{};
+    final variables = args['variables'];
+    if (variables is Map) {
+      for (final e in variables.entries) {
+        initial[e.key.toString()] = e.value;
       }
     }
-    final out = StringBuffer();
-    try {
-      await _conditionRunSteps(
-        rawSteps,
-        tools,
-        vars,
-        out,
-        depth: 0,
-      );
-    } catch (e) {
-      out.writeln('条件执行中断：$e');
-    }
-    final text = out.toString().trim();
-    return text.isEmpty ? '条件执行：没有可执行步骤。' : text;
-  }
-
-  Future<void> _conditionRunSteps(
-    List<dynamic> steps,
-    List<ExternalTool> tools,
-    Map<String, String> vars,
-    StringBuffer out, {
-    required int depth,
-  }) async {
-    if (depth > 8) throw StateError('条件执行嵌套超过 8 层');
-    final indent = List.filled(depth, '  ').join();
-    for (var i = 0; i < steps.length; i++) {
-      final raw = steps[i];
-      if (raw is! Map) continue;
-      final step = raw.map((k, v) => MapEntry(k.toString(), v));
-      final type = (step['type'] ?? 'tool').toString();
-      final id = (step['id'] ?? step['name'] ?? '步骤${i + 1}').toString();
-      switch (type) {
-        case 'tool':
-          final name = (step['tool'] ?? step['name'] ?? '').toString().trim();
-          if (name.isEmpty) {
-            out.writeln('$indent- $id: 缺少 tool 名字');
-            continue;
+    final engine = ConditionExecEngine(
+      callTool: (name, callArgs) async {
+        ExternalTool? target;
+        for (final t in tools) {
+          if (t.name == name) {
+            target = t;
+            break;
           }
-          if (name == 'condition_exec') {
-            out.writeln('$indent- $id: 不允许递归调用 condition_exec');
-            continue;
-          }
-          ExternalTool? target;
-          for (final t in tools) {
-            if (t.name == name) {
-              target = t;
-              break;
-            }
-          }
-          if (target == null) {
-            final msg = '找不到工具 $name';
-            out.writeln('$indent- $id: $msg');
-            _emitWorkflowStep(
-              message: '条件执行 · $id · $name',
-              args: {'step': id, 'tool': name, 'error': msg},
-              result: msg,
-              ok: false,
-            );
-            continue;
-          }
-          final rawArgs = step['args'];
-          final callArgs = <String, dynamic>{};
-          if (rawArgs is Map) {
-            for (final e in rawArgs.entries) {
-              callArgs[e.key.toString()] =
-                  _conditionTemplate(e.value?.toString() ?? '', vars);
-            }
-          }
-          final sw = Stopwatch()..start();
-          String result;
-          var ok = true;
-          try {
-            result = await target.invoke(callArgs);
-          } catch (e) {
-            result = '调用失败：$e';
-            ok = false;
-          }
-          sw.stop();
-          vars['last'] = result;
-          final saveTo = step['save_to']?.toString().trim() ?? '';
-          if (saveTo.isNotEmpty) vars[saveTo] = result;
-          out.writeln(
-            '$indent- $id · $name：${_conditionSnippet(result)}',
+        }
+        if (target == null) {
+          throw StateError(
+            '找不到工具 $name（condition_exec 只能调用当前工具列表里的工具）',
           );
+        }
+        return target.invoke(callArgs);
+      },
+      emitStep: ({
+        required String message,
+        Map<String, dynamic>? args,
+        String? result,
+        required bool ok,
+        int? durationMs,
+      }) =>
           _emitWorkflowStep(
-            message: '条件执行 · $id · $name',
-            args: {'step': id, 'tool': name, ...callArgs},
-            result: result,
-            durationMs: sw.elapsedMilliseconds,
-            ok: ok,
-          );
-        case 'delay':
-          final rawMs = step['ms'] ?? step['duration'] ?? step['duration_ms'];
-          final ms = (rawMs is num ? rawMs.toInt() : 1000).clamp(0, 60000);
-          final sw = Stopwatch()..start();
-          await Future<void>.delayed(Duration(milliseconds: ms));
-          sw.stop();
-          out.writeln('$indent- $id · 延迟 ${ms}ms');
-          _emitWorkflowStep(
-            message: '条件执行 · $id · 延迟 ${ms}ms',
-            args: {'step': id, 'type': 'delay', 'ms': ms},
-            result: '已等待 ${ms}ms',
-            durationMs: sw.elapsedMilliseconds,
-          );
-        case 'assign':
-          final to = step['to']?.toString().trim() ?? 'last';
-          final value =
-              _conditionTemplate(step['value']?.toString() ?? '', vars);
-          vars[to] = value;
-          out.writeln('$indent- $id · 赋值 $to = ${_conditionSnippet(value)}');
-          _emitWorkflowStep(
-            message: '条件执行 · $id · 赋值 $to',
-            args: {'step': id, 'type': 'assign', 'to': to},
-            result: value,
-          );
-        case 'branch':
-          final condition =
-              (step['if'] ?? step['condition'] ?? 'true').toString();
-          final picked = _conditionEval(condition, vars);
-          final branchName = picked ? 'then' : 'else';
-          out.writeln(
-            '$indent- $id · 分支($condition) → $branchName',
-          );
-          _emitWorkflowStep(
-            message: '条件执行 · $id · 分支 $branchName',
-            args: {'step': id, 'condition': condition},
-            result: '命中 $branchName',
-          );
-          final branch = picked ? step['then'] : step['else'];
-          if (branch is List && branch.isNotEmpty) {
-            await _conditionRunSteps(
-              branch.cast<dynamic>(),
-              tools,
-              vars,
-              out,
-              depth: depth + 1,
-            );
-          }
-        default:
-          out.writeln('$indent- $id: 未知步骤类型 $type');
-          _emitWorkflowStep(
-            message: '条件执行 · $id · 未知类型',
-            args: {'step': id, 'type': type},
-            result: '未知步骤类型 $type',
-            ok: false,
-          );
-      }
-    }
+        message: message,
+        args: args,
+        result: result,
+        durationMs: durationMs,
+        ok: ok,
+      ),
+    );
+    return engine.run(rawSteps.cast<dynamic>(), initial);
   }
 
   void _emitWorkflowStep({
@@ -3056,57 +2941,6 @@ class ChatNotifier extends Notifier<ChatState> {
     final oneLine = text.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (oneLine.length <= max) return oneLine;
     return '${oneLine.substring(0, max)}…';
-  }
-
-  static String _conditionTemplate(String raw, Map<String, String> vars) {
-    return raw.replaceAllMapped(
-      RegExp(r'\$([A-Za-z_][A-Za-z0-9_]*)'),
-      (m) => vars[m.group(1)] ?? '',
-    );
-  }
-
-  static String _conditionResolve(String raw, Map<String, String> vars) {
-    final t = raw.trim();
-    if (t.startsWith(r'$')) return vars[t.substring(1)] ?? '';
-    if (t.length >= 2 &&
-        ((t.startsWith('"') && t.endsWith('"')) ||
-            (t.startsWith("'") && t.endsWith("'")))) {
-      return t.substring(1, t.length - 1);
-    }
-    return t;
-  }
-
-  static bool _conditionEval(String raw, Map<String, String> vars) {
-    var expr = raw.trim();
-    if (expr.isEmpty) return true;
-    if (expr == 'true') return true;
-    if (expr == 'false') return false;
-    var negate = false;
-    if (expr.startsWith('!')) {
-      negate = true;
-      expr = expr.substring(1).trim();
-    }
-    final contains = RegExp(
-      r'^contains\(\s*(.*?)\s*,\s*(.*?)\s*\)$',
-      dotAll: true,
-    ).firstMatch(expr);
-    if (contains != null) {
-      final hay = _conditionResolve(contains.group(1)!, vars);
-      final needle = _conditionResolve(contains.group(2)!, vars);
-      final r = hay.contains(needle);
-      return negate ? !r : r;
-    }
-    final cmp =
-        RegExp(r'^(.*?)\s*(==|!=)\s*(.*?)$', dotAll: true).firstMatch(expr);
-    if (cmp != null) {
-      final left = _conditionResolve(cmp.group(1)!, vars);
-      final right = _conditionResolve(cmp.group(3)!, vars);
-      final equal = left == right;
-      final r = cmp.group(2) == '==' ? equal : !equal;
-      return negate ? !r : r;
-    }
-    final value = _conditionResolve(expr, vars);
-    return negate ? value.isEmpty : value.isNotEmpty;
   }
 
   List<ExternalTool> _buildExternalTools({bool includeImageTool = true}) {
@@ -4029,16 +3863,24 @@ class ChatNotifier extends Notifier<ChatState> {
     tools.add(
       ExternalTool(
         name: 'condition_exec',
-        description: '通用条件执行/微处理器。一次调用可以顺序执行多个工具、'
-            '延迟等待、根据前一步结果做分支，适合“先 A 再 B，有内容走 1，没内容走 2”'
-            '这类简单固定流程，省去 AI 多次来回调用。'
+        description: '通用条件执行/微流程引擎 v2。一次调用按顺序执行多个步骤，'
+            '支持工具调用、延迟、变量、完整表达式、if/for/while/try/break/return，'
+            '适合把固定流程交给 DSL 一次跑完，省去 AI 多次来回调用。'
             '参数 steps 是数组，每步是对象：\n'
-            '1) 调用工具：{"type":"tool","tool":"工具名","args":{...},"save_to":"变量名","id":"步骤名"}\n'
-            '2) 延迟：{"type":"delay","ms":1000,"id":"等待"}\n'
-            '3) 赋值：{"type":"assign","to":"变量名","value":"\$last 或常量"}\n'
-            '4) 分支：{"type":"branch","if":"contains(\$last, \'关键词\')","then":[子步骤],"else":[子步骤]}\n'
-            '支持的内置判断函数：contains(\$var, "子串")；比较 \$var == "值"、\$var != ""。'
-            '上一步工具返回自动存到 \$last，也可用 save_to 命名。'
+            '- {"type":"tool","tool":"工具名","args":{...},"save_to":"变量"}: 调用工具；'
+            '工具返回自动存到 \$last，save_to 会把结果尝试 JSON 解码后存为对象/List\n'
+            '- {"type":"set","to":"变量","value":"表达式"}: 赋值\n'
+            '- {"type":"delay","ms":1000}: 延迟\n'
+            '- {"type":"if","if":"表达式","then":[...],"else":[...]}: 分支\n'
+            '- {"type":"for","var":"i","start":0,"end":5,"step":1,"body":[...]} 或 {"items":"\$list","body":[...]}: 循环\n'
+            '- {"type":"while","while":"表达式","max":1000,"body":[...]}: 条件循环\n'
+            '- {"type":"break"}: 跳出循环；{"type":"return","value":"表达式"}: 提前结束\n'
+            '- {"type":"try","try":[...],"catch":[...],"error_var":"e"}: 异常捕获\n'
+            '表达式支持：算术(+ - * / %)、比较(== != > < >= <=)、逻辑(&& || !)、'
+            '三元 ?:、函数 contains/starts/ends/len/lower/upper/trim/replace/split/join/'
+            'num/str/get/json/json_encode/type；变量用 \$name 或 \${name}，'
+            '对象/列表可用 \$data.key、\$list[0] 取值。'
+            '工具 args 里的字符串支持 \$var 插值；写 expr:表达式 可传计算结果。'
             '执行路径和每步结果会作为 条件执行 事件展示在思维链，可点击查看完整结果。',
         parameters: const {
           'type': 'object',
@@ -4046,7 +3888,8 @@ class ChatNotifier extends Notifier<ChatState> {
             'steps': {
               'type': 'array',
               'description':
-                  '步骤数组，每步为 {type: tool|delay|assign|branch, ...}，branch 的 then/else 仍是步骤数组',
+                  '步骤数组，每步为 {type: tool|set|delay|if|for|while|try|break|return|log, ...}，'
+                      '控制流步骤的 then/else/body 仍然是步骤数组',
             },
             'variables': {
               'type': 'object',
