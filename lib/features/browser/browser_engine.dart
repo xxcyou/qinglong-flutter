@@ -115,12 +115,14 @@ class BrowserEngine {
       ..setNavigationDelegate(
         NavigationDelegate(
           onNavigationRequest: (request) async {
-            if (!request.isMainFrame) return NavigationDecision.navigate;
             final uri = Uri.tryParse(request.url);
             if (uri == null) return NavigationDecision.prevent;
             final scheme = uri.scheme.toLowerCase();
             // 普通网页/本地文件照常放行；外部协议（微信/QQ/支付宝/intent/market…）
-            // 全部拦下来，先经过确认框，防止网页偷偷拉起其它 App 或下载。
+            // 一律拦下来，优先在 APP 内置浏览器里打开网页回退地址。
+            // 注意：QQ 登录常发生在 iframe 里，iframe 的 intent:// 跳转如果
+            // 因为 isMainFrame=false 直接放行，就会落到系统浏览器。所以这里
+            // 不再按主/子 frame 区分，外部协议统一处理。
             if (scheme == 'http' ||
                 scheme == 'https' ||
                 scheme == 'about' ||
@@ -1248,6 +1250,9 @@ return JSON.stringify({
 
     // 确实没有网页版可走时，才交给系统打开外部 App，
     // 由 Android 自带的选择器/浏览器弹窗决定。
+    if (webUrl == null) {
+      _log('warn', '外部跳转没有网页回退，转系统打开：$url');
+    }
     final uri = Uri.tryParse(url);
     _lastExternalJump = ExternalJumpRequest(
       id: 'jump${++_jumpSeq}',
@@ -1286,6 +1291,29 @@ return JSON.stringify({
   /// 把 `intent://host/path?...` 按 `#Intent` 中的 `scheme=https`
   /// 还原成 `https://host/path?...`。
   static String? _webFallbackUrl(String url) {
+    // QQ 系登录回调经常把目标网址放在 s_url / url / redirect_uri 等参数里
+    // （mqqapi://card/...?s_url=https%3A%2F%2F...）。先把这些 http(s) 参数
+    // 解析出来，让回调留在内置浏览器。
+    if (url.isNotEmpty) {
+      final uri = Uri.tryParse(url);
+      if (uri != null) {
+        for (final key in [
+          's_url',
+          'url',
+          'target',
+          'redirect_uri',
+          'jump_url',
+          'callback',
+          'browser_fallback_url'
+        ]) {
+          final value = uri.queryParameters[key];
+          if (value != null &&
+              (value.startsWith('http://') || value.startsWith('https://'))) {
+            return value;
+          }
+        }
+      }
+    }
     const marker = 'S.browser_fallback_url=';
     final markerIndex = url.indexOf(marker);
     if (markerIndex >= 0) {
