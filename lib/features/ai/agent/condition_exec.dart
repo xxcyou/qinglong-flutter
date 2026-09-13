@@ -329,10 +329,19 @@ class ConditionExecEngine {
   }
 
   void _log(Map<String, dynamic> step, String id, String indent, int depth) {
-    final raw = (step['message'] ?? step['value'] ?? '').toString();
-    final msg = raw.trim().startsWith('expr:')
-        ? _stringify(_eval(raw.trim().substring(5)))
-        : _template(raw);
+    final hasMessage = step['message'] != null;
+    final hasValue = step['value'] != null;
+    String msg;
+    if (hasMessage) {
+      final raw = step['message']!.toString();
+      msg = raw.trim().startsWith('expr:')
+          ? _stringify(_eval(raw.trim().substring(5)))
+          : _template(raw);
+    } else if (hasValue) {
+      msg = _stringify(_eval(step['value']!));
+    } else {
+      msg = '';
+    }
     _out.writeln('$indent- $id · $msg');
     _emit(
       message: '条件执行 · $id',

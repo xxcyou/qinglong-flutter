@@ -51,12 +51,46 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
         settled.add('${e.turn}|${e.toolName ?? ''}');
       }
     }
-    return [
+    final visible = [
       for (final e in events)
         if (!(e.kind == AgentEventKind.toolStart &&
             settled.contains('${e.turn}|${e.toolName ?? ''}')))
           e,
     ];
+    // condition_exec 现在会发很多小步骤；全摊开全是 condition_exec 太费眼。
+    // 把连续的小步骤折叠成一行"条件执行 · N 步"，展开/详情里保留完整树形轨迹。
+    final grouped = <AgentEvent>[];
+    for (var i = 0; i < visible.length;) {
+      final e = visible[i];
+      if (e.kind == AgentEventKind.workflowStep &&
+          e.toolName == 'condition_exec') {
+        final trace = StringBuffer();
+        var ok = true;
+        final start = i;
+        while (i < visible.length &&
+            visible[i].kind == AgentEventKind.workflowStep &&
+            visible[i].toolName == 'condition_exec') {
+          ok = ok && visible[i].ok;
+          trace.writeln(_TimelineRowState._workflowLine(visible[i]));
+          i++;
+        }
+        grouped.add(
+          AgentEvent(
+            kind: AgentEventKind.workflowStep,
+            message: '条件执行 · ${i - start} 步',
+            toolName: 'condition_exec',
+            args: {'count': i - start, 'collapsed': true},
+            result: trace.toString().trim(),
+            fullResult: trace.toString().trim(),
+            ok: ok,
+          ),
+        );
+      } else {
+        grouped.add(e);
+        i++;
+      }
+    }
+    return grouped;
   }
 
   @override
@@ -323,7 +357,8 @@ class _TimelineRowState extends State<_TimelineRow> {
                                   ),
                                 ),
                                 if (event.toolName != null &&
-                                    event.toolName!.isNotEmpty)
+                                    event.toolName!.isNotEmpty &&
+                                    event.kind != AgentEventKind.workflowStep)
                                   TextSpan(
                                     text: '  ${event.toolName}',
                                     style: const TextStyle(
@@ -466,6 +501,20 @@ class _TimelineRowState extends State<_TimelineRow> {
     return 0;
   }
 
+  static String _workflowLine(AgentEvent event) {
+    final depth = _workflowDepth(event);
+    final indent = List.filled(depth, '  ').join();
+    final msg = event.message.startsWith('条件执行 · ')
+        ? event.message.substring('条件执行 · '.length)
+        : event.message;
+    final result = event.result?.trim() ?? '';
+    if (result.isEmpty || result == event.message) return '$indent- $msg';
+    final summary = result.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final clipped =
+        summary.length > 160 ? '${summary.substring(0, 160)}…' : summary;
+    return '$indent- $msg：$clipped';
+  }
+
   static String _ms(int ms) =>
       ms >= 1000 ? '${(ms / 1000).toStringAsFixed(1)}s' : '${ms}ms';
 
@@ -561,7 +610,7 @@ class _TimelineRowState extends State<_TimelineRow> {
         return _Visual(
           Icons.account_tree_outlined,
           Colors.lightBlue.shade600,
-          '条件执行',
+          '流程',
         );
       case AgentEventKind.done:
         return _Visual(Icons.flag_rounded, scheme.primary, '收尾');

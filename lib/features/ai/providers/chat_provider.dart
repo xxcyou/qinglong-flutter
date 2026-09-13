@@ -3890,6 +3890,7 @@ class ChatNotifier extends Notifier<ChatState> {
             '- {"type":"while","while":"表达式","max":1000,"body":[...]}: 条件循环\n'
             '- {"type":"break"}: 跳出循环；{"type":"return","value":"表达式"}: 提前结束\n'
             '- {"type":"try","try":[...],"catch":[...],"error_var":"e"}: 异常捕获\n'
+            '- {"type":"log","message":"文本 \$var 模板"} 或 {"type":"log","value":"表达式"}: 日志\n'
             '表达式支持：算术(+ - * / %)、比较(== != > < >= <=)、逻辑(&& || !)、'
             '三元 ?:、函数 contains/starts/ends/len/lower/upper/trim/replace/split/join/'
             'num/str/get/json/json_encode/type；变量用 \$name 或 \${name}，'
