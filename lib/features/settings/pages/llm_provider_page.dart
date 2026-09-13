@@ -865,15 +865,62 @@ String _capabilitySummary(LlmProviderConfig provider, String model) {
   return parts.join(' · ');
 }
 
-class _ProviderModels extends ConsumerWidget {
+class _ProviderModels extends ConsumerStatefulWidget {
   const _ProviderModels({required this.providerId});
 
   final String providerId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final registry = ref.watch(llmRegistryProvider);
+  ConsumerState<_ProviderModels> createState() => _ProviderModelsState();
+}
+
+class _ProviderModelsState extends ConsumerState<_ProviderModels> {
+  bool _selecting = false;
+  final Set<String> _selected = {};
+
+  Future<void> _deleteSelected(String providerId) async {
+    final registry = ref.read(llmRegistryProvider);
     final provider = registry.byId(providerId);
+    if (provider == null || _selected.isEmpty) return;
+    final names = _selected.toList()..sort();
+    final ok = await showConfirmDialog(
+      context,
+      title: '批量移除模型',
+      message: '从这家列表里移除 ${names.length} 个模型：\n${names.join('\n')}\n'
+          '下次获取若接口仍返回它们会回来。',
+      confirmText: '移除',
+    );
+    if (ok != true || !mounted) return;
+    final models = provider.models
+        .where((m) => !_selected.contains(m))
+        .toList(growable: false);
+    final manual = provider.manualModels
+        .where((m) => !_selected.contains(m))
+        .toList(growable: false);
+    final rest = <String>{...models, ...manual}.toList()..sort();
+    final limits = {...provider.contextLimits}
+      ..removeWhere((k, _) => _selected.contains(k));
+    await ref.read(llmRegistryProvider.notifier).updateProvider(
+          provider.copyWith(
+            models: models,
+            manualModels: manual,
+            contextLimits: limits,
+            defaultModel: _selected.contains(provider.defaultModel)
+                ? (rest.isNotEmpty ? rest.first : '')
+                : provider.defaultModel,
+          ),
+        );
+    if (!mounted) return;
+    setState(() {
+      _selected.clear();
+      _selecting = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final registry = ref.watch(llmRegistryProvider);
+    final provider = registry.byId(widget.providerId);
     if (provider == null) return const SizedBox.shrink();
     final chat = ref.watch(chatProvider);
     final notifier = ref.read(chatProvider.notifier);
@@ -909,17 +956,17 @@ class _ProviderModels extends ConsumerWidget {
                   children: [
                     GlassPill(
                       icon: Icons.refresh,
-                      label: chat.isLoadingModels ? '获取中…' : '获取并缓存模型',
+                      label: chat.isLoadingModels ? '获取中…' : '更新在线模型',
                       dense: true,
                       onTap: chat.isLoadingModels
                           ? null
                           : () async {
-                              await notifier.loadModelsFor(providerId);
+                              await notifier.loadModelsFor(widget.providerId);
                               if (!context.mounted) return;
                               final err = ref.read(chatProvider).modelsError;
                               final n = ref
                                       .read(llmRegistryProvider)
-                                      .byId(providerId)
+                                      .byId(widget.providerId)
                                       ?.allModels
                                       .length ??
                                   0;
@@ -950,11 +997,46 @@ class _ProviderModels extends ConsumerWidget {
                         );
                         if (name == null || name.trim().isEmpty) return;
                         await notifier.addManualModelTo(
-                          providerId,
+                          widget.providerId,
                           name.trim(),
                         );
                       },
                     ),
+                    if (_selecting)
+                      GlassPill(
+                        icon: Icons.select_all,
+                        label:
+                            _selected.length == models.length ? '取消全选' : '全选',
+                        dense: true,
+                        onTap: () => setState(() {
+                          if (_selected.length == models.length &&
+                              models.isNotEmpty) {
+                            _selected.clear();
+                          } else {
+                            _selected.addAll(models);
+                          }
+                        }),
+                      ),
+                    GlassPill(
+                      icon: _selecting ? Icons.close : Icons.delete_sweep,
+                      label: _selecting
+                          ? '取消批量'
+                          : (models.isEmpty ? '批量删除' : '批量删除'),
+                      dense: true,
+                      onTap: () => setState(() {
+                        _selecting = !_selecting;
+                        _selected.clear();
+                      }),
+                    ),
+                    if (_selecting)
+                      GlassPill(
+                        icon: Icons.delete_forever,
+                        label: '删除选中 (${_selected.length})',
+                        dense: true,
+                        onTap: _selected.isEmpty
+                            ? null
+                            : () => _deleteSelected(widget.providerId),
+                      ),
                   ],
                 ),
               ],
@@ -966,7 +1048,7 @@ class _ProviderModels extends ConsumerWidget {
             padding: const EdgeInsets.only(bottom: 8),
             child: GlassCard(
               child: Text(
-                '还没有模型。先填好 Base URL 与 API Key 再点「获取并缓存模型」，'
+                '还没有模型。先填好 Base URL 与 API Key 再点「更新在线模型」，'
                 '或者直接手动添加模型名。',
                 style:
                     TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
@@ -978,19 +1060,38 @@ class _ProviderModels extends ConsumerWidget {
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: GlassCard(
-                selected: m == provider.defaultModel,
-                onTap: () => ref
-                    .read(llmRegistryProvider.notifier)
-                    .setDefaultModel(providerId, m),
+                selected: _selecting
+                    ? _selected.contains(m)
+                    : m == provider.defaultModel,
+                onTap: () {
+                  if (_selecting) {
+                    setState(() {
+                      if (!_selected.add(m)) _selected.remove(m);
+                    });
+                  } else {
+                    ref
+                        .read(llmRegistryProvider.notifier)
+                        .setDefaultModel(provider.id, m);
+                  }
+                },
                 child: Row(
                   children: [
-                    Icon(
-                      m == provider.defaultModel
-                          ? Icons.radio_button_checked
-                          : Icons.radio_button_unchecked,
-                      size: 20,
-                      color: m == provider.defaultModel ? scheme.primary : null,
-                    ),
+                    if (_selecting)
+                      Checkbox(
+                        value: _selected.contains(m),
+                        onChanged: (_) => setState(() {
+                          if (!_selected.add(m)) _selected.remove(m);
+                        }),
+                      )
+                    else
+                      Icon(
+                        m == provider.defaultModel
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                        size: 20,
+                        color:
+                            m == provider.defaultModel ? scheme.primary : null,
+                      ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Column(
@@ -1014,152 +1115,156 @@ class _ProviderModels extends ConsumerWidget {
                         ],
                       ),
                     ),
-                    IconButton(
-                      tooltip: '能力设置（图片/思考/工具）',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () async {
-                        final caps = provider.capabilitiesFor(m);
-                        var supportsImage = caps.supportsImage;
-                        var supportsReasoning = caps.supportsReasoning;
-                        var supportsTools = caps.supportsTools;
-                        void save() => ref
-                            .read(llmRegistryProvider.notifier)
-                            .updateProvider(
-                              provider.copyWith(
-                                modelCapabilities: {
-                                  ...provider.modelCapabilities,
-                                  m: ModelCapabilities(
-                                    supportsImage: supportsImage,
-                                    supportsReasoning: supportsReasoning,
-                                    supportsTools: supportsTools,
-                                  ),
-                                },
-                              ),
-                            );
-                        await showModalBottomSheet<void>(
-                          context: context,
-                          isScrollControlled: true,
-                          builder: (sheetContext) => SafeArea(
-                            child: StatefulBuilder(
-                              builder: (sheetContext, setSheetState) => Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Padding(
-                                    padding: const EdgeInsets.fromLTRB(
-                                        16, 14, 16, 4),
-                                    child: Text(
-                                      '$m 的能力设置',
-                                      style: const TextStyle(
-                                          fontSize: 15,
-                                          fontWeight: FontWeight.w700),
+                    if (!_selecting) ...[
+                      IconButton(
+                        tooltip: '能力设置（图片/思考/工具）',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () async {
+                          final caps = provider.capabilitiesFor(m);
+                          var supportsImage = caps.supportsImage;
+                          var supportsReasoning = caps.supportsReasoning;
+                          var supportsTools = caps.supportsTools;
+                          void save() => ref
+                              .read(llmRegistryProvider.notifier)
+                              .updateProvider(
+                                provider.copyWith(
+                                  modelCapabilities: {
+                                    ...provider.modelCapabilities,
+                                    m: ModelCapabilities(
+                                      supportsImage: supportsImage,
+                                      supportsReasoning: supportsReasoning,
+                                      supportsTools: supportsTools,
                                     ),
-                                  ),
-                                  CheckboxListTile(
-                                    value: supportsImage,
-                                    title: const Text('支持图片'),
-                                    subtitle: const Text(
-                                        '开启后图片直接发给主模型，不调用 image_recognize 工具'),
-                                    onChanged: (v) {
-                                      supportsImage = v ?? false;
-                                      save();
-                                      setSheetState(() {});
-                                    },
-                                  ),
-                                  CheckboxListTile(
-                                    value: supportsReasoning,
-                                    title: const Text('支持思考'),
-                                    subtitle: const Text(
-                                        '允许发送 reasoning_effort / 思维链'),
-                                    onChanged: (v) {
-                                      supportsReasoning = v ?? true;
-                                      save();
-                                      setSheetState(() {});
-                                    },
-                                  ),
-                                  CheckboxListTile(
-                                    value: supportsTools,
-                                    title: const Text('支持工具'),
-                                    subtitle: const Text('允许调用函数/工具'),
-                                    onChanged: (v) {
-                                      supportsTools = v ?? true;
-                                      save();
-                                      setSheetState(() {});
-                                    },
-                                  ),
-                                  const SizedBox(height: 8),
-                                ],
+                                  },
+                                ),
+                              );
+                          await showModalBottomSheet<void>(
+                            context: context,
+                            isScrollControlled: true,
+                            builder: (sheetContext) => SafeArea(
+                              child: StatefulBuilder(
+                                builder: (sheetContext, setSheetState) =>
+                                    Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                          16, 14, 16, 4),
+                                      child: Text(
+                                        '$m 的能力设置',
+                                        style: const TextStyle(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w700),
+                                      ),
+                                    ),
+                                    CheckboxListTile(
+                                      value: supportsImage,
+                                      title: const Text('支持图片'),
+                                      subtitle: const Text(
+                                          '开启后图片直接发给主模型，不调用 image_recognize 工具'),
+                                      onChanged: (v) {
+                                        supportsImage = v ?? false;
+                                        save();
+                                        setSheetState(() {});
+                                      },
+                                    ),
+                                    CheckboxListTile(
+                                      value: supportsReasoning,
+                                      title: const Text('支持思考'),
+                                      subtitle: const Text(
+                                          '允许发送 reasoning_effort / 思维链'),
+                                      onChanged: (v) {
+                                        supportsReasoning = v ?? true;
+                                        save();
+                                        setSheetState(() {});
+                                      },
+                                    ),
+                                    CheckboxListTile(
+                                      value: supportsTools,
+                                      title: const Text('支持工具'),
+                                      subtitle: const Text('允许调用函数/工具'),
+                                      onChanged: (v) {
+                                        supportsTools = v ?? true;
+                                        save();
+                                        setSheetState(() {});
+                                      },
+                                    ),
+                                    const SizedBox(height: 8),
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.tune, size: 18),
-                    ),
-                    IconButton(
-                      tooltip: '设置上下文长度',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () async {
-                        final v = await showTextInputDialog(
-                          context,
-                          title: '$m 的上下文长度',
-                          initialValue: '${provider.contextLimits[m] ?? 8000}',
-                          hintText: '8000',
-                          helperText: '用于计算上下文占用比例与自动压缩时机',
-                          keyboardType: TextInputType.number,
-                          confirmText: '保存',
-                        );
-                        final n = int.tryParse((v ?? '').trim());
-                        if (n == null || n < 1000) return;
-                        await ref
-                            .read(llmRegistryProvider.notifier)
-                            .updateProvider(
-                              provider.copyWith(
-                                contextLimits: {
-                                  ...provider.contextLimits,
-                                  m: n,
-                                },
-                              ),
-                            );
-                      },
-                      icon: const Icon(Icons.straighten, size: 18),
-                    ),
-                    IconButton(
-                      tooltip: '移除',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () async {
-                        final ok = await showConfirmDialog(
-                          context,
-                          title: '移除模型',
-                          message: '从这家的列表里移除 $m？'
-                              '下次获取若接口仍返回它会回来。',
-                          confirmText: '移除',
-                        );
-                        if (ok != true) return;
-                        final rest = <String>{
-                          ...provider.models.where((x) => x != m),
-                          ...provider.manualModels.where((x) => x != m),
-                        }.toList()
-                          ..sort();
-                        await ref
-                            .read(llmRegistryProvider.notifier)
-                            .updateProvider(
-                              provider.copyWith(
-                                models: provider.models
-                                    .where((x) => x != m)
-                                    .toList(growable: false),
-                                manualModels: provider.manualModels
-                                    .where((x) => x != m)
-                                    .toList(growable: false),
-                                contextLimits: {...provider.contextLimits}
-                                  ..remove(m),
-                                defaultModel: provider.defaultModel == m
-                                    ? (rest.isEmpty ? '' : rest.first)
-                                    : provider.defaultModel,
-                              ),
-                            );
-                      },
-                      icon: const Icon(Icons.close, size: 18),
-                    ),
+                          );
+                        },
+                        icon: const Icon(Icons.tune, size: 18),
+                      ),
+                      IconButton(
+                        tooltip: '设置上下文长度',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () async {
+                          final v = await showTextInputDialog(
+                            context,
+                            title: '$m 的上下文长度',
+                            initialValue:
+                                '${provider.contextLimits[m] ?? 8000}',
+                            hintText: '8000',
+                            helperText: '用于计算上下文占用比例与自动压缩时机',
+                            keyboardType: TextInputType.number,
+                            confirmText: '保存',
+                          );
+                          final n = int.tryParse((v ?? '').trim());
+                          if (n == null || n < 1000) return;
+                          await ref
+                              .read(llmRegistryProvider.notifier)
+                              .updateProvider(
+                                provider.copyWith(
+                                  contextLimits: {
+                                    ...provider.contextLimits,
+                                    m: n,
+                                  },
+                                ),
+                              );
+                        },
+                        icon: const Icon(Icons.straighten, size: 18),
+                      ),
+                      IconButton(
+                        tooltip: '移除',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () async {
+                          final ok = await showConfirmDialog(
+                            context,
+                            title: '移除模型',
+                            message: '从这家的列表里移除 $m？'
+                                '下次获取若接口仍返回它会回来。',
+                            confirmText: '移除',
+                          );
+                          if (ok != true) return;
+                          final rest = <String>{
+                            ...provider.models.where((x) => x != m),
+                            ...provider.manualModels.where((x) => x != m),
+                          }.toList()
+                            ..sort();
+                          await ref
+                              .read(llmRegistryProvider.notifier)
+                              .updateProvider(
+                                provider.copyWith(
+                                  models: provider.models
+                                      .where((x) => x != m)
+                                      .toList(growable: false),
+                                  manualModels: provider.manualModels
+                                      .where((x) => x != m)
+                                      .toList(growable: false),
+                                  contextLimits: {...provider.contextLimits}
+                                    ..remove(m),
+                                  defaultModel: provider.defaultModel == m
+                                      ? (rest.isEmpty ? '' : rest.first)
+                                      : provider.defaultModel,
+                                ),
+                              );
+                        },
+                        icon: const Icon(Icons.close, size: 18),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -1169,7 +1274,6 @@ class _ProviderModels extends ConsumerWidget {
   }
 }
 
-/// 一行"点进去改"的设置项。
 class _PickRow extends StatelessWidget {
   const _PickRow({
     required this.icon,

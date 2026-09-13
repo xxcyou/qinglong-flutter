@@ -601,16 +601,66 @@ class _TestRowState extends State<_TestRow> {
 }
 
 /// 模型区：自动获取 + 手动添加 + 单个模型的上下文长度与连通性。
-class _ModelSection extends ConsumerWidget {
+class _ModelSection extends ConsumerStatefulWidget {
   const _ModelSection({required this.onChanged});
 
   final VoidCallback onChanged;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final scheme = Theme.of(context).colorScheme;
+  ConsumerState<_ModelSection> createState() => _ModelSectionState();
+}
+
+class _ModelSectionState extends ConsumerState<_ModelSection> {
+  bool _selecting = false;
+  final Set<String> _selected = {};
+
+  Future<void> _deleteSelected() async {
+    final registry = ref.read(llmRegistryProvider);
+    final provider = registry.active;
+    if (provider.id.isEmpty || _selected.isEmpty) return;
+    final names = _selected.toList()..sort();
+    final ok = await showConfirmDialog(
+      context,
+      title: '批量移除模型',
+      message: '从当前提供商移除 ${names.length} 个模型：\n${names.join('\n')}\n'
+          '下次自动获取若接口仍返回它们会回来。',
+      confirmText: '移除',
+    );
+    if (ok != true || !mounted) return;
+    final models = provider.models
+        .where((m) => !_selected.contains(m))
+        .toList(growable: false);
+    final manual = provider.manualModels
+        .where((m) => !_selected.contains(m))
+        .toList(growable: false);
+    final rest = <String>{...models, ...manual}.toList()..sort();
+    final limits = {...provider.contextLimits}
+      ..removeWhere((k, _) => _selected.contains(k));
+    await ref.read(llmRegistryProvider.notifier).updateProvider(
+          provider.copyWith(
+            models: models,
+            manualModels: manual,
+            contextLimits: limits,
+            defaultModel: _selected.contains(provider.defaultModel)
+                ? (rest.isNotEmpty ? rest.first : '')
+                : provider.defaultModel,
+          ),
+        );
+    if (!mounted) return;
+    setState(() {
+      _selected.clear();
+      _selecting = false;
+    });
+    widget.onChanged();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final chat = ref.watch(chatProvider);
     final notifier = ref.read(chatProvider.notifier);
+    final scheme = Theme.of(context).colorScheme;
+    final provider = ref.watch(llmRegistryProvider).active;
+    final models = chat.availableModels;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -634,13 +684,12 @@ class _ModelSection extends ConsumerWidget {
                 const SizedBox(height: 3),
                 Builder(
                   builder: (context) {
-                    final provider = ref.watch(llmRegistryProvider).active;
                     final at = provider.modelsFetchedAt;
                     return Text(
                       at == null
-                          ? '还没缓存模型列表，点下面「获取并缓存模型」'
+                          ? '还没缓存模型列表，点下面「更新在线模型」'
                           : '${provider.label} 已缓存 '
-                              '${provider.allModels.length} 个模型 · '
+                              '${models.length} 个模型 · '
                               '${Formatter.dateTime(at)}',
                       style: TextStyle(
                         fontSize: 11.5,
@@ -656,7 +705,7 @@ class _ModelSection extends ConsumerWidget {
                   children: [
                     GlassPill(
                       icon: Icons.refresh,
-                      label: chat.isLoadingModels ? '获取中…' : '获取并缓存模型',
+                      label: chat.isLoadingModels ? '获取中…' : '更新在线模型',
                       dense: true,
                       tooltip: 'AI 页只读这份缓存，不会自己去拉列表',
                       onTap: chat.isLoadingModels
@@ -669,6 +718,7 @@ class _ModelSection extends ConsumerWidget {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(content: Text('获取到 $n 个模型')),
                               );
+                              widget.onChanged();
                             },
                     ),
                     GlassPill(
@@ -684,42 +734,94 @@ class _ModelSection extends ConsumerWidget {
                           confirmText: '添加',
                         );
                         if (name == null || name.trim().isEmpty) return;
-                        notifier.addManualModel(name.trim());
+                        await notifier.addManualModel(name.trim());
+                        widget.onChanged();
                       },
                     ),
+                    if (_selecting)
+                      GlassPill(
+                        icon: Icons.select_all,
+                        label:
+                            _selected.length == models.length ? '取消全选' : '全选',
+                        dense: true,
+                        onTap: () => setState(() {
+                          if (_selected.length == models.length &&
+                              models.isNotEmpty) {
+                            _selected.clear();
+                          } else {
+                            _selected.addAll(models);
+                          }
+                        }),
+                      ),
+                    GlassPill(
+                      icon: _selecting ? Icons.close : Icons.delete_sweep,
+                      label: _selecting ? '取消批量' : '批量删除',
+                      dense: true,
+                      onTap: () => setState(() {
+                        _selecting = !_selecting;
+                        _selected.clear();
+                      }),
+                    ),
+                    if (_selecting)
+                      GlassPill(
+                        icon: Icons.delete_forever,
+                        label: '删除选中 (${_selected.length})',
+                        dense: true,
+                        onTap:
+                            _selected.isEmpty ? null : () => _deleteSelected(),
+                      ),
                   ],
                 ),
               ],
             ),
           ),
         ),
-        if (chat.availableModels.isEmpty)
+        if (models.isEmpty)
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: GlassCard(
               child: Text(
-                '还没有模型。先填好 Base URL 与 API Key 再点「自动获取」，或直接手动添加模型名。',
+                '还没有模型。先填好 Base URL 与 API Key 再点「更新在线模型」，或直接手动添加模型名。',
                 style:
                     TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
               ),
             ),
           )
         else
-          for (final m in chat.availableModels)
+          for (final m in models)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: GlassCard(
-                selected: m == chat.selectedModel,
-                onTap: () => notifier.setModel(m),
+                selected: _selecting
+                    ? _selected.contains(m)
+                    : m == chat.selectedModel,
+                onTap: () {
+                  if (_selecting) {
+                    setState(() {
+                      if (!_selected.add(m)) _selected.remove(m);
+                    });
+                    widget.onChanged();
+                  } else {
+                    notifier.setModel(m);
+                  }
+                },
                 child: Row(
                   children: [
-                    Icon(
-                      m == chat.selectedModel
-                          ? Icons.radio_button_checked
-                          : Icons.radio_button_unchecked,
-                      size: 20,
-                      color: m == chat.selectedModel ? scheme.primary : null,
-                    ),
+                    if (_selecting)
+                      Checkbox(
+                        value: _selected.contains(m),
+                        onChanged: (_) => setState(() {
+                          if (!_selected.add(m)) _selected.remove(m);
+                        }),
+                      )
+                    else
+                      Icon(
+                        m == chat.selectedModel
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                        size: 20,
+                        color: m == chat.selectedModel ? scheme.primary : null,
+                      ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Column(
@@ -746,54 +848,60 @@ class _ModelSection extends ConsumerWidget {
                         ],
                       ),
                     ),
-                    IconButton(
-                      tooltip: '设置上下文长度',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () async {
-                        final v = await showTextInputDialog(
-                          context,
-                          title: '$m 的上下文长度',
-                          initialValue: '${chat.modelContextLimits[m] ?? 8000}',
-                          hintText: '8000',
-                          helperText: '用于计算上下文占用比例与自动压缩时机',
-                          keyboardType: TextInputType.number,
-                          confirmText: '保存',
-                        );
-                        final n = int.tryParse((v ?? '').trim());
-                        if (n == null || n < 1000) return;
-                        notifier.setModelContextLimit(m, n);
-                      },
-                      icon: const Icon(Icons.straighten, size: 18),
-                    ),
-                    IconButton(
-                      tooltip: '测试该模型',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: chat.testingModel == m
-                          ? null
-                          : () => notifier.testModel(m),
-                      icon: chat.testingModel == m
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.bolt, size: 18),
-                    ),
-                    IconButton(
-                      tooltip: '移除',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () async {
-                        final ok = await showConfirmDialog(
-                          context,
-                          title: '移除模型',
-                          message: '从列表里移除 $m？下次自动获取若接口仍返回它会回来。',
-                          confirmText: '移除',
-                        );
-                        if (ok != true) return;
-                        notifier.removeModel(m);
-                      },
-                      icon: const Icon(Icons.close, size: 18),
-                    ),
+                    if (!_selecting) ...[
+                      IconButton(
+                        tooltip: '设置上下文长度',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () async {
+                          final v = await showTextInputDialog(
+                            context,
+                            title: '$m 的上下文长度',
+                            initialValue:
+                                '${chat.modelContextLimits[m] ?? 8000}',
+                            hintText: '8000',
+                            helperText: '用于计算上下文占用比例与自动压缩时机',
+                            keyboardType: TextInputType.number,
+                            confirmText: '保存',
+                          );
+                          final n = int.tryParse((v ?? '').trim());
+                          if (n == null || n < 1000) return;
+                          await notifier.setModelContextLimit(m, n);
+                          widget.onChanged();
+                        },
+                        icon: const Icon(Icons.straighten, size: 18),
+                      ),
+                      IconButton(
+                        tooltip: '测试该模型',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: chat.testingModel == m
+                            ? null
+                            : () => notifier.testModel(m),
+                        icon: chat.testingModel == m
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.bolt, size: 18),
+                      ),
+                      IconButton(
+                        tooltip: '移除',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () async {
+                          final ok = await showConfirmDialog(
+                            context,
+                            title: '移除模型',
+                            message: '从列表里移除 $m？下次自动获取若接口仍返回它会回来。',
+                            confirmText: '移除',
+                          );
+                          if (ok != true) return;
+                          await notifier.removeModel(m);
+                          widget.onChanged();
+                        },
+                        icon: const Icon(Icons.close, size: 18),
+                      ),
+                    ],
                   ],
                 ),
               ),
