@@ -368,6 +368,13 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
     }
   }
 
+  Future<String?> _hostPath(String path) {
+    return _bridge.hostPath(
+      path: path,
+      scope: _appScope ? 'app' : 'shell',
+    );
+  }
+
   void _rejectBinary(FileKind kind) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -573,6 +580,7 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
                             entry: entry,
                             kind: kind,
                             usable: usable,
+                            hostPathResolver: _hostPath,
                             onTap: () {
                               if (entry.isDirectory) {
                                 _load(entry.path);
@@ -602,18 +610,69 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
   }
 }
 
+/// 附件选择器里的图片缩略图：解析宿主路径后显示小图，
+/// 加载中/失败退回文件类型图标。
+class _PickerImageThumbnail extends StatelessWidget {
+  const _PickerImageThumbnail({
+    required this.path,
+    required this.resolver,
+    required this.kind,
+  });
+
+  final String path;
+  final Future<String?> Function(String path) resolver;
+  final FileKind kind;
+  static const _size = 40.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String?>(
+      future: resolver(path),
+      builder: (context, snap) {
+        final host = snap.data;
+        if (host != null && host.isNotEmpty) {
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.file(
+              File(host),
+              width: _size,
+              height: _size,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+              errorBuilder: (_, __, ___) => _fallback(),
+            ),
+          );
+        }
+        return _fallback();
+      },
+    );
+  }
+
+  Widget _fallback() => Container(
+        width: _size,
+        height: _size,
+        decoration: BoxDecoration(
+          color: kind.color.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(kind.icon, color: kind.color, size: _size * 0.55),
+      );
+}
+
 class _Tile extends StatelessWidget {
   const _Tile({
     required this.entry,
     required this.kind,
     required this.usable,
     required this.onTap,
+    this.hostPathResolver,
   });
 
   final ShellFileEntry entry;
   final FileKind kind;
   final bool usable;
   final VoidCallback onTap;
+  final Future<String?> Function(String path)? hostPathResolver;
 
   @override
   Widget build(BuildContext context) {
@@ -633,7 +692,15 @@ class _Tile extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(12, 9, 12, 9),
             child: Row(
               children: [
-                Icon(kind.icon, size: 22, color: kind.color),
+                if (kind.category == FileCategory.image &&
+                    hostPathResolver != null)
+                  _PickerImageThumbnail(
+                    path: entry.path,
+                    resolver: hostPathResolver!,
+                    kind: kind,
+                  )
+                else
+                  Icon(kind.icon, size: 22, color: kind.color),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
