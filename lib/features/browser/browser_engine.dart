@@ -93,6 +93,9 @@ class BrowserEngine {
   /// 有没有上一页：界面上的返回键靠它决定灰不灰。
   final ValueNotifier<bool> canGoBack = ValueNotifier(false);
 
+  /// 主框架导航失败后是否已自动重试过一次。
+  bool _retriedFailedMainNav = false;
+
   static const _maxRequests = 300;
   static const _maxConsole = 200;
 
@@ -142,6 +145,7 @@ class BrowserEngine {
             );
           },
           onPageStarted: (url) {
+            _retriedFailedMainNav = false;
             loading.value = true;
             currentUrl.value = url;
           },
@@ -169,6 +173,16 @@ class BrowserEngine {
           onWebResourceError: (error) {
             loading.value = false;
             _log('error', '${error.errorCode} ${error.description}');
+            // 首次打开黑屏常见原因：WebView 刚挂载时主文档网络请求被拒绝
+            // （ERR_CONNECTION_REFUSED 等）。手动刷新能好，那就自动补一次重试。
+            if (error.isForMainFrame == true && !_retriedFailedMainNav) {
+              _retriedFailedMainNav = true;
+              Future<void>.delayed(const Duration(milliseconds: 500), () async {
+                try {
+                  await _controller?.reload();
+                } catch (_) {}
+              });
+            }
           },
         ),
       );
