@@ -99,6 +99,11 @@ class BrowserEngine {
   /// 主框架导航失败后是否已自动重试过一次。
   bool _retriedFailedMainNav = false;
 
+  /// 新 WebView 第一次页面加载完成后，是否已触发过一次“补刷新”。
+  /// 首次加载页面虽然请求/地址都正常，但 Android 表面有时不显示；
+  /// 手动刷新能好，这里就自动等效刷新一次。
+  bool _firstPageFinishedScheduledReload = false;
+
   static const _maxRequests = 300;
   static const _maxConsole = 200;
 
@@ -121,6 +126,7 @@ class BrowserEngine {
       _scriptsLoaded = true;
       await loadScripts();
     }
+    _firstPageFinishedScheduledReload = false;
     final c = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..addJavaScriptChannel('QLBridge', onMessageReceived: _onBridge)
@@ -162,6 +168,17 @@ class BrowserEngine {
             // 登录 / 过验证之后 cookie 只在内存里，进程被杀就没了。
             // 每次加载完落一次盘，等于"关掉 APP 明天回来还是登录状态"。
             await WebBridge.flush();
+            if (!_firstPageFinishedScheduledReload) {
+              _firstPageFinishedScheduledReload = true;
+              Future<void>.delayed(
+                const Duration(milliseconds: 400),
+                () async {
+                  try {
+                    await _controller?.reload();
+                  } catch (_) {}
+                },
+              );
+            }
             _record(
               CapturedRequest(
                 id: ++_docSeq,
