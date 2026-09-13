@@ -61,6 +61,9 @@ class BrowserEngine {
   WebViewController? _controller;
   WebViewController? get controller => _controller;
 
+  /// WebView 创建/替换版本：BrowserHost 监听它来做首次挂载重建。
+  final ValueNotifier<int> controllerRevision = ValueNotifier(0);
+
   /// 内置浏览器 WebView 的 RepaintBoundary key，用于截取网页画面。
   final GlobalKey webViewBoundaryKey = GlobalKey();
 
@@ -192,6 +195,7 @@ class BrowserEngine {
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
     );
     _controller = c;
+    controllerRevision.value++;
     await _applyBrowserLikeSettings(c);
     return c;
   }

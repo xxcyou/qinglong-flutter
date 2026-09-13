@@ -206,17 +206,25 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<bool>(
-      valueListenable: _engine.visible,
-      builder: (context, visible, _) {
-        return ValueListenableBuilder<BrowserWindowState>(
-          valueListenable: _window,
-          builder: (context, win, _) {
-            // 等待提示会改变工具条高度，所以它也要参与重建。
-            return ValueListenableBuilder<String>(
-              valueListenable: _engine.waitingHint,
-              builder: (context, hint, _) =>
-                  _build(context, visible, win, hint),
+    // controllerRevision 必须参与重建：第一次 ensure() 建 WebViewController
+    // 后，如果宿主不重建，WebViewWidget 就不会挂上来，open() 的第一次
+    // loadRequest 发给一个还不存在的控件，表现就是转圈但地址栏/标题为空。
+    return ValueListenableBuilder<int>(
+      valueListenable: _engine.controllerRevision,
+      builder: (context, _, __) {
+        return ValueListenableBuilder<bool>(
+          valueListenable: _engine.visible,
+          builder: (context, visible, _) {
+            return ValueListenableBuilder<BrowserWindowState>(
+              valueListenable: _window,
+              builder: (context, win, _) {
+                // 等待提示会改变工具条高度，所以它也要参与重建。
+                return ValueListenableBuilder<String>(
+                  valueListenable: _engine.waitingHint,
+                  builder: (context, hint, _) =>
+                      _build(context, visible, win, hint),
+                );
+              },
             );
           },
         );
