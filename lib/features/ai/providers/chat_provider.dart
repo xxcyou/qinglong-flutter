@@ -2917,7 +2917,12 @@ class ChatNotifier extends Notifier<ChatState> {
         ok: ok,
       ),
     );
-    return engine.run(rawSteps.cast<dynamic>(), initial);
+    final functions = args['functions'];
+    return engine.run(
+      rawSteps.cast<dynamic>(),
+      initial,
+      functions: functions is List ? functions.cast<dynamic>() : const [],
+    );
   }
 
   void _emitWorkflowStep({
@@ -3891,6 +3896,9 @@ class ChatNotifier extends Notifier<ChatState> {
             '- {"type":"break"}: 跳出循环；{"type":"return","value":"表达式"}: 提前结束\n'
             '- {"type":"try","try":[...],"catch":[...],"error_var":"e"}: 异常捕获\n'
             '- {"type":"log","message":"文本 \$var 模板"} 或 {"type":"log","value":"表达式"}: 日志\n'
+            '- {"type":"function","name":"foo","params":["a","b"] 或 {"a":0,"b":"x"},"body":[...]}: 定义函数\n'
+            '- {"type":"call","fn":"foo","args":{"a":...},"save_to":"r"}: 调用函数；'
+            '也可以顶层 functions 数组预先定义；函数体 return 返回值，局部变量不污染外层，可递归（有深度限制）\n'
             '表达式支持：算术(+ - * / %)、比较(== != > < >= <=)、逻辑(&& || !)、'
             '三元 ?:、函数 contains/starts/ends/len/lower/upper/trim/replace/split/join/'
             'num/str/get/json/json_encode/type；变量用 \$name 或 \${name}，'
@@ -3911,6 +3919,10 @@ class ChatNotifier extends Notifier<ChatState> {
             'variables': {
               'type': 'object',
               'description': '可选的初始变量，键值对存到变量表',
+            },
+            'functions': {
+              'type': 'array',
+              'description': '可选的函数定义数组，每项结构同 type:"function" 步骤',
             },
           },
           'required': ['steps'],

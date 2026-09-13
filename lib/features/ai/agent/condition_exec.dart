@@ -6,6 +6,8 @@ import 'dart:convert';
 /// - 变量可以存动态值（数字/字符串/布尔/列表/字典），不再只有字符串
 /// - 支持完整表达式：`+ - * / %`、比较、`&& || !`、三元 `?:`、函数调用
 /// - 支持 `set / if / for / while / break / return / try` 控制流
+/// - 支持函数：`functions` 或 `type:"function"` 定义，`type:"call"` 调用，
+///   `return` 返回值，参数数组/默认值，调用时局部变量不污染外层
 /// - 工具结果自动尝试 JSON 解码，后面可以直接 `$result.items[0]`
 /// - 保留延迟、嵌套、思维链步骤可视化
 class ConditionExecEngine {
@@ -28,16 +30,25 @@ class ConditionExecEngine {
     required int depth,
   }) emitStep;
 
-  final Map<String, dynamic> _vars = {};
+  Map<String, dynamic> _vars = {};
+  final Map<String, _DslFunction> _functions = {};
   final StringBuffer _out = StringBuffer();
 
   Future<String> run(
     List<dynamic> steps,
-    Map<String, dynamic> initialVars,
-  ) async {
+    Map<String, dynamic> initialVars, {
+    List<dynamic> functions = const [],
+  }) async {
     _vars.clear();
     _vars.addAll(initialVars);
+    _functions.clear();
     _out.clear();
+    for (final fn in functions) {
+      _registerFunction(fn);
+    }
+    for (final step in steps) {
+      _registerFunction(step);
+    }
     try {
       await _runSteps(steps, depth: 0);
     } on _ReturnSignal catch (r) {
@@ -47,6 +58,69 @@ class ConditionExecEngine {
     }
     final text = _out.toString().trim();
     return text.isEmpty ? '条件执行：没有可执行步骤。' : text;
+  }
+
+  void _registerFunction(Object? raw) {
+    if (raw is! Map) return;
+    final step = raw.map((k, v) => MapEntry(k.toString(), v));
+    if (step['type']?.toString() != 'function') return;
+    final name = (step['name'] ?? step['fn'] ?? '').toString().trim();
+    if (name.isEmpty) throw const FormatException('函数名不能为空');
+    if (step['body'] is! List) {
+      throw FormatException('函数 $name 缺少 body 步骤数组');
+    }
+    final params = step['params'];
+    final names = <String>[];
+    final defaults = <String, Object?>{};
+    if (params is List) {
+      for (final p in params) {
+        names.add(p.toString());
+      }
+    } else if (params is Map) {
+      for (final e in params.entries) {
+        names.add(e.key.toString());
+        defaults[e.key.toString()] = e.value;
+      }
+    } else if (params != null) {
+      throw FormatException('函数 $name 的 params 必须是数组或对象');
+    }
+    _functions[name] = _DslFunction(
+      name: name,
+      params: names,
+      defaults: defaults,
+      body: (step['body'] as List).cast<dynamic>(),
+    );
+  }
+
+  Future<Object?> _invokeDslFunction(
+    String name,
+    Map<String, dynamic> args,
+    int depth,
+  ) async {
+    if (depth > 12) throw StateError('函数调用嵌套超过 12 层');
+    final fn = _functions[name];
+    if (fn == null) throw FormatException('未定义函数 $name');
+    final local = <String, dynamic>{..._vars};
+    for (final p in fn.params) {
+      if (args.containsKey(p)) {
+        local[p] = args[p];
+      } else if (fn.defaults.containsKey(p)) {
+        local[p] = _eval(fn.defaults[p]);
+      } else {
+        local[p] = null;
+      }
+    }
+    final saved = _vars;
+    _vars = local;
+    Object? ret;
+    try {
+      await _runSteps(fn.body, depth: depth);
+    } on _ReturnSignal catch (r) {
+      ret = r.value;
+    } finally {
+      _vars = saved;
+    }
+    return ret;
   }
 
   void _emit({
@@ -79,6 +153,16 @@ class ConditionExecEngine {
       switch (type) {
         case 'tool':
           await _tool(step, id, indent, depth);
+        case 'function':
+          _emit(
+            message: '条件执行 · $id · 定义函数 ${step['name'] ?? step['fn'] ?? ''}',
+            args: {'step': id, 'type': 'function'},
+            result: '已注册函数',
+            ok: true,
+            depth: depth,
+          );
+        case 'call':
+          await _call(step, id, indent, depth);
         case 'set':
           _set(step, id, indent, depth);
         case 'delay':
@@ -153,6 +237,47 @@ class ConditionExecEngine {
       args: {'step': id, 'tool': name, ...args},
       result: result,
       ok: ok,
+      durationMs: sw.elapsedMilliseconds,
+      depth: depth,
+    );
+  }
+
+  Future<void> _call(
+    Map<String, dynamic> step,
+    String id,
+    String indent,
+    int depth,
+  ) async {
+    final name = (step['fn'] ?? step['function'] ?? step['name'] ?? '')
+        .toString()
+        .trim();
+    if (name.isEmpty) {
+      _out.writeln('$indent- $id: 缺少 fn 函数名');
+      return;
+    }
+    if (!_functions.containsKey(name)) {
+      throw FormatException('未定义函数 $name');
+    }
+    final rawArgs = step['args'];
+    final args = <String, dynamic>{};
+    if (rawArgs is Map) {
+      for (final e in rawArgs.entries) {
+        args[e.key.toString()] = _argValue(e.value);
+      }
+    }
+    final sw = Stopwatch()..start();
+    final result = await _invokeDslFunction(name, args, depth + 1);
+    sw.stop();
+    _vars['last'] = result;
+    final saveTo = (step['save_to'] ?? step['as'] ?? '').toString().trim();
+    if (saveTo.isNotEmpty) _vars[saveTo] = result;
+    final display = result == null ? 'null' : _snippet(_stringify(result));
+    _out.writeln('$indent- $id · 调用 $name = $display');
+    _emit(
+      message: '条件执行 · $id · 调用 $name',
+      args: {'step': id, 'fn': name, ...args},
+      result: display,
+      ok: true,
       durationMs: sw.elapsedMilliseconds,
       depth: depth,
     );
@@ -430,6 +555,20 @@ class ConditionExecEngine {
     if (v is num || v is bool) return v.toString();
     return const JsonEncoder.withIndent('  ').convert(v);
   }
+}
+
+class _DslFunction {
+  _DslFunction({
+    required this.name,
+    required this.params,
+    required this.defaults,
+    required this.body,
+  });
+
+  final String name;
+  final List<String> params;
+  final Map<String, Object?> defaults;
+  final List<dynamic> body;
 }
 
 class _BreakSignal implements Exception {
