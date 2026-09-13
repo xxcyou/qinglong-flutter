@@ -70,6 +70,7 @@ class AgentTeamTools {
           kind: AgentEventKind.thinking,
           message: '派工：$label\n$task',
           result: task,
+          group: label,
         ),
       );
       try {
@@ -86,6 +87,7 @@ class AgentTeamTools {
               durationMs: e.durationMs,
               ok: e.ok,
               turn: e.turn,
+              group: label,
             ),
           ),
         );

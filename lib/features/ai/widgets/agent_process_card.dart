@@ -99,6 +99,7 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
             result: trace.toString().trim(),
             fullResult: trace.toString().trim(),
             ok: ok,
+            group: e.group,
           ),
         );
       } else {
@@ -223,20 +224,56 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
           if (_expanded)
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (var i = 0; i < events.length; i++)
-                    _TimelineRow(
-                      event: events[i],
-                      isLast: i == events.length - 1,
-                      onOpenCanvas: widget.onOpenCanvas,
-                    ),
-                ],
-              ),
+              child: _timeline(events),
             ),
         ],
       ),
+    );
+  }
+
+  /// 时间线：普通事件直接一行；带 `group` 的连续事件（子代理）合成一个
+  /// 默认折叠、可展开、折叠态带实时速览的容器。
+  Widget _timeline(List<AgentEvent> events) {
+    // 先把所有子代理事件按 group 聚齐。并行子代理可能交错出现，
+    // 不能只按“连续同组”切，否则一个子代理会被拆成好几个框。
+    final order = <String>[];
+    final byGroup = <String, List<AgentEvent>>{};
+    for (final e in events) {
+      final group = e.group;
+      if (group == null || group.isEmpty) continue;
+      byGroup.putIfAbsent(group, () {
+        order.add(group);
+        return [];
+      }).add(e);
+    }
+    final used = <String>{};
+    final children = <Widget>[];
+    for (var i = 0; i < events.length; i++) {
+      final e = events[i];
+      final group = e.group;
+      if (group != null && group.isNotEmpty) {
+        if (used.add(group)) {
+          children.add(
+            _SubagentGroup(
+              events: byGroup[group]!,
+              running: widget.running,
+              onOpenCanvas: widget.onOpenCanvas,
+            ),
+          );
+        }
+      } else {
+        children.add(
+          _TimelineRow(
+            event: e,
+            isLast: i == events.length - 1,
+            onOpenCanvas: widget.onOpenCanvas,
+          ),
+        );
+      }
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: children,
     );
   }
 
@@ -711,6 +748,155 @@ class _TimelineRowState extends State<_TimelineRow> {
       case AgentEventKind.error:
         return _Visual(Icons.error_outline, scheme.error, '错误');
     }
+  }
+}
+
+/// 子代理容器：同一个 `group` 的事件默认折叠成一个框。
+///
+/// 折叠态只给一行实时速览（思考/工具/正文的最近事件），
+/// 展开后显示该子代理完整的时间线。多个子代理各自独立展开/收起。
+class _SubagentGroup extends StatefulWidget {
+  const _SubagentGroup({
+    required this.events,
+    required this.running,
+    this.onOpenCanvas,
+  });
+
+  final List<AgentEvent> events;
+  final bool running;
+  final void Function(AiCanvas canvas)? onOpenCanvas;
+
+  @override
+  State<_SubagentGroup> createState() => _SubagentGroupState();
+}
+
+class _SubagentGroupState extends State<_SubagentGroup> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final label = widget.events.first.group ?? '子代理';
+    final last = widget.events.last;
+    final done =
+        last.kind == AgentEventKind.done || last.kind == AgentEventKind.error;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: scheme.outlineVariant.withValues(alpha: 0.4),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            borderRadius: BorderRadius.circular(10),
+            child: Row(
+              children: [
+                AnimatedRotation(
+                  turns: _expanded ? 0.5 : 0,
+                  duration: const Duration(milliseconds: 180),
+                  child: Icon(
+                    Icons.keyboard_arrow_down_rounded,
+                    size: 18,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  Icons.account_tree_outlined,
+                  size: 16,
+                  color: scheme.primary,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                if (widget.running && !done)
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else
+                  Icon(
+                    done
+                        ? Icons.check_circle_outline_rounded
+                        : Icons.more_horiz_rounded,
+                    size: 16,
+                    color:
+                        done ? Colors.green.shade600 : scheme.onSurfaceVariant,
+                  ),
+              ],
+            ),
+          ),
+          if (!_expanded && widget.events.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, left: 4),
+              child: Text(
+                _status(last, label),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          if (_expanded)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (var i = 0; i < widget.events.length; i++)
+                    _TimelineRow(
+                      event: widget.events[i],
+                      isLast: i == widget.events.length - 1,
+                      onOpenCanvas: widget.onOpenCanvas,
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 折叠态的一行实时速览：工具名 + 最近事件内容，压成一行。
+  String _status(AgentEvent e, String label) {
+    final prefix = switch (e.kind) {
+      AgentEventKind.thinking => '思考',
+      AgentEventKind.answer => '正文',
+      AgentEventKind.toolStart => '调用',
+      AgentEventKind.toolEnd => '完成',
+      AgentEventKind.error => '错误',
+      AgentEventKind.done => '收尾',
+      _ => '',
+    };
+    var msg = e.message.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final tag = '[$label] ';
+    if (msg.startsWith(tag)) msg = msg.substring(tag.length).trim();
+    if (e.toolName != null && e.toolName!.isNotEmpty) {
+      return '${prefix.isEmpty ? '' : '$prefix '}${e.toolName} · $msg';
+    }
+    return prefix.isEmpty ? msg : '$prefix $msg';
   }
 }
 

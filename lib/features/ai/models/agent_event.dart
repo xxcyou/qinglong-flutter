@@ -70,6 +70,7 @@ class AgentEvent {
     this.ok = true,
     this.turn = 0,
     this.isWrite = false,
+    this.group,
   });
 
   final AgentEventKind kind;
@@ -77,6 +78,10 @@ class AgentEvent {
   final String? toolName;
   final Map<String, dynamic>? args;
   final String? result;
+
+  /// 可选分组标识：同一组事件（比如同一个子代理）用同一个值，
+  /// UI 可以把它们折叠成一个容器展示。不参与业务逻辑。
+  final String? group;
 
   /// 工具链里要立即展示的图片（data URI），例如 show_image 一加载完就推送。
   final String? imageDataUri;
@@ -130,6 +135,7 @@ class AgentEvent {
         'ok': ok,
         'turn': turn,
         if (isWrite) 'isWrite': true,
+        if (group != null) 'group': group,
       };
 
   factory AgentEvent.fromJson(Map<String, dynamic> json) {
@@ -151,6 +157,7 @@ class AgentEvent {
       ok: json['ok'] != false,
       turn: (json['turn'] as num?)?.toInt() ?? 0,
       isWrite: json['isWrite'] == true,
+      group: json['group']?.toString(),
     );
   }
 }
