@@ -105,7 +105,7 @@ class ConditionExecEngine {
       if (args.containsKey(p)) {
         local[p] = args[p];
       } else if (fn.defaults.containsKey(p)) {
-        local[p] = _eval(fn.defaults[p]);
+        local[p] = await _eval(fn.defaults[p]);
       } else {
         local[p] = null;
       }
@@ -164,7 +164,7 @@ class ConditionExecEngine {
         case 'call':
           await _call(step, id, indent, depth);
         case 'set':
-          _set(step, id, indent, depth);
+          await _set(step, id, indent, depth);
         case 'delay':
           await _delay(step, id, indent, depth);
         case 'if':
@@ -181,19 +181,20 @@ class ConditionExecEngine {
           final rawLevel = step['level'] ?? step['times'] ?? 1;
           throw _BreakSignal(
             rawLevel is num ? rawLevel.toInt().clamp(1, 12) : 1,
+            step['label']?.toString(),
           );
         case 'continue':
           throw const _ContinueSignal();
         case 'throw':
         case 'raise':
           throw _DslException(
-            step['value'] == null ? 'DSL 主动抛出错误' : _eval(step['value']!),
+            step['value'] == null ? 'DSL 主动抛出错误' : await _eval(step['value']!),
           );
         case 'return':
           throw _ReturnSignal(
-              step['value'] == null ? null : _eval(step['value']!));
+              step['value'] == null ? null : await _eval(step['value']!));
         case 'log':
-          _log(step, id, indent, depth);
+          await _log(step, id, indent, depth);
         default:
           final msg = '未知步骤类型 $type';
           _out.writeln('$indent- $id: $msg');
@@ -227,7 +228,7 @@ class ConditionExecEngine {
     final args = <String, dynamic>{};
     if (rawArgs is Map) {
       for (final e in rawArgs.entries) {
-        args[e.key.toString()] = _argValue(e.value);
+        args[e.key.toString()] = await _argValue(e.value);
       }
     }
     final sw = Stopwatch()..start();
@@ -295,9 +296,14 @@ class ConditionExecEngine {
     );
   }
 
-  void _set(Map<String, dynamic> step, String id, String indent, int depth) {
+  Future<void> _set(
+    Map<String, dynamic> step,
+    String id,
+    String indent,
+    int depth,
+  ) async {
     final to = (step['to'] ?? step['var'] ?? 'last').toString();
-    final value = _eval(step['value'] ?? '');
+    final value = await _eval(step['value'] ?? '');
     _vars[to] = value;
     _out.writeln('$indent- $id · 赋值 $to = ${_snippet(_stringify(value))}');
     _emit(
@@ -315,8 +321,8 @@ class ConditionExecEngine {
     String indent,
     int depth,
   ) async {
-    final value =
-        _evalNum(step['ms'] ?? step['duration'] ?? step['duration_ms'] ?? 1000);
+    final value = await _evalNum(
+        step['ms'] ?? step['duration'] ?? step['duration_ms'] ?? 1000);
     final ms = value.toInt().clamp(0, 60000);
     final sw = Stopwatch()..start();
     await Future<void>.delayed(Duration(milliseconds: ms));
@@ -339,7 +345,7 @@ class ConditionExecEngine {
     int depth,
   ) async {
     final condition = (step['if'] ?? step['condition'] ?? 'true').toString();
-    final picked = _truthy(_eval(condition));
+    final picked = _truthy(await _eval(condition));
     final branch = picked ? step['then'] : step['else'];
     _out.writeln('$indent- $id · 分支($condition) → ${picked ? 'then' : 'else'}');
     _emit(
@@ -368,7 +374,7 @@ class ConditionExecEngine {
     for (final rawCase in cases) {
       if (rawCase is! Map) continue;
       final m = rawCase.map((k, v) => MapEntry(k.toString(), v));
-      if (_equals(value, _eval(m['match'] ?? ''))) {
+      if (_equals(value, await _eval(m['match'] ?? ''))) {
         final b = m['body'];
         if (b is List) body = b.cast<dynamic>();
         matched = true;
@@ -402,16 +408,21 @@ class ConditionExecEngine {
     final varName = (step['var'] ?? step['variable'] ?? 'item').toString();
     List<dynamic> items;
     if (step['items'] != null) {
-      final v = _eval(step['items']!);
+      final v = await _eval(step['items']!);
       if (v is List) {
         items = v;
+      } else if (v is Map) {
+        items = [
+          for (final e in v.entries) {'key': e.key, 'value': e.value},
+        ];
       } else {
         items = _stringify(v).split(',');
       }
     } else {
-      final start = _evalNum(step['start'] ?? 0).toInt();
-      final end = _evalNum(step['end'] ?? 0).toInt();
-      final stepVal = _evalNum(step['step'] ?? 1).toInt().clamp(1, 1000000);
+      final start = (await _evalNum(step['start'] ?? 0)).toInt();
+      final end = (await _evalNum(step['end'] ?? 0)).toInt();
+      final stepVal =
+          (await _evalNum(step['step'] ?? 1)).toInt().clamp(1, 1000000);
       items = [
         for (var i = start; i < end; i += stepVal) i,
       ];
@@ -433,6 +444,14 @@ class ConditionExecEngine {
       } on _ContinueSignal {
         continue;
       } on _BreakSignal catch (b) {
+        final myLabel = step['label']?.toString();
+        if (b.label != null) {
+          if (b.label == myLabel) {
+            _out.writeln('$indent- $id · break $myLabel');
+            break;
+          }
+          rethrow;
+        }
         if (b.level > 1) throw _BreakSignal(b.level - 1);
         _out.writeln('$indent- $id · break');
         break;
@@ -448,9 +467,9 @@ class ConditionExecEngine {
   ) async {
     final condition =
         (step['while'] ?? step['condition'] ?? 'false').toString();
-    final max = _evalNum(step['max'] ?? 1000).toInt().clamp(1, 100000);
+    final max = (await _evalNum(step['max'] ?? 1000)).toInt().clamp(1, 100000);
     var count = 0;
-    while (_truthy(_eval(condition)) && count < max) {
+    while (_truthy(await _eval(condition)) && count < max) {
       _out.writeln('$indent- $id · 第 ${count + 1} 次循环');
       _emit(
         message: '条件执行 · $id · 循环 ${count + 1}',
@@ -469,6 +488,14 @@ class ConditionExecEngine {
         count++;
         continue;
       } on _BreakSignal catch (b) {
+        final myLabel = step['label']?.toString();
+        if (b.label != null) {
+          if (b.label == myLabel) {
+            _out.writeln('$indent- $id · break $myLabel');
+            break;
+          }
+          rethrow;
+        }
         if (b.level > 1) throw _BreakSignal(b.level - 1);
         _out.writeln('$indent- $id · break');
         break;
@@ -485,46 +512,65 @@ class ConditionExecEngine {
     int depth,
   ) async {
     final errorVar = (step['error_var'] ?? 'error').toString();
+    Object? pending;
     try {
       if (step['try'] is List) {
-        await _runSteps(
-          (step['try'] as List).cast<dynamic>(),
-          depth: depth + 1,
-        );
+        try {
+          await _runSteps(
+            (step['try'] as List).cast<dynamic>(),
+            depth: depth + 1,
+          );
+        } catch (e) {
+          if (e is _ReturnSignal || e is _BreakSignal || e is _ContinueSignal) {
+            pending = e;
+          } else {
+            _vars[errorVar] = e.toString();
+            _out.writeln('$indent- $id · 捕获错误：${_snippet(e.toString())}');
+            _emit(
+              message: '条件执行 · $id · 捕获错误',
+              args: {'step': id},
+              result: e.toString(),
+              ok: false,
+              depth: depth,
+            );
+            if (step['catch'] is List) {
+              await _runSteps(
+                (step['catch'] as List).cast<dynamic>(),
+                depth: depth + 1,
+              );
+            }
+          }
+        }
       }
-    } catch (e) {
-      if (e is _ReturnSignal || e is _BreakSignal || e is _ContinueSignal) {
-        rethrow;
-      }
-      _vars[errorVar] = e.toString();
-      _out.writeln('$indent- $id · 捕获错误：${_snippet(e.toString())}');
-      _emit(
-        message: '条件执行 · $id · 捕获错误',
-        args: {'step': id},
-        result: e.toString(),
-        ok: false,
-        depth: depth,
-      );
-      if (step['catch'] is List) {
+    } finally {
+      if (step['finally'] is List) {
         await _runSteps(
-          (step['catch'] as List).cast<dynamic>(),
+          (step['finally'] as List).cast<dynamic>(),
           depth: depth + 1,
         );
       }
     }
+    if (pending case final _ReturnSignal r) throw r;
+    if (pending case final _BreakSignal b) throw b;
+    if (pending case final _ContinueSignal c) throw c;
   }
 
-  void _log(Map<String, dynamic> step, String id, String indent, int depth) {
+  Future<void> _log(
+    Map<String, dynamic> step,
+    String id,
+    String indent,
+    int depth,
+  ) async {
     final hasMessage = step['message'] != null;
     final hasValue = step['value'] != null;
     String msg;
     if (hasMessage) {
       final raw = step['message']!.toString();
       msg = raw.trim().startsWith('expr:')
-          ? _stringify(_eval(raw.trim().substring(5)))
+          ? _stringify(await _eval(raw.trim().substring(5)))
           : _template(raw);
     } else if (hasValue) {
-      msg = _stringify(_eval(step['value']!));
+      msg = _stringify(await _eval(step['value']!));
     } else {
       msg = '';
     }
@@ -540,11 +586,11 @@ class ConditionExecEngine {
 
   // ------------------------------------------------------------ 表达式
 
-  dynamic _argValue(Object? value) {
+  Future<dynamic> _argValue(Object? value) async {
     if (value is String) {
       final trimmed = value.trim();
       if (trimmed.startsWith('expr:')) {
-        return _eval(trimmed.substring(5));
+        return await _eval(trimmed.substring(5));
       }
       return _template(value);
     }
@@ -561,23 +607,32 @@ class ConditionExecEngine {
     );
   }
 
-  dynamic _eval(Object? raw) {
+  Future<dynamic> _eval(Object? raw) async {
     if (raw is num || raw is bool || raw == null) return raw;
-    if (raw is List) return [for (final v in raw) _eval(v)];
+    if (raw is List) {
+      final out = <dynamic>[];
+      for (final v in raw) {
+        out.add(await _eval(v));
+      }
+      return out;
+    }
     if (raw is Map) {
-      return raw.map(
-        (k, v) => MapEntry(_stringify(_eval(k)), _eval(v)),
-      );
+      final out = <String, dynamic>{};
+      for (final e in raw.entries) {
+        out[_stringify(await _eval(e.key))] = await _eval(e.value);
+      }
+      return out;
     }
     final source = raw.toString().trim();
     if (source.isEmpty) return '';
     final lexer = _Lexer(source);
-    final parser = _Parser(lexer.tokens, _vars);
+    final parser = _Parser(lexer.tokens, _vars, _functions,
+        (name, args, depth) => _invokeDslFunction(name, args, depth));
     return parser.parse();
   }
 
-  num _evalNum(Object? raw) {
-    final v = _eval(raw);
+  Future<num> _evalNum(Object? raw) async {
+    final v = await _eval(raw);
     if (v is num) return v;
     final n = num.tryParse(_stringify(v).trim());
     if (n != null) return n;
@@ -656,8 +711,9 @@ class _DslFunction {
 }
 
 class _BreakSignal implements Exception {
-  const _BreakSignal([this.level = 1]);
+  const _BreakSignal([this.level = 1, this.label]);
   final int level;
+  final String? label;
 }
 
 class _ContinueSignal implements Exception {
@@ -795,13 +851,19 @@ class _Lexer {
 }
 
 class _Parser {
-  _Parser(this._tokens, this._vars);
+  _Parser(this._tokens, this._vars, this._functions, this._invokeDslFn);
   final List<_Token> _tokens;
   final Map<String, dynamic> _vars;
+  final Map<String, _DslFunction> _functions;
+  final Future<Object?> Function(
+    String name,
+    Map<String, dynamic> args,
+    int depth,
+  ) _invokeDslFn;
   int _pos = 0;
 
-  dynamic parse() {
-    final v = _parseTernary();
+  Future<dynamic> parse() async {
+    final v = await _parseTernary();
     final t = _cur;
     if (t.type != _TokType.eof) throw FormatException('多余内容：${t.value}');
     return v;
@@ -820,54 +882,54 @@ class _Parser {
 
   bool _peekOp(String op) => _cur.type == _TokType.op && _cur.value == op;
 
-  dynamic _parseTernary() {
-    final cond = _parseOr();
+  Future<dynamic> _parseTernary() async {
+    final cond = await _parseOr();
     if (_peekOp('?')) {
       _take();
-      final then = _parseTernary();
+      final then = await _parseTernary();
       _expect(':');
-      final els = _parseTernary();
+      final els = await _parseTernary();
       return _truthy(cond) ? then : els;
     }
     return cond;
   }
 
-  dynamic _parseOr() {
-    var left = _parseAnd();
+  Future<dynamic> _parseOr() async {
+    var left = await _parseAnd();
     while (_peekOp('||')) {
       _take();
-      final right = _parseAnd();
+      final right = await _parseAnd();
       // JS 语义：返回实际选中的操作数，允许 `$x || '默认值'` 这种兜底写法。
       left = _truthy(left) ? left : right;
     }
     return left;
   }
 
-  dynamic _parseAnd() {
-    var left = _parseEquality();
+  Future<dynamic> _parseAnd() async {
+    var left = await _parseEquality();
     while (_peekOp('&&')) {
       _take();
-      final right = _parseEquality();
+      final right = await _parseEquality();
       left = _truthy(left) ? right : left;
     }
     return left;
   }
 
-  dynamic _parseEquality() {
-    var left = _parseRelational();
+  Future<dynamic> _parseEquality() async {
+    var left = await _parseRelational();
     while (_peekOp('==') || _peekOp('!=')) {
       final op = _take().value.toString();
-      final right = _parseRelational();
+      final right = await _parseRelational();
       left = op == '==' ? _equals(left, right) : !_equals(left, right);
     }
     return left;
   }
 
-  dynamic _parseRelational() {
-    var left = _parseAdditive();
+  Future<dynamic> _parseRelational() async {
+    var left = await _parseAdditive();
     while (_peekOp('<') || _peekOp('>') || _peekOp('<=') || _peekOp('>=')) {
       final op = _take().value.toString();
-      final right = _parseAdditive();
+      final right = await _parseAdditive();
       final int cmp;
       if (left is num && right is num) {
         cmp = left.compareTo(right);
@@ -888,11 +950,11 @@ class _Parser {
     return left;
   }
 
-  dynamic _parseAdditive() {
-    var left = _parseMultiplicative();
+  Future<dynamic> _parseAdditive() async {
+    var left = await _parseMultiplicative();
     while (_peekOp('+') || _peekOp('-')) {
       final op = _take().value.toString();
-      final right = _parseMultiplicative();
+      final right = await _parseMultiplicative();
       if (op == '+') {
         if (left is num && right is num) {
           left = left + right;
@@ -917,11 +979,11 @@ class _Parser {
     return left;
   }
 
-  dynamic _parseMultiplicative() {
-    var left = _parseUnary();
+  Future<dynamic> _parseMultiplicative() async {
+    var left = await _parseUnary();
     while (_peekOp('*') || _peekOp('/') || _peekOp('%')) {
       final op = _take().value.toString();
-      final right = _parseUnary();
+      final right = await _parseUnary();
       final a = _num(left);
       final b = _num(right);
       if (op != '*' && b == 0) {
@@ -937,20 +999,20 @@ class _Parser {
     return left;
   }
 
-  dynamic _parseUnary() {
+  Future<dynamic> _parseUnary() async {
     if (_peekOp('!')) {
       _take();
-      return !_truthy(_parseUnary());
+      return !_truthy(await _parseUnary());
     }
     if (_peekOp('-')) {
       _take();
-      return -_num(_parseUnary());
+      return -_num(await _parseUnary());
     }
-    return _parsePostfix();
+    return await _parsePostfix();
   }
 
-  dynamic _parsePostfix() {
-    var v = _parsePrimary();
+  Future<dynamic> _parsePostfix() async {
+    var v = await _parsePrimary();
     while (true) {
       if (_peekOp('.')) {
         _take();
@@ -961,7 +1023,7 @@ class _Parser {
         v = _getField(v, name.value.toString());
       } else if (_peekOp('[')) {
         _take();
-        final idx = _parseTernary();
+        final idx = await _parseTernary();
         _expect(']');
         if (v is List) {
           if (idx is! num) throw const FormatException('索引必须是数字');
@@ -991,7 +1053,7 @@ class _Parser {
     return v;
   }
 
-  dynamic _parsePrimary() {
+  Future<dynamic> _parsePrimary() async {
     final t = _take();
     switch (t.type) {
       case _TokType.number:
@@ -1012,30 +1074,30 @@ class _Parser {
           _take();
           final args = <dynamic>[];
           if (!_peekOp(')')) {
-            args.add(_parseTernary());
+            args.add(await _parseTernary());
             while (_peekOp(',')) {
               _take();
-              args.add(_parseTernary());
+              args.add(await _parseTernary());
             }
           }
           _expect(')');
-          return _callFunction(name, args);
+          return await _callFunction(name, args);
         }
         if (_vars.containsKey(name)) return _vars[name];
         return name;
       case _TokType.op:
         if (t.value == '(') {
-          final v = _parseTernary();
+          final v = await _parseTernary();
           _expect(')');
           return v;
         }
         if (t.value == '[') {
           final list = <dynamic>[];
           if (!_peekOp(']')) {
-            list.add(_parseTernary());
+            list.add(await _parseTernary());
             while (_peekOp(',')) {
               _take();
-              list.add(_parseTernary());
+              list.add(await _parseTernary());
             }
           }
           _expect(']');
@@ -1045,9 +1107,9 @@ class _Parser {
           final map = <String, dynamic>{};
           if (!_peekOp('}')) {
             while (true) {
-              final key = _parseTernary();
+              final key = await _parseTernary();
               _expect(':');
-              final value = _parseTernary();
+              final value = await _parseTernary();
               map[_stringify(key)] = value;
               if (_peekOp(',')) {
                 _take();
@@ -1065,7 +1127,7 @@ class _Parser {
     }
   }
 
-  dynamic _callFunction(String name, List<dynamic> args) {
+  Future<dynamic> _callFunction(String name, List<dynamic> args) async {
     Object? a(int i) => i < args.length ? args[i] : null;
     String reqString(String fn, int i) {
       final v = a(i);
@@ -1137,7 +1199,20 @@ class _Parser {
         if (v is Map) return 'object';
         return 'null';
       default:
-        throw FormatException('未知函数 $name');
+        final fn = _functions[name];
+        if (fn == null) throw FormatException('未知函数 $name');
+        final callArgs = <String, dynamic>{};
+        for (var i = 0; i < fn.params.length; i++) {
+          final p = fn.params[i];
+          if (i < args.length) {
+            callArgs[p] = args[i];
+          } else if (fn.defaults.containsKey(p)) {
+            callArgs[p] = fn.defaults[p];
+          } else {
+            callArgs[p] = null;
+          }
+        }
+        return await _invokeDslFn(name, callArgs, 1);
     }
   }
 
