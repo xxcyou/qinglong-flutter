@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../../core/local_shell/proot_bridge.dart';
 import '../../../core/theme/glass.dart';
 import '../models/agent_task_plan.dart';
 import '../models/canvas_result_bus.dart';
@@ -67,6 +68,7 @@ class _AiCanvasViewState extends State<AiCanvasView> {
   CanvasFileServer? _server;
   bool _loading = true;
   bool _submitted = false;
+  String? _error;
 
   /// 这个画布在窗口总线上的名字。空 = 不参与窗口互通。
   String get _busName =>
@@ -143,6 +145,7 @@ class _AiCanvasViewState extends State<AiCanvasView> {
       await old.close();
     }
     final canvas = widget.canvas;
+    _error = null;
     try {
       // 远程 URL：直接加载，外链资源/接口由页面自己访问。
       final remote = canvas.url.trim();
@@ -153,8 +156,15 @@ class _AiCanvasViewState extends State<AiCanvasView> {
       // 本地文件 / 资源目录 / 纯内联：统一走 localhost 服务承载。
       // 给页面一个真正的 http origin，外链 CSS/JS/图片和 fetch 请求
       // 都跟普通网页一样工作，本地相对路径也能照常解析。
-      final filePath = canvas.htmlPath.trim();
-      final baseDir = canvas.baseDir.trim();
+      //
+      // 关键：/workspace/... 是 PRoot guest 路径，在 Android 进程里
+      // 直接 File() 是打不开的，必须先通过原生桥翻译成宿主真实路径。
+      final rawFilePath = canvas.htmlPath.trim();
+      final rawBaseDir = canvas.baseDir.trim();
+      final filePath =
+          rawFilePath.isEmpty ? '' : await _resolveHostPath(rawFilePath);
+      final baseDir =
+          rawBaseDir.isEmpty ? '' : await _resolveHostPath(rawBaseDir);
       final rootPath =
           filePath.isNotEmpty ? Directory(filePath).parent.path : baseDir;
       final source = filePath.isNotEmpty
@@ -170,10 +180,34 @@ class _AiCanvasViewState extends State<AiCanvasView> {
       }
       _server = server;
       _controller.loadRequest(Uri.parse(server.baseUrl));
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
-      setState(() => _loading = false);
+      setState(() {
+        _loading = false;
+        _error = '画布加载失败：$e';
+      });
     }
+  }
+
+  /// 把 guest 路径（/workspace/...）或 APP 路径翻译成宿主真实路径。
+  ///
+  /// 先按原路径试（APP 绝对路径能直接用），不行再让 PRoot 桥分别按
+  /// shell/app 两种作用域解析一次——和图片识别工具同一套兜底逻辑。
+  Future<String> _resolveHostPath(String path) async {
+    final directType = await FileSystemEntity.type(path);
+    if (directType != FileSystemEntityType.notFound) return path;
+    final bridge = ProotBridge();
+    for (final scope in const ['shell', 'app']) {
+      try {
+        final host = await bridge.hostPath(path: path, scope: scope);
+        if (host.isEmpty) continue;
+        final type = await FileSystemEntity.type(host);
+        if (type != FileSystemEntityType.notFound) return host;
+      } catch (_) {
+        // 换另一个 scope 再试。
+      }
+    }
+    return path;
   }
 
   void _onBridgeMessage(JavaScriptMessage message) {
@@ -258,6 +292,26 @@ window.addEventListener('load',function(){window.aiReportSize();setTimeout(windo
       children: [
         WebViewWidget(controller: _controller),
         if (_loading) const Center(child: CircularProgressIndicator()),
+        if (_error != null)
+          Positioned.fill(
+            child: ColoredBox(
+              color: const Color(0xCC0b0b0f),
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: Text(
+                    _error!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Color(0xFFe8e0c8),
+                      fontSize: 13,
+                      height: 1.6,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
