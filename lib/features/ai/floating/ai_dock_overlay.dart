@@ -1565,6 +1565,12 @@ class _WindowState extends ConsumerState<_Window> {
                                         running: false,
                                         turns: m.turns,
                                         totalTokens: m.totalTokens,
+                                        initiallyExpanded: m.agentEvents.any(
+                                          (e) =>
+                                              e.kind ==
+                                                  AgentEventKind.toolImage &&
+                                              e.imageDataUri != null,
+                                        ),
                                         onOpenCanvas: (canvas) => ref
                                             .read(aiDockProvider.notifier)
                                             .showCanvas(canvas),
@@ -1624,6 +1630,12 @@ class _WindowState extends ConsumerState<_Window> {
                                         running: false,
                                         turns: m.turns,
                                         totalTokens: m.totalTokens,
+                                        initiallyExpanded: m.agentEvents.any(
+                                          (e) =>
+                                              e.kind ==
+                                                  AgentEventKind.toolImage &&
+                                              e.imageDataUri != null,
+                                        ),
                                         onOpenCanvas: (canvas) => ref
                                             .read(aiDockProvider.notifier)
                                             .showCanvas(canvas),
@@ -1635,6 +1647,13 @@ class _WindowState extends ConsumerState<_Window> {
                                     events: chat.liveAgentEvents,
                                     running: chat.isLoading,
                                     totalTokens: chat.lastTokens,
+                                    initiallyExpanded: chat.isLoading ||
+                                        chat.liveAgentEvents.any(
+                                          (e) =>
+                                              e.kind ==
+                                                  AgentEventKind.toolImage &&
+                                              e.imageDataUri != null,
+                                        ),
                                     onOpenCanvas: (canvas) => ref
                                         .read(aiDockProvider.notifier)
                                         .showCanvas(canvas),
