@@ -20,6 +20,7 @@ import 'tool_registry.dart';
 /// 用户可以随时中断正在跑的 Agent。
 class AgentCancelToken {
   bool _cancelled = false;
+  bool _interruptRequested = false;
 
   /// 当前正在飞的那次 LLM 请求。
   ///
@@ -29,6 +30,9 @@ class AgentCancelToken {
   CancelToken? _http;
 
   bool get isCancelled => _cancelled;
+
+  /// 轮到中断：只想打断正在“思考/生成”的那次 LLM 请求，但不终止整个运行。
+  bool get interruptRequested => _interruptRequested;
 
   /// 每轮请求前登记，请求结束后清掉。
   set httpToken(CancelToken? token) {
@@ -44,6 +48,19 @@ class AgentCancelToken {
     _http?.cancel('user cancelled');
     _http = null;
   }
+
+  /// 只掐当前这一次 LLM 请求（用于“思考中强制插入”），运行本身保留。
+  /// 如果此刻没有正在飞的请求，就什么都不做——下一轮安全点自然会消费 inbox。
+  void interrupt() {
+    final http = _http;
+    if (http == null) return;
+    _interruptRequested = true;
+    http.cancel('user interrupt');
+  }
+
+  void clearInterrupt() {
+    _interruptRequested = false;
+  }
 }
 
 class AgentCancelledException implements Exception {
@@ -51,6 +68,38 @@ class AgentCancelledException implements Exception {
 
   @override
   String toString() => '任务已被用户中断';
+}
+
+/// 运行中由用户插进来的待发消息。
+///
+/// AgentLoop 不会边生成边打断；它在每一轮之间的安全点（上一轮工具结果已经
+/// 拼回消息、还没发下一个 LLM 请求前）把 inbox 里的消息消费掉，插成一条
+/// 新的 user 消息，再让模型接着处理。
+class AgentInboxMessage {
+  const AgentInboxMessage({
+    required this.id,
+    required this.text,
+    this.images = const [],
+  });
+
+  final String id;
+  final String text;
+  final List<AiImageAttachment> images;
+}
+
+/// 运行期消息插槽：外部（ChatNotifier）往里面放消息，AgentLoop 在合适时机取走。
+class AgentInbox {
+  final List<AgentInboxMessage> messages = [];
+
+  void add(AgentInboxMessage message) => messages.add(message);
+
+  void insertFirst(AgentInboxMessage message) {
+    messages.insert(0, message);
+  }
+
+  void removeById(String id) => messages.removeWhere((m) => m.id == id);
+
+  bool get isEmpty => messages.isEmpty;
 }
 
 enum AgentOutcome {
@@ -167,6 +216,8 @@ class AgentLoop {
     this.responseTransformer,
     this.enableTools = true,
     this.enableImageInjection = false,
+    this.inbox,
+    this.onInboxMessage,
   });
 
   final LlmConfig config;
@@ -179,6 +230,13 @@ class AgentLoop {
   /// 主模型支持图片时置 true：截图/图片工具产生的附件会以 user 图片消息
   /// 注入回对话，让主模型直接看图。
   final bool enableImageInjection;
+
+  /// 运行期待插入的用户消息；在每轮之间的安全点消费。
+  final AgentInbox? inbox;
+
+  /// 每消费一条 inbox 消息时回调（通常由 ChatNotifier 把排队条去掉、把用户
+  /// 气泡写进会话）。回调抛错只会吞掉，不影响 AgentLoop 收消息。
+  final void Function(AgentInboxMessage message)? onInboxMessage;
 
   /// 运行期注入的扩展工具（MCP / 技能）。与内置工具同等参与确认策略。
   final List<ExternalTool> externalTools;
@@ -879,8 +937,40 @@ class AgentLoop {
       }
     }
 
+    // 把运行期间用户插进来的消息在安全点消费掉：上一轮的思考/工具/正文都
+    // 已经处理完，消息列表里工具回复齐全；此刻追加 user 消息再发下一个请求，
+    // 模型能正常接住，不会把一个半轮次的 tool_calls 拆坏。
+    void drainInbox() {
+      final box = inbox;
+      if (box == null || box.isEmpty) return;
+      while (box.messages.isNotEmpty) {
+        final msg = box.messages.removeAt(0);
+        try {
+          onInboxMessage?.call(msg);
+        } catch (_) {
+          // 外部把消息写进会话/排队条失败不能掐断 Agent 主流程。
+        }
+        messages.add(
+          LlmMessage(
+            role: 'user',
+            content: msg.text,
+            images: [for (final img in msg.images) img.dataUri],
+          ),
+        );
+        emit(
+          AgentEvent(
+            kind: AgentEventKind.thinking,
+            message: '收到用户插入的消息，继续处理',
+            result: msg.text,
+            turn: turnsUsed,
+          ),
+        );
+      }
+    }
+
     try {
       for (var turn = 0; turn < maxTurns; turn++) {
+        drainInbox();
         checkCancelled();
         turnsUsed = turn + 1;
 
@@ -928,6 +1018,16 @@ class AgentLoop {
           // 取消导致的失败不算错误：翻译成中断，走统一的中断收尾。
           if (e.type == ApiExceptionType.cancelled ||
               (cancelToken?.isCancelled ?? false)) {
+            // 完整停止：运行作废，走 cancelled 收尾。
+            if (cancelToken?.isCancelled ?? false) {
+              throw const AgentCancelledException();
+            }
+            // 仅“思考中强制插入”：掐掉这一次请求，但保留运行本体；
+            // 下一轮开头 drainInbox 会把强制插入的消息喂给模型。
+            if (cancelToken?.interruptRequested ?? false) {
+              cancelToken?.clearInterrupt();
+              continue;
+            }
             throw const AgentCancelledException();
           }
           rethrow;

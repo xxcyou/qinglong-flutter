@@ -328,6 +328,9 @@ class _SessionRun {
   /// 这次发送是否由“继续中断任务”触发；失败时用来保留中断快照，避免丢了没法再试。
   bool isResume = false;
 
+  /// 运行期间用户新发的待插消息。AgentLoop 会在每轮之间的安全点消费。
+  final AgentInbox inbox = AgentInbox();
+
   final List<AgentEvent> events = [];
   final StringBuffer liveReasoning = StringBuffer();
   final StringBuffer liveContent = StringBuffer();
@@ -1166,13 +1169,36 @@ class ChatNotifier extends Notifier<ChatState> {
     // 只带附件、没有文字也可以发：AI 会直接看附件/调工具识别。
     if (value.isEmpty && images.isEmpty) return;
     if (_runs.containsKey(sid)) {
-      enqueueWithImages(value, images);
+      // AI 还在跑：不再像以前那样只压进队尾等整轮跑完；把这条同时挂到
+      // 当前运行的 inbox，AgentLoop 在下一轮之间的安全点就把它插进去。
+      final run = _runs[sid]!;
+      final queued = QueuedMessage.create(
+        value,
+        sessionId: sid,
+        images: images,
+      );
+      state = state.copyWith(
+        queue: [...state.queue, queued],
+      );
+      run.inbox.add(
+        AgentInboxMessage(
+          id: queued.id,
+          text: value,
+          images: images,
+        ),
+      );
       clearPendingImages();
       return;
     }
     // 附件已经交给 _sendNow 了，这里立刻清空待发条，不要等整轮跑完才消失。
     clearPendingImages();
-    await _sendNow(value, sessionId: sid, images: images);
+    // 上一次是被打断的：把中断前已执行的工具链直接带过去续轮，而不是开全新一轮。
+    await _sendNow(
+      value,
+      sessionId: sid,
+      images: images,
+      resumeEvents: _resumeEventsFromCancelled(sid),
+    );
     // 这里不再无条件 drain：_sendNow 收尾时已经按"是否挂起"判断过一次。
     _pumpQueue(sid);
   }
@@ -1232,24 +1258,140 @@ class ChatNotifier extends Notifier<ChatState> {
     reorderQueue(index, 0);
   }
 
-  /// 紧急插队：立刻中断当前运行，把这条排到最前面，中断后马上发出。
+  /// 紧急插队：根据当前运行阶段决定打断方式。
   ///
-  /// 中断不回滚已执行的写操作（和"停止"按钮一样），所以这是显式动作，
-  /// 由用户在排队条上点"中断并立即发送"触发。
-  void interruptAndSend(String id) {
-    promoteQueued(id);
-    if (_runs.containsKey(state.currentSessionId)) {
-      // stopAgent 收尾时会 drain 当前会话队列，被顶到最前的这条先发。
-      stopAgent();
-      return;
-    }
+  /// - 正在思考/生成（reasoning 流式输出，或还没开始输出工具/正文）：
+  ///   只掐掉当前那一次 LLM 请求，把消息插进 inbox，下一轮开头就喂给模型，
+  ///   不把整个 run 拆掉；
+  /// - 正在输出正文/工具名、或已经进入工具执行/挂起确认：
+  ///   强制停止整个当前运行，带上中断前已执行的工具链（resumeEvents）立刻
+  ///   开一个续轮新 run，把这条消息当作新的用户输入。
+  ///
+  /// 两种路径都不会回滚已执行的写操作。
+  Future<void> interruptAndSend(String id) async {
+    final sid = state.currentSessionId;
+    final idx = state.queue.indexWhere((q) => q.id == id);
+    if (idx < 0) return;
+    final item = state.queue[idx];
+    state = state.copyWith(
+      queue: [
+        ...state.queue.take(idx),
+        ...state.queue.skip(idx + 1),
+      ],
+    );
+    final run = _runs[sid];
     // 用户宁愿先发这条，也就是不打算回答那个挂起的问题了：
-    // 主动把提问撤掉，否则 _drainQueue 的"挂起中不自动发"保护会把它挡住，
-    // 点了"中断并立即发送"却什么都不发生。
+    // 主动把提问撤掉，否则 _drainQueue 的"挂起中不自动发"保护会把它挡住。
     if (state.pendingQuestion != null) {
       state = state.copyWith(clearPendingQuestion: true);
     }
-    unawaited(_drainQueue(state.currentSessionId));
+    if (run == null) {
+      await _sendNow(
+        item.text,
+        sessionId: sid,
+        images: item.images,
+        resumeEvents: _resumeEventsFromCancelled(sid),
+      );
+      _pumpQueue(sid);
+      return;
+    }
+
+    // 思考/安全等待：不拆当前 run，插到 inbox 最前面；正在飞的那次 LLM 请求
+    // 用 interrupt() 掐掉，让 AgentLoop 下一轮先消费这条。
+    if (!_isRunOutputting(run)) {
+      run.inbox.removeById(id);
+      run.inbox.insertFirst(
+        AgentInboxMessage(
+          id: item.id,
+          text: item.text,
+          images: item.images,
+        ),
+      );
+      run.cancelToken?.interrupt();
+      return;
+    }
+
+    // 输出/工具阶段：强制停止，再带 resumeEvents 续轮。
+    final resumeEvents = run.events;
+    run.inbox.removeById(id);
+    run.generation++;
+    run.cancelToken?.cancel();
+    run.dispose();
+    _runs.remove(sid);
+    if (sid == state.currentSessionId) {
+      state = state.copyWith(
+        isLoading: false,
+        runningSessionIds: {..._runs.keys},
+        liveAgentEvents: const [],
+        clearLiveText: true,
+        clearError: true,
+      );
+    } else {
+      state = state.copyWith(runningSessionIds: {..._runs.keys});
+    }
+    await _sendNow(
+      item.text,
+      sessionId: sid,
+      images: item.images,
+      resumeEvents: resumeEvents,
+    );
+    _pumpQueue(sid);
+  }
+
+  /// 当前 run 是否已经进入“输出工具/正文/工具执行”阶段。
+  ///
+  /// 反过来说：没有这些输出、也没卡在工具上，就属于“思考或安全点”，
+  /// 可以只掐 LLM 请求、保留 run 插消息。
+  bool _isRunOutputting(_SessionRun run) {
+    if (run.liveTool.isNotEmpty || run.liveContent.isNotEmpty) return true;
+    final last = run.events.lastOrNull;
+    if (last == null) return false;
+    return last.kind == AgentEventKind.toolStart ||
+        last.kind == AgentEventKind.canvas ||
+        last.kind == AgentEventKind.planPending;
+  }
+
+  /// 运行中 AgentLoop 在安全点消费 inbox 消息时，把这条从排队条拿掉，
+  /// 并把用户消息写进会话气泡。
+  void _handleInboxMessage(_SessionRun run, AgentInboxMessage msg) {
+    if (_runs[run.sessionId] != run) return;
+    state = state.copyWith(
+      queue: state.queue.where((q) => q.id != msg.id).toList(),
+    );
+    final session = _sessionById(run.sessionId);
+    if (session == null) return;
+    _replaceSession(
+      AiSession(
+        id: session.id,
+        title: session.title,
+        messages: [
+          ...session.messages,
+          AiChatMessage(
+            role: 'user',
+            content: msg.text,
+            images: msg.images,
+            createdAt: DateTime.now(),
+          ),
+        ],
+        createdAt: session.createdAt,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  /// 如果这个会话最后一条 assistant 是被打断的，把它已经执行过的工具事件
+  /// 当作续轮快照；否则返回 null（全新一轮）。
+  List<AgentEvent>? _resumeEventsFromCancelled(String sessionId) {
+    final session = _sessionById(sessionId);
+    if (session == null) return null;
+    for (final m in session.messages.reversed) {
+      if (m.isUser) return null;
+      if (m.role != 'assistant') continue;
+      return (m.outcome == 'cancelled' && m.agentEvents.isNotEmpty)
+          ? m.agentEvents
+          : null;
+    }
+    return null;
   }
 
   /// 依次把某个会话的排队消息发出去。
@@ -1274,7 +1416,12 @@ class ChatNotifier extends Notifier<ChatState> {
           ...state.queue.skip(idx + 1),
         ],
       );
-      await _sendNow(next.text, sessionId: sid, images: next.images);
+      await _sendNow(
+        next.text,
+        sessionId: sid,
+        images: next.images,
+        resumeEvents: _resumeEventsFromCancelled(sid),
+      );
     }
   }
 
@@ -2753,6 +2900,9 @@ class ChatNotifier extends Notifier<ChatState> {
         approvalMode: state.approvalMode,
         maxTurns: ref.read(llmRegistryProvider).mainMaxTurns,
         cancelToken: token,
+        inbox: run?.inbox,
+        onInboxMessage:
+            run == null ? null : (msg) => _handleInboxMessage(run, msg),
         requestTransformer: _requestTransformerFor(activeProviderId),
         responseTransformer: _responseTransformerFor(activeProviderId),
         // 每轮 LLM 请求一回来就刷新顶部上下文/token，不用等整轮跑完。
