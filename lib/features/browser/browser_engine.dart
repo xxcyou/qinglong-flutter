@@ -415,7 +415,13 @@ class BrowserEngine {
   // -------------------------------------------------------------- 基本操作
 
   Future<void> open(String url) async {
+    final firstBoot = _controller == null;
     final c = await ensure();
+    // 第一次 create 的 WebView 要等 Flutter 平台视图真正挂载后 loadRequest
+    // 才会生效；否则第一次打开会白转圈，第二次才正常。
+    if (firstBoot) {
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+    }
     var target = url.trim();
     // 本地文件优先判断：AI 写了个 html 到工作目录，然后想让用户看效果。
     // 以前这里一律补 https://，于是 /workspace/a.html 变成
