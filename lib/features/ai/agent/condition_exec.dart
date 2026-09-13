@@ -175,8 +175,20 @@ class ConditionExecEngine {
           await _while(step, id, indent, depth);
         case 'try':
           await _try(step, id, indent, depth);
+        case 'switch':
+          await _switch(step, id, indent, depth);
         case 'break':
-          throw const _BreakSignal();
+          final rawLevel = step['level'] ?? step['times'] ?? 1;
+          throw _BreakSignal(
+            rawLevel is num ? rawLevel.toInt().clamp(1, 12) : 1,
+          );
+        case 'continue':
+          throw const _ContinueSignal();
+        case 'throw':
+        case 'raise':
+          throw _DslException(
+            step['value'] == null ? 'DSL 主动抛出错误' : _eval(step['value']!),
+          );
         case 'return':
           throw _ReturnSignal(
               step['value'] == null ? null : _eval(step['value']!));
@@ -342,6 +354,45 @@ class ConditionExecEngine {
     }
   }
 
+  Future<void> _switch(
+    Map<String, dynamic> step,
+    String id,
+    String indent,
+    int depth,
+  ) async {
+    final value = _eval(step['value'] ?? '');
+    final cases = step['cases'];
+    if (cases is! List) throw const FormatException('switch 缺少 cases 数组');
+    List<dynamic>? body;
+    var matched = false;
+    for (final rawCase in cases) {
+      if (rawCase is! Map) continue;
+      final m = rawCase.map((k, v) => MapEntry(k.toString(), v));
+      if (_equals(value, _eval(m['match'] ?? ''))) {
+        final b = m['body'];
+        if (b is List) body = b.cast<dynamic>();
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      final def = step['default'];
+      if (def is List) body = def.cast<dynamic>();
+    }
+    final branchName = matched ? 'case' : 'default';
+    _out.writeln('$indent- $id · switch → $branchName');
+    _emit(
+      message: '条件执行 · $id · switch $branchName',
+      args: {'step': id, 'value': value},
+      result: '命中 $branchName',
+      ok: true,
+      depth: depth,
+    );
+    if (body != null) {
+      await _runSteps(body, depth: depth + 1);
+    }
+  }
+
   Future<void> _for(
     Map<String, dynamic> step,
     String id,
@@ -375,13 +426,17 @@ class ConditionExecEngine {
     );
     if (step['body'] is! List) return;
     final body = (step['body'] as List).cast<dynamic>();
-    try {
-      for (final item in items) {
-        _vars[varName] = item;
+    for (final item in items) {
+      _vars[varName] = item;
+      try {
         await _runSteps(body, depth: depth + 1);
+      } on _ContinueSignal {
+        continue;
+      } on _BreakSignal catch (b) {
+        if (b.level > 1) throw _BreakSignal(b.level - 1);
+        _out.writeln('$indent- $id · break');
+        break;
       }
-    } on _BreakSignal {
-      _out.writeln('$indent- $id · break');
     }
   }
 
@@ -410,7 +465,11 @@ class ConditionExecEngine {
           (step['body'] as List).cast<dynamic>(),
           depth: depth + 1,
         );
-      } on _BreakSignal {
+      } on _ContinueSignal {
+        count++;
+        continue;
+      } on _BreakSignal catch (b) {
+        if (b.level > 1) throw _BreakSignal(b.level - 1);
         _out.writeln('$indent- $id · break');
         break;
       }
@@ -434,7 +493,9 @@ class ConditionExecEngine {
         );
       }
     } catch (e) {
-      if (e is _ReturnSignal || e is _BreakSignal) rethrow;
+      if (e is _ReturnSignal || e is _BreakSignal || e is _ContinueSignal) {
+        rethrow;
+      }
       _vars[errorVar] = e.toString();
       _out.writeln('$indent- $id · 捕获错误：${_snippet(e.toString())}');
       _emit(
@@ -533,6 +594,29 @@ class ConditionExecEngine {
     return true;
   }
 
+  bool _equals(Object? a, Object? b) {
+    if (a is num && b is num) return a == b;
+    if (a is String && b is String) return a == b;
+    if (a is bool && b is bool) return a == b;
+    if (a == null && b == null) return true;
+    if (a is List && b is List) {
+      if (a.length != b.length) return false;
+      for (var i = 0; i < a.length; i++) {
+        if (!_equals(a[i], b[i])) return false;
+      }
+      return true;
+    }
+    if (a is Map && b is Map) {
+      if (a.length != b.length) return false;
+      for (final key in a.keys) {
+        if (!b.containsKey(key)) return false;
+        if (!_equals(a[key], b[key])) return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
   Object? _tryParse(String result) {
     final t = result.trim();
     if (!(t.startsWith('{') || t.startsWith('['))) return result;
@@ -572,12 +656,25 @@ class _DslFunction {
 }
 
 class _BreakSignal implements Exception {
-  const _BreakSignal();
+  const _BreakSignal([this.level = 1]);
+  final int level;
+}
+
+class _ContinueSignal implements Exception {
+  const _ContinueSignal();
 }
 
 class _ReturnSignal implements Exception {
   const _ReturnSignal(this.value);
   final Object? value;
+}
+
+class _DslException implements Exception {
+  const _DslException(this.value);
+  final Object? value;
+
+  @override
+  String toString() => value?.toString() ?? 'DSL 主动抛出的错误';
 }
 
 enum _TokType { number, string, ident, variable, op, eof }
@@ -677,7 +774,7 @@ class _Lexer {
         _pos += 2;
         continue;
       }
-      if ('+-*/%<>=!().,[]?:'.contains(ch)) {
+      if ('+-*/%<>=!().,[]?:{}'.contains(ch)) {
         tokens.add(_Token(_TokType.op, ch, start));
         _pos++;
         continue;
@@ -943,6 +1040,24 @@ class _Parser {
           }
           _expect(']');
           return list;
+        }
+        if (t.value == '{') {
+          final map = <String, dynamic>{};
+          if (!_peekOp('}')) {
+            while (true) {
+              final key = _parseTernary();
+              _expect(':');
+              final value = _parseTernary();
+              map[_stringify(key)] = value;
+              if (_peekOp(',')) {
+                _take();
+                continue;
+              }
+              break;
+            }
+          }
+          _expect('}');
+          return map;
         }
         throw FormatException('无法解析的符号 ${t.value}');
       case _TokType.eof:
