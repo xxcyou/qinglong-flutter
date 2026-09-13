@@ -124,6 +124,15 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
   int? _busId;
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 从外部 App 完成登录/授权返回时，把内置浏览器带回跳转前的页面，
+    // 别让用户停留在系统浏览器里。
+    if (state == AppLifecycleState.resumed) {
+      _engine.handleAppResumed();
+    }
+  }
+
+  @override
   Future<bool> didPopRoute() async {
     // 编辑器开着：返回键先关编辑器，别把整个浏览器收走。
     if (_editing != null) {

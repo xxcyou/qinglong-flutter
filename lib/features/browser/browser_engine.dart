@@ -82,6 +82,7 @@ class BrowserEngine {
   Future<bool> Function(ExternalJumpRequest request)? externalJumpPrompt;
 
   int _jumpSeq = 0;
+  ExternalJumpRequest? _lastExternalJump;
 
   /// 有没有上一页：界面上的返回键靠它决定灰不灰。
   final ValueNotifier<bool> canGoBack = ValueNotifier(false);
@@ -1233,6 +1234,12 @@ return JSON.stringify({
     // 由 Android 自带的选择器/浏览器弹窗决定用哪个应用打开。
     // 这样第三方登录、拉起微信/QQ/支付宝时表现更接近原生浏览器。
     final uri = Uri.tryParse(url);
+    _lastExternalJump = ExternalJumpRequest(
+      id: 'jump${++_jumpSeq}',
+      url: url,
+      sourceUrl: sourceUrl ?? currentUrl.value,
+      createdAt: DateTime.now(),
+    );
     if (uri != null) {
       try {
         final opened = await launchUrl(
@@ -1242,26 +1249,42 @@ return JSON.stringify({
         if (!opened) {
           // 系统没有能处理这个 scheme 的应用：记录下来供 AI 排查，
           // 但不弹 APP 确认框打扰用户。
-          final req = ExternalJumpRequest(
-            id: 'jump${++_jumpSeq}',
-            url: url,
-            sourceUrl: sourceUrl ?? currentUrl.value,
-            createdAt: DateTime.now(),
-          );
-          pendingExternalJumps.value = [...pendingExternalJumps.value, req];
+          pendingExternalJumps.value = [
+            ...pendingExternalJumps.value,
+            _lastExternalJump!
+          ];
         }
       } catch (_) {
         // 同上：打不开时不弹 APP 弹窗，只留一条记录。
-        final req = ExternalJumpRequest(
-          id: 'jump${++_jumpSeq}',
-          url: url,
-          sourceUrl: sourceUrl ?? currentUrl.value,
-          createdAt: DateTime.now(),
-        );
-        pendingExternalJumps.value = [...pendingExternalJumps.value, req];
+        pendingExternalJumps.value = [
+          ...pendingExternalJumps.value,
+          _lastExternalJump!
+        ];
       }
     }
     return NavigationDecision.prevent;
+  }
+
+  /// 用户从外部 App（微信/QQ/支付宝等）回到 APP 后，把内置浏览器
+  /// 带回跳转前的页面，避免登录完成后留在系统浏览器里。
+  Future<void> handleAppResumed() async {
+    final jump = _lastExternalJump;
+    if (jump == null) return;
+    _lastExternalJump = null;
+    final controller = _controller;
+    if (controller == null) return;
+    final backUrl = (jump.sourceUrl?.isNotEmpty ?? false)
+        ? jump.sourceUrl!
+        : currentUrl.value;
+    if (backUrl.isEmpty) return;
+    try {
+      final uri = Uri.tryParse(backUrl);
+      if (uri != null) {
+        await controller.loadRequest(uri);
+      }
+    } catch (_) {
+      // 回跳失败不致命，用户仍在内置浏览器里，可以手动操作。
+    }
   }
 
   /// AI/用户决定允许还是拒绝一次外部跳转。
