@@ -3318,7 +3318,8 @@ class ChatNotifier extends Notifier<ChatState> {
             'name': {'type': 'string', 'description': '显示名'},
             'base_url': {
               'type': 'string',
-              'description': 'OpenAI 兼容 Base URL（填到 /v1）'
+              'description':
+                  'OpenAI 兼容 Base URL，支持 /v1、/v4 等版本路径，或直接填完整 /chat/completions 地址'
             },
             'api_key': {'type': 'string', 'description': 'API Key，新增/修改时可选'},
             'default_model': {'type': 'string', 'description': '默认模型名'},

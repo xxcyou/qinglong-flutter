@@ -473,7 +473,9 @@ class LlmClient {
     if (base.endsWith('/chat/completions')) {
       return base.replaceAll(RegExp(r'/chat/completions$'), '');
     }
-    if (base.endsWith('/v1')) return base;
+    // 有的厂商不是 /v1：智谱是 /api/paas/v4，阿里兼容是 /compatible-mode/v1，
+    // 已经带 v1/v2/v3/v4 版本号时不要再硬拼 /v1。
+    if (RegExp(r'/(v\d+)$').hasMatch(base)) return base;
     return '$base/v1';
   }
 
@@ -935,7 +937,7 @@ class LlmClient {
       ApiException(
         message: switch (status) {
           401 || 403 => 'AI 服务鉴权失败（HTTP $status），请检查 API Key',
-          404 => 'AI 接口不存在（HTTP 404），请检查 Base URL 是否带对了 /v1',
+          404 => 'AI 接口不存在（HTTP 404），请检查 Base URL 的版本路径是否正确（如 /v1、/v4）',
           429 => 'AI 服务限流（HTTP 429），稍后再试',
           _ => 'AI 服务返回错误（HTTP $status）${detail.isEmpty ? '' : '：$detail'}',
         },

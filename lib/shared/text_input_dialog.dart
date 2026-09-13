@@ -17,6 +17,7 @@ Future<String?> showTextInputDialog(
   int maxLines = 1,
   String cancelText = '取消',
   String confirmText = '保存',
+  List<({String label, String value})> presets = const [],
 }) {
   return showDialog<String>(
     context: context,
@@ -32,6 +33,7 @@ Future<String?> showTextInputDialog(
       maxLines: maxLines,
       cancelText: cancelText,
       confirmText: confirmText,
+      presets: presets,
     ),
   );
 }
@@ -49,6 +51,7 @@ class _TextInputDialog extends StatefulWidget {
     required this.maxLines,
     required this.cancelText,
     required this.confirmText,
+    required this.presets,
   });
 
   final String title;
@@ -62,6 +65,7 @@ class _TextInputDialog extends StatefulWidget {
   final int maxLines;
   final String cancelText;
   final String confirmText;
+  final List<({String label, String value})> presets;
 
   @override
   State<_TextInputDialog> createState() => _TextInputDialogState();
@@ -86,23 +90,45 @@ class _TextInputDialogState extends State<_TextInputDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.title),
-      content: TextField(
-        controller: _controller,
-        autofocus: widget.autofocus,
-        obscureText: widget.obscureText,
-        keyboardType: widget.keyboardType,
-        // 多行时不能设 maxLines=1，也不能让回车提交，否则没法换行。
-        maxLines: widget.maxLines,
-        minLines: widget.maxLines > 1 ? widget.maxLines : null,
-        decoration: InputDecoration(
-          labelText: widget.labelText.isEmpty ? null : widget.labelText,
-          hintText: widget.hintText.isEmpty ? null : widget.hintText,
-          helperText: widget.helperText.isEmpty ? null : widget.helperText,
-          helperMaxLines: 3,
-        ),
-        onSubmitted: widget.maxLines > 1
-            ? null
-            : (value) => Navigator.pop(context, value.trim()),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (widget.presets.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final preset in widget.presets)
+                    ActionChip(
+                      label: Text(preset.label),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => _controller.text = preset.value,
+                    ),
+                ],
+              ),
+            ),
+          TextField(
+            controller: _controller,
+            autofocus: widget.autofocus,
+            obscureText: widget.obscureText,
+            keyboardType: widget.keyboardType,
+            // 多行时不能设 maxLines=1，也不能让回车提交，否则没法换行。
+            maxLines: widget.maxLines,
+            minLines: widget.maxLines > 1 ? widget.maxLines : null,
+            decoration: InputDecoration(
+              labelText: widget.labelText.isEmpty ? null : widget.labelText,
+              hintText: widget.hintText.isEmpty ? null : widget.hintText,
+              helperText: widget.helperText.isEmpty ? null : widget.helperText,
+              helperMaxLines: 3,
+            ),
+            onSubmitted: widget.maxLines > 1
+                ? null
+                : (value) => Navigator.pop(context, value.trim()),
+          ),
+        ],
       ),
       actions: [
         TextButton(

@@ -431,8 +431,24 @@ class _LlmProviderEditPageState extends ConsumerState<LlmProviderEditPage> {
                 title: 'Base URL',
                 initialValue: provider.baseUrl,
                 hintText: 'https://api.openai.com/v1',
-                helperText: '兼容 OpenAI 的 /chat/completions 接口，填到 /v1 即可',
+                helperText: 'OpenAI 兼容接口通用填法：OpenAI/DeepSeek 用 /v1，智谱用 /v4；'
+                    '已带版本路径不会硬拼 /v1，也可直接填完整 /chat/completions 地址',
                 confirmText: '保存',
+                presets: const [
+                  (
+                    label: '智谱 GLM',
+                    value: 'https://open.bigmodel.cn/api/paas/v4'
+                  ),
+                  (label: 'DeepSeek', value: 'https://api.deepseek.com/v1'),
+                  (label: 'OpenAI', value: 'https://api.openai.com/v1'),
+                  (label: 'Moonshot', value: 'https://api.moonshot.cn/v1'),
+                  (
+                    label: '通义',
+                    value: 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+                  ),
+                  (label: 'Ollama', value: 'http://localhost:11434/v1'),
+                  (label: 'OpenRouter', value: 'https://openrouter.ai/api/v1'),
+                ],
               );
               if (v == null) return;
               await _save(provider.copyWith(baseUrl: v.trim()));

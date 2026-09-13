@@ -88,7 +88,8 @@ class LlmProviderConfig {
   /// 显示名。留空时界面回落显示主机名。
   final String name;
 
-  /// OpenAI 兼容 Base URL，填到 `/v1` 即可。
+  /// OpenAI 兼容 Base URL。可带版本路径：OpenAI 用 `/v1`，智谱用 `/api/paas/v4`，
+  /// 也可以直接填到 `/chat/completions`，系统会自动识别不再硬拼 `/v1`。
   final String baseUrl;
 
   /// 这家的模型缓存（`/v1/models` 拉到的）。
