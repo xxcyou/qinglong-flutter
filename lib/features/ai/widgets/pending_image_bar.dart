@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../../../shared/image_preview_overlay.dart';
@@ -43,7 +45,7 @@ class PendingImageBar extends StatelessWidget {
   }
 }
 
-class _Thumb extends StatelessWidget {
+class _Thumb extends StatefulWidget {
   const _Thumb({
     required this.image,
     required this.onTap,
@@ -55,35 +57,63 @@ class _Thumb extends StatelessWidget {
   final VoidCallback onRemove;
 
   @override
+  State<_Thumb> createState() => _ThumbState();
+}
+
+class _ThumbState extends State<_Thumb> {
+  Uint8List? _bytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _decode();
+  }
+
+  @override
+  void didUpdateWidget(covariant _Thumb oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.image.dataUri != widget.image.dataUri) _decode();
+  }
+
+  void _decode() {
+    try {
+      final uri = widget.image.dataUri;
+      _bytes = base64Decode(
+        uri.contains(',') ? uri.substring(uri.indexOf(',') + 1) : uri,
+      );
+    } catch (_) {
+      _bytes = null;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final bytes = base64Decode(
-      image.dataUri.contains(',')
-          ? image.dataUri.substring(image.dataUri.indexOf(',') + 1)
-          : image.dataUri,
-    );
+    final bytes = _bytes;
     return Stack(
       children: [
         GestureDetector(
-          onTap: onTap,
+          onTap: widget.onTap,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(10),
             child: SizedBox(
               width: 58,
               height: 58,
-              child: bytes.isEmpty
+              child: bytes == null || bytes.isEmpty
                   ? ColoredBox(
                       color: scheme.surfaceContainerHighest,
                       child: const Icon(Icons.broken_image_outlined),
                     )
-                  : Image.memory(
-                      bytes,
-                      width: 58,
-                      height: 58,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => ColoredBox(
-                        color: scheme.surfaceContainerHighest,
-                        child: const Icon(Icons.broken_image_outlined),
+                  : RepaintBoundary(
+                      child: Image.memory(
+                        bytes,
+                        width: 58,
+                        height: 58,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => ColoredBox(
+                          color: scheme.surfaceContainerHighest,
+                          child: const Icon(Icons.broken_image_outlined),
+                        ),
                       ),
                     ),
             ),
@@ -93,7 +123,7 @@ class _Thumb extends StatelessWidget {
           right: -4,
           top: -4,
           child: GestureDetector(
-            onTap: onRemove,
+            onTap: widget.onRemove,
             child: Container(
               width: 20,
               height: 20,

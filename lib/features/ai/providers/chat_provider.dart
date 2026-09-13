@@ -1170,8 +1170,9 @@ class ChatNotifier extends Notifier<ChatState> {
       clearPendingImages();
       return;
     }
-    await _sendNow(value, sessionId: sid, images: images);
+    // 附件已经交给 _sendNow 了，这里立刻清空待发条，不要等整轮跑完才消失。
     clearPendingImages();
+    await _sendNow(value, sessionId: sid, images: images);
     // 这里不再无条件 drain：_sendNow 收尾时已经按"是否挂起"判断过一次。
     _pumpQueue(sid);
   }

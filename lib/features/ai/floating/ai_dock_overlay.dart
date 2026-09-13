@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -2529,24 +2528,53 @@ class _Hints extends StatelessWidget {
   }
 }
 
-class _MiniImage extends StatelessWidget {
+class _MiniImage extends StatefulWidget {
   const _MiniImage({required this.image});
 
   final AiImageAttachment image;
 
   @override
-  Widget build(BuildContext context) {
-    final comma = image.dataUri.indexOf(',');
-    final raw = comma >= 0 ? image.dataUri.substring(comma + 1) : image.dataUri;
+  State<_MiniImage> createState() => _MiniImageState();
+}
+
+class _MiniImageState extends State<_MiniImage> {
+  Uint8List? _bytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _decode();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MiniImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.image.dataUri != widget.image.dataUri) _decode();
+  }
+
+  void _decode() {
     try {
-      return Image.memory(
-        base64Decode(raw),
+      final comma = widget.image.dataUri.indexOf(',');
+      final raw = comma >= 0
+          ? widget.image.dataUri.substring(comma + 1)
+          : widget.image.dataUri;
+      _bytes = base64Decode(raw);
+    } catch (_) {
+      _bytes = null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = _bytes;
+    if (bytes == null) return const Icon(Icons.broken_image_outlined);
+    return RepaintBoundary(
+      child: Image.memory(
+        bytes,
         fit: BoxFit.cover,
         errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined),
-      );
-    } catch (_) {
-      return const Icon(Icons.broken_image_outlined);
-    }
+      ),
+    );
   }
 }
 
