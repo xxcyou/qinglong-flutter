@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/cache/cache_cleaner.dart';
@@ -2898,11 +2899,19 @@ class ChatNotifier extends Notifier<ChatState> {
             final bytes = await BrowserEngine.instance.captureWebViewPng();
             if (bytes == null) return '浏览器截图失败：未能截取内置浏览器画面。';
             final stamp = DateTime.now().millisecondsSinceEpoch;
+            // 写到 APP 自己的缓存目录，返回宿主绝对路径 + scope=app。
+            // shell 搜不到是正常的（私有目录），但 show_image 用 scope='app'
+            // 能从 APP 侧直接读到。
+            final cacheDir = await getApplicationCacheDirectory();
+            final shotFile = File(
+              '${cacheDir.path}/browser_shot_$stamp.png',
+            );
+            await shotFile.writeAsBytes(bytes, flush: true);
             final img = AiImageAttachment(
               name: label ?? 'browser_$stamp.png',
               mime: 'image/png',
               dataUri: 'data:image/png;base64,${base64Encode(bytes)}',
-              path: '',
+              path: shotFile.path,
               scope: 'app',
             );
             _lastToolScreenshot = img;
@@ -2910,10 +2919,10 @@ class ChatNotifier extends Notifier<ChatState> {
                 .putIfAbsent(state.currentSessionId, () => [])
                 .add(img);
             return '已截取内置浏览器画面。\n'
-                'name: ${img.name}\nscope: app'
+                'path: ${img.path}\nscope: app'
                 '${label == null ? '' : '\n用途：$label'}\n'
-                '需要显示到聊天：调用 show_image 传这个图片/直接后续说已截图。'
-                '需要识别：调用 image_recognize。';
+                '需要显示到聊天：调用 show_image 传上面的 path/scope。'
+                '需要识别：调用 image_recognize 传同样的 path/scope。';
           } catch (e) {
             _lastToolScreenshot = null;
             return '浏览器截图失败：$e';
