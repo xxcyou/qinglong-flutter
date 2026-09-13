@@ -50,9 +50,10 @@ class BrowserTools {
             '比 web_fetch 强的地方：它是真浏览器，会执行 JS、保留登录态和 Cookie，'
             '所以能拿到前端渲染出来的内容。遇到 Cloudflare 人机验证/登录墙时，'
             '配合 browser_wait_user 让用户点一下即可。'
+            '这个工具只负责访问网页，不会自动弹出浏览器悬浮窗；'
+            '需要把浏览器显示给用户时，请单独调用 browser_control action=show。'
             '也能打开本地文件：url 传 /workspace/x.html（或 file:///…）'
-            '就会渲染终端工作目录里的网页——自己写完 html 想让用户看效果时'
-            '配 show=true 直接弹出来。',
+            '就会渲染终端工作目录里的网页。',
         parameters: obj([
           'url'
         ], {
@@ -65,16 +66,11 @@ class BrowserTools {
             'description': '可选：等这个 CSS 选择器出现再返回（内容靠 JS 渲染时用）',
           },
           'max_chars': {'type': 'integer', 'description': '正文最多返回多少字符，默认 8000'},
-          'show': {
-            'type': 'boolean',
-            'description': '是否同时把浏览器显示给用户看，默认 false（后台打开）',
-          },
         }),
         origin: origin,
         invoke: (args) async {
           final url = args['url']?.toString().trim() ?? '';
           if (url.isEmpty) return '网址为空。';
-          if (args['show'] == true) engine.show(byAgent: true);
           await engine.open(url);
           final selector = args['wait_selector']?.toString() ?? '';
           if (selector.isNotEmpty) {
