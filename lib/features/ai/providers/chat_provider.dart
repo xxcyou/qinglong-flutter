@@ -2844,6 +2844,8 @@ class ChatNotifier extends Notifier<ChatState> {
         registry: registry,
         extraTools: [canvasTool],
       );
+      // 后台子代理完成结果自动并回主代理上下文的槽。
+      final subagentSink = AgentSubagentSink();
       // 主模型始终是主线。支持图片的主模型直接看多模态图片；
       // 不支持的走 image_recognize 工具识别。
       final LlmConfig llmConfig =
@@ -2895,6 +2897,7 @@ class ChatNotifier extends Notifier<ChatState> {
             parallel: plan.parallel,
             workerModel:
                 plan.overridesModel ? workerConfig.model : llmConfig.model,
+            subagentSink: subagentSink,
           ),
         ],
         approvalMode: state.approvalMode,
@@ -2903,6 +2906,7 @@ class ChatNotifier extends Notifier<ChatState> {
         inbox: run?.inbox,
         onInboxMessage:
             run == null ? null : (msg) => _handleInboxMessage(run, msg),
+        subagentSink: subagentSink,
         requestTransformer: _requestTransformerFor(activeProviderId),
         responseTransformer: _responseTransformerFor(activeProviderId),
         // 每轮 LLM 请求一回来就刷新顶部上下文/token，不用等整轮跑完。

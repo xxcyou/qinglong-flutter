@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../../../core/llm/llm_client.dart';
 import '../models/agent_event.dart';
 import 'agent_loop.dart';
@@ -55,6 +57,10 @@ class AgentTeamTools {
     /// 子代理用的是哪家哪个模型，只在工具描述里点一句——
     /// 让模型知道派出去的工人可能比自己弱，好决定任务拆多细。
     String workerModel = '',
+
+    /// 后台子代理完成结果的自动汇入槽；不传则子代理照常后台跑，
+    /// 只是不自动并入主代理上下文（仍可 subagent_wait 取）。
+    AgentSubagentSink? subagentSink,
   }) {
     final limitCeiling = parallel.clamp(1, maxParallel);
     Map<String, dynamic> obj(
@@ -63,47 +69,23 @@ class AgentTeamTools {
     ) =>
         {'type': 'object', 'properties': props, 'required': required};
 
-    Future<String> runWorker(String title, String task, int index) async {
-      final label = title.trim().isEmpty ? '子任务${index + 1}' : title.trim();
-      onEvent?.call(
-        AgentEvent(
-          kind: AgentEventKind.thinking,
-          message: '派工：$label\n$task',
-          result: task,
-          group: label,
-        ),
-      );
-      try {
-        final result = await spawn().run(
-          history: seed(task),
-          onEvent: (e) => onEvent?.call(
-            AgentEvent(
-              kind: e.kind,
-              message: '[$label] ${e.message}',
-              toolName: e.toolName,
-              args: e.args,
-              result: e.result,
-              fullResult: e.fullResult,
-              durationMs: e.durationMs,
-              ok: e.ok,
-              turn: e.turn,
-              group: label,
-            ),
-          ),
-        );
-        return _describe(label, result);
-      } catch (e) {
-        return '### $label\n执行出错：$e';
-      }
-    }
+    final coordinator = _SubagentCoordinator(
+      spawn: spawn,
+      seed: seed,
+      onEvent: onEvent,
+      sink: subagentSink,
+      maxParallel: limitCeiling,
+    );
 
     return [
       ExternalTool(
         name: 'task_worker',
-        description: '把一个**独立的子任务**交给一个子代理去做完，拿回它的结论。'
+        description: '把一个**独立的子任务**后台交给一个子代理去做，**不阻塞主代理**。'
             '适合：需要好几步工具调用、但结论只有几句话的活'
             '（体检一个脚本、查清一个接口、把一个目录整理干净）。'
-            '好处是过程不占你的上下文——子代理自己查自己试，只把结论交给你。'
+            '返回任务 id，主代理可以继续做别的事；'
+            '子代理完成时结果会自动并入上下文，'
+            '只有下一步真的必须拿到结果时才调 subagent_wait(id) 等它。'
             '注意：子代理看不到你和用户的对话，所以 task 里要把背景、路径、'
             '判定标准一次写清楚，别让它猜。它也不能反过来问用户。'
             '${workerModel.isEmpty ? '' : '子代理用的模型是 $workerModel。'}',
@@ -122,22 +104,28 @@ class AgentTeamTools {
         }),
         isWrite: true,
         origin: '任务代理',
-        invoke: (args) => runWorker(
-          args['title']?.toString() ?? '',
-          args['task']?.toString() ?? '',
-          0,
-        ),
+        invoke: (args) async {
+          final task = args['task']?.toString().trim() ?? '';
+          if (task.isEmpty) return 'task 是空的，没有可派发的子任务。';
+          final title = args['title']?.toString().trim() ?? '';
+          final id = coordinator.start(title.isEmpty ? '' : title, task);
+          return '已后台启动子代理${id.isEmpty ? '' : '「$id"'}\n主代理可以继续做自己的事；'
+              '需要它结果时调用 subagent_wait(id)，不调也会在完成后自动并入上下文。';
+        },
       ),
       ExternalTool(
         name: 'parallel_agents',
-        description: '把几个**互不相干**的子任务同时派给多个子代理，一起等结果。'
+        description: '把多个**互不相干**的子任务后台同时派给多个子代理，**不阻塞主代理**。'
             '适合：十个脚本各查一遍、三个网站各抓一份、多份日志各自分析——'
-            '这类彼此没有先后依赖的活。总耗时接近最慢的那一个，而不是加起来。\n'
+            '这类彼此没有先后依赖的活。\n'
             '硬约束（不遵守就会拿到互相冲突的结果）：\n'
             '1) 子任务之间不能有依赖（B 需要 A 的结果就别放一批，改成先后两次调用）；\n'
             '2) 不同子任务不要改同一个文件；\n'
             '3) 终端和浏览器是全机唯一的，多个子代理用会自动排队——'
             '所以一批里塞五个"都要长时间占着终端"的任务并不会更快。\n'
+            '本工具返回后主代理继续跑，不等待；'
+            '需要汇总时调 subagent_wait()（不带 id = 等全部），'
+            '或者等它们一个个完成自动并入上下文。\n'
             '并行度上限 $limitCeiling 个（用户在设置里定的），默认就用这个数。',
         parameters: obj([
           'tasks'
@@ -178,34 +166,38 @@ class AgentTeamTools {
             }
           }
           if (items.isEmpty) return 'tasks 里没有有效的 task 字段。';
-          // 用户设的那个数既是默认值也是天花板：他把并行调到 2 就是不想让
-          // 手机同时跑三个，模型不该有权把它加回去。
-          final limit =
-              ((args['max_parallel'] as num?)?.toInt() ?? limitCeiling)
-                  .clamp(1, limitCeiling);
-
-          final outputs = List<String>.filled(items.length, '');
-          var cursor = 0;
-          // 手写一个并发闸门：Future.wait 全放出去会把 N 个子代理一起塞进
-          // 同一条网络，反而更慢，而且抢锁的等待时间也会一起变长。
-          Future<void> worker() async {
-            while (true) {
-              final index = cursor;
-              if (index >= items.length) return;
-              cursor = index + 1;
-              final item = items[index];
-              outputs[index] = await runWorker(item.title, item.task, index);
-            }
-          }
-
-          await Future.wait([
-            for (var i = 0; i < limit && i < items.length; i++) worker(),
-          ]);
-          return [
-            '${items.length} 个子任务全部结束（并行度 $limit）。',
-            ...outputs,
-          ].join('\n\n');
+          final ids = coordinator.startMany(items);
+          return '已后台启动 ${items.length} 个子代理（并行上限 $limitCeiling）：'
+              '${ids.join('、')}\n主代理可以继续做自己的事；'
+              '需要汇总时调 subagent_wait()，不调也会在完成时自动并入上下文。';
         },
+      ),
+      ExternalTool(
+        name: 'subagent_status',
+        description: '查看当前已启动的子代理状态（运行中/已完成），不等待。',
+        parameters: obj([], {}),
+        isWrite: false,
+        origin: '任务代理',
+        invoke: (_) async => coordinator.status(),
+      ),
+      ExternalTool(
+        name: 'subagent_wait',
+        description: '等待一个或全部子代理完成并返回汇总。'
+            '**只有下一步真的必须用到子代理结果时才调用**；'
+            '不调用的话，子代理完成时结果也会自动并入上下文。',
+        parameters: obj([], {
+          'id': {
+            'type': 'string',
+            'description': '可选。传单个子代理 id 只等它；不传则等全部已启动子代理。'
+          },
+        }),
+        isWrite: false,
+        origin: '任务代理',
+        invoke: (args) => coordinator.wait(
+          args['id']?.toString().trim().isNotEmpty == true
+              ? args['id']!.toString().trim()
+              : null,
+        ),
       ),
     ];
   }
@@ -243,5 +235,153 @@ class AgentTeamTools {
           '这通常说明这个子任务还该再拆细一点。）');
     }
     return parts.join('\n');
+  }
+}
+
+/// 一个后台子代理任务。
+class _Subtask {
+  _Subtask({
+    required this.id,
+    required this.label,
+    required this.task,
+  });
+
+  final String id;
+  final String label;
+  final String task;
+  final Completer<void> completer = Completer<void>();
+  String summary = '';
+  bool done = false;
+}
+
+/// 子代理后台调度器：只负责“派出去、跑完收结果”。
+///
+/// - `start` 立刻返回任务 id，主代理不等待；
+/// - 内部按 `maxParallel` 限制同时真正在跑的子代理数；
+/// - 每个子代理完成后把摘要放进 `AgentSubagentSink`，由主 AgentLoop 自动并入上下文。
+class _SubagentCoordinator {
+  _SubagentCoordinator({
+    required this.spawn,
+    required this.seed,
+    required this.onEvent,
+    required this.sink,
+    required this.maxParallel,
+  });
+
+  final AgentLoop Function() spawn;
+  final List<LlmMessage> Function(String task) seed;
+  final void Function(AgentEvent event)? onEvent;
+  final AgentSubagentSink? sink;
+  final int maxParallel;
+
+  final Map<String, _Subtask> _tasks = {};
+  final List<_Subtask> _pending = [];
+  int _active = 0;
+  int _seq = 0;
+
+  String start(String title, String task) {
+    final label =
+        title.trim().isEmpty ? '子任务${_tasks.length + 1}' : title.trim();
+    final id =
+        'sub_${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}_${_seq++}';
+    final t = _Subtask(id: id, label: label, task: task);
+    _tasks[id] = t;
+    _pending.add(t);
+    _pump();
+    return id;
+  }
+
+  List<String> startMany(List<({String title, String task})> items) {
+    final ids = <String>[];
+    for (final item in items) {
+      ids.add(start(item.title, item.task));
+    }
+    return ids;
+  }
+
+  void _pump() {
+    while (_active < maxParallel && _pending.isNotEmpty) {
+      final t = _pending.removeAt(0);
+      _active++;
+      unawaited(_run(t));
+    }
+  }
+
+  Future<void> _run(_Subtask t) async {
+    final label = t.label;
+    onEvent?.call(
+      AgentEvent(
+        kind: AgentEventKind.thinking,
+        message: '派工：$label\n${t.task}',
+        result: t.task,
+        group: label,
+      ),
+    );
+    try {
+      final result = await spawn().run(
+        history: seed(t.task),
+        onEvent: (e) => onEvent?.call(
+          AgentEvent(
+            kind: e.kind,
+            message: '[$label] ${e.message}',
+            toolName: e.toolName,
+            args: e.args,
+            result: e.result,
+            fullResult: e.fullResult,
+            durationMs: e.durationMs,
+            ok: e.ok,
+            turn: e.turn,
+            group: label,
+          ),
+        ),
+      );
+      t.summary = AgentTeamTools._describe(label, result);
+    } catch (e) {
+      t.summary = '### $label\n执行出错：$e';
+    } finally {
+      t.done = true;
+      if (!t.completer.isCompleted) t.completer.complete();
+      if (t.summary.isNotEmpty) {
+        sink?.add(
+          AgentSubagentResult(
+            id: t.id,
+            label: label,
+            summary: t.summary,
+          ),
+        );
+      }
+      _active--;
+      _pump();
+    }
+  }
+
+  Future<String> wait([String? id]) async {
+    if (id != null) {
+      final t = _tasks[id];
+      if (t == null) return '没有找到子代理 id：$id（用 subagent_status 查看）。';
+      await t.completer.future;
+      // 已经主动取走结果，就不再让 AgentLoop 下次再自动并入一遍。
+      sink?.removeById(id);
+      return t.summary;
+    }
+    final all = _tasks.values.toList();
+    for (final t in all.where((t) => !t.done)) {
+      await t.completer.future;
+    }
+    if (all.isEmpty) return '当前没有已启动的子代理。';
+    for (final t in all) {
+      sink?.removeById(t.id);
+    }
+    return all.map((t) => t.summary).join('\n\n');
+  }
+
+  String status() {
+    if (_tasks.isEmpty) return '当前没有已启动的子代理。';
+    return _tasks.values
+        .map(
+          (t) =>
+              t.done ? '✅ ${t.label}（${t.id}）已完成' : '⏳ ${t.label}（${t.id}）运行中',
+        )
+        .join('\n');
   }
 }

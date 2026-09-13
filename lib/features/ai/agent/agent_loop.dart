@@ -102,6 +102,39 @@ class AgentInbox {
   bool get isEmpty => messages.isEmpty;
 }
 
+/// 一个后台子代理跑完后要自动并入主代理上下文的结果。
+class AgentSubagentResult {
+  const AgentSubagentResult({
+    required this.id,
+    required this.label,
+    required this.summary,
+  });
+
+  final String id;
+  final String label;
+  final String summary;
+}
+
+/// 子代理结果汇入主代理运行的消息槽。
+///
+/// 子代理在后台完成后把摘要放进来，AgentLoop 在下一轮之间的安全点取走，
+/// 以“【子代理已完成】”的 user 消息喂给主模型——主代理不用专门停下来等。
+class AgentSubagentSink {
+  final List<AgentSubagentResult> _completed = [];
+
+  void add(AgentSubagentResult result) => _completed.add(result);
+
+  void removeById(String id) {
+    _completed.removeWhere((r) => r.id == id);
+  }
+
+  List<AgentSubagentResult> takeCompleted() {
+    final pending = List<AgentSubagentResult>.from(_completed);
+    _completed.clear();
+    return pending;
+  }
+}
+
 enum AgentOutcome {
   completed,
   failed,
@@ -218,6 +251,7 @@ class AgentLoop {
     this.enableImageInjection = false,
     this.inbox,
     this.onInboxMessage,
+    this.subagentSink,
   });
 
   final LlmConfig config;
@@ -237,6 +271,9 @@ class AgentLoop {
   /// 每消费一条 inbox 消息时回调（通常由 ChatNotifier 把排队条去掉、把用户
   /// 气泡写进会话）。回调抛错只会吞掉，不影响 AgentLoop 收消息。
   final void Function(AgentInboxMessage message)? onInboxMessage;
+
+  /// 后台子代理完成结果的汇入槽：AgentLoop 在安全点自动取走并加入上下文。
+  final AgentSubagentSink? subagentSink;
 
   /// 运行期注入的扩展工具（MCP / 技能）。与内置工具同等参与确认策略。
   final List<ExternalTool> externalTools;
@@ -968,9 +1005,33 @@ class AgentLoop {
       }
     }
 
+    // 后台子代理跑完的结果自动并入上下文：同样是安全点消费，
+    // 主代理下个请求就能看到“哪个子代理已经干完、结论是什么”。
+    void drainSubagentResults() {
+      final sink = subagentSink;
+      if (sink == null) return;
+      for (final r in sink.takeCompleted()) {
+        messages.add(
+          LlmMessage(
+            role: 'user',
+            content: '【子代理「${r.label}」已完成】\n${r.summary}',
+          ),
+        );
+        emit(
+          AgentEvent(
+            kind: AgentEventKind.thinking,
+            message: '子代理「${r.label}」已完成，结果已并入上下文',
+            result: r.summary,
+            group: r.label,
+          ),
+        );
+      }
+    }
+
     try {
       for (var turn = 0; turn < maxTurns; turn++) {
         drainInbox();
+        drainSubagentResults();
         checkCancelled();
         turnsUsed = turn + 1;
 
