@@ -60,6 +60,21 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
   }
 
   @override
+  void didUpdateWidget(covariant AgentProcessCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldHasImage = oldWidget.events.any(
+      (e) => e.kind == AgentEventKind.toolImage && e.imageDataUri != null,
+    );
+    final newHasImage = widget.events.any(
+      (e) => e.kind == AgentEventKind.toolImage && e.imageDataUri != null,
+    );
+    // 新图片事件到达时自动展开，保证立即看到图，而不是等工具链结束。
+    if (newHasImage && !oldHasImage && !_expanded) {
+      _expanded = true;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final events = _rows;

@@ -15,6 +15,7 @@ import '../../../core/theme/theme_effects_controller.dart';
 import '../../../core/utils/formatter.dart';
 import '../../../core/utils/error_text.dart';
 import '../../browser/browser_engine.dart';
+import '../models/agent_event.dart';
 import '../models/ai_message.dart';
 import '../models/ai_plan.dart';
 import '../providers/chat_provider.dart';
@@ -1001,7 +1002,14 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                       return AgentProcessCard(
                                         events: state.liveAgentEvents,
                                         running: state.isLoading,
-                                        initiallyExpanded: state.isLoading,
+                                        initiallyExpanded: state.isLoading ||
+                                            state.liveAgentEvents.any(
+                                              (e) =>
+                                                  e.kind ==
+                                                      AgentEventKind
+                                                          .toolImage &&
+                                                  e.imageDataUri != null,
+                                            ),
                                         totalTokens: state.lastTokens,
                                       );
                                     }

@@ -2875,9 +2875,9 @@ class ChatNotifier extends Notifier<ChatState> {
         ),
       ExternalTool(
         name: 'browser_screenshot',
-        description: '截取内置浏览器当前画面。'
-            '用法：先 browser_open 打开目标页（打开时 show:true 显示到前台），'
-            '再调用本工具；它会先把浏览器窗口带到前台再截屏。'
+        description: '截取内置浏览器当前画面（不改变浏览器显示/隐藏状态）。'
+            '用法：先 browser_open 打开目标页，再调用本工具；'
+            '即使悬浮浏览器当前隐藏，也会直接截取它当前渲染的画面，不会强制把浏览器弹出来。'
             '它只负责生成截图文件，不会直接显示到聊天。'
             '要把截图显示给用户并让 AI 看图，请随后调用 show_image 传返回的 path/scope；'
             '不支持图片的主模型再用 image_recognize 识别。',
@@ -2892,8 +2892,6 @@ class ChatNotifier extends Notifier<ChatState> {
         },
         origin: '浏览器截图',
         invoke: (args) async {
-          BrowserEngine.instance.show(byAgent: true);
-          await Future<void>.delayed(const Duration(milliseconds: 350));
           final label = args['label']?.toString().trim();
           try {
             final bytes = await BrowserEngine.instance.captureWebViewPng();
