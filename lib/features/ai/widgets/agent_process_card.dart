@@ -774,6 +774,22 @@ class _SubagentGroupState extends State<_SubagentGroup> {
   bool _expanded = false;
 
   @override
+  void didUpdateWidget(covariant _SubagentGroup oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldHasImage = oldWidget.events.any(
+      (e) => e.kind == AgentEventKind.toolImage && e.imageDataUri != null,
+    );
+    final newHasImage = widget.events.any(
+      (e) => e.kind == AgentEventKind.toolImage && e.imageDataUri != null,
+    );
+    // 子代理第一次显示图片时自动展开，让图立刻出现在流程里，
+    // 而不是等整轮跑完/用户手动展开才看到。
+    if (newHasImage && !oldHasImage && !_expanded) {
+      _expanded = true;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final label = widget.events.first.group ?? '子代理';
