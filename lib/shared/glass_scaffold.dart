@@ -291,6 +291,21 @@ class GlassCard extends StatelessWidget {
                     ),
                   ),
                 ),
+                if (style != null &&
+                    (style.innerGlowColor != null ||
+                        style.innerGlowOpacity != null ||
+                        style.innerShadowColor != null ||
+                        style.innerShadowOpacity != null))
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: CustomPaint(
+                        painter: ThemeInnerDecorPainter(
+                          style: style,
+                          cornerRadius: br.topLeft.x,
+                        ),
+                      ),
+                    ),
+                  ),
                 Material(
                   color: selected
                       ? scheme.primaryContainer.withValues(alpha: 0.35)

@@ -226,6 +226,28 @@ class GlassPanel extends StatelessWidget {
                     : [gradientColors.first, gradientColors.first],
               )
             : Glass.fill(scheme, opacity: fillOpacity);
+        final hasInnerDecor = style != null &&
+            (style.innerGlowColor != null ||
+                style.innerGlowOpacity != null ||
+                style.innerShadowColor != null ||
+                style.innerShadowOpacity != null);
+        final contentChild = hasInnerDecor
+            ? Stack(
+                children: [
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: CustomPaint(
+                        painter: ThemeInnerDecorPainter(
+                          style: style,
+                          cornerRadius: br.topLeft.x,
+                        ),
+                      ),
+                    ),
+                  ),
+                  inner,
+                ],
+              )
+            : inner;
         Widget content = DecoratedBox(
           decoration: BoxDecoration(
             borderRadius: br,
@@ -237,7 +259,7 @@ class GlassPanel extends StatelessWidget {
                   alpha: effectiveBorderOpacity),
             ),
           ),
-          child: inner,
+          child: contentChild,
         );
 
         if (onTap != null) {

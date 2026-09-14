@@ -83,6 +83,16 @@ class ComponentStyle {
     this.shadowOpacity,
     this.shadowBlur,
     this.shadowOffsetY,
+    this.innerGlowColor,
+    this.innerGlowOpacity,
+    this.innerGlowRadius,
+    this.innerGlowSide = 'all',
+    this.innerShadowColor,
+    this.innerShadowOpacity,
+    this.innerShadowBlur,
+    this.innerShadowOffsetX = 0,
+    this.innerShadowOffsetY = 2,
+    this.innerShadowSide = 'bottom',
   });
 
   /// 纯色填充（覆盖渐变；没传时继续用渐变/默认玻璃填充）。
@@ -102,6 +112,20 @@ class ComponentStyle {
   final double? shadowBlur;
   final double? shadowOffsetY;
 
+  /// 内发光：组件内部边缘柔和发光，side 支持 all/top/bottom/left/right。
+  final Color? innerGlowColor;
+  final double? innerGlowOpacity;
+  final double? innerGlowRadius;
+  final String innerGlowSide;
+
+  /// 内阴影：组件内部边缘暗影，模拟被遮挡/月光照不到的暗部。
+  final Color? innerShadowColor;
+  final double? innerShadowOpacity;
+  final double? innerShadowBlur;
+  final double? innerShadowOffsetX;
+  final double? innerShadowOffsetY;
+  final String innerShadowSide;
+
   ComponentStyle merge(ComponentStyle? base) {
     if (base == null) return this;
     return ComponentStyle(
@@ -120,6 +144,16 @@ class ComponentStyle {
       shadowOpacity: shadowOpacity ?? base.shadowOpacity,
       shadowBlur: shadowBlur ?? base.shadowBlur,
       shadowOffsetY: shadowOffsetY ?? base.shadowOffsetY,
+      innerGlowColor: innerGlowColor ?? base.innerGlowColor,
+      innerGlowOpacity: innerGlowOpacity ?? base.innerGlowOpacity,
+      innerGlowRadius: innerGlowRadius ?? base.innerGlowRadius,
+      innerGlowSide: innerGlowSide,
+      innerShadowColor: innerShadowColor ?? base.innerShadowColor,
+      innerShadowOpacity: innerShadowOpacity ?? base.innerShadowOpacity,
+      innerShadowBlur: innerShadowBlur ?? base.innerShadowBlur,
+      innerShadowOffsetX: innerShadowOffsetX ?? base.innerShadowOffsetX,
+      innerShadowOffsetY: innerShadowOffsetY ?? base.innerShadowOffsetY,
+      innerShadowSide: innerShadowSide,
     );
   }
 }
@@ -416,6 +450,12 @@ class ThemeEffectBridge {
           rawColors.map((c) => parseColor(c)).whereType<Color>().toList();
       if (parsed.isNotEmpty) colors = parsed;
     }
+    final innerGlow = st['innerGlow'] is Map
+        ? Map<String, dynamic>.from(st['innerGlow'] as Map)
+        : const <String, dynamic>{};
+    final innerShadow = st['innerShadow'] is Map
+        ? Map<String, dynamic>.from(st['innerShadow'] as Map)
+        : const <String, dynamic>{};
     return ComponentStyle(
       color: parseColor(st['color']),
       borderColor: parseColor(st['borderColor']),
@@ -432,6 +472,46 @@ class ThemeEffectBridge {
       shadowOpacity: (st['shadowOpacity'] as num?)?.toDouble(),
       shadowBlur: (st['shadowBlur'] as num?)?.toDouble(),
       shadowOffsetY: (st['shadowOffsetY'] as num?)?.toDouble(),
+      innerGlowColor: parseColor(innerGlow['color'] ??
+          innerGlow['innerGlowColor'] ??
+          st['innerGlowColor']),
+      innerGlowOpacity: (innerGlow['opacity'] ??
+              innerGlow['innerGlowOpacity'] ??
+              st['innerGlowOpacity'] as num?)
+          ?.toDouble(),
+      innerGlowRadius: (innerGlow['radius'] ??
+              innerGlow['innerGlowRadius'] ??
+              st['innerGlowRadius'] as num?)
+          ?.toDouble(),
+      innerGlowSide: (innerGlow['side'] ??
+                  innerGlow['innerGlowSide'] ??
+                  st['innerGlowSide'])
+              ?.toString() ??
+          'all',
+      innerShadowColor: parseColor(innerShadow['color'] ??
+          innerShadow['innerShadowColor'] ??
+          st['innerShadowColor']),
+      innerShadowOpacity: (innerShadow['opacity'] ??
+              innerShadow['innerShadowOpacity'] ??
+              st['innerShadowOpacity'] as num?)
+          ?.toDouble(),
+      innerShadowBlur: (innerShadow['blur'] ??
+              innerShadow['innerShadowBlur'] ??
+              st['innerShadowBlur'] as num?)
+          ?.toDouble(),
+      innerShadowOffsetX: (innerShadow['offsetX'] ??
+              innerShadow['innerShadowOffsetX'] ??
+              st['innerShadowOffsetX'] as num?)
+          ?.toDouble(),
+      innerShadowOffsetY: (innerShadow['offsetY'] ??
+              innerShadow['innerShadowOffsetY'] ??
+              st['innerShadowOffsetY'] as num?)
+          ?.toDouble(),
+      innerShadowSide: (innerShadow['side'] ??
+                  innerShadow['innerShadowSide'] ??
+                  st['innerShadowSide'])
+              ?.toString() ??
+          'bottom',
     );
   }
 
@@ -731,6 +811,187 @@ class _ComponentPaintPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _ComponentPaintPainter oldDelegate) =>
       oldDelegate.effect != effect;
+}
+
+/// 组件内部发光/内部阴影绘制器。
+///
+/// 这些是真实“内”效果：先 clip 到组件圆角矩形，再在内部边缘画淡出/淡入的
+/// 线性渐变。`innerGlow` 模拟被月光/灯照亮的边缘，`innerShadow` 模拟没有被
+/// 照到、暗下来的边缘（默认底部）。
+class ThemeInnerDecorPainter extends CustomPainter {
+  ThemeInnerDecorPainter({
+    required this.style,
+    required this.cornerRadius,
+  });
+
+  final ComponentStyle style;
+  final double cornerRadius;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final rr = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      Radius.circular(cornerRadius),
+    );
+    canvas.save();
+    canvas.clipRRect(rr);
+    _paintGlow(canvas, size);
+    _paintShadow(canvas, size);
+    canvas.restore();
+  }
+
+  List<String> _sides(String? raw) {
+    return switch (raw) {
+      'top' => const ['top'],
+      'bottom' => const ['bottom'],
+      'left' => const ['left'],
+      'right' => const ['right'],
+      _ => const ['top', 'bottom', 'left', 'right'],
+    };
+  }
+
+  void _paintGlow(Canvas canvas, Size size) {
+    final color = style.innerGlowColor;
+    final opacity = style.innerGlowOpacity ?? 0.6;
+    final band =
+        (style.innerGlowRadius ?? 12).clamp(0.0, size.shortestSide * 0.5);
+    if (color == null ||
+        opacity <= 0 ||
+        band <= 0 ||
+        size.width <= 2 ||
+        size.height <= 2) {
+      return;
+    }
+    final paint = Paint();
+    final sides = _sides(style.innerGlowSide);
+    void face(String side) {
+      switch (side) {
+        case 'top':
+          final rect = Rect.fromLTWH(0, 0, size.width, band * 2);
+          paint.shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              color.withValues(alpha: opacity),
+              color.withValues(alpha: 0),
+            ],
+          ).createShader(rect);
+          canvas.drawRect(rect, paint);
+        case 'bottom':
+          final rect =
+              Rect.fromLTWH(0, size.height - band * 2, size.width, band * 2);
+          paint.shader = LinearGradient(
+            begin: Alignment.bottomCenter,
+            end: Alignment.topCenter,
+            colors: [
+              color.withValues(alpha: opacity),
+              color.withValues(alpha: 0),
+            ],
+          ).createShader(rect);
+          canvas.drawRect(rect, paint);
+        case 'left':
+          final rect = Rect.fromLTWH(0, 0, band * 2, size.height);
+          paint.shader = LinearGradient(
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
+            colors: [
+              color.withValues(alpha: opacity),
+              color.withValues(alpha: 0),
+            ],
+          ).createShader(rect);
+          canvas.drawRect(rect, paint);
+        case 'right':
+          final rect =
+              Rect.fromLTWH(size.width - band * 2, 0, band * 2, size.height);
+          paint.shader = LinearGradient(
+            begin: Alignment.centerRight,
+            end: Alignment.centerLeft,
+            colors: [
+              color.withValues(alpha: opacity),
+              color.withValues(alpha: 0),
+            ],
+          ).createShader(rect);
+          canvas.drawRect(rect, paint);
+      }
+    }
+
+    for (final side in sides) {
+      face(side);
+    }
+  }
+
+  void _paintShadow(Canvas canvas, Size size) {
+    final color = style.innerShadowColor ?? Colors.black;
+    final opacity = style.innerShadowOpacity ?? 0.32;
+    final band =
+        (style.innerShadowBlur ?? 10).clamp(0.0, size.shortestSide * 0.5);
+    if (opacity <= 0 || band <= 0 || size.width <= 2 || size.height <= 2) {
+      return;
+    }
+    final paint = Paint();
+    final ox = style.innerShadowOffsetX ?? 0;
+    final oy = style.innerShadowOffsetY ?? 2;
+    final sides = _sides(style.innerShadowSide);
+    void face(String side) {
+      switch (side) {
+        case 'top':
+          final rect = Rect.fromLTWH(ox, oy, size.width, band * 2);
+          paint.shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              color.withValues(alpha: opacity),
+              color.withValues(alpha: 0),
+            ],
+          ).createShader(rect);
+          canvas.drawRect(rect, paint);
+        case 'bottom':
+          final rect = Rect.fromLTWH(
+              ox, size.height - band * 2 + oy, size.width, band * 2);
+          paint.shader = LinearGradient(
+            begin: Alignment.bottomCenter,
+            end: Alignment.topCenter,
+            colors: [
+              color.withValues(alpha: opacity),
+              color.withValues(alpha: 0),
+            ],
+          ).createShader(rect);
+          canvas.drawRect(rect, paint);
+        case 'left':
+          final rect = Rect.fromLTWH(ox, oy, band * 2, size.height);
+          paint.shader = LinearGradient(
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
+            colors: [
+              color.withValues(alpha: opacity),
+              color.withValues(alpha: 0),
+            ],
+          ).createShader(rect);
+          canvas.drawRect(rect, paint);
+        case 'right':
+          final rect = Rect.fromLTWH(
+              size.width - band * 2 + ox, oy, band * 2, size.height);
+          paint.shader = LinearGradient(
+            begin: Alignment.centerRight,
+            end: Alignment.centerLeft,
+            colors: [
+              color.withValues(alpha: opacity),
+              color.withValues(alpha: 0),
+            ],
+          ).createShader(rect);
+          canvas.drawRect(rect, paint);
+      }
+    }
+
+    for (final side in sides) {
+      face(side);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant ThemeInnerDecorPainter oldDelegate) =>
+      oldDelegate.style != style || oldDelegate.cornerRadius != cornerRadius;
 }
 
 class _EffectWidget extends StatefulWidget {
