@@ -64,6 +64,84 @@ class ThemeComponentRegistry {
   }
 }
 
+/// 液体玻璃参数（最大逼近苹果 Liquid Glass 的参数面）。
+/// 不是像素级 1:1：苹果的渲染是私有系统合成器 + 私有着色器，
+/// 这里用“背景模糊 + 动态高光 + 波纹/焦散 + 厚度边缘”做最接近的合成。
+class LiquidGlass {
+  const LiquidGlass({
+    this.blur,
+    this.refraction = 0.4,
+    this.specular = 0.65,
+    this.lightX = 0.72,
+    this.lightY = 0.14,
+    this.ripple = 0.35,
+    this.tint,
+    this.tintOpacity = 0.32,
+    this.caustic = 0.25,
+    this.thickness = 0.5,
+    this.edgeHighlight = true,
+    this.innerShadow = true,
+  });
+
+  /// 背景模糊强度，不传就用 style.blur / 组件默认。
+  final double? blur;
+
+  /// 背景“折射扭曲”强度（当前用边缘光晕/波纹模拟，不是真实几何扭曲）。
+  final double refraction;
+
+  /// 镜面高光强度 0~1。
+  final double specular;
+
+  /// 光源位置，组件内部坐标比例 0~1。
+  final double lightX;
+  final double lightY;
+
+  /// 高光/波纹流动幅度。
+  final double ripple;
+
+  /// 玻璃着色/染色。
+  final Color? tint;
+  final double tintOpacity;
+
+  /// 焦散光斑强度。
+  final double caustic;
+
+  /// 玻璃厚度感（边缘高光宽度/阴影范围）。
+  final double thickness;
+  final bool edgeHighlight;
+  final bool innerShadow;
+
+  LiquidGlass copyWith({
+    double? blur,
+    double? refraction,
+    double? specular,
+    double? lightX,
+    double? lightY,
+    double? ripple,
+    Color? tint,
+    double? tintOpacity,
+    double? caustic,
+    double? thickness,
+    bool? edgeHighlight,
+    bool? innerShadow,
+  }) {
+    return LiquidGlass(
+      blur: blur ?? this.blur,
+      refraction: refraction ?? this.refraction,
+      specular: specular ?? this.specular,
+      lightX: lightX ?? this.lightX,
+      lightY: lightY ?? this.lightY,
+      ripple: ripple ?? this.ripple,
+      tint: tint ?? this.tint,
+      tintOpacity: tintOpacity ?? this.tintOpacity,
+      caustic: caustic ?? this.caustic,
+      thickness: thickness ?? this.thickness,
+      edgeHighlight: edgeHighlight ?? this.edgeHighlight,
+      innerShadow: innerShadow ?? this.innerShadow,
+    );
+  }
+}
+
 /// 组件原生风格覆盖：不是画上去的图层，而是直接改 APP 自带组件的
 /// 边缘颜色/宽度/圆角/渐变/发光等真实装饰属性。
 class ComponentStyle {
@@ -98,6 +176,7 @@ class ComponentStyle {
     this.backgroundImage,
     this.backgroundImageFit = 'cover',
     this.backgroundImageOpacity,
+    this.liquid,
   });
 
   /// 纯色填充（覆盖渐变；没传时继续用渐变/默认玻璃填充）。
@@ -142,6 +221,9 @@ class ComponentStyle {
   final String backgroundImageFit;
   final double? backgroundImageOpacity;
 
+  /// 液体玻璃最大逼近参数；非 null 时组件切换成液体玻璃合成层。
+  final LiquidGlass? liquid;
+
   ComponentStyle merge(ComponentStyle? base) {
     if (base == null) return this;
     return ComponentStyle(
@@ -176,6 +258,7 @@ class ComponentStyle {
       backgroundImageFit: backgroundImageFit,
       backgroundImageOpacity:
           backgroundImageOpacity ?? base.backgroundImageOpacity,
+      liquid: liquid ?? base.liquid,
     );
   }
 }
@@ -542,6 +625,31 @@ class ThemeEffectBridge {
           (st['backgroundImageFit'] ?? st['textureFit'] ?? 'cover').toString(),
       backgroundImageOpacity:
           (st['backgroundImageOpacity'] as num?)?.toDouble(),
+      liquid: _parseLiquid(st['liquid']),
+    );
+  }
+
+  static LiquidGlass? _parseLiquid(Object? raw) {
+    if (raw is! Map) return null;
+    final m = Map<String, dynamic>.from(raw);
+    return LiquidGlass(
+      blur: (m['blur'] as num?)?.toDouble(),
+      refraction:
+          ((m['refraction'] as num?)?.toDouble() ?? 0.4).clamp(0.0, 2.0),
+      specular: ((m['specular'] as num?)?.toDouble() ?? 0.65).clamp(0.0, 1.0),
+      lightX: ((m['lightX'] ?? m['light_x'] ?? m['lx']) as num?)?.toDouble() ??
+          0.72,
+      lightY: ((m['lightY'] ?? m['light_y'] ?? m['ly']) as num?)?.toDouble() ??
+          0.14,
+      ripple: ((m['ripple'] as num?)?.toDouble() ?? 0.35).clamp(0.0, 2.0),
+      tint: parseColor(m['tint'] ?? m['color']),
+      tintOpacity:
+          ((m['tintOpacity'] ?? m['tint_opacity']) as num?)?.toDouble() ?? 0.32,
+      caustic: ((m['caustic'] as num?)?.toDouble() ?? 0.25).clamp(0.0, 1.0),
+      thickness: ((m['thickness'] as num?)?.toDouble() ?? 0.5).clamp(0.0, 2.0),
+      edgeHighlight:
+          (m['edgeHighlight'] ?? m['edge_highlight'] ?? true) == true,
+      innerShadow: (m['innerShadow'] ?? m['inner_shadow'] ?? true) == true,
     );
   }
 
@@ -1022,6 +1130,201 @@ class ThemeInnerDecorPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant ThemeInnerDecorPainter oldDelegate) =>
       oldDelegate.style != style || oldDelegate.cornerRadius != cornerRadius;
+}
+
+/// 液体玻璃合成层：在组件背景上叠加动态高光、焦散、折射波纹与厚度边缘。
+/// 这是“最大逼近版”，不是苹果像素级 1:1。
+class LiquidGlassOverlay extends StatefulWidget {
+  const LiquidGlassOverlay({
+    super.key,
+    required this.liquid,
+    required this.cornerRadius,
+  });
+
+  final LiquidGlass liquid;
+  final double cornerRadius;
+
+  @override
+  State<LiquidGlassOverlay> createState() => _LiquidGlassOverlayState();
+}
+
+class _LiquidGlassOverlayState extends State<LiquidGlassOverlay>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 5200),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) => CustomPaint(
+        painter: _LiquidGlassPainter(
+          liquid: widget.liquid,
+          cornerRadius: widget.cornerRadius,
+          t: _controller.value,
+        ),
+      ),
+    );
+  }
+}
+
+class _LiquidGlassPainter extends CustomPainter {
+  _LiquidGlassPainter({
+    required this.liquid,
+    required this.cornerRadius,
+    required this.t,
+  });
+
+  final LiquidGlass liquid;
+  final double cornerRadius;
+  final double t;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final rrect = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      Radius.circular(cornerRadius),
+    );
+    canvas.save();
+    canvas.clipRRect(rrect);
+    _paintTint(canvas, size, rrect);
+    _paintRefraction(canvas, size);
+    _paintCaustics(canvas, size);
+    _paintSpecular(canvas, size);
+    _paintEdges(canvas, size);
+    canvas.restore();
+  }
+
+  void _paintTint(Canvas canvas, Size size, RRect rrect) {
+    final color = liquid.tint ?? Colors.white;
+    final opacity = liquid.tintOpacity.clamp(0.0, 1.0);
+    if (opacity <= 0) return;
+    canvas.drawRRect(
+      rrect,
+      Paint()..color = color.withValues(alpha: opacity),
+    );
+  }
+
+  void _paintRefraction(Canvas canvas, Size size) {
+    final strength = liquid.refraction.clamp(0.0, 2.0);
+    if (strength <= 0) return;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = Colors.white.withValues(alpha: 0.10 * strength);
+    final mid = Offset(size.width * 0.5, size.height * 0.5);
+    final radius = size.longestSide * 0.42;
+    for (var i = 0; i < 3; i++) {
+      final phase = t * 2 * math.pi + i * 2.399;
+      final path = Path();
+      final rr = radius + (i - 1) * size.longestSide * 0.06;
+      const points = 24;
+      for (var p = 0; p <= points; p++) {
+        final a = p / points * 2 * math.pi;
+        final wobble =
+            math.sin(a * 3 + phase) * size.longestSide * 0.012 * strength;
+        final px = mid.dx + math.cos(a) * (rr + wobble);
+        final py = mid.dy + math.sin(a) * ((rr + wobble) * 0.72);
+        if (p == 0) {
+          path.moveTo(px, py);
+        } else {
+          path.lineTo(px, py);
+        }
+      }
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  void _paintCaustics(Canvas canvas, Size size) {
+    final strength = liquid.caustic.clamp(0.0, 1.0);
+    if (strength <= 0) return;
+    for (var i = 0; i < 4; i++) {
+      final px =
+          size.width * (0.2 + 0.6 * (0.5 + 0.5 * math.sin(t * 1.7 + i * 1.9)));
+      final py =
+          size.height * (0.2 + 0.6 * (0.5 + 0.5 * math.cos(t * 1.3 + i * 2.3)));
+      final r = size.shortestSide * (0.08 + 0.10 * liquid.thickness);
+      final paint = Paint()
+        ..shader = RadialGradient(
+          colors: [
+            Colors.white.withValues(alpha: 0.16 * strength),
+            Colors.white.withValues(alpha: 0),
+          ],
+        ).createShader(Rect.fromCircle(center: Offset(px, py), radius: r));
+      canvas.drawCircle(Offset(px, py), r, paint);
+    }
+  }
+
+  void _paintSpecular(Canvas canvas, Size size) {
+    final strength = liquid.specular.clamp(0.0, 1.0);
+    if (strength <= 0) return;
+    final lx =
+        (liquid.lightX + liquid.ripple * 0.08 * math.sin(t * 2 * math.pi))
+            .clamp(0.0, 1.0);
+    final ly =
+        (liquid.lightY + liquid.ripple * 0.1 * math.cos(t * 1.3 * math.pi))
+            .clamp(0.0, 1.0);
+    final center = Offset(size.width * lx, size.height * ly);
+    final radius = size.longestSide * (0.18 + 0.22 * liquid.thickness);
+    final paint = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          Colors.white.withValues(alpha: 0.55 * strength),
+          Colors.white.withValues(alpha: 0.12 * strength),
+          Colors.white.withValues(alpha: 0),
+        ],
+        stops: const [0, 0.45, 1],
+      ).createShader(Rect.fromCircle(center: center, radius: radius));
+    canvas.drawCircle(center, radius, paint);
+  }
+
+  void _paintEdges(Canvas canvas, Size size) {
+    if (liquid.edgeHighlight) {
+      final band = size.shortestSide * (0.05 + 0.08 * liquid.thickness);
+      final paint = Paint();
+      paint.shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          Colors.white.withValues(alpha: 0.34),
+          Colors.white.withValues(alpha: 0),
+        ],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, band));
+      canvas.drawRect(Rect.fromLTWH(0, 0, size.width, band), paint);
+    }
+    if (liquid.innerShadow) {
+      final band = size.shortestSide * (0.08 + 0.10 * liquid.thickness);
+      final paint = Paint();
+      paint.shader = LinearGradient(
+        begin: Alignment.bottomCenter,
+        end: Alignment.topCenter,
+        colors: [
+          Colors.black.withValues(alpha: 0.30),
+          Colors.black.withValues(alpha: 0),
+        ],
+      ).createShader(Rect.fromLTWH(0, size.height - band, size.width, band));
+      canvas.drawRect(
+          Rect.fromLTWH(0, size.height - band, size.width, band), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _LiquidGlassPainter oldDelegate) => true;
 }
 
 class _EffectWidget extends StatefulWidget {

@@ -299,6 +299,7 @@ class GlassCard extends StatelessWidget {
                 style.innerGlowOpacity != null ||
                 style.innerShadowColor != null ||
                 style.innerShadowOpacity != null);
+        final liquidGlass = style?.liquid;
         final cardStack = Stack(
           children: [
             Positioned.fill(
@@ -309,6 +310,15 @@ class GlassCard extends StatelessWidget {
               ),
             ),
             if (bgLayer != null) bgLayer,
+            if (liquidGlass != null)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: LiquidGlassOverlay(
+                    liquid: liquidGlass,
+                    cornerRadius: br.topLeft.x,
+                  ),
+                ),
+              ),
             if (hasInnerDecor)
               Positioned.fill(
                 child: IgnorePointer(
@@ -332,7 +342,7 @@ class GlassCard extends StatelessWidget {
             ),
           ],
         );
-        final blurValue = style?.blur;
+        final blurValue = style?.liquid?.blur ?? style?.blur;
         final cardChild = blurValue != null
             ? ClipRRect(
                 borderRadius: br,

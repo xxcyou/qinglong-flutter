@@ -165,7 +165,8 @@ class GlassPanel extends StatelessWidget {
             .componentStyleFor(page, 'panel', anchorIndex ?? 0);
         final baseRadius = style?.radius ?? radius;
         final br = Glass.radius(baseRadius);
-        final effectiveBlur = style?.blur ??
+        final effectiveBlur = style?.liquid?.blur ??
+            style?.blur ??
             (blur == Glass.blur && visual != null ? visual.glassBlur : blur);
         final effectiveShadowY =
             shadowY == 8 && visual != null ? visual.glassShadowY : shadowY;
@@ -274,25 +275,36 @@ class GlassPanel extends StatelessWidget {
             ),
           );
         }
-        final contentChild = (hasInnerDecor || bgLayer != null)
-            ? Stack(
-                children: [
-                  if (bgLayer != null) bgLayer,
-                  if (hasInnerDecor)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: CustomPaint(
-                          painter: ThemeInnerDecorPainter(
-                            style: style,
-                            cornerRadius: br.topLeft.x,
+        final liquidGlass = style?.liquid;
+        final contentChild =
+            (hasInnerDecor || bgLayer != null || liquidGlass != null)
+                ? Stack(
+                    children: [
+                      if (bgLayer != null) bgLayer,
+                      if (liquidGlass != null)
+                        Positioned.fill(
+                          child: IgnorePointer(
+                            child: LiquidGlassOverlay(
+                              liquid: liquidGlass,
+                              cornerRadius: br.topLeft.x,
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-                  inner,
-                ],
-              )
-            : inner;
+                      if (hasInnerDecor)
+                        Positioned.fill(
+                          child: IgnorePointer(
+                            child: CustomPaint(
+                              painter: ThemeInnerDecorPainter(
+                                style: style,
+                                cornerRadius: br.topLeft.x,
+                              ),
+                            ),
+                          ),
+                        ),
+                      inner,
+                    ],
+                  )
+                : inner;
         Widget content = DecoratedBox(
           decoration: BoxDecoration(
             borderRadius: br,
