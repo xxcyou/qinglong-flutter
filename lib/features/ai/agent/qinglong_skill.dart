@@ -324,7 +324,8 @@ DSHTheme.createComponent({
     glowColor: '#D4AF37', glowRadius: 16, glowOpacity: 0.35,
     liquid: { blur: 20, refraction: 0.35, specular: 0.55, lightX: 0.7, lightY: 0.15,
               ripple: 0.25, tint: '#D4AF37', tintOpacity: 0.08, caustic: 0.15,
-              thickness: 0.5, edgeHighlight: true, innerShadow: true },
+              thickness: 0.5, edgeHighlight: true, innerShadow: true,
+              animated: false },
     innerGlow: { color: '#D4AF37', opacity: 0.2, radius: 10, side: 'top' }
   }
 });
@@ -379,7 +380,7 @@ document.getElementById('vol').addEventListener('input', function () {
 - `durationMs`: 动画单次时长，默认 1800
 - `textBackgroundColor`, `textBorderColor`, `textBorderWidth`, `textRadius`, `textPadding`: 文字气泡样式
 - `paint`：组件重绘/发光，`{type: solid|gradient|radialGradient|glow|stroke|shadow|ellipse|ring|line|dashed, colors, opacity, borderWidth, radius, cornerRadius, angle, dashWidth, dashGap}`
-- `styleComponent`：真实修改组件（page,type,index,style），style 支持 `color`（纯色填充）、`colors`+`angle`（渐变）、`borderColor`/`borderWidth`/`borderOpacity`、`glowColor`/`glowRadius`/`glowOpacity`、`fillOpacity`、`radius`、`shadowColor`/`shadowOpacity`/`shadowBlur`/`shadowOffsetY`、`innerGlow`（内发光：color/opacity/radius/side，side 可 top/bottom/left/right/all）、`innerShadow`（内阴影：color/opacity/blur/offsetX/offsetY/side）、`opacity`（组件整体透明度）、`blur`（玻璃/液体玻璃模糊强度）、`backgroundImage`/`texture`（背景纹理图路径，如木纹）、`backgroundImageFit`（cover/fill/contain）、`backgroundImageOpacity`（纹理透明度）、`liquid`（液体玻璃最大逼近：blur/refraction/specular/lightX/lightY/ripple/tint/tintOpacity/caustic/thickness/edgeHighlight/innerShadow）。liquid 模式不传 fillOpacity 时自动半透明，且默认去掉边缘描边（想要描边需显式传 borderWidth/borderColor/borderOpacity）；高光/焦散会随组件移动跟手
+- `styleComponent`：真实修改组件（page,type,index,style），style 支持 `color`（纯色填充）、`colors`+`angle`（渐变）、`borderColor`/`borderWidth`/`borderOpacity`、`glowColor`/`glowRadius`/`glowOpacity`、`fillOpacity`、`radius`、`shadowColor`/`shadowOpacity`/`shadowBlur`/`shadowOffsetY`、`innerGlow`（内发光：color/opacity/radius/side，side 可 top/bottom/left/right/all）、`innerShadow`（内阴影：color/opacity/blur/offsetX/offsetY/side）、`opacity`（组件整体透明度）、`blur`（玻璃/液体玻璃模糊强度）、`backgroundImage`/`texture`（背景纹理图路径，如木纹）、`backgroundImageFit`（cover/fill/contain）、`backgroundImageOpacity`（纹理透明度）、`liquid`（液体玻璃最大逼近：blur/refraction/specular/lightX/lightY/ripple/tint/tintOpacity/caustic/thickness/edgeHighlight/innerShadow/animated）。liquid 模式不传 fillOpacity 时自动半透明，且默认去掉边缘描边（想要描边需显式传 borderWidth/borderColor/borderOpacity）；`animated` 默认 false，即默认静态液态玻璃不会一闪一闪，只有显式设 `animated: true` 才持续流动；高光/焦散仍会随组件移动跟手
 - `interactive:true`：让特效可点击/长按；默认不拦截正常控件
 
 ### 实现"括号中的高级效果"的标准做法

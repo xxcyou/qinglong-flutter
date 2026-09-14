@@ -82,6 +82,7 @@ class LiquidGlass {
     this.thickness = 0.5,
     this.edgeHighlight = true,
     this.innerShadow = true,
+    this.animated = false,
   });
 
   /// 背景模糊强度，不传就用 style.blur / 组件默认。
@@ -112,6 +113,10 @@ class LiquidGlass {
   final bool edgeHighlight;
   final bool innerShadow;
 
+  /// 是否让高光/焦散/波纹持续流动。
+  /// 默认关闭（静态液态玻璃），可避免“一闪一闪”；想保留流动效果设 true。
+  final bool animated;
+
   LiquidGlass copyWith({
     double? blur,
     double? refraction,
@@ -125,6 +130,7 @@ class LiquidGlass {
     double? thickness,
     bool? edgeHighlight,
     bool? innerShadow,
+    bool? animated,
   }) {
     return LiquidGlass(
       blur: blur ?? this.blur,
@@ -139,6 +145,7 @@ class LiquidGlass {
       thickness: thickness ?? this.thickness,
       edgeHighlight: edgeHighlight ?? this.edgeHighlight,
       innerShadow: innerShadow ?? this.innerShadow,
+      animated: animated ?? this.animated,
     );
   }
 }
@@ -798,6 +805,7 @@ class ThemeEffectBridge {
       edgeHighlight:
           (m['edgeHighlight'] ?? m['edge_highlight'] ?? true) == true,
       innerShadow: (m['innerShadow'] ?? m['inner_shadow'] ?? true) == true,
+      animated: (m['animated'] ?? false) == true,
     );
   }
 
@@ -1665,7 +1673,7 @@ class _LiquidGlassOverlayState extends State<LiquidGlassOverlay>
             painter: _LiquidGlassPainter(
               liquid: widget.liquid,
               cornerRadius: widget.cornerRadius,
-              t: _controller.value,
+              t: widget.liquid.animated ? _controller.value : 0.0,
               motion: _motion,
             ),
           );
@@ -1725,7 +1733,7 @@ class _LiquidGlassPainter extends CustomPainter {
     final mid = Offset(size.width * 0.5, size.height * 0.5);
     final radius = size.longestSide * 0.42;
     for (var i = 0; i < 3; i++) {
-      final phase = t * 2 * math.pi + i * 2.399;
+      final phase = (liquid.animated ? t * 2 * math.pi : 0.0) + i * 2.399;
       final path = Path();
       final rr = radius + (i - 1) * size.longestSide * 0.06;
       const points = 24;
@@ -1748,12 +1756,13 @@ class _LiquidGlassPainter extends CustomPainter {
   void _paintCaustics(Canvas canvas, Size size) {
     final strength = liquid.caustic.clamp(0.0, 1.0);
     if (strength <= 0) return;
+    final at = liquid.animated ? t : 0.0;
     for (var i = 0; i < 4; i++) {
-      final px =
-          size.width * (0.2 + 0.6 * (0.5 + 0.5 * math.sin(t * 1.7 + i * 1.9))) -
-              motion.dx * 0.35;
+      final px = size.width *
+              (0.2 + 0.6 * (0.5 + 0.5 * math.sin(at * 1.7 + i * 1.9))) -
+          motion.dx * 0.35;
       final py = size.height *
-              (0.2 + 0.6 * (0.5 + 0.5 * math.cos(t * 1.3 + i * 2.3))) -
+              (0.2 + 0.6 * (0.5 + 0.5 * math.cos(at * 1.3 + i * 2.3))) -
           motion.dy * 0.35;
       final r = size.shortestSide * (0.08 + 0.10 * liquid.thickness);
       final paint = Paint()
@@ -1772,12 +1781,13 @@ class _LiquidGlassPainter extends CustomPainter {
     if (strength <= 0) return;
     final moveX = motion.dx / math.max(size.width, 1) * 0.9;
     final moveY = motion.dy / math.max(size.height, 1) * 0.9;
+    final at = liquid.animated ? t : 0.0;
     final lx = (liquid.lightX +
-            liquid.ripple * 0.08 * math.sin(t * 2 * math.pi) -
+            liquid.ripple * 0.08 * math.sin(at * 2 * math.pi) -
             moveX)
         .clamp(0.0, 1.0);
     final ly = (liquid.lightY +
-            liquid.ripple * 0.1 * math.cos(t * 1.3 * math.pi) -
+            liquid.ripple * 0.1 * math.cos(at * 1.3 * math.pi) -
             moveY)
         .clamp(0.0, 1.0);
     final center = Offset(size.width * lx, size.height * ly);
@@ -1825,7 +1835,12 @@ class _LiquidGlassPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _LiquidGlassPainter oldDelegate) => true;
+  bool shouldRepaint(covariant _LiquidGlassPainter oldDelegate) {
+    return oldDelegate.liquid.animated != liquid.animated ||
+        oldDelegate.t != t ||
+        oldDelegate.motion != motion ||
+        oldDelegate.cornerRadius != cornerRadius;
+  }
 }
 
 class _EffectWidget extends StatefulWidget {
