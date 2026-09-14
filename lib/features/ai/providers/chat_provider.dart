@@ -1449,6 +1449,11 @@ class ChatNotifier extends Notifier<ChatState> {
     final run = _SessionRun(sessionId: session.id)
       ..resumeEvents = resumeEvents ?? const []
       ..isResume = resumeEvents != null;
+    // 续跑时把中断前的事件直接放进新 run 的事件流：流程卡片从旧事件接着长，
+    // 不会一继续就“清空重来”只看到后面新跑的。
+    if (resumeEvents != null && resumeEvents.isNotEmpty) {
+      run.events.addAll(resumeEvents);
+    }
     _runs[session.id] = run;
     if (session.id == state.currentSessionId) {
       state = state.copyWith(
@@ -1456,7 +1461,9 @@ class ChatNotifier extends Notifier<ChatState> {
         pendingPlan: const [],
         clearPendingQuestion: true,
         clearInterruptedRun: true,
-        liveAgentEvents: const [],
+        liveAgentEvents: resumeEvents?.isNotEmpty == true
+            ? List<AgentEvent>.from(resumeEvents!)
+            : const [],
         clearLiveText: true,
         clearError: true,
         runningSessionIds: {..._runs.keys},
