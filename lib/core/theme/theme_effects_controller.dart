@@ -323,10 +323,45 @@ class ThemeComponentBridge {
     final m = Map<String, dynamic>.from(raw);
     final id = m['id']?.toString();
     if (id == null || id.isEmpty) return null;
+    final styleMap = <String, dynamic>{};
     final styleRaw = m['style'];
-    final style = styleRaw is Map
-        ? ThemeEffectBridge.parseComponentStyle(styleRaw)
-        : null;
+    if (styleRaw is Map) {
+      styleMap.addAll(Map<String, dynamic>.from(styleRaw));
+    }
+    const styleKeys = [
+      'color',
+      'colors',
+      'gradientColors',
+      'angle',
+      'gradientAngle',
+      'borderColor',
+      'borderWidth',
+      'borderOpacity',
+      'fillOpacity',
+      'radius',
+      'shadowColor',
+      'shadowOpacity',
+      'shadowBlur',
+      'shadowOffsetY',
+      'glowColor',
+      'glowRadius',
+      'glowOpacity',
+      'innerGlow',
+      'innerShadow',
+      'opacity',
+      'blur',
+      'backgroundImage',
+      'texture',
+      'backgroundImageFit',
+      'backgroundImageOpacity',
+      'liquid',
+    ];
+    for (final key in styleKeys) {
+      if (!styleMap.containsKey(key) && m.containsKey(key)) {
+        styleMap[key] = m[key];
+      }
+    }
+    final style = ThemeEffectBridge.parseComponentStyle(styleMap);
     return ThemeComponent(
       id: id,
       type: (m['type']?.toString() ?? 'button').toLowerCase(),
