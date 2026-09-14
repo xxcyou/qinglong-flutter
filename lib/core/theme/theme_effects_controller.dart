@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
@@ -941,26 +942,92 @@ class _ComponentWidgetState extends State<_ComponentWidget> {
       case 'input':
         return _buildInput(context);
       case 'text':
-        return _wrapTap(content);
+        return _wrapTap(_shouldDecorate(widget.component)
+            ? _wrapContainer(content)
+            : content);
       case 'iconButton':
         return _wrapTap(
-          Container(
-            decoration: _decoration(),
-            child: Center(
-              child: _buildIcon(c.icon, c.color, c.fontSize + 8),
-            ),
-          ),
+          _wrapContainer(_buildIcon(c.icon, c.color, c.fontSize + 8)),
         );
       case 'card':
       case 'button':
       default:
-        return _wrapTap(
-          Container(
-            decoration: _decoration(),
-            child: Center(child: content),
-          ),
-        );
+        return _wrapTap(_wrapContainer(content));
     }
+  }
+
+  bool _shouldDecorate(ThemeComponent c) {
+    final s = c.style;
+    return s?.color != null ||
+        s?.gradientColors != null ||
+        s?.borderColor != null ||
+        s?.borderWidth != null ||
+        s?.borderOpacity != null ||
+        s?.shadowColor != null ||
+        s?.shadowOpacity != null ||
+        s?.shadowBlur != null ||
+        s?.shadowOffsetY != null ||
+        s?.glowColor != null ||
+        s?.glowRadius != null ||
+        s?.glowOpacity != null ||
+        s?.liquid != null ||
+        s?.blur != null;
+  }
+
+  Widget _wrapContainer(Widget content) {
+    final c = widget.component;
+    final s = c.style;
+    final radiusValue = s?.radius ?? c.borderRadius;
+    final br = BorderRadius.circular(radiusValue);
+    final liquid = s?.liquid;
+    final hasInner = s != null &&
+        (s.innerGlowColor != null ||
+            s.innerGlowOpacity != null ||
+            s.innerShadowColor != null ||
+            s.innerShadowOpacity != null);
+    final blur = s?.blur ?? liquid?.blur;
+
+    Widget stack = Stack(
+      children: [
+        if (liquid != null)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: LiquidGlassOverlay(
+                liquid: liquid,
+                cornerRadius: radiusValue,
+              ),
+            ),
+          ),
+        if (hasInner)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: ThemeInnerDecorPainter(
+                  style: s,
+                  cornerRadius: radiusValue,
+                ),
+              ),
+            ),
+          ),
+        Center(child: content),
+      ],
+    );
+
+    if (blur != null) {
+      stack = ClipRRect(
+        borderRadius: br,
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+          child: stack,
+        ),
+      );
+    }
+
+    return Container(
+      decoration: _decoration(),
+      clipBehavior: Clip.antiAlias,
+      child: stack,
+    );
   }
 
   Widget _buildInput(BuildContext context) {
@@ -1033,19 +1100,53 @@ class _ComponentWidgetState extends State<_ComponentWidget> {
     final c = widget.component;
     final s = c.style;
     final br = BorderRadius.circular(s?.radius ?? c.borderRadius);
+    final fill = s?.fillOpacity ?? (s?.liquid != null ? 0.55 : null);
+    final baseColor = s?.color ?? c.color;
+    final bgColor =
+        fill == null ? baseColor : baseColor.withValues(alpha: fill);
     final colors = s?.gradientColors;
+    final gradientColors = colors == null
+        ? null
+        : fill == null
+            ? colors
+            : [for (final col in colors) col.withValues(alpha: fill)];
     final angle = s?.gradientAngle ?? 135;
     final borderColor = s?.borderColor;
     final borderOpacity = s?.borderOpacity ?? 1.0;
+    final shadowColor = s?.shadowColor;
+    final shadowOpacity = s?.shadowOpacity;
+    final shadowBlur = s?.shadowBlur;
+    final shadowOffsetY = s?.shadowOffsetY;
+    final glowColor = s?.glowColor;
+    final glowOpacity = s?.glowOpacity;
+    final glowRadius = s?.glowRadius;
+    final shadows = <BoxShadow>[
+      if (shadowColor != null ||
+          shadowOpacity != null ||
+          shadowBlur != null ||
+          shadowOffsetY != null)
+        BoxShadow(
+          color: (shadowColor ?? Colors.black)
+              .withValues(alpha: shadowOpacity ?? 0.2),
+          blurRadius: shadowBlur ?? 8,
+          offset: Offset(0, shadowOffsetY ?? 4),
+        ),
+      if (glowColor != null)
+        BoxShadow(
+          color: glowColor.withValues(alpha: glowOpacity ?? 0.6),
+          blurRadius: glowRadius ?? 12,
+          spreadRadius: 0,
+        ),
+    ];
     return BoxDecoration(
-      color: s?.color ?? c.color,
-      gradient: s?.color == null && colors != null
+      color: bgColor,
+      gradient: s?.color == null && gradientColors != null
           ? LinearGradient(
               begin: Alignment(-math.cos(angle * math.pi / 180),
                   -math.sin(angle * math.pi / 180)),
               end: Alignment(math.cos(angle * math.pi / 180),
                   math.sin(angle * math.pi / 180)),
-              colors: colors,
+              colors: gradientColors,
             )
           : null,
       borderRadius: br,
@@ -1054,6 +1155,7 @@ class _ComponentWidgetState extends State<_ComponentWidget> {
             borderColor?.withValues(alpha: borderOpacity) ?? Colors.transparent,
         width: s?.borderWidth ?? 0,
       ),
+      boxShadow: shadows.isEmpty ? null : shadows,
     );
   }
 
