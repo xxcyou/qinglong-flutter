@@ -1151,6 +1151,9 @@ class LiquidGlassOverlay extends StatefulWidget {
 class _LiquidGlassOverlayState extends State<LiquidGlassOverlay>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
+  Offset _lastGlobal = Offset.zero;
+  Offset _motion = Offset.zero;
+  bool _hasLast = false;
 
   @override
   void initState() {
@@ -1167,17 +1170,35 @@ class _LiquidGlassOverlayState extends State<LiquidGlassOverlay>
     super.dispose();
   }
 
+  /// 悬浮窗/面板滑动时，记录它全局位置的变化，作为液体高光“被带着走”的
+  /// 惯性输入。没有这个的话，玻璃滑了但高光钉在组件内部坐标里，看起来不跟手。
+  void _trackMotion() {
+    final render = context.findRenderObject();
+    if (render is! RenderBox || !render.attached) return;
+    final global = render.localToGlobal(Offset.zero);
+    if (_hasLast) {
+      final delta = global - _lastGlobal;
+      _motion = Offset.lerp(_motion, delta, 0.25) ?? Offset.zero;
+    }
+    _lastGlobal = global;
+    _hasLast = true;
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: _controller,
-      builder: (context, _) => CustomPaint(
-        painter: _LiquidGlassPainter(
-          liquid: widget.liquid,
-          cornerRadius: widget.cornerRadius,
-          t: _controller.value,
-        ),
-      ),
+      builder: (context, _) {
+        _trackMotion();
+        return CustomPaint(
+          painter: _LiquidGlassPainter(
+            liquid: widget.liquid,
+            cornerRadius: widget.cornerRadius,
+            t: _controller.value,
+            motion: _motion,
+          ),
+        );
+      },
     );
   }
 }
@@ -1187,11 +1208,13 @@ class _LiquidGlassPainter extends CustomPainter {
     required this.liquid,
     required this.cornerRadius,
     required this.t,
+    this.motion = Offset.zero,
   });
 
   final LiquidGlass liquid;
   final double cornerRadius;
   final double t;
+  final Offset motion;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1255,9 +1278,11 @@ class _LiquidGlassPainter extends CustomPainter {
     if (strength <= 0) return;
     for (var i = 0; i < 4; i++) {
       final px =
-          size.width * (0.2 + 0.6 * (0.5 + 0.5 * math.sin(t * 1.7 + i * 1.9)));
-      final py =
-          size.height * (0.2 + 0.6 * (0.5 + 0.5 * math.cos(t * 1.3 + i * 2.3)));
+          size.width * (0.2 + 0.6 * (0.5 + 0.5 * math.sin(t * 1.7 + i * 1.9))) -
+              motion.dx * 0.35;
+      final py = size.height *
+              (0.2 + 0.6 * (0.5 + 0.5 * math.cos(t * 1.3 + i * 2.3))) -
+          motion.dy * 0.35;
       final r = size.shortestSide * (0.08 + 0.10 * liquid.thickness);
       final paint = Paint()
         ..shader = RadialGradient(
@@ -1273,12 +1298,16 @@ class _LiquidGlassPainter extends CustomPainter {
   void _paintSpecular(Canvas canvas, Size size) {
     final strength = liquid.specular.clamp(0.0, 1.0);
     if (strength <= 0) return;
-    final lx =
-        (liquid.lightX + liquid.ripple * 0.08 * math.sin(t * 2 * math.pi))
-            .clamp(0.0, 1.0);
-    final ly =
-        (liquid.lightY + liquid.ripple * 0.1 * math.cos(t * 1.3 * math.pi))
-            .clamp(0.0, 1.0);
+    final moveX = motion.dx / math.max(size.width, 1) * 0.9;
+    final moveY = motion.dy / math.max(size.height, 1) * 0.9;
+    final lx = (liquid.lightX +
+            liquid.ripple * 0.08 * math.sin(t * 2 * math.pi) -
+            moveX)
+        .clamp(0.0, 1.0);
+    final ly = (liquid.lightY +
+            liquid.ripple * 0.1 * math.cos(t * 1.3 * math.pi) -
+            moveY)
+        .clamp(0.0, 1.0);
     final center = Offset(size.width * lx, size.height * ly);
     final radius = size.longestSide * (0.18 + 0.22 * liquid.thickness);
     final paint = Paint()

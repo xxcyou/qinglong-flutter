@@ -186,7 +186,11 @@ class GlassPanel extends StatelessWidget {
         final effectiveShadowBlur =
             style?.shadowBlur ?? (effectiveShadowY * 2.2);
         final effectiveShadowOffsetY = style?.shadowOffsetY ?? effectiveShadowY;
-        final fillOpacity = style?.fillOpacity ?? opacity;
+        final liquidActive = style?.liquid != null;
+        // 液体玻璃默认要透：主题没显式给 fillOpacity 时，自动压到半透明，
+        // 否则原来的不透明 colors/纯色会把“液态”直接盖成一块实心板。
+        final defaultLiquidFill = liquidActive ? 0.55 : null;
+        final fillOpacity = style?.fillOpacity ?? defaultLiquidFill ?? opacity;
         final styleAngle = style?.gradientAngle ?? 135;
         Widget inner = tint == null
             ? _padded(child)
@@ -215,14 +219,17 @@ class GlassPanel extends StatelessWidget {
           );
         }
         final List<Color> gradientColors = style?.gradientColors ?? [];
+        final gradientAlpha = style?.fillOpacity ?? defaultLiquidFill;
         final effectiveGradientColors =
-            gradientColors.isNotEmpty && style?.fillOpacity != null
+            gradientColors.isNotEmpty && gradientAlpha != null
                 ? [
                     for (final c in gradientColors)
-                      c.withValues(alpha: style!.fillOpacity!)
+                      c.withValues(alpha: gradientAlpha)
                   ]
                 : gradientColors;
-        final solidColor = style?.color;
+        final solidColor = style?.color != null && liquidActive
+            ? style!.color!.withValues(alpha: gradientAlpha ?? 0.55)
+            : style?.color;
         final gradient = effectiveGradientColors.isNotEmpty
             ? LinearGradient(
                 begin: Alignment(-math.cos(styleAngle * math.pi / 180),

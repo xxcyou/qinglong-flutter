@@ -215,20 +215,26 @@ class GlassCard extends StatelessWidget {
         final style = ThemeEffectsController.instance
             .componentStyleFor(page, 'card', anchorIndex ?? 0);
         final br = BorderRadius.circular(style?.radius ?? radius);
+        final liquidActive = style?.liquid != null;
+        final defaultLiquidFill = liquidActive ? 0.55 : null;
+        final baseFill =
+            style?.fillOpacity ?? defaultLiquidFill ?? (dark ? 0.46 : 0.78);
+        final deepFill = style?.fillOpacity == null
+            ? (defaultLiquidFill ?? (dark ? 0.28 : 0.56))
+            : style!.fillOpacity! * 0.7;
         final List<Color> gradientColors = style?.gradientColors ??
             [
-              (dark ? scheme.surface : Colors.white).withValues(
-                  alpha: style?.fillOpacity ?? (dark ? 0.46 : 0.78)),
-              (dark ? scheme.surface : Colors.white).withValues(
-                  alpha: style?.fillOpacity == null
-                      ? (dark ? 0.28 : 0.56)
-                      : style!.fillOpacity! * 0.7),
+              (dark ? scheme.surface : Colors.white)
+                  .withValues(alpha: baseFill),
+              (dark ? scheme.surface : Colors.white)
+                  .withValues(alpha: deepFill),
             ];
+        final gradientAlpha = style?.fillOpacity ?? defaultLiquidFill;
         final effectiveGradientColors =
-            gradientColors.isNotEmpty && style?.fillOpacity != null
+            gradientColors.isNotEmpty && gradientAlpha != null
                 ? [
                     for (final c in gradientColors)
-                      c.withValues(alpha: style!.fillOpacity!)
+                      c.withValues(alpha: gradientAlpha)
                   ]
                 : gradientColors;
         final borderColor = style?.borderColor ??
@@ -243,7 +249,9 @@ class GlassCard extends StatelessWidget {
                   ));
         final borderOpacity = style?.borderOpacity ?? 1.0;
         final borderWidth = style?.borderWidth ?? (selected ? 1.4 : 1);
-        final solidColor = style?.color;
+        final solidColor = style?.color != null && liquidActive
+            ? style!.color!.withValues(alpha: gradientAlpha ?? 0.55)
+            : style?.color;
         final styleAngle = style?.gradientAngle ?? 135;
         final shadowColor =
             style?.shadowColor ?? Colors.black.withValues(alpha: 0);
