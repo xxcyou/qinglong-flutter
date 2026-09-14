@@ -1112,7 +1112,10 @@ class ChatNotifier extends Notifier<ChatState> {
   /// 工具结果明细），不是界面上的气泡列表——所以展开后能看到 AI
   /// 到底记住了哪些东西。
   String contextPreview({int maxChars = 8000}) {
-    final history = _history();
+    // 用真正经过自动压缩后要发给模型的那份历史，而不是原始气泡列表。
+    // 这样展开“上下文”看到的才是模型真实能看到的内容，不会把已被压缩
+    // 掉的旧工具摘要也当成“AI 还记得”。
+    final history = _historyWithAutoCompress();
     final out = <String>[];
     var used = 0;
     for (final m in history) {
