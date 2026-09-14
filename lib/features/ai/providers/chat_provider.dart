@@ -1613,20 +1613,19 @@ class ChatNotifier extends Notifier<ChatState> {
           updatedAt: DateTime.now(),
         ),
       );
-      // 继续中断任务时如果发送失败（网络/Base URL 问题），不能把中断快照丢掉：
-      // 用户修好网络后还得能再点一次“继续”。把中断状态原样留回去。
-      if (run.isResume) {
-        state = state.copyWith(
-          interruptedRun: InterruptedRun(
-            sessionId: session.id,
-            userInput: value,
-            events: List<AgentEvent>.from(run.events),
-            startedAt: DateTime.now(),
-          ),
-          liveAgentEvents: List<AgentEvent>.from(run.events),
-        );
-        await _saveActiveRun();
-      }
+      // 无论是不是“继续”来的，任何中断（网络、模型错误、超时等）都保留一份
+      // 可续跑的快照：用户修好网络/换个模型后点“继续”，会用已跑过的工具事件
+      // 接着续轮，而不是整段从头再来。
+      state = state.copyWith(
+        interruptedRun: InterruptedRun(
+          sessionId: session.id,
+          userInput: value,
+          events: List<AgentEvent>.from(run.events),
+          startedAt: DateTime.now(),
+        ),
+        liveAgentEvents: List<AgentEvent>.from(run.events),
+      );
+      await _saveActiveRun();
       _runs.remove(session.id);
       run.dispose();
       if (session.id == state.currentSessionId) {
@@ -1640,11 +1639,7 @@ class ChatNotifier extends Notifier<ChatState> {
       } else {
         state = state.copyWith(runningSessionIds: {..._runs.keys});
       }
-      if (run.isResume) {
-        // resume 失败：不清 active run，保留“继续”入口。
-      } else {
-        unawaited(_clearActiveRun());
-      }
+      // 错误导致的失败也保留 active run，供“继续”续轮。
       unawaited(BrowserEngine.instance.settleAfterRun());
       _pumpQueue(session.id);
     }
