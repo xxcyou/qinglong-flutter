@@ -16,6 +16,7 @@ import '../widgets/terminal_selection_bar.dart';
 import '../widgets/terminal_theme_sheet.dart';
 import 'shell_files_page.dart';
 import '../../../shared/mono_text.dart';
+import '../../../core/theme/glass.dart';
 
 class TerminalPage extends ConsumerStatefulWidget {
   const TerminalPage({super.key});
@@ -270,30 +271,37 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
           Expanded(
             child: ClipRRect(
               borderRadius: BorderRadius.circular(16),
-              child: Container(
-                margin: const EdgeInsets.fromLTRB(6, 0, 6, 6),
-                color: palette.background,
-                child: state.running
-                    ? TerminalView(
-                        _terminal,
-                        controller: _terminalController,
-                        focusNode: _focusNode,
-                        autofocus: true,
-                        keyboardType: TextInputType.multiline,
-                        backgroundOpacity: 1,
-                        theme: palette.theme,
-                        // 等宽字体 + 行高：Android 自带 monospace 字形窄、
-                        // 中英混排基线乱跳，换成 JetBrains Mono 才像正经终端。
-                        textStyle: TerminalStyle(
-                          fontSize: settings.terminalFontSize,
-                          height: settings.terminalLineHeight,
-                          fontFamily: kMonoFamily,
-                          fontFamilyFallback: kMonoFallback,
-                        ),
-                        padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
-                        cursorType: TerminalCursorType.block,
-                      )
-                    : _LaunchView(onTap: notifier.spawn, palette: palette),
+              child: GlassPanel(
+                margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+                radius: 20,
+                blur: Glass.blur,
+                padding: EdgeInsets.zero,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: state.running
+                      ? TerminalView(
+                          _terminal,
+                          controller: _terminalController,
+                          focusNode: _focusNode,
+                          autofocus: true,
+                          keyboardType: TextInputType.multiline,
+                          // 半透明背景：让玻璃面板的模糊渐变从底下透出来，
+                          // 像嵌进 APP 的玻璃面板，而不是一块独立的黑匣子。
+                          backgroundOpacity: 0.86,
+                          theme: palette.theme,
+                          // 等宽字体 + 行高：Android 自带 monospace 字形窄、
+                          // 中英混排基线乱跳，换成 JetBrains Mono 才像正经终端。
+                          textStyle: TerminalStyle(
+                            fontSize: settings.terminalFontSize,
+                            height: settings.terminalLineHeight,
+                            fontFamily: kMonoFamily,
+                            fontFamilyFallback: kMonoFallback,
+                          ),
+                          padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+                          cursorType: TerminalCursorType.block,
+                        )
+                      : _LaunchView(onTap: notifier.spawn, palette: palette),
+                ),
               ),
             ),
           ),
