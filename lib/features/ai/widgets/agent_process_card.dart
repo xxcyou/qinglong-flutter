@@ -867,7 +867,7 @@ class _SubagentGroupState extends State<_SubagentGroup> {
               padding: const EdgeInsets.only(top: 4, left: 4),
               child: Text(
                 _status(last, label),
-                maxLines: 1,
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: 11,
@@ -895,9 +895,15 @@ class _SubagentGroupState extends State<_SubagentGroup> {
     );
   }
 
-  /// 折叠态的一行实时速览：工具名 + 最近事件内容，压成一行。
+  /// 折叠态的实时速览：优先显示最近一条“思考”，没有思考才用最后一条事件。
+  /// 这样子代理还在想问题时，不展开也能看到它在想什么。
   String _status(AgentEvent e, String label) {
-    final prefix = switch (e.kind) {
+    AgentEvent latestThinking = e;
+    for (final ev in widget.events) {
+      if (ev.kind == AgentEventKind.thinking) latestThinking = ev;
+    }
+    final target = latestThinking;
+    final prefix = switch (target.kind) {
       AgentEventKind.thinking => '思考',
       AgentEventKind.answer => '正文',
       AgentEventKind.toolStart => '调用',
@@ -906,11 +912,11 @@ class _SubagentGroupState extends State<_SubagentGroup> {
       AgentEventKind.done => '收尾',
       _ => '',
     };
-    var msg = e.message.replaceAll(RegExp(r'\s+'), ' ').trim();
+    var msg = target.message.replaceAll(RegExp(r'\s+'), ' ').trim();
     final tag = '[$label] ';
     if (msg.startsWith(tag)) msg = msg.substring(tag.length).trim();
-    if (e.toolName != null && e.toolName!.isNotEmpty) {
-      return '${prefix.isEmpty ? '' : '$prefix '}${e.toolName} · $msg';
+    if (target.toolName != null && target.toolName!.isNotEmpty) {
+      return '${prefix.isEmpty ? '' : '$prefix '}${target.toolName} · $msg';
     }
     return prefix.isEmpty ? msg : '$prefix $msg';
   }
