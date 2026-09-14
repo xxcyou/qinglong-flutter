@@ -397,6 +397,21 @@ DSHTheme.createComponent({
 DSHTheme.removeComponent('btn_liquid');
 ```
 
+## createComponent 原生互动组件参数
+- 类型：`button` / `card` / `text` / `iconButton` / `input`。
+- 坐标：`x/y/width/height` 是**屏幕绝对坐标**（和 effect 一样），不是网页坐标。
+- 事件：
+  - `DSHTheme.onComponent('tap', fn)`、`onComponent('longPress', fn)`、`onComponent('change', fn)`。
+  - 回传对象：tap/longPress 是 `{id}`；change 是 `{id, value}`。
+- 更新/删除：
+  - `DSHTheme.updateComponent(cfg)`：同 id 覆盖（**需传完整对象**，不是增量合并）。
+  - `DSHTheme.removeComponent(id)`。
+- 样式：
+  - 放 `style` 里，支持 `styleComponent` 全部字段：`color/colors+angle/border*/fillOpacity/radius/shadow*/glow*/innerGlow/innerShadow/opacity/blur/backgroundImage/liquid`。
+  - 根级直接写 `colors/borderColor/shadowColor/glowColor/liquid/innerGlow/innerShadow/fillOpacity/blur/radius` 也会自动并入 style，但推荐统一写进 `style`。
+- 渲染能力：完整支持深色玻璃、液体玻璃、暗金细边、深投影、外发光、内发光/内阴影、半透明渐变、纹理背景。
+- 典型用法：背景音控件、右下角悬浮按钮、互动卡片、输入框。背景 WebView 里的 HTML DOM 会被 App 组件盖住、点不到，需要“真能点”的控件一律用 `createComponent`，不要用 HTML 按钮。
+
 ## 常用字段
 - id/imagePath/icon/text/x/y/width/height/color/animation/fit/interactive/fontSize/speechTail。
 - `opacity` 整体透明度、`rotation` 静态旋转、`scale` 缩放、`durationMs` 动画时长、`textBackgroundColor`/`textBorderColor`/`textBorderWidth`/`textRadius`/`textPadding` 文字气泡样式。

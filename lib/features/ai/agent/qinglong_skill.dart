@@ -296,6 +296,40 @@ DSHTheme.createComponent({
 DSHTheme.removeComponent('btn_liquid');
 ```
 
+### createComponent 原生互动组件参数
+- 类型：`button` / `card` / `text` / `iconButton` / `input`。
+- 坐标：`x/y/width/height` 是**屏幕绝对坐标**（和 effect 一样），不是网页坐标。
+- 事件：
+  - `DSHTheme.onComponent('tap', fn)`、`onComponent('longPress', fn)`、`onComponent('change', fn)`。
+  - 回传对象：tap/longPress 是 `{id}`；change 是 `{id, value}`。
+- 更新/删除：
+  - `DSHTheme.updateComponent(cfg)`：同 id 覆盖（**需传完整对象**，不是增量合并）。
+  - `DSHTheme.removeComponent(id)`。
+- 样式：
+  - 建议放 `style` 里，支持 `styleComponent` 的**全部字段**：`color / colors+angle / borderColor/borderWidth/borderOpacity / fillOpacity / radius / shadowColor/shadowOpacity/shadowBlur/shadowOffsetY / glowColor/glowRadius/glowOpacity / innerGlow / innerShadow / opacity / blur / backgroundImage/texture / liquid`。
+  - 根级直接写 `colors`、`borderColor`、`shadowColor`、`glowColor`、`liquid`、`innerGlow`、`innerShadow`、`fillOpacity`、`blur`、`radius` 也会自动并入 style，但推荐统一写进 `style`。
+- 渲染能力：完整支持深色玻璃、液体玻璃、暗金边、深投影、外发光、内发光/内阴影、半透明渐变。
+- 典型用法：背景音控件 / 右下角悬浮按钮 / 互动卡片 / 输入框。因为背景 WebView 的 HTML DOM 会被 App 组件盖住、点不到，所以需要“真能点”的控件一律用 `createComponent`，不要用 HTML 按钮。
+
+示例（右下角深色玻璃托 + 两个按钮）：
+```javascript
+DSHTheme.createComponent({
+  id: 'shell', type: 'card',
+  x: W - 240 - 14, y: H - 64 - 84,
+  width: 240, height: 64, borderRadius: 24,
+  style: {
+    colors: ['#2A2F38', '#14171C'], angle: 135, fillOpacity: 0.55,
+    borderColor: '#D4AF37', borderWidth: 1, borderOpacity: 0.5,
+    shadowColor: '#000000', shadowOpacity: 0.45, shadowBlur: 18, shadowOffsetY: 6,
+    glowColor: '#D4AF37', glowRadius: 16, glowOpacity: 0.35,
+    liquid: { blur: 20, refraction: 0.35, specular: 0.55, lightX: 0.7, lightY: 0.15,
+              ripple: 0.25, tint: '#D4AF37', tintOpacity: 0.08, caustic: 0.15,
+              thickness: 0.5, edgeHighlight: true, innerShadow: true },
+    innerGlow: { color: '#D4AF37', opacity: 0.2, radius: 10, side: 'top' }
+  }
+});
+```
+
 ### 层级说明（别把前/后搞反）
 - `effect`：永远在组件**前面**，适合落叶、气泡、布偶、角标、光晕这类浮层特效；它默认不挡点击，但视觉上是盖在组件上的。
 - `styleComponent`：真正改**组件本身**，可以改边框颜色/宽度、渐变、发光、圆角；想要“组件背景/组件内部颜色”这类效果，优先用它，不要用 effect 假装背景。
