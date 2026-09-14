@@ -705,7 +705,9 @@ class QlToolRegistry {
               'action=overwrite 用 content 替换 start~end 闭区间；'
               'action=insert 在 start 前插入 content；'
               'action=delete 删除 start~end 闭区间（content 可空）。'
-              'byBytes=true 按字节，false/缺省按行。start/end 都是 1-based。',
+              'byBytes=true 按字节，false/缺省按行。start/end 都是 1-based。'
+              '**修改已有脚本/文件的局部内容首选这个工具**：先 shell_search_code 定行、'
+              'shell_read_range 看上下文，再这里小改，别用 shell_write_file 全量重写。',
           parameters: _obj([
             'path',
             'action',
@@ -733,6 +735,10 @@ class QlToolRegistry {
         ToolDefinition(
           name: 'shell_write_file',
           description: '写入/追加本地 Debian 文本文件，终端和 APP 文件管理看到的是同一份。'
+              '**只用于新建文件、整体重写小文件、或大文件分块追加**。'
+              '改已有脚本/文件里的局部内容时，优先 shell_search_code + shell_read_range 定位，'
+              '再用 shell_modify_range 精确覆盖/插入/删除，不要为了改几行把整份文件重写一遍'
+              '（浪费 token、容易丢注释/格式）。'
               '写超大文件（几 KB 以上）的正确姿势：第一次调用不传 append（覆盖），'
               '之后每次传 append:true 分块追加，内容走原生文件 IO，不会出现“命令过长”。'
               '不要把整份大文件塞进 shell_exec 的 command，也不要用 heredoc 一次写超大内容。',
