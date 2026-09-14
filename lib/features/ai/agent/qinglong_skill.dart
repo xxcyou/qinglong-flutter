@@ -281,10 +281,15 @@ DSHTheme.clear();
 - `text`: 文字 / 气泡内容
 - `x y width height`: 屏幕逻辑坐标（先查组件锚点再定位）
 - `color`: 颜色
-- `animation`: none / float / bounce / spin
+- `animation`: `none | float | bounce | spin | fade | pulse | shake | wiggle | blink | slide`
 - `fontSize`, `speechTail`, `fit`（contain/fill/cover）
-- `paint`：组件重绘/发光，`{type: solid|gradient|radialGradient|glow|stroke|shadow, colors, opacity, borderWidth, radius, cornerRadius, angle}`
-- `styleComponent`：真实修改组件边缘颜色/宽度/渐变/发光（page,type,index,style）
+- `opacity`: 整体透明度 0~1，默认 1
+- `rotation`: 静态旋转角度（度）
+- `scale`: 整体缩放，默认 1
+- `durationMs`: 动画单次时长，默认 1800
+- `textBackgroundColor`, `textBorderColor`, `textBorderWidth`, `textRadius`, `textPadding`: 文字气泡样式
+- `paint`：组件重绘/发光，`{type: solid|gradient|radialGradient|glow|stroke|shadow|ellipse|ring|line|dashed, colors, opacity, borderWidth, radius, cornerRadius, angle, dashWidth, dashGap}`
+- `styleComponent`：真实修改组件（page,type,index,style），style 支持 `color`（纯色填充）、`colors`+`angle`（渐变）、`borderColor`/`borderWidth`/`borderOpacity`、`glowColor`/`glowRadius`/`glowOpacity`、`fillOpacity`、`radius`、`shadowColor`/`shadowOpacity`/`shadowBlur`/`shadowOffsetY`
 - `interactive:true`：让特效可点击/长按；默认不拦截正常控件
 
 ### 实现"括号中的高级效果"的标准做法

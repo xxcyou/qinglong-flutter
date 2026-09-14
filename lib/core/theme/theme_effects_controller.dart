@@ -68,8 +68,10 @@ class ThemeComponentRegistry {
 /// 边缘颜色/宽度/圆角/渐变/发光等真实装饰属性。
 class ComponentStyle {
   const ComponentStyle({
+    this.color,
     this.borderColor,
     this.borderWidth,
+    this.borderOpacity,
     this.glowColor,
     this.glowRadius,
     this.glowOpacity,
@@ -77,10 +79,17 @@ class ComponentStyle {
     this.gradientAngle = 135,
     this.fillOpacity,
     this.radius,
+    this.shadowColor,
+    this.shadowOpacity,
+    this.shadowBlur,
+    this.shadowOffsetY,
   });
 
+  /// 纯色填充（覆盖渐变；没传时继续用渐变/默认玻璃填充）。
+  final Color? color;
   final Color? borderColor;
   final double? borderWidth;
+  final double? borderOpacity;
   final Color? glowColor;
   final double? glowRadius;
   final double? glowOpacity;
@@ -88,12 +97,18 @@ class ComponentStyle {
   final double gradientAngle;
   final double? fillOpacity;
   final double? radius;
+  final Color? shadowColor;
+  final double? shadowOpacity;
+  final double? shadowBlur;
+  final double? shadowOffsetY;
 
   ComponentStyle merge(ComponentStyle? base) {
     if (base == null) return this;
     return ComponentStyle(
+      color: color ?? base.color,
       borderColor: borderColor ?? base.borderColor,
       borderWidth: borderWidth ?? base.borderWidth,
+      borderOpacity: borderOpacity ?? base.borderOpacity,
       glowColor: glowColor ?? base.glowColor,
       glowRadius: glowRadius ?? base.glowRadius,
       glowOpacity: glowOpacity ?? base.glowOpacity,
@@ -101,6 +116,10 @@ class ComponentStyle {
       gradientAngle: gradientAngle,
       fillOpacity: fillOpacity ?? base.fillOpacity,
       radius: radius ?? base.radius,
+      shadowColor: shadowColor ?? base.shadowColor,
+      shadowOpacity: shadowOpacity ?? base.shadowOpacity,
+      shadowBlur: shadowBlur ?? base.shadowBlur,
+      shadowOffsetY: shadowOffsetY ?? base.shadowOffsetY,
     );
   }
 }
@@ -124,6 +143,15 @@ class ThemeEffect {
     this.interactive = false,
     this.fontSize = 14,
     this.speechTail = false,
+    this.opacity = 1,
+    this.rotation = 0,
+    this.scale = 1,
+    this.durationMs = 1800,
+    this.textBackgroundColor,
+    this.textBorderColor,
+    this.textBorderWidth = 1.2,
+    this.textRadius = 12,
+    this.textPadding = 8,
   });
 
   final String id;
@@ -145,7 +173,7 @@ class ThemeEffect {
   final double height;
   final Color color;
 
-  /// none / float / bounce / spin
+  /// none / float / bounce / spin / fade / pulse / shake / wiggle / blink / slide
   final String animation;
 
   /// contain / fill / cover
@@ -155,6 +183,25 @@ class ThemeEffect {
   final bool interactive;
   final double fontSize;
   final bool speechTail;
+
+  /// 整体透明度 0~1，默认 1。
+  final double opacity;
+
+  /// 静态旋转角度（度），配合动画 spin/wiggle 时会在动态角度基础上叠加。
+  final double rotation;
+
+  /// 整体缩放，默认 1。
+  final double scale;
+
+  /// 动画一个循环的时长（毫秒），默认 1800。
+  final int durationMs;
+
+  /// 文字气泡背景。
+  final Color? textBackgroundColor;
+  final Color? textBorderColor;
+  final double textBorderWidth;
+  final double textRadius;
+  final double textPadding;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -172,6 +219,15 @@ class ThemeEffect {
         'interactive': interactive,
         'fontSize': fontSize,
         'speechTail': speechTail,
+        'opacity': opacity,
+        'rotation': rotation,
+        'scale': scale,
+        'durationMs': durationMs,
+        'textBackgroundColor': textBackgroundColor?.toARGB32(),
+        'textBorderColor': textBorderColor?.toARGB32(),
+        'textBorderWidth': textBorderWidth,
+        'textRadius': textRadius,
+        'textPadding': textPadding,
       };
 }
 
@@ -335,6 +391,15 @@ class ThemeEffectBridge {
       interactive: map['interactive'] == true,
       fontSize: (map['fontSize'] as num?)?.toDouble() ?? 14,
       speechTail: map['speechTail'] == true,
+      opacity: ((map['opacity'] as num?)?.toDouble() ?? 1).clamp(0.0, 1.0),
+      rotation: (map['rotation'] as num?)?.toDouble() ?? 0,
+      scale: (map['scale'] as num?)?.toDouble() ?? 1,
+      durationMs: (map['durationMs'] as num?)?.toInt() ?? 1800,
+      textBackgroundColor: parseColor(map['textBackgroundColor']),
+      textBorderColor: parseColor(map['textBorderColor']),
+      textBorderWidth: (map['textBorderWidth'] as num?)?.toDouble() ?? 1.2,
+      textRadius: (map['textRadius'] as num?)?.toDouble() ?? 12,
+      textPadding: (map['textPadding'] as num?)?.toDouble() ?? 8,
     );
   }
 
@@ -352,8 +417,10 @@ class ThemeEffectBridge {
       if (parsed.isNotEmpty) colors = parsed;
     }
     return ComponentStyle(
+      color: parseColor(st['color']),
       borderColor: parseColor(st['borderColor']),
       borderWidth: (st['borderWidth'] as num?)?.toDouble(),
+      borderOpacity: (st['borderOpacity'] as num?)?.toDouble(),
       glowColor: parseColor(st['glowColor']),
       glowRadius: (st['glowRadius'] as num?)?.toDouble(),
       glowOpacity: (st['glowOpacity'] as num?)?.toDouble(),
@@ -361,6 +428,10 @@ class ThemeEffectBridge {
       gradientAngle: (st['angle'] as num?)?.toDouble() ?? 135,
       fillOpacity: (st['fillOpacity'] as num?)?.toDouble(),
       radius: (st['radius'] as num?)?.toDouble(),
+      shadowColor: parseColor(st['shadowColor']),
+      shadowOpacity: (st['shadowOpacity'] as num?)?.toDouble(),
+      shadowBlur: (st['shadowBlur'] as num?)?.toDouble(),
+      shadowOffsetY: (st['shadowOffsetY'] as num?)?.toDouble(),
     );
   }
 
@@ -592,6 +663,61 @@ class _ComponentPaintPainter extends CustomPainter {
             ..maskFilter = MaskFilter.blur(BlurStyle.normal, blurRadius),
         );
         break;
+      case 'ellipse':
+        canvas.drawOval(
+          rect,
+          Paint()..color = colors.first.withValues(alpha: opacity),
+        );
+        break;
+      case 'ring':
+        canvas.drawOval(
+          rect,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = strokeWidth
+            ..color = colors.first.withValues(alpha: opacity),
+        );
+        break;
+      case 'line':
+        {
+          final rad = angle * math.pi / 180;
+          final cx = size.width / 2;
+          final cy = size.height / 2;
+          final len = size.longestSide;
+          final from = Offset(
+              cx - math.cos(rad) * len / 2, cy - math.sin(rad) * len / 2);
+          final to = Offset(
+              cx + math.cos(rad) * len / 2, cy + math.sin(rad) * len / 2);
+          canvas.drawLine(
+            from,
+            to,
+            Paint()
+              ..strokeWidth = strokeWidth
+              ..strokeCap = StrokeCap.round
+              ..color = colors.first.withValues(alpha: opacity),
+          );
+        }
+        break;
+      case 'dashed':
+        {
+          final path = Path()..addRRect(rrect);
+          final dashWidth = _num(p, 'dashWidth', 6).clamp(1.0, 80.0);
+          final dashGap = _num(p, 'dashGap', 4).clamp(0.0, 80.0);
+          final strokePaint = Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = strokeWidth
+            ..strokeCap = StrokeCap.round
+            ..color = colors.first.withValues(alpha: opacity);
+          for (final metric in path.computeMetrics()) {
+            var dist = 0.0;
+            while (dist < metric.length) {
+              final end = math.min(dist + dashWidth, metric.length);
+              canvas.drawPath(metric.extractPath(dist, end), strokePaint);
+              dist = end + dashGap;
+            }
+          }
+        }
+        break;
       case 'solid':
       default:
         canvas.drawRRect(
@@ -625,10 +751,23 @@ class _EffectWidgetState extends State<_EffectWidget>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1800),
+      duration: Duration(milliseconds: widget.effect.durationMs),
     );
     if (widget.effect.animation != 'none') {
       _controller.repeat();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _EffectWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.effect.durationMs != widget.effect.durationMs) {
+      _controller.duration = Duration(milliseconds: widget.effect.durationMs);
+    }
+    if (widget.effect.animation != 'none') {
+      if (!_controller.isAnimating) _controller.repeat();
+    } else {
+      _controller.stop();
     }
   }
 
@@ -671,21 +810,50 @@ class _EffectWidgetState extends State<_EffectWidget>
         animation: _controller,
         builder: (context, _) {
           final t = _controller.value;
-          Offset offset = Offset.zero;
-          double angle = 0;
+          var offset = Offset.zero;
+          var angle = e.rotation * math.pi / 180;
+          var scale = e.scale;
+          var opacity = e.opacity;
           switch (e.animation) {
             case 'float':
               offset = Offset(0, 6 * math.sin(t * 2 * math.pi));
             case 'bounce':
               offset = Offset(0, -10 * math.sin(t * math.pi));
             case 'spin':
-              angle = t * 2 * math.pi;
+              angle += t * 2 * math.pi;
+            case 'fade':
+              opacity = e.opacity *
+                  (0.35 + 0.65 * (0.5 + 0.5 * math.sin(t * 2 * math.pi)));
+            case 'pulse':
+              scale = e.scale * (0.85 + 0.15 * math.sin(t * 2 * math.pi));
+            case 'shake':
+              offset = Offset(8 * math.sin(t * 2 * math.pi), 0);
+            case 'wiggle':
+              angle += 0.18 * math.sin(t * 2 * math.pi);
+            case 'blink':
+              opacity = e.opacity * (t < 0.5 ? 1 : 0.12);
+            case 'slide':
+              offset = Offset(-e.width * (1 - t), 0);
           }
-          return Transform.translate(
-            offset: offset,
-            child: Transform.rotate(angle: angle, child: child),
+          return Opacity(
+            opacity: opacity.clamp(0.0, 1.0),
+            child: Transform.translate(
+              offset: offset,
+              child: Transform.rotate(
+                angle: angle,
+                child: Transform.scale(scale: scale, child: child),
+              ),
+            ),
           );
         },
+      );
+    } else if (e.opacity < 1 || e.scale != 1 || e.rotation != 0) {
+      child = Opacity(
+        opacity: e.opacity.clamp(0.0, 1.0),
+        child: Transform.rotate(
+          angle: e.rotation * math.pi / 180,
+          child: Transform.scale(scale: e.scale, child: child),
+        ),
       );
     }
     if (e.interactive) {
@@ -704,12 +872,20 @@ class _EffectWidgetState extends State<_EffectWidget>
 
   Widget _iconOrText(ThemeEffect e) {
     if (e.text != null && e.text!.isNotEmpty) {
+      final bg = e.textBackgroundColor ?? e.color.withValues(alpha: 0.16);
+      final border = e.textBorderColor ?? e.color.withValues(alpha: 0.6);
       return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        padding: EdgeInsets.symmetric(
+          horizontal: e.textPadding,
+          vertical: e.textPadding * 0.5,
+        ),
         decoration: BoxDecoration(
-          color: e.color.withValues(alpha: 0.16),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: e.color.withValues(alpha: 0.6)),
+          color: bg,
+          borderRadius: BorderRadius.circular(e.textRadius),
+          border: Border.all(
+            color: border,
+            width: e.textBorderWidth,
+          ),
         ),
         child: Text(
           e.text!,

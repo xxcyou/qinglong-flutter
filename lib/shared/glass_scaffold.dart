@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../core/theme/glass.dart';
@@ -230,7 +232,15 @@ class GlassCard extends StatelessWidget {
                             ? 0.42
                             : (dark ? 0.12 : 0.6),
                   ));
+        final borderOpacity = style?.borderOpacity ?? 1.0;
         final borderWidth = style?.borderWidth ?? (selected ? 1.4 : 1);
+        final solidColor = style?.color;
+        final styleAngle = style?.gradientAngle ?? 135;
+        final shadowColor =
+            style?.shadowColor ?? Colors.black.withValues(alpha: 0);
+        final shadowOpacity = style?.shadowOpacity ?? (dark ? 0.22 : 0.08);
+        final shadowBlur = style?.shadowBlur ?? 12;
+        final shadowOffsetY = style?.shadowOffsetY ?? 4;
         final glow = style?.glowColor != null
             ? [
                 BoxShadow(
@@ -248,20 +258,25 @@ class GlassCard extends StatelessWidget {
           child: Container(
             decoration: BoxDecoration(
               borderRadius: br,
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: gradientColors,
-              ),
+              color: solidColor,
+              gradient: solidColor == null
+                  ? LinearGradient(
+                      begin: Alignment(-math.cos(styleAngle * math.pi / 180),
+                          -math.sin(styleAngle * math.pi / 180)),
+                      end: Alignment(math.cos(styleAngle * math.pi / 180),
+                          math.sin(styleAngle * math.pi / 180)),
+                      colors: gradientColors,
+                    )
+                  : null,
               border: Border.all(
-                color: style?.borderColor != null ? borderColor : borderColor,
+                color: borderColor.withValues(alpha: borderOpacity),
                 width: borderWidth,
               ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: dark ? 0.22 : 0.08),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
+                  color: shadowColor.withValues(alpha: shadowOpacity),
+                  blurRadius: shadowBlur,
+                  offset: Offset(0, shadowOffsetY),
                 ),
                 ...glow,
               ],

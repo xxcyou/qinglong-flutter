@@ -171,15 +171,22 @@ class GlassPanel extends StatelessWidget {
             shadowY == 8 && visual != null ? visual.glassShadowY : shadowY;
         final effectiveBorderColor =
             style?.borderColor ?? visual?.borderColor ?? Colors.white;
-        final effectiveBorderOpacity = style?.borderColor != null
-            ? 1.0
-            : (visual?.glassBorderOpacity ??
-                (scheme.brightness == Brightness.dark ? 0.16 : 0.78));
+        final effectiveBorderOpacity = style?.borderOpacity ??
+            (style?.borderColor != null
+                ? 1.0
+                : (visual?.glassBorderOpacity ??
+                    (scheme.brightness == Brightness.dark ? 0.16 : 0.78)));
         final effectiveBorderWidth = style?.borderWidth ?? borderWidth;
-        final effectiveShadowColor = visual?.shadowColor ?? Colors.black;
-        final effectiveShadowOpacity = visual?.glassShadowOpacity ??
-            (scheme.brightness == Brightness.dark ? 0.42 : 0.14);
+        final effectiveShadowColor =
+            style?.shadowColor ?? visual?.shadowColor ?? Colors.black;
+        final effectiveShadowOpacity = style?.shadowOpacity ??
+            (visual?.glassShadowOpacity ??
+                (scheme.brightness == Brightness.dark ? 0.42 : 0.14));
+        final effectiveShadowBlur =
+            style?.shadowBlur ?? (effectiveShadowY * 2.2);
+        final effectiveShadowOffsetY = style?.shadowOffsetY ?? effectiveShadowY;
         final fillOpacity = style?.fillOpacity ?? opacity;
+        final styleAngle = style?.gradientAngle ?? 135;
         Widget inner = tint == null
             ? _padded(child)
             : DecoratedBox(
@@ -207,10 +214,13 @@ class GlassPanel extends StatelessWidget {
           );
         }
         final List<Color> gradientColors = style?.gradientColors ?? [];
+        final solidColor = style?.color;
         final gradient = gradientColors.isNotEmpty
             ? LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
+                begin: Alignment(-math.cos(styleAngle * math.pi / 180),
+                    -math.sin(styleAngle * math.pi / 180)),
+                end: Alignment(math.cos(styleAngle * math.pi / 180),
+                    math.sin(styleAngle * math.pi / 180)),
                 colors: gradientColors.length >= 2
                     ? gradientColors
                     : [gradientColors.first, gradientColors.first],
@@ -219,7 +229,8 @@ class GlassPanel extends StatelessWidget {
         Widget content = DecoratedBox(
           decoration: BoxDecoration(
             borderRadius: br,
-            gradient: gradient,
+            color: solidColor,
+            gradient: solidColor == null ? gradient : null,
             border: Border.all(
               width: effectiveBorderWidth,
               color: effectiveBorderColor.withValues(
@@ -265,8 +276,8 @@ class GlassPanel extends StatelessWidget {
                 BoxShadow(
                   color: effectiveShadowColor.withValues(
                       alpha: effectiveShadowOpacity),
-                  blurRadius: effectiveShadowY * 2.2,
-                  offset: Offset(0, effectiveShadowY),
+                  blurRadius: effectiveShadowBlur,
+                  offset: Offset(0, effectiveShadowOffsetY),
                 ),
                 BoxShadow(
                   color: scheme.primary.withValues(
