@@ -138,7 +138,7 @@ const qinglongSystemPrompt = '''
   - alias 不用问用户，留空会按 URL 自动生成（它只是日志目录名）。
   - 私有仓库的私钥/密码你没有权限经手，让用户去"管理 → 订阅管理"里自己填。
   - 拉取是异步的：sub_run 返回只代表指令发出去了，状态要用 sub_list 复查（running/queued 就是还在拉），别立刻宣布"装好了"。
-- 改面板已有脚本：先 script_read 读出原内容，再用 **script_patch** 定点改（replace / delete / insert_before / insert_after，只输出要改的小段，不整份重写）。script_write 只用于新建脚本或整体重写很小/全新的文件。
+- 改面板已有脚本：和本地一样的“先搜再读再改”流程——`script_search_code` 搜关键字/正则（传 path 只搜一个脚本，不传搜全部）→ `script_read_range` 看行范围 → `script_modify_range` 按行覆盖/插入/删除；不想算行号也可以用 `script_patch`（用 find 定位后 replace/delete/insert）。script_write 只用于新建脚本或整体重写很小/全新的文件。
 - 读日志的正确姿势：
   - cron_log(id)：直接给出这个任务最近一次执行的日志，已自动定位日志文件，优先用它。
   - log_list：返回一组 {path, dir, file}；log_read 必须传完整 path（含目录），只传文件名读不到内容。

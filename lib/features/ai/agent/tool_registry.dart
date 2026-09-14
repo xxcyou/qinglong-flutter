@@ -9,6 +9,7 @@ import '../../envs/api/env_api.dart';
 import '../../envs/models/env_var.dart';
 import '../../logs/api/log_api.dart';
 import '../../scripts/api/script_api.dart';
+import '../../scripts/models/script_node.dart';
 import '../../subscriptions/api/subscription_api.dart';
 import '../../subscriptions/models/subscription.dart';
 import '../../system/api/system_api.dart';
@@ -333,6 +334,71 @@ class QlToolRegistry {
           description: '列出脚本文件树',
           parameters: _obj([], {}),
           isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'script_search_code',
+          description: '在青龙面板脚本里搜索关键字/正则，返回文件路径、行号和匹配行。'
+              '只搜一个脚本就传 path；不传 path 会搜全部面板脚本（可能较慢）。'
+              '搜到后先 script_read_range 精读上下文，再用 script_modify_range 定点改，'
+              '不要整份 script_write 重写。',
+          parameters: _obj([
+            'pattern'
+          ], {
+            'pattern': {
+              'type': 'string',
+              'description': '关键字或正则，例如 "class User" / "function\\s+\\w+"',
+            },
+            'path': _stringProp,
+            'maxMatches': {
+              'type': 'integer',
+              'description': '最多返回多少条，默认 50，最大 200',
+            },
+          }),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'script_read_range',
+          description: '读取青龙面板脚本的指定行范围（1-based 闭区间），返回带行号内容。'
+              '配合 script_search_code / script_modify_range 做定点修改。',
+          parameters: _obj([
+            'path',
+            'start',
+            'end'
+          ], {
+            'path': _stringProp,
+            'start': _intProp,
+            'end': _intProp,
+          }),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'script_modify_range',
+          description: '在青龙面板已有脚本里按行范围定点修改：'
+              'action=overwrite 用 content 替换 start~end 闭区间；'
+              'action=insert 在 start 前插入 content；'
+              'action=delete 删除 start~end 闭区间（content 可空）。'
+              'start/end 都是 1-based。改已有脚本优先用「script_search_code → script_read_range → script_modify_range」'
+              '或 script_patch，不要整份 script_write 重写。',
+          parameters: _obj([
+            'path',
+            'action',
+            'start',
+            'end'
+          ], {
+            'path': _stringProp,
+            'action': {
+              'type': 'string',
+              'enum': ['overwrite', 'insert', 'delete'],
+              'description': 'overwrite / insert / delete',
+            },
+            'start': _intProp,
+            'end': _intProp,
+            'content': _stringProp,
+          }),
+          isWrite: true,
+          impact: '在青龙面板脚本内按行范围覆盖/插入/删除后保存',
+          reversible: false,
+          danger: true,
         ),
         ToolDefinition(
           name: 'script_read',
@@ -855,6 +921,39 @@ class QlToolRegistry {
     'shell_archive_extract',
   };
 
+  static List<String> _flattenScriptPaths(
+    List<ScriptNode> nodes, [
+    String parent = '',
+  ]) {
+    final out = <String>[];
+    for (final n in nodes) {
+      final path = n.key ?? (parent.isEmpty ? n.title : '$parent/${n.title}');
+      if (n.isLeaf) {
+        out.add(path);
+      } else {
+        out.addAll(_flattenScriptPaths(n.children, path));
+      }
+    }
+    return out;
+  }
+
+  static String _searchOneScript({
+    required String content,
+    required String path,
+    required RegExp re,
+    required int maxMatches,
+  }) {
+    final lines = content.split('\n');
+    final out = <String>[];
+    for (var i = 0; i < lines.length && out.length < maxMatches; i++) {
+      if (re.hasMatch(lines[i])) {
+        out.add('$path:${i + 1}: ${lines[i]}');
+      }
+    }
+    if (out.length >= maxMatches) out.add('…（达到 $maxMatches 条上限）');
+    return out.join('\n');
+  }
+
   Future<String> execute({
     required String toolName,
     required Map<String, dynamic> args,
@@ -1113,6 +1212,115 @@ class QlToolRegistry {
       case 'script_list':
         final nodes = await ScriptApi.files(apiBaseUrl: base);
         return jsonEncode({'files': nodes.map((n) => n.title).toList()});
+
+      case 'script_search_code':
+        {
+          final pattern = args['pattern']?.toString() ?? '';
+          if (pattern.isEmpty) return 'pattern 不能为空。';
+          final maxMatches =
+              ((args['maxMatches'] as num?)?.toInt() ?? 50).clamp(1, 200);
+          RegExp re;
+          try {
+            re = RegExp(pattern);
+          } catch (_) {
+            return '正则不合法：$pattern';
+          }
+          final path = args['path']?.toString().trim() ?? '';
+          if (path.isNotEmpty) {
+            final content = await ScriptApi.read(apiBaseUrl: base, file: path);
+            final result = _searchOneScript(
+              content: content,
+              path: path,
+              re: re,
+              maxMatches: maxMatches,
+            );
+            return result.isEmpty ? '在 $path 里没有匹配。' : result;
+          }
+          final nodes = await ScriptApi.files(apiBaseUrl: base);
+          final paths = _flattenScriptPaths(nodes);
+          final matches = <String>[];
+          for (final p in paths) {
+            if (matches.length >= maxMatches) break;
+            final content = await ScriptApi.read(apiBaseUrl: base, file: p);
+            final part = _searchOneScript(
+              content: content,
+              path: p,
+              re: re,
+              maxMatches: maxMatches - matches.length,
+            );
+            if (part.isNotEmpty) matches.add(part);
+          }
+          if (matches.isEmpty) return '所有面板脚本里都没有匹配。';
+          return matches.join('\n');
+        }
+
+      case 'script_read_range':
+        {
+          final path = args['path'] as String;
+          final start = (args['start'] as num?)?.toInt() ?? 1;
+          final end = (args['end'] as num?)?.toInt() ?? start;
+          final content = await ScriptApi.read(apiBaseUrl: base, file: path);
+          final lines = content.split('\n');
+          if (lines.isNotEmpty && content.endsWith('\n')) lines.removeLast();
+          if (lines.isEmpty) return '脚本是空的。';
+          final s = start < 1 ? 1 : start;
+          final e = end > lines.length ? lines.length : end;
+          if (s > e || s > lines.length) {
+            return '范围不合法：脚本共 ${lines.length} 行，请求 $start~$end。';
+          }
+          return [
+            for (var i = s; i <= e; i++) '$i: ${lines[i - 1]}',
+          ].join('\n');
+        }
+
+      case 'script_modify_range':
+        {
+          final path = args['path'] as String;
+          final action = args['action']?.toString() ?? '';
+          final start = (args['start'] as num?)?.toInt() ?? 1;
+          final end = (args['end'] as num?)?.toInt() ?? start;
+          final content = args['content']?.toString() ?? '';
+          final original = await ScriptApi.read(apiBaseUrl: base, file: path);
+          var lines = original.split('\n');
+          final hasTrailing = original.endsWith('\n') && lines.isNotEmpty;
+          if (hasTrailing) lines.removeLast();
+          if (lines.isEmpty && action != 'insert' && start > 1) {
+            return '脚本是空的，只能 insert 到第 1 行前。';
+          }
+          final s = start < 1 ? 1 : start;
+          final e = end > lines.length ? lines.length : end;
+          if (s > lines.length + 1 ||
+              (action != 'insert' && (s > e || s > lines.length))) {
+            return '范围不合法：脚本共 ${lines.length} 行，请求 $start~$end。';
+          }
+          final contentLines = content.split('\n');
+          final List<String> updated;
+          switch (action) {
+            case 'overwrite':
+              updated = [
+                ...lines.take(s - 1),
+                ...contentLines,
+                ...lines.skip(e),
+              ];
+              break;
+            case 'insert':
+              updated = [
+                ...lines.take(s - 1),
+                ...contentLines,
+                ...lines.skip(s - 1),
+              ];
+              break;
+            case 'delete':
+              updated = [...lines.take(s - 1), ...lines.skip(e)];
+              break;
+            default:
+              return '不认识的 action：$action（overwrite / insert / delete）';
+          }
+          var result = updated.join('\n');
+          if (hasTrailing) result = '$result\n';
+          await ScriptApi.save(apiBaseUrl: base, path: path, content: result);
+          return '已定点修改并保存脚本 $path（$action 第 $s${e == s ? '' : '~$e'} 行）。';
+        }
 
       case 'script_read':
         return await ScriptApi.read(
