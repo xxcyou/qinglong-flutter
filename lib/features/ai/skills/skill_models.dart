@@ -347,8 +347,15 @@ const builtinSkills = <AiSkill>[
 # DSHTheme 组件特效开发
 
 ## App 开放接口
-- 主题包 js 调 `window.DSHTheme.*`，在 Flutter 组件上层绘制效果，不挡点击。
+- `DSHTheme.effect`：在 **所有 Flutter 组件上方** 绘制前景效果（浮层），不挡点击。
+- `DSHTheme.styleComponent`：真实修改组件本身（边缘/渐变/发光/圆角），不是覆盖层。
+- 目前没有“组件后方”图层。需要组件背景/内部装饰时优先 `styleComponent` 改组件；`effect` 始终浮在组件前面。
 - GlassPanel/GlassCard 自动上报锚点，用 DSHTheme.queryComponents 查真实坐标。
+
+## 层级说明
+- `effect` = 前景浮层：永远画在组件**上面**，适合落叶/气泡/布偶/角标/光晕。
+- `styleComponent` = 真改组件：适合组件背景、边框、渐变、发光、圆角。
+- 没有 behind 图层；别把“组件背景”需求套到 effect 上，那会盖住组件内容。
 
 ## API
 ```javascript

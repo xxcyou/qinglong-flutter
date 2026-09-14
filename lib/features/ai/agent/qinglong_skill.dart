@@ -231,7 +231,8 @@ const qinglongSystemPrompt = '''
 
 ### App 已经给主题包开放的能力
 - 主题包里的 html/js 会运行在全屏 WebView 背景里（只负责背景渲染）。
-- 只要在 js 里调用 `window.DSHTheme.*`，就可以在 **Flutter 组件的上层** 绘制图片、文字、气泡、动画，不阻塞点击。
+- 只要在 js 里调用 `window.DSHTheme.effect`，就是在 **所有 Flutter 组件的上方** 绘制图片、文字、气泡、动画，不阻塞点击——它是前景覆盖层，不是组件后面的背景。
+- 要“真实修改组件本身”（边缘、渐变、发光、圆角）用 `DSHTheme.styleComponent`，它不是覆盖层，是直接改 App 自带组件。
 - `GlassPanel` / `GlassCard` 会自动上报组件锚点，js 能查到组件在屏幕上的真实位置。
 
 ### DSHTheme API
@@ -268,6 +269,11 @@ DSHTheme.queryComponents({
 DSHTheme.remove('petal_1');
 DSHTheme.clear();
 ```
+
+### 层级说明（别把前/后搞反）
+- `effect`：永远在组件**前面**，适合落叶、气泡、布偶、角标、光晕这类浮层特效；它默认不挡点击，但视觉上是盖在组件上的。
+- `styleComponent`：真正改**组件本身**，可以改边框颜色/宽度、渐变、发光、圆角；想要“组件背景/组件内部颜色”这类效果，优先用它，不要用 effect 假装背景。
+- 目前没有“画在组件后面”的图层。需要组件后面的装饰时，改用 `styleComponent` 改背景渐变/颜色，或者接受效果浮在组件上方。
 
 ### effect 常用字段
 - `id`: 唯一 id
