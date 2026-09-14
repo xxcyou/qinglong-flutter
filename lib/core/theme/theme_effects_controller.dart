@@ -1620,6 +1620,7 @@ class _LiquidGlassOverlayState extends State<LiquidGlassOverlay>
   Offset _lastGlobal = Offset.zero;
   Offset _motion = Offset.zero;
   bool _hasLast = false;
+  int _frame = 0;
 
   @override
   void initState() {
@@ -1638,7 +1639,10 @@ class _LiquidGlassOverlayState extends State<LiquidGlassOverlay>
 
   /// 悬浮窗/面板滑动时，记录它全局位置的变化，作为液体高光“被带着走”的
   /// 惯性输入。没有这个的话，玻璃滑了但高光钉在组件内部坐标里，看起来不跟手。
+  /// 每 6 帧跟踪一次，避免每个液体组件每帧都做 localToGlobal 拖慢界面。
   void _trackMotion() {
+    _frame++;
+    if (_frame % 6 != 0) return;
     final render = context.findRenderObject();
     if (render is! RenderBox || !render.attached) return;
     final global = render.localToGlobal(Offset.zero);
@@ -1652,19 +1656,21 @@ class _LiquidGlassOverlayState extends State<LiquidGlassOverlay>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, _) {
-        _trackMotion();
-        return CustomPaint(
-          painter: _LiquidGlassPainter(
-            liquid: widget.liquid,
-            cornerRadius: widget.cornerRadius,
-            t: _controller.value,
-            motion: _motion,
-          ),
-        );
-      },
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) {
+          _trackMotion();
+          return CustomPaint(
+            painter: _LiquidGlassPainter(
+              liquid: widget.liquid,
+              cornerRadius: widget.cornerRadius,
+              t: _controller.value,
+              motion: _motion,
+            ),
+          );
+        },
+      ),
     );
   }
 }

@@ -53,8 +53,8 @@ class _ThemeMenuWindow extends StatefulWidget {
 class _ThemeMenuWindowState extends State<_ThemeMenuWindow> {
   double _left = 32;
   double _top = 96;
-  final double _width = 340;
-  final double _height = 480;
+  double _width = 340;
+  double _height = 480;
 
   @override
   Widget build(BuildContext context) {
@@ -75,29 +75,63 @@ class _ThemeMenuWindowState extends State<_ThemeMenuWindow> {
           top: _top.clamp(0.0, screen.height - h - 8),
           width: w,
           height: h,
-          child: Material(
-            elevation: 28,
-            shadowColor: Colors.black54,
-            borderRadius: BorderRadius.circular(22),
-            clipBehavior: Clip.antiAlias,
-            color: const Color(0xFF111319),
-            child: Column(
-              children: [
-                _buildHeader(),
-                Expanded(
-                  child: ThemeMenuView(
-                    themeId: widget.themeId,
-                    readConfig: widget.readConfig,
-                    saveConfig: widget.saveConfig,
-                    onClose: widget.onClose,
+          child: Stack(
+            children: [
+              Material(
+                elevation: 28,
+                shadowColor: Colors.black54,
+                borderRadius: BorderRadius.circular(22),
+                clipBehavior: Clip.antiAlias,
+                color: const Color(0xFF111319),
+                child: Column(
+                  children: [
+                    _buildHeader(),
+                    Expanded(
+                      child: ThemeMenuView(
+                        themeId: widget.themeId,
+                        readConfig: widget.readConfig,
+                        saveConfig: widget.saveConfig,
+                        onClose: widget.onClose,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Positioned(
+                right: 0,
+                bottom: 0,
+                child: GestureDetector(
+                  onPanUpdate: _resize,
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: const BoxDecoration(
+                      color: Colors.black38,
+                      borderRadius: BorderRadius.only(
+                        topLeft: Radius.circular(14),
+                      ),
+                    ),
+                    child: const Icon(
+                      Icons.open_in_full,
+                      size: 14,
+                      color: Colors.white54,
+                    ),
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ],
     );
+  }
+
+  void _resize(DragUpdateDetails details) {
+    final screen = MediaQuery.of(context).size;
+    setState(() {
+      _width = (_width + details.delta.dx).clamp(240.0, screen.width - 16.0);
+      _height = (_height + details.delta.dy).clamp(240.0, screen.height - 16.0);
+    });
   }
 
   Widget _buildHeader() {
@@ -222,6 +256,11 @@ class _ThemeMenuViewState extends State<ThemeMenuView> {
   }
 
   String _prepareMenuHtml(String html, {required String guestPackageRoot}) {
+    const forceScroll = '''
+<style>
+html, body { height: auto !important; min-height: 100% !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch !important; }
+</style>
+''';
     final bridge = '''
 <script data-dsh-theme-menu-bridge>
 (function () {
@@ -273,6 +312,7 @@ class _ThemeMenuViewState extends State<ThemeMenuView> {
 })();
 </script>
 ''';
+    html = forceScroll + html;
     final bodyStart = html.indexOf('<body');
     final bodyTagEnd = bodyStart >= 0 ? html.indexOf('>', bodyStart) : -1;
     final bodyEnd = html.lastIndexOf('</body>');
