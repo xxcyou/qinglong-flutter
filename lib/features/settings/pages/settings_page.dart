@@ -504,8 +504,10 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
     await ref.read(themeProvider.notifier).remove(theme.id);
   }
 
-  void _openThemeMenu(ThemeConfig theme) {
+  Future<void> _openThemeMenu(ThemeConfig theme) async {
     final notifier = ref.read(themeProvider.notifier);
+    final hasMenu = await notifier.hasThemeMenu(theme.id);
+    if (!hasMenu || !mounted) return;
     showThemeMenuWindow(
       context,
       theme: theme,

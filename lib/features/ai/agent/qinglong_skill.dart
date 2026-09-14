@@ -331,7 +331,7 @@ DSHTheme.createComponent({
 ```
 
 ### 主题配置菜单（html/menu.html + DSHThemeMenu）
-- 每个主题包可以自带 `html/menu.html`（CSS/JS 随意），在设置页**长按该主题**会弹出悬浮配置窗。
+- 每个主题包可以自带 `html/menu.html`（CSS/JS 随意），在设置页**长按该主题**会弹出悬浮配置窗；**没有 `html/menu.html` 时长按不弹窗**（静默忽略）。
 - 菜单里的实时互动和保存配置走 `window.DSHThemeMenu`：
   - `DSHThemeMenu.getConfig(function(cfg){})`：读取当前主题包 `config.json`。
   - `DSHThemeMenu.saveConfig(cfg)`：实时保存到主题包 `config.json`。

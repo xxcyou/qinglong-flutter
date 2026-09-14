@@ -349,6 +349,19 @@ class ThemeNotifier extends Notifier<ThemeState> {
     );
   }
 
+  /// 主题包是否自带 html/menu.html 配置菜单。
+  Future<bool> hasThemeMenu(String id) async {
+    try {
+      final hostPath = await _bridge.hostPath(
+        path: '$packagesRoot/$id/html/menu.html',
+        scope: 'shell',
+      );
+      return File(hostPath).existsSync();
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 应用某个主题（只改 activeId，不删别的方案）。
   Future<void> apply(String id) async {
     if (state.byId(id) == null) return;
