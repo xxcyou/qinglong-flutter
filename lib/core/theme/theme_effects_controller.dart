@@ -93,6 +93,11 @@ class ComponentStyle {
     this.innerShadowOffsetX = 0,
     this.innerShadowOffsetY = 2,
     this.innerShadowSide = 'bottom',
+    this.opacity,
+    this.blur,
+    this.backgroundImage,
+    this.backgroundImageFit = 'cover',
+    this.backgroundImageOpacity,
   });
 
   /// 纯色填充（覆盖渐变；没传时继续用渐变/默认玻璃填充）。
@@ -126,6 +131,17 @@ class ComponentStyle {
   final double? innerShadowOffsetY;
   final String innerShadowSide;
 
+  /// 组件整体透明度（0~1）。
+  final double? opacity;
+
+  /// 玻璃/液体玻璃的模糊强度（像素）。null 表示保持组件默认模糊。
+  final double? blur;
+
+  /// 背景纹理图（guest 路径），例如木纹图片。
+  final String? backgroundImage;
+  final String backgroundImageFit;
+  final double? backgroundImageOpacity;
+
   ComponentStyle merge(ComponentStyle? base) {
     if (base == null) return this;
     return ComponentStyle(
@@ -154,6 +170,12 @@ class ComponentStyle {
       innerShadowOffsetX: innerShadowOffsetX ?? base.innerShadowOffsetX,
       innerShadowOffsetY: innerShadowOffsetY ?? base.innerShadowOffsetY,
       innerShadowSide: innerShadowSide,
+      opacity: opacity ?? base.opacity,
+      blur: blur ?? base.blur,
+      backgroundImage: backgroundImage ?? base.backgroundImage,
+      backgroundImageFit: backgroundImageFit,
+      backgroundImageOpacity:
+          backgroundImageOpacity ?? base.backgroundImageOpacity,
     );
   }
 }
@@ -512,6 +534,14 @@ class ThemeEffectBridge {
                   st['innerShadowSide'])
               ?.toString() ??
           'bottom',
+      opacity: (st['opacity'] as num?)?.toDouble(),
+      blur: (st['blur'] as num?)?.toDouble(),
+      backgroundImage:
+          (st['backgroundImage'] ?? st['texture'] ?? st['bgImage'])?.toString(),
+      backgroundImageFit:
+          (st['backgroundImageFit'] ?? st['textureFit'] ?? 'cover').toString(),
+      backgroundImageOpacity:
+          (st['backgroundImageOpacity'] as num?)?.toDouble(),
     );
   }
 

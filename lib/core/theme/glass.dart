@@ -165,8 +165,8 @@ class GlassPanel extends StatelessWidget {
             .componentStyleFor(page, 'panel', anchorIndex ?? 0);
         final baseRadius = style?.radius ?? radius;
         final br = Glass.radius(baseRadius);
-        final effectiveBlur =
-            blur == Glass.blur && visual != null ? visual.glassBlur : blur;
+        final effectiveBlur = style?.blur ??
+            (blur == Glass.blur && visual != null ? visual.glassBlur : blur);
         final effectiveShadowY =
             shadowY == 8 && visual != null ? visual.glassShadowY : shadowY;
         final effectiveBorderColor =
@@ -214,16 +214,26 @@ class GlassPanel extends StatelessWidget {
           );
         }
         final List<Color> gradientColors = style?.gradientColors ?? [];
+        final effectiveGradientColors =
+            gradientColors.isNotEmpty && style?.fillOpacity != null
+                ? [
+                    for (final c in gradientColors)
+                      c.withValues(alpha: style!.fillOpacity!)
+                  ]
+                : gradientColors;
         final solidColor = style?.color;
-        final gradient = gradientColors.isNotEmpty
+        final gradient = effectiveGradientColors.isNotEmpty
             ? LinearGradient(
                 begin: Alignment(-math.cos(styleAngle * math.pi / 180),
                     -math.sin(styleAngle * math.pi / 180)),
                 end: Alignment(math.cos(styleAngle * math.pi / 180),
                     math.sin(styleAngle * math.pi / 180)),
-                colors: gradientColors.length >= 2
-                    ? gradientColors
-                    : [gradientColors.first, gradientColors.first],
+                colors: effectiveGradientColors.length >= 2
+                    ? effectiveGradientColors
+                    : [
+                        effectiveGradientColors.first,
+                        effectiveGradientColors.first
+                      ],
               )
             : Glass.fill(scheme, opacity: fillOpacity);
         final hasInnerDecor = style != null &&
@@ -231,19 +241,54 @@ class GlassPanel extends StatelessWidget {
                 style.innerGlowOpacity != null ||
                 style.innerShadowColor != null ||
                 style.innerShadowOpacity != null);
-        final contentChild = hasInnerDecor
+        Widget? bgLayer;
+        if (style?.backgroundImage?.isNotEmpty == true) {
+          final bgStyle = style!;
+          bgLayer = Positioned.fill(
+            child: IgnorePointer(
+              child: FutureBuilder<String>(
+                future: ThemeEffectsController.instance
+                    .resolveImagePath(bgStyle.backgroundImage!),
+                builder: (context, snap) {
+                  final host = snap.data ?? '';
+                  if (host.isEmpty) return const SizedBox.shrink();
+                  final fit = bgStyle.backgroundImageFit;
+                  final opacity =
+                      (bgStyle.backgroundImageOpacity ?? 1).clamp(0.0, 1.0);
+                  final boxFit = fit == 'fill'
+                      ? BoxFit.fill
+                      : fit == 'contain'
+                          ? BoxFit.contain
+                          : BoxFit.cover;
+                  Widget img = Image.file(
+                    File(host),
+                    fit: boxFit,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  );
+                  if (opacity < 1) {
+                    img = Opacity(opacity: opacity, child: img);
+                  }
+                  return img;
+                },
+              ),
+            ),
+          );
+        }
+        final contentChild = (hasInnerDecor || bgLayer != null)
             ? Stack(
                 children: [
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: CustomPaint(
-                        painter: ThemeInnerDecorPainter(
-                          style: style,
-                          cornerRadius: br.topLeft.x,
+                  if (bgLayer != null) bgLayer,
+                  if (hasInnerDecor)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          painter: ThemeInnerDecorPainter(
+                            style: style,
+                            cornerRadius: br.topLeft.x,
+                          ),
                         ),
                       ),
                     ),
-                  ),
                   inner,
                 ],
               )
@@ -290,35 +335,38 @@ class GlassPanel extends StatelessWidget {
         return ComponentAnchorTracker(
           type: 'panel',
           index: anchorIndex,
-          child: Container(
-            margin: margin,
-            decoration: BoxDecoration(
-              borderRadius: br,
-              boxShadow: [
-                BoxShadow(
-                  color: effectiveShadowColor.withValues(
-                      alpha: effectiveShadowOpacity),
-                  blurRadius: effectiveShadowBlur,
-                  offset: Offset(0, effectiveShadowOffsetY),
-                ),
-                BoxShadow(
-                  color: scheme.primary.withValues(
-                    alpha: scheme.brightness == Brightness.dark ? 0.10 : 0.06,
+          child: Opacity(
+            opacity: (style?.opacity ?? 1).clamp(0.0, 1.0),
+            child: Container(
+              margin: margin,
+              decoration: BoxDecoration(
+                borderRadius: br,
+                boxShadow: [
+                  BoxShadow(
+                    color: effectiveShadowColor.withValues(
+                        alpha: effectiveShadowOpacity),
+                    blurRadius: effectiveShadowBlur,
+                    offset: Offset(0, effectiveShadowOffsetY),
                   ),
-                  blurRadius: effectiveShadowY * 3,
-                  spreadRadius: -effectiveShadowY,
+                  BoxShadow(
+                    color: scheme.primary.withValues(
+                      alpha: scheme.brightness == Brightness.dark ? 0.10 : 0.06,
+                    ),
+                    blurRadius: effectiveShadowY * 3,
+                    spreadRadius: -effectiveShadowY,
+                  ),
+                  ...glow,
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: br,
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(
+                    sigmaX: effectiveBlur,
+                    sigmaY: effectiveBlur,
+                  ),
+                  child: content,
                 ),
-                ...glow,
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: br,
-              child: BackdropFilter(
-                filter: ImageFilter.blur(
-                  sigmaX: effectiveBlur,
-                  sigmaY: effectiveBlur,
-                ),
-                child: content,
               ),
             ),
           ),

@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
@@ -222,6 +224,13 @@ class GlassCard extends StatelessWidget {
                       ? (dark ? 0.28 : 0.56)
                       : style!.fillOpacity! * 0.7),
             ];
+        final effectiveGradientColors =
+            gradientColors.isNotEmpty && style?.fillOpacity != null
+                ? [
+                    for (final c in gradientColors)
+                      c.withValues(alpha: style!.fillOpacity!)
+                  ]
+                : gradientColors;
         final borderColor = style?.borderColor ??
             (selected
                 ? scheme.primary
@@ -252,71 +261,123 @@ class GlassCard extends StatelessWidget {
               ]
             : const <BoxShadow>[];
 
+        Widget? bgLayer;
+        if (style?.backgroundImage?.isNotEmpty == true) {
+          final bgStyle = style!;
+          bgLayer = Positioned.fill(
+            child: IgnorePointer(
+              child: FutureBuilder<String>(
+                future: ThemeEffectsController.instance
+                    .resolveImagePath(bgStyle.backgroundImage!),
+                builder: (context, snap) {
+                  final host = snap.data ?? '';
+                  if (host.isEmpty) return const SizedBox.shrink();
+                  final fit = bgStyle.backgroundImageFit;
+                  final opacity =
+                      (bgStyle.backgroundImageOpacity ?? 1).clamp(0.0, 1.0);
+                  final boxFit = fit == 'fill'
+                      ? BoxFit.fill
+                      : fit == 'contain'
+                          ? BoxFit.contain
+                          : BoxFit.cover;
+                  Widget img = Image.file(
+                    File(host),
+                    fit: boxFit,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  );
+                  if (opacity < 1) {
+                    img = Opacity(opacity: opacity, child: img);
+                  }
+                  return img;
+                },
+              ),
+            ),
+          );
+        }
+        final hasInnerDecor = style != null &&
+            (style.innerGlowColor != null ||
+                style.innerGlowOpacity != null ||
+                style.innerShadowColor != null ||
+                style.innerShadowOpacity != null);
+        final cardStack = Stack(
+          children: [
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(gradient: Glass.sheen(scheme)),
+                ),
+              ),
+            ),
+            if (bgLayer != null) bgLayer,
+            if (hasInnerDecor)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: ThemeInnerDecorPainter(
+                      style: style,
+                      cornerRadius: br.topLeft.x,
+                    ),
+                  ),
+                ),
+              ),
+            Material(
+              color: selected
+                  ? scheme.primaryContainer.withValues(alpha: 0.35)
+                  : Colors.transparent,
+              child: InkWell(
+                onTap: onTap,
+                onLongPress: onLongPress,
+                child: Padding(padding: padding, child: child),
+              ),
+            ),
+          ],
+        );
+        final blurValue = style?.blur;
+        final cardChild = blurValue != null
+            ? ClipRRect(
+                borderRadius: br,
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(
+                    sigmaX: blurValue,
+                    sigmaY: blurValue,
+                  ),
+                  child: cardStack,
+                ),
+              )
+            : cardStack;
         return ComponentAnchorTracker(
           type: 'card',
           index: anchorIndex,
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: br,
-              color: solidColor,
-              gradient: solidColor == null
-                  ? LinearGradient(
-                      begin: Alignment(-math.cos(styleAngle * math.pi / 180),
-                          -math.sin(styleAngle * math.pi / 180)),
-                      end: Alignment(math.cos(styleAngle * math.pi / 180),
-                          math.sin(styleAngle * math.pi / 180)),
-                      colors: gradientColors,
-                    )
-                  : null,
-              border: Border.all(
-                color: borderColor.withValues(alpha: borderOpacity),
-                width: borderWidth,
+          child: Opacity(
+            opacity: (style?.opacity ?? 1).clamp(0.0, 1.0),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: br,
+                color: solidColor,
+                gradient: solidColor == null
+                    ? LinearGradient(
+                        begin: Alignment(-math.cos(styleAngle * math.pi / 180),
+                            -math.sin(styleAngle * math.pi / 180)),
+                        end: Alignment(math.cos(styleAngle * math.pi / 180),
+                            math.sin(styleAngle * math.pi / 180)),
+                        colors: effectiveGradientColors,
+                      )
+                    : null,
+                border: Border.all(
+                  color: borderColor.withValues(alpha: borderOpacity),
+                  width: borderWidth,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: shadowColor.withValues(alpha: shadowOpacity),
+                    blurRadius: shadowBlur,
+                    offset: Offset(0, shadowOffsetY),
+                  ),
+                  ...glow,
+                ],
               ),
-              boxShadow: [
-                BoxShadow(
-                  color: shadowColor.withValues(alpha: shadowOpacity),
-                  blurRadius: shadowBlur,
-                  offset: Offset(0, shadowOffsetY),
-                ),
-                ...glow,
-              ],
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(gradient: Glass.sheen(scheme)),
-                    ),
-                  ),
-                ),
-                if (style != null &&
-                    (style.innerGlowColor != null ||
-                        style.innerGlowOpacity != null ||
-                        style.innerShadowColor != null ||
-                        style.innerShadowOpacity != null))
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: CustomPaint(
-                        painter: ThemeInnerDecorPainter(
-                          style: style,
-                          cornerRadius: br.topLeft.x,
-                        ),
-                      ),
-                    ),
-                  ),
-                Material(
-                  color: selected
-                      ? scheme.primaryContainer.withValues(alpha: 0.35)
-                      : Colors.transparent,
-                  child: InkWell(
-                    onTap: onTap,
-                    onLongPress: onLongPress,
-                    child: Padding(padding: padding, child: child),
-                  ),
-                ),
-              ],
+              clipBehavior: Clip.antiAlias,
+              child: cardChild,
             ),
           ),
         );

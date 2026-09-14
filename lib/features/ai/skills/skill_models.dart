@@ -388,7 +388,7 @@ DSHTheme.effect({ id:'puppet', imagePath: PKG+'/puppet.png', x:10, y:10, width:8
 - id/imagePath/icon/text/x/y/width/height/color/animation/fit/interactive/fontSize/speechTail。
 - `opacity` 整体透明度、`rotation` 静态旋转、`scale` 缩放、`durationMs` 动画时长、`textBackgroundColor`/`textBorderColor`/`textBorderWidth`/`textRadius`/`textPadding` 文字气泡样式。
 - `paint` 组件重绘：`{type: solid|gradient|radialGradient|glow|stroke|shadow|ellipse|ring|line|dashed, colors, opacity, borderWidth, radius, cornerRadius, angle, dashWidth, dashGap}`。
-- `styleComponent` 真实修改组件，style 支持 `color`（纯色填充）、`colors`+`angle`（渐变）、`borderColor`/`borderWidth`/`borderOpacity`、`glowColor`/`glowRadius`/`glowOpacity`、`fillOpacity`、`radius`、`shadowColor`/`shadowOpacity`/`shadowBlur`/`shadowOffsetY`、`innerGlow`（内发光：color/opacity/radius/side，side 可 top/bottom/left/right/all）、`innerShadow`（内阴影：color/opacity/blur/offsetX/offsetY/side）；type 支持 panel/card/bubble；不传 index 或 type:'*' 可应用到全部匹配组件。
+- `styleComponent` 真实修改组件，style 支持 `color`（纯色填充）、`colors`+`angle`（渐变）、`borderColor`/`borderWidth`/`borderOpacity`、`glowColor`/`glowRadius`/`glowOpacity`、`fillOpacity`、`radius`、`shadowColor`/`shadowOpacity`/`shadowBlur`/`shadowOffsetY`、`innerGlow`（内发光：color/opacity/radius/side，side 可 top/bottom/left/right/all）、`innerShadow`（内阴影：color/opacity/blur/offsetX/offsetY/side）、`opacity`（整体透明度）、`blur`（玻璃/液体玻璃模糊）、`backgroundImage`/`texture`（背景纹理，如木纹）、`backgroundImageFit`/`backgroundImageOpacity`；type 支持 panel/card/bubble；不传 index 或 type:'*' 可应用到全部匹配组件。
 - 图片路径不要写死包 id，用 `window.DSH_PACKAGE_ROOT + '/image/elements/x.png'`。
 
 ## 标准套路
