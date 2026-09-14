@@ -1011,8 +1011,19 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
 })();
 </script>
 ''';
+      // 桥必须插在**所有主题脚本之前**：html 里手工写的 <script src=...> 可能
+      // 已经在尾部了，往 </body> 前插桥仍然晚于这些脚本，它们执行时
+      // DSHTheme 还没定义，只能静默 return（流星/气泡等特效直接消失）。
+      final bodyStart = html.indexOf('<body');
+      final bodyTagEnd = bodyStart >= 0 ? html.indexOf('>', bodyStart) : -1;
       final bodyEnd = html.lastIndexOf('</body>');
-      if (bodyEnd >= 0) {
+      if (bodyTagEnd >= 0) {
+        html = html.replaceRange(
+          bodyTagEnd + 1,
+          bodyTagEnd + 1,
+          '\n$bridge\n',
+        );
+      } else if (bodyEnd >= 0) {
         html = html.replaceFirst('</body>', '$bridge</body>');
       } else {
         html = '$html$bridge';
