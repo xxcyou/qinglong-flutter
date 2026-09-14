@@ -412,6 +412,17 @@ DSHTheme.removeComponent('btn_liquid');
 - 渲染能力：完整支持深色玻璃、液体玻璃、暗金细边、深投影、外发光、内发光/内阴影、半透明渐变、纹理背景。
 - 典型用法：背景音控件、右下角悬浮按钮、互动卡片、输入框。背景 WebView 里的 HTML DOM 会被 App 组件盖住、点不到，需要“真能点”的控件一律用 `createComponent`，不要用 HTML 按钮。
 
+## 主题配置菜单（html/menu.html + DSHThemeMenu）
+- 每个主题包可带 `html/menu.html`，设置页长按该主题会弹出悬浮配置窗。
+- 菜单通道：`DSHThemeMenu.getConfig(cb)` / `saveConfig(cfg)` / `close()` / `effect()` / `styleComponent()` / `createComponent()` / `queryComponents()`。
+- 配置保存在主题包 `config.json`，导出 ZIP 会一起带走，所以可用菜单配好后导出成“带初始配置”的主题包。
+- 示例：
+```javascript
+DSHThemeMenu.getConfig(function (cfg) { updateUI(cfg); });
+DSHThemeMenu.saveConfig({ volume: 60, nightSound: true });
+DSHThemeMenu.styleComponent({ type: 'panel', style: { glowColor: '#D4AF37' } });
+```
+
 ## 常用字段
 - id/imagePath/icon/text/x/y/width/height/color/animation/fit/interactive/fontSize/speechTail。
 - `opacity` 整体透明度、`rotation` 静态旋转、`scale` 缩放、`durationMs` 动画时长、`textBackgroundColor`/`textBorderColor`/`textBorderWidth`/`textRadius`/`textPadding` 文字气泡样式。

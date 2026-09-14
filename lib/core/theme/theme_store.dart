@@ -321,6 +321,34 @@ class ThemeNotifier extends Notifier<ThemeState> {
     await prefs.setString(activeKey, state.activeId);
   }
 
+  /// 读取主题包内的菜单配置（config.json，初始配置/用户实时保存都在这里）。
+  /// 导出 ZIP 时会原样打进包，所以“菜单配好再导出”就是带初始配置的主题包。
+  Future<Map<String, dynamic>> readMenuConfig(String id) async {
+    try {
+      final hostDir =
+          await _bridge.hostPath(path: '$packagesRoot/$id', scope: 'shell');
+      final file = File('$hostDir/config.json');
+      if (!file.existsSync()) return <String, dynamic>{};
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      return <String, dynamic>{};
+    } catch (_) {
+      return <String, dynamic>{};
+    }
+  }
+
+  /// 实时保存主题包菜单配置到 config.json（导出时随包带走）。
+  Future<void> saveMenuConfig(String id, Map<String, dynamic> config) async {
+    final hostDir =
+        await _bridge.hostPath(path: '$packagesRoot/$id', scope: 'shell');
+    Directory(hostDir).createSync(recursive: true);
+    final file = File('$hostDir/config.json');
+    await file.writeAsString(
+      const JsonEncoder.withIndent('  ').convert(config),
+      flush: true,
+    );
+  }
+
   /// 应用某个主题（只改 activeId，不删别的方案）。
   Future<void> apply(String id) async {
     if (state.byId(id) == null) return;
@@ -544,26 +572,26 @@ class ThemeNotifier extends Notifier<ThemeState> {
     b.writeln('// 主题控制脚本：这是整个主题的总控入口（纯色也在这里配置）。');
     b.writeln('// 它负责分配：哪个组件用哪个子 js / css / html / xml / 图片 / 音效。');
     b.writeln('const theme = {');
-    b.writeln("  id: '${_jsEscape(theme.id)}',");
-    b.writeln("  name: '${_jsEscape(theme.name)}',");
-    b.writeln("  brightness: '${_jsEscape(theme.brightness)}',");
-    b.writeln("  backgroundImage: '${_jsEscape(theme.backgroundImage)}',");
+    b.writeln('  id: \'${_jsEscape(theme.id)}\',');
+    b.writeln('  name: \'${_jsEscape(theme.name)}\',');
+    b.writeln('  brightness: \'${_jsEscape(theme.brightness)}\',');
+    b.writeln('  backgroundImage: \'${_jsEscape(theme.backgroundImage)}\',');
     b.writeln('  colors: ${jsonEncode(theme.colors)},');
     b.writeln('  effects: ${jsonEncode(theme.effects)},');
     b.writeln('};');
     b.writeln('');
     b.writeln('// 主题资源路由：controller.js 在这里分配各组件的子脚本/样式/HTML/XML。');
-    b.writeln("const themeResources = {");
-    b.writeln("  components: {");
+    b.writeln('const themeResources = {');
+    b.writeln('  components: {');
     b.writeln(
-        "    background: { script: 'js/background.js', css: 'css/background.css', html: 'html/index.html', xml: 'xml/animations/background.xml' },");
+        '    background: { script: \'js/background.js\', css: \'css/background.css\', html: \'html/index.html\', xml: \'xml/animations/background.xml\' },');
     b.writeln(
-        "    chatBubble: { script: 'js/chat-bubble.js', css: 'css/chat-bubble.css', html: 'html/chat-bubble.html', xml: 'xml/components/chat-bubble.xml' },");
-    b.writeln("  },");
-    b.writeln("  images: 'image/elements',");
-    b.writeln("  scripts: 'scripts',");
-    b.writeln("  audio: 'audio',");
-    b.writeln("};");
+        '    chatBubble: { script: \'js/chat-bubble.js\', css: \'css/chat-bubble.css\', html: \'html/chat-bubble.html\', xml: \'xml/components/chat-bubble.xml\' },');
+    b.writeln('  },');
+    b.writeln('  images: \'image/elements\',');
+    b.writeln('  scripts: \'scripts\',');
+    b.writeln('  audio: \'audio\',');
+    b.writeln('};');
     b.writeln('export default themeResources;');
     await File('$hostDir/controller.js').writeAsString(
       b.toString(),

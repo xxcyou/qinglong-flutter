@@ -330,6 +330,26 @@ DSHTheme.createComponent({
 });
 ```
 
+### 主题配置菜单（html/menu.html + DSHThemeMenu）
+- 每个主题包可以自带 `html/menu.html`（CSS/JS 随意），在设置页**长按该主题**会弹出悬浮配置窗。
+- 菜单里的实时互动和保存配置走 `window.DSHThemeMenu`：
+  - `DSHThemeMenu.getConfig(function(cfg){})`：读取当前主题包 `config.json`。
+  - `DSHThemeMenu.saveConfig(cfg)`：实时保存到主题包 `config.json`。
+  - `DSHThemeMenu.close()`：关闭菜单。
+  - `DSHThemeMenu.effect(...)` / `DSHThemeMenu.styleComponent(...)` / `DSHThemeMenu.createComponent(...)` / `DSHThemeMenu.queryComponents(...)`：和背景 DSHTheme 一样实时改当前主题，所见即所得。
+- 配置保存路径：`/workspace/.ql_themes/packages/<id>/config.json`；导出 ZIP 时 config.json 会一起打进包，所以“菜单里配好再导出 = 带初始配置的主题包”。
+- 给主题加初始配置：菜单里改完保存，再 `theme_manage export_zip` 导出即可。
+
+示例：
+```javascript
+window.DSHThemeMenu.getConfig(function (cfg) {
+  if (!cfg.volume) cfg.volume = 50;
+  updateUI(cfg);
+});
+window.DSHThemeMenu.saveConfig({ volume: 60, nightSound: true });
+window.DSHThemeMenu.styleComponent({ type: 'panel', style: { glowColor: '#D4AF37' } });
+```
+
 ### 层级说明（别把前/后搞反）
 - `effect`：永远在组件**前面**，适合落叶、气泡、布偶、角标、光晕这类浮层特效；它默认不挡点击，但视觉上是盖在组件上的。
 - `styleComponent`：真正改**组件本身**，可以改边框颜色/宽度、渐变、发光、圆角；想要“组件背景/组件内部颜色”这类效果，优先用它，不要用 effect 假装背景。

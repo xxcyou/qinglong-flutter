@@ -5,6 +5,7 @@ import '../../../core/cache/cache_cleaner.dart';
 import '../../../core/debug/api_debug_log.dart';
 import '../../../core/theme/theme_config.dart';
 import '../../../core/theme/theme_store.dart';
+import '../widgets/theme_menu_window.dart';
 import '../../../shared/glass_scaffold.dart';
 import '../../../shared/local_file_picker.dart';
 import '../../../core/llm/llm_registry_provider.dart';
@@ -503,6 +504,16 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
     await ref.read(themeProvider.notifier).remove(theme.id);
   }
 
+  void _openThemeMenu(ThemeConfig theme) {
+    final notifier = ref.read(themeProvider.notifier);
+    showThemeMenuWindow(
+      context,
+      theme: theme,
+      readConfig: () => notifier.readMenuConfig(theme.id),
+      saveConfig: (config) => notifier.saveMenuConfig(theme.id, config),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(themeProvider);
@@ -570,6 +581,7 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
                 ],
               ),
               onTap: () => notifier.apply(theme.id),
+              onLongPress: () => _openThemeMenu(theme),
             ),
             const Divider(height: 1),
           ],
