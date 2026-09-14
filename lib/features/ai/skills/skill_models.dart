@@ -416,11 +416,15 @@ DSHTheme.removeComponent('btn_liquid');
 - 每个主题包可带 `html/menu.html`，设置页长按该主题会弹出悬浮配置窗；**没有 `html/menu.html` 时长按不弹窗**。
 - 菜单通道：`DSHThemeMenu.getConfig(cb)` / `saveConfig(cfg)` / `close()` / `effect()` / `styleComponent()` / `createComponent()` / `queryComponents()`。
 - 配置保存在主题包 `config.json`，导出 ZIP 会一起带走，所以可用菜单配好后导出成“带初始配置”的主题包。
+- **实时自动保存**：不要做保存按钮；控件每次变化时同时调 `saveConfig`（写 config.json）和 `effect/styleComponent`（实时生效）。
 - 示例：
 ```javascript
 DSHThemeMenu.getConfig(function (cfg) { updateUI(cfg); });
-DSHThemeMenu.saveConfig({ volume: 60, nightSound: true });
-DSHThemeMenu.styleComponent({ type: 'panel', style: { glowColor: '#D4AF37' } });
+input.addEventListener('input', function () {
+  cfg.volume = parseInt(this.value, 10);
+  DSHThemeMenu.saveConfig(cfg);     // 自动保存
+  DSHThemeMenu.styleComponent({ type: 'panel', style: { glowColor: '#D4AF37', glowOpacity: cfg.volume / 100 } }); // 实时生效
+});
 ```
 
 ## 常用字段

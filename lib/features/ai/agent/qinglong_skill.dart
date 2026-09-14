@@ -340,14 +340,24 @@ DSHTheme.createComponent({
 - 配置保存路径：`/workspace/.ql_themes/packages/<id>/config.json`；导出 ZIP 时 config.json 会一起打进包，所以“菜单里配好再导出 = 带初始配置的主题包”。
 - 给主题加初始配置：菜单里改完保存，再 `theme_manage export_zip` 导出即可。
 
-示例：
+实时要点：
+- **不要做“保存按钮”**。配置是实时的：控件每次变化时，同时调用 `saveConfig` 落盘 + `effect/styleComponent` 让当前主题立刻变化。
+- `saveConfig` 会直接写 `config.json`，没有手动保存步骤；导出 ZIP 时这些实时保存的配置会一起带走。
+
+示例（滑块一变就自动保存 + 实时生效）：
 ```javascript
 window.DSHThemeMenu.getConfig(function (cfg) {
   if (!cfg.volume) cfg.volume = 50;
   updateUI(cfg);
 });
-window.DSHThemeMenu.saveConfig({ volume: 60, nightSound: true });
-window.DSHThemeMenu.styleComponent({ type: 'panel', style: { glowColor: '#D4AF37' } });
+document.getElementById('vol').addEventListener('input', function () {
+  cfg.volume = parseInt(this.value, 10);
+  DSHThemeMenu.saveConfig(cfg);                 // 自动保存，不点按钮
+  DSHThemeMenu.styleComponent({                 // 立即生效
+    type: 'panel',
+    style: { glowColor: '#D4AF37', glowOpacity: cfg.volume / 100 }
+  });
+});
 ```
 
 ### 层级说明（别把前/后搞反）
