@@ -804,7 +804,25 @@ class ThemeEffectBridge {
   static Color? parseColor(Object? v) {
     if (v is int) return Color(v);
     if (v is String) {
-      final s = v.replaceFirst('#', '');
+      final raw = v.trim();
+      if (raw.startsWith('rgb')) {
+        final match = RegExp(r'^rgba?\(([^)]+)\)$').firstMatch(raw);
+        if (match != null) {
+          final parts =
+              match.group(1)!.split(',').map((e) => e.trim()).toList();
+          if (parts.length >= 3) {
+            final r = int.tryParse(parts[0]) ?? 0;
+            final g = int.tryParse(parts[1]) ?? 0;
+            final b = int.tryParse(parts[2]) ?? 0;
+            final a = parts.length > 3
+                ? (double.tryParse(parts[3]) ?? 1).clamp(0.0, 1.0)
+                : 1.0;
+            return Color.fromRGBO(r, g, b, a);
+          }
+        }
+        return null;
+      }
+      final s = raw.replaceFirst('#', '');
       final i = int.tryParse(s, radix: 16);
       if (i == null) return null;
       return s.length == 6 ? Color(0xFF000000 | i) : Color(i);
