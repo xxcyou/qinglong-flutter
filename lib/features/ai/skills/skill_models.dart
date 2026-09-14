@@ -333,7 +333,7 @@ const builtinSkills = <AiSkill>[
 
 ## 原则
 - 高级组件特效用 DSHTheme（见 theme-effect-dev 技能），不要依赖 App 固定效果。
-- DSHTheme 支持：图片/文字特效、paint 组件重绘、styleComponent 真改组件边缘/渐变/发光、interactive 手势互动。
+- DSHTheme 支持：图片/文字特效、paint 组件重绘、styleComponent 真改组件边缘/渐变/发光、interactive 手势互动、createComponent 创建原生互动组件。
 - 图片路径必须是主题包内 guest 路径。
 ''',
   ),
@@ -382,6 +382,19 @@ DSHTheme.styleComponent({
 // 手势互动：默认特效不挡控件，只有 interactive:true 可点击
 window.DSHTheme.onEffect('tap', function(e) { /* e.id */ });
 DSHTheme.effect({ id:'puppet', imagePath: PKG+'/puppet.png', x:10, y:10, width:80, height:80, interactive:true, animation:'bounce' });
+
+// 真实原生互动组件：button / card / text / iconButton / input
+window.DSHTheme.onComponent('tap', function(e) { /* e.id */ });
+window.DSHTheme.onComponent('change', function(e) { /* e.id, e.value */ });
+DSHTheme.createComponent({
+  id: 'btn_liquid', type: 'button',
+  x: 100, y: 300, width: 160, height: 50,
+  text: '互动按钮', fontSize: 16,
+  color: '#8E86C8', textColor: '#FFFFFF', borderRadius: 14,
+  style: { colors: ['#8E86C8', '#5E5BA8'], radius: 14,
+           liquid: { blur: 18, specular: 0.6, tintOpacity: 0.25 } }
+});
+DSHTheme.removeComponent('btn_liquid');
 ```
 
 ## 常用字段

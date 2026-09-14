@@ -268,6 +268,32 @@ DSHTheme.queryComponents({
 
 DSHTheme.remove('petal_1');
 DSHTheme.clear();
+
+// 创建真实原生互动组件（button / card / text / iconButton / input）
+DSHTheme.onComponent('tap', function (e) {
+  console.log('tap', e.id);
+});
+DSHTheme.onComponent('longPress', function (e) {});
+DSHTheme.onComponent('change', function (e) {
+  console.log('change', e.id, e.value);
+});
+DSHTheme.createComponent({
+  id: 'btn_liquid',
+  type: 'button', // button | card | text | iconButton | input
+  x: 100, y: 300, width: 160, height: 50,
+  text: '互动按钮',
+  fontSize: 16,
+  color: '#8E86C8',
+  textColor: '#FFFFFF',
+  borderRadius: 14,
+  style: {
+    // 可复用 styleComponent 的背景样式
+    colors: ['#8E86C8', '#5E5BA8'],
+    radius: 14,
+    liquid: { blur: 18, specular: 0.6, tintOpacity: 0.25 }
+  }
+});
+DSHTheme.removeComponent('btn_liquid');
 ```
 
 ### 层级说明（别把前/后搞反）
