@@ -247,8 +247,15 @@ class GlassCard extends StatelessWidget {
                             ? 0.42
                             : (dark ? 0.12 : 0.6),
                   ));
-        final borderOpacity = style?.borderOpacity ?? 1.0;
-        final borderWidth = style?.borderWidth ?? (selected ? 1.4 : 1);
+        final borderExplicit = style?.borderWidth != null ||
+            style?.borderColor != null ||
+            style?.borderOpacity != null;
+        final borderOpacity = (liquidActive && !borderExplicit)
+            ? 0.0
+            : (style?.borderOpacity ?? 1.0);
+        final borderWidth = (liquidActive && !borderExplicit)
+            ? 0.0
+            : (style?.borderWidth ?? (selected ? 1.4 : 1));
         final solidColor = style?.color != null && liquidActive
             ? style!.color!.withValues(alpha: gradientAlpha ?? 0.55)
             : style?.color;

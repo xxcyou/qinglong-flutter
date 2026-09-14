@@ -172,12 +172,20 @@ class GlassPanel extends StatelessWidget {
             shadowY == 8 && visual != null ? visual.glassShadowY : shadowY;
         final effectiveBorderColor =
             style?.borderColor ?? visual?.borderColor ?? Colors.white;
-        final effectiveBorderOpacity = style?.borderOpacity ??
-            (style?.borderColor != null
-                ? 1.0
-                : (visual?.glassBorderOpacity ??
-                    (scheme.brightness == Brightness.dark ? 0.16 : 0.78)));
-        final effectiveBorderWidth = style?.borderWidth ?? borderWidth;
+        final liquidActive = style?.liquid != null;
+        final borderExplicit = style?.borderWidth != null ||
+            style?.borderColor != null ||
+            style?.borderOpacity != null;
+        final effectiveBorderOpacity = (liquidActive && !borderExplicit)
+            ? 0.0
+            : (style?.borderOpacity ??
+                (style?.borderColor != null
+                    ? 1.0
+                    : (visual?.glassBorderOpacity ??
+                        (scheme.brightness == Brightness.dark ? 0.16 : 0.78))));
+        final effectiveBorderWidth = (liquidActive && !borderExplicit)
+            ? 0.0
+            : (style?.borderWidth ?? borderWidth);
         final effectiveShadowColor =
             style?.shadowColor ?? visual?.shadowColor ?? Colors.black;
         final effectiveShadowOpacity = style?.shadowOpacity ??
@@ -186,7 +194,6 @@ class GlassPanel extends StatelessWidget {
         final effectiveShadowBlur =
             style?.shadowBlur ?? (effectiveShadowY * 2.2);
         final effectiveShadowOffsetY = style?.shadowOffsetY ?? effectiveShadowY;
-        final liquidActive = style?.liquid != null;
         // 液体玻璃默认要透：主题没显式给 fillOpacity 时，自动压到半透明，
         // 否则原来的不透明 colors/纯色会把“液态”直接盖成一块实心板。
         final defaultLiquidFill = liquidActive ? 0.55 : null;
