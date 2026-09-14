@@ -358,6 +358,42 @@ class QlToolRegistry {
           danger: true,
         ),
         ToolDefinition(
+          name: 'script_patch',
+          description: '在青龙面板已有脚本里做**定点修改**（不需要整份重写）：'
+              'action=replace 把 find 匹配到的内容替换成 content；'
+              'action=delete 删除 find 匹配到的内容；'
+              'action=insert_before / insert_after 在 find 匹配处前面/后面插入 content。'
+              '默认只改第一处，count 可指定改几处（-1=全部）。'
+              '先 script_read 看原脚本、确定要改的那一小段，再用它精准改，'
+              '**不要用 script_write 为了改几行把整份脚本重新输出一遍**。',
+          parameters: _obj([
+            'path',
+            'action',
+            'find'
+          ], {
+            'path': _stringProp,
+            'action': {
+              'type': 'string',
+              'enum': ['replace', 'delete', 'insert_before', 'insert_after'],
+              'description':
+                  'replace=替换 / delete=删除 / insert_before=在某段前插入 / insert_after=在某段后插入',
+            },
+            'find': {
+              'type': 'string',
+              'description': '要定位的文段（原脚本里真实存在的一小段，尽量唯一）',
+            },
+            'content': _stringProp,
+            'count': {
+              'type': 'integer',
+              'description': '改几处，默认 1；-1 表示全部匹配',
+            },
+          }),
+          isWrite: true,
+          impact: '在青龙面板脚本内部做定点覆盖/插入/删除后保存',
+          reversible: false,
+          danger: true,
+        ),
+        ToolDefinition(
           name: 'script_delete',
           description: '删除脚本',
           parameters: _obj(['path'], {'path': _stringProp}),
@@ -1091,6 +1127,64 @@ class QlToolRegistry {
           content: args['content'] as String,
         );
         return '已保存脚本 ${args['path']}';
+
+      case 'script_patch':
+        {
+          final path = args['path'] as String;
+          final action = args['action']?.toString() ?? '';
+          final find = args['find']?.toString() ?? '';
+          final content = args['content']?.toString() ?? '';
+          final count = (args['count'] as num?)?.toInt() ?? 1;
+          if (find.isEmpty) return 'find 不能为空，先找准要改的那段原脚本内容。';
+          final original = await ScriptApi.read(apiBaseUrl: base, file: path);
+
+          final occurrences = <int>[];
+          var searchFrom = 0;
+          while (true) {
+            final i = original.indexOf(find, searchFrom);
+            if (i < 0) break;
+            occurrences.add(i);
+            searchFrom = i + find.length;
+          }
+          if (occurrences.isEmpty) {
+            return '脚本里没找到这段原文：${find.length > 80 ? '${find.substring(0, 80)}…' : find}。'
+                '先用 script_read 确认当前内容再改。';
+          }
+          final limited = count < 0
+              ? occurrences
+              : occurrences.take(count > 0 ? count : 1).toList();
+          final updated = StringBuffer();
+          var pos = 0;
+          for (final occ in limited) {
+            updated.write(original.substring(pos, occ));
+            switch (action) {
+              case 'replace':
+                updated.write(content);
+                break;
+              case 'delete':
+                break;
+              case 'insert_before':
+                updated.write(content);
+                updated.write(find);
+                break;
+              case 'insert_after':
+                updated.write(find);
+                updated.write(content);
+                break;
+              default:
+                return '不认识的 action：$action（replace / delete / insert_before / insert_after）';
+            }
+            pos = occ + find.length;
+          }
+          updated.write(original.substring(pos));
+
+          await ScriptApi.save(
+            apiBaseUrl: base,
+            path: path,
+            content: updated.toString(),
+          );
+          return '已定点修改并保存脚本 $path（${action == 'replace' ? '替换' : action == 'delete' ? '删除' : '插入'} ${limited.length} 处）。';
+        }
 
       case 'script_delete':
         await ScriptApi.delete(
