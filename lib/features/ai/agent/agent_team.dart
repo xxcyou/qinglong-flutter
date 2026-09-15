@@ -23,7 +23,7 @@ import 'external_tool.dart';
 ///    两个子代理同时用只会一前一后，不会交叉。这是"多个 agent 同时操作终端
 ///    会不会卡住"的答案——不会卡死，会排队，等太久会明确报错而不是无限挂着。
 /// 2. **子代理不能再开子代理**：工具清单里剔掉了自己，避免无限分裂。
-/// 3. **并行度可配置**：默认 3，设置里可调到 64。手机上太多就是自己抢 CPU 和网络带宽，
+/// 3. **并行度完全按用户设置**：不写死上限。手机上太多就是自己抢 CPU 和网络带宽，
 ///    但终端/浏览器是全机唯一的，用到它们的子代理会自动排队，不会互相踩。
 ///
 /// 剩下一类冲突软件层面挡不住：两个子代理被派去改同一个文件。所以拆任务时
@@ -36,10 +36,7 @@ class AgentTeamTools {
   /// 用户可以在设置里调（SubAgentPlan.maxTurns）。
   static const subMaxTurns = 16;
 
-  /// 并行度的硬上限：按用户设置放行（用了 64 就允许 64）。
-  /// 手机本地一下跑太多会抢 CPU/网络，所以真正调度仍由终端/浏览器锁排队；
-  /// 这里不再替用户把上限砍成 8。
-  static const maxParallel = 64;
+  /// 并行度不写死上限：用户设置多少就是多少，只保证最少 1 个。
   static const defaultParallel = 3;
 
   static List<ExternalTool> build({
@@ -67,7 +64,7 @@ class AgentTeamTools {
     /// 只是不自动并入主代理上下文（仍可 subagent_wait 取）。
     AgentSubagentSink? subagentSink,
   }) {
-    final limitCeiling = parallel.clamp(1, maxParallel);
+    final limitCeiling = parallel < 1 ? 1 : parallel;
     Map<String, dynamic> obj(
       List<String> required,
       Map<String, dynamic> props,

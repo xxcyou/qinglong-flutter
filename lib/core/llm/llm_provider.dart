@@ -312,7 +312,9 @@ class SubAgentPlan {
       };
 
   static SubAgentPlan fromJson(Map<String, dynamic> json) => SubAgentPlan(
-        parallel: ((json['parallel'] as num?)?.toInt() ?? 3).clamp(1, 8),
+        parallel: (((json['parallel'] as num?)?.toInt() ?? 3) < 1
+            ? 1
+            : (json['parallel'] as num?)?.toInt() ?? 3),
         providerId: json['providerId']?.toString() ?? '',
         model: json['model']?.toString() ?? '',
         maxTurns: ((json['maxTurns'] as num?)?.toInt() ?? 64).clamp(4, 200),

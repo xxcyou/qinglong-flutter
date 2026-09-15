@@ -1050,6 +1050,8 @@ class ChatNotifier extends Notifier<ChatState> {
       '5. 终端和浏览器是全机共用的，可能要排队等一会儿，这是正常的，别反复重试。'
           '查公开网页/文档优先用 web_search / collect_info / web_fetch，多个工人别同时操作共享浏览器；'
           '只有必须登录/过验证/动态渲染时才用 browser_open。',
+      '6. 派给你的 task 是主代理拆的，不是用户原话。结论里不要说"用户要求/用户说"，'
+          '只说"任务要求"；不要虚构用户指令。',
       '',
       panel == null
           ? '- 青龙面板：未选择，需要面板的工具会失败。'
