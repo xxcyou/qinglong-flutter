@@ -232,6 +232,7 @@ const qinglongSystemPrompt = '''
 
 ### App 已经给主题包开放的能力
 - 主题包里的 html/js 会运行在全屏 WebView 背景里（只负责背景渲染）。
+- **手机性能硬约束**：全屏 WebView 不能上 three.js/WebGL/大音频/高帧率 canvas/每帧 queryComponents。默认优先静态图/纯 CSS 渐变；要动画时粒子（桂花/星点等）控制在 6 个以内、更新频率 ≤10fps、不要自动播放音频；组件描边/玻璃效果用 DSHTheme 覆盖层，不要靠 WebView 每帧轮询。
 - 只要在 js 里调用 `window.DSHTheme.effect`，就是在 **所有 Flutter 组件的上方** 绘制图片、文字、气泡、动画，不阻塞点击——它是前景覆盖层，不是组件后面的背景。
 - 要“真实修改组件本身”（边缘、渐变、发光、圆角）用 `DSHTheme.styleComponent`，它不是覆盖层，是直接改 App 自带组件。
 - `GlassPanel` / `GlassCard` 会自动上报组件锚点，js 能查到组件在屏幕上的真实位置。
