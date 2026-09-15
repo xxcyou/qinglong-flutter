@@ -1096,26 +1096,25 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   // 2) DSHTheme.effect / effectBatch 在 JS 侧先限流，减少 WebView→Flutter 桥消息量；
   // 3) 玉兔等主题自带的 document 点击/触摸监听保留，允许主题自身处理互动。
   var minFrame = 1000 / 60;
-    var oldRaf = window.requestAnimationFrame && window.requestAnimationFrame.bind(window);
-    var oldCaf = window.cancelAnimationFrame && window.cancelAnimationFrame.bind(window);
-    var lastFrame = 0;
-    window.requestAnimationFrame = function (cb) {
-      var now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      var wait = Math.max(0, minFrame - (now - lastFrame));
-      if (wait > 0) {
-        return setTimeout(function () {
-          lastFrame = typeof performance !== 'undefined' ? performance.now() : Date.now();
-          cb(lastFrame);
-        }, wait);
-      }
-      lastFrame = now;
-      return oldRaf ? oldRaf(cb) : setTimeout(function () { cb(now); }, 16);
-    };
-    window.cancelAnimationFrame = function (id) {
-      if (typeof id === 'number') clearTimeout(id);
-      if (oldCaf) oldCaf(id);
-    };
-  })();
+  var oldRaf = window.requestAnimationFrame && window.requestAnimationFrame.bind(window);
+  var oldCaf = window.cancelAnimationFrame && window.cancelAnimationFrame.bind(window);
+  var lastFrame = 0;
+  window.requestAnimationFrame = function (cb) {
+    var now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    var wait = Math.max(0, minFrame - (now - lastFrame));
+    if (wait > 0) {
+      return setTimeout(function () {
+        lastFrame = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        cb(lastFrame);
+      }, wait);
+    }
+    lastFrame = now;
+    return oldRaf ? oldRaf(cb) : setTimeout(function () { cb(now); }, 16);
+  };
+  window.cancelAnimationFrame = function (id) {
+    if (typeof id === 'number') clearTimeout(id);
+    if (oldCaf) oldCaf(id);
+  };
 
   window.DSH_PACKAGE_ROOT = '$guestPackageJs';
   window.__dshCallbacks = window.__dshCallbacks || {};
