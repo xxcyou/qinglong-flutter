@@ -1132,15 +1132,57 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
 <script data-dsh-theme-bridge>
 (function () {
   if (window.DSHTheme && window.DSHTheme.__dsh) return;
+
+  // App 侧性能看门狗：不修改主题包文件，只在注入时对每个主题生效。
+  // 1) 把 requestAnimationFrame 压到 30fps——three.js/canvas 再重也不会拖死 UI；
+  // 2) DSHTheme.effect / effectBatch 在 JS 侧先限流，减少 WebView→Flutter 桥消息量。
+  (function () {
+    var minFrame = 1000 / 30;
+    var oldRaf = window.requestAnimationFrame && window.requestAnimationFrame.bind(window);
+    var oldCaf = window.cancelAnimationFrame && window.cancelAnimationFrame.bind(window);
+    var lastFrame = 0;
+    window.requestAnimationFrame = function (cb) {
+      var now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      var wait = Math.max(0, minFrame - (now - lastFrame));
+      if (wait > 0) {
+        return setTimeout(function () {
+          lastFrame = typeof performance !== 'undefined' ? performance.now() : Date.now();
+          cb(lastFrame);
+        }, wait);
+      }
+      lastFrame = now;
+      return oldRaf ? oldRaf(cb) : setTimeout(function () { cb(now); }, 16);
+    };
+    window.cancelAnimationFrame = function (id) {
+      if (typeof id === 'number') clearTimeout(id);
+      if (oldCaf) oldCaf(id);
+    };
+  })();
+
   window.DSH_PACKAGE_ROOT = '$guestPackageJs';
   window.__dshCallbacks = window.__dshCallbacks || {};
   function post(msg) {
     try { DSHThemeBridge.postMessage(JSON.stringify(msg)); } catch (e) {}
   }
+  var effectLast = {};
+  var lastEffectBatch = 0;
+  function throttledEffect(e) {
+    var now = Date.now();
+    var id = e && e.id;
+    if (id && effectLast[id] && now - effectLast[id] < 80) return;
+    if (id) effectLast[id] = now;
+    post({ cmd: 'effect', effect: e });
+  }
+  function throttledEffectBatch(effects) {
+    var now = Date.now();
+    if (now - lastEffectBatch < 120) return;
+    lastEffectBatch = now;
+    post({ cmd: 'effectBatch', effects: effects });
+  }
   window.DSHTheme = {
     __dsh: true,
-    effect: function (e) { post({ cmd: 'effect', effect: e }); },
-    effectBatch: function (effects) { post({ cmd: 'effectBatch', effects: effects }); },
+    effect: throttledEffect,
+    effectBatch: throttledEffectBatch,
     remove: function (id) { post({ cmd: 'remove', id: id }); },
     clear: function () { post({ cmd: 'clear' }); },
     styleComponent: function (options) { post({ cmd: 'styleComponent', options: options || {} }); },
@@ -1273,20 +1315,9 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
 
   @override
   Widget build(BuildContext context) {
-    final platform = _controller.platform;
-    if (platform is AndroidWebViewController) {
-      // 透明背景 + 全屏 WebView 用默认 Surface 模式在当前机型会触发
-      // Input ANR。Hybrid Composition 虽有少量性能开销，但输入/合成更稳，
-      // 主题动态背景必须靠它才不卡死。
-      return WebViewWidget.fromPlatform(
-        platform: AndroidWebViewWidget(
-          AndroidWebViewWidgetCreationParams(
-            controller: platform,
-            displayWithHybridComposition: true,
-          ),
-        ),
-      );
-    }
+    // 保持默认 Surface 渲染。早期怀疑需要 Hybrid Composition，但在当前
+    // Android 上 Hybrid 反而会触发 FocusEvent ANR；配合注入的 rAF 30fps
+    // + effect/effectBatch 限流后，Surface 模式全屏动态背景已稳定。
     return WebViewWidget(controller: _controller);
   }
 }
