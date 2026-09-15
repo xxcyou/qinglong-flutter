@@ -398,6 +398,10 @@ class ThemeEffectsController extends ChangeNotifier {
   Timer? _effectFlushTimer;
   final Map<String, ComponentStyle> _styles = {};
 
+  /// guest 图片路径 -> host 文件路径缓存：同一动画帧里多个特效引用同一张图时，
+  /// 不再重复走 ProotBridge.hostPath 异步链路。
+  final Map<String, String> _imageHostCache = {};
+
   /// 主题包交互事件回调（由 WebView 背景注册）。
   Function(String id)? onEffectTap;
   Function(String id)? onEffectLongPress;
@@ -426,8 +430,15 @@ class ThemeEffectsController extends ChangeNotifier {
       path = '/workspace/.ql_themes/packages/$currentPackageId/$path';
     }
 
+    // 相对路径先规范化再查缓存，避免同一张图重复走 hostPath。
+    final cached = _imageHostCache[path];
+    if (cached != null && cached.isNotEmpty) return cached;
+
     final direct = await host(path);
-    if (direct.isNotEmpty && File(direct).existsSync()) return direct;
+    if (direct.isNotEmpty && File(direct).existsSync()) {
+      _imageHostCache[path] = direct;
+      return direct;
+    }
 
     // 绝对路径里写死了旧包 id：导入 ZIP 后包目录会变成 pkgxxxx，
     // 把旧 id 替换成当前 id 再试一次。
@@ -439,7 +450,10 @@ class ThemeEffectsController extends ChangeNotifier {
       );
       if (fixed != path) {
         final retry = await host(fixed);
-        if (retry.isNotEmpty && File(retry).existsSync()) return retry;
+        if (retry.isNotEmpty && File(retry).existsSync()) {
+          _imageHostCache[path] = retry;
+          return retry;
+        }
       }
     }
     return direct;
@@ -806,7 +820,9 @@ class _ThemeOverlayContentState extends State<_ThemeOverlayContent> {
                 top: e.y - origin.dy,
                 width: e.width,
                 height: e.height,
-                child: _EffectWidget(effect: e),
+                // 每个特效独立重绘边界：动画只重绘自己的小区域，
+                // 不会让整个全屏 Stack 跟着每帧重绘。
+                child: RepaintBoundary(child: _EffectWidget(effect: e)),
               ),
           ],
         );
@@ -1448,6 +1464,14 @@ class _EffectWidgetState extends State<_EffectWidget>
 
   late final AnimationController _controller;
   bool _ownsAnimation = false;
+  Future<String>? _imageFuture;
+
+  void _prepareImage() {
+    final p = widget.effect.imagePath;
+    _imageFuture = (p != null && p.isNotEmpty)
+        ? ThemeEffectsController.instance.resolveImagePath(p)
+        : null;
+  }
 
   @override
   void initState() {
@@ -1456,6 +1480,7 @@ class _EffectWidgetState extends State<_EffectWidget>
       vsync: this,
       duration: Duration(milliseconds: widget.effect.durationMs),
     );
+    _prepareImage();
     _syncAnimation();
   }
 
@@ -1480,6 +1505,9 @@ class _EffectWidgetState extends State<_EffectWidget>
     if (oldWidget.effect.durationMs != widget.effect.durationMs) {
       _controller.duration = Duration(milliseconds: widget.effect.durationMs);
     }
+    if (oldWidget.effect.imagePath != widget.effect.imagePath) {
+      _prepareImage();
+    }
     _syncAnimation();
   }
 
@@ -1498,7 +1526,8 @@ class _EffectWidgetState extends State<_EffectWidget>
       child = _PaintEffect(effect: e);
     } else if (e.imagePath != null && e.imagePath!.isNotEmpty) {
       child = FutureBuilder<String>(
-        future: ThemeEffectsController.instance.resolveImagePath(e.imagePath!),
+        future: _imageFuture ??
+            ThemeEffectsController.instance.resolveImagePath(e.imagePath!),
         builder: (context, snap) {
           final host = snap.data ?? '';
           if (host.isNotEmpty) {

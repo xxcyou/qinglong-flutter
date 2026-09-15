@@ -1093,8 +1093,8 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
 
   // App 侧性能看门狗：不修改主题包文件，只在注入时对每个主题生效。
   // 1) HTML 背景保持 60fps 流畅；只在外层做消息保护，不砍 WebView 动画；
-  // 2) DSHTheme.effect / effectBatch 在 JS 侧先限流，减少 WebView→Flutter 桥消息量；
-  // 3) 玉兔等主题自带的 document 点击/触摸监听保留，允许主题自身处理互动。
+  // 2) DSHTheme.effect / effectBatch 在 JS 侧合并最新值后批量发送，减少桥消息量；
+  // 3) 主题自带的 document 点击/触摸监听保留，允许主题自身处理互动。
   var minFrame = 1000 / 60;
   var oldRaf = window.requestAnimationFrame && window.requestAnimationFrame.bind(window);
   var oldCaf = window.cancelAnimationFrame && window.cancelAnimationFrame.bind(window);
@@ -1121,47 +1121,87 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   function post(msg) {
     try { DSHThemeBridge.postMessage(JSON.stringify(msg)); } catch (e) {}
   }
-  var effectLast = {};
-  var effectRects = {};
-  var lastEffectBatch = 0;
+  // 特效几何信息：Flutter 手势 tap 需要转发回 WebView document 时，
+  // 用这个矩形中心生成合成事件，让主题自己的命中检测照常工作。
+  var effectGeometries = {};
+
+  // 特效更新合并队列：同一帧内同一个 id 只保留最新状态，每 ~16ms
+  // 批量发给 Flutter。相比“掉了不给”的节流，这是“合并最新值”，
+  // 动画再频繁也不会丢最终位置，且桥消息量被压缩到每帧一条 batch。
+  var effectLatest = {};
+  var effectDirty = {};
+  var effectFlushTimer = null;
+  var effectFlushMs = 16;
+
   function rememberEffect(e) {
     if (e && e.id) {
-      effectRects[e.id] = {
+      effectGeometries[e.id] = {
         x: e.x || 0, y: e.y || 0,
         w: e.width || 0, h: e.height || 0
       };
     }
     return e;
   }
+
+  function scheduleEffectFlush() {
+    if (effectFlushTimer !== null) return;
+    effectFlushTimer = setTimeout(function () {
+      effectFlushTimer = null;
+      var ids = Object.keys(effectDirty);
+      if (!ids.length) return;
+      var effects = [];
+      for (var i = 0; i < ids.length; i++) {
+        var id = ids[i];
+        if (!effectLatest[id]) continue;
+        effects.push(forceBackgroundEffect(effectLatest[id]));
+      }
+      effectDirty = {};
+      post({ cmd: 'effectBatch', effects: effects });
+    }, effectFlushMs);
+  }
+
+  function queueEffect(e) {
+    rememberEffect(e);
+    if (!e || !e.id) return;
+    effectLatest[e.id] = e;
+    effectDirty[e.id] = true;
+    scheduleEffectFlush();
+  }
+
   function forceBackgroundEffect(e) {
     // 特效层保持主题原样：动画 + interactive 都保留。
-    // Flutter 手势的 tap 会由 __emitEffect 转发成 WebView 的合成点击，
-    // 让主题自己的 document 监听也能弹气泡。
+    // 通用接口不针对任何固定主题做特判。
     return e;
   }
-  function throttledEffect(e) {
-    var now = Date.now();
-    var id = e && e.id;
-    if (id && effectLast[id] && now - effectLast[id] < 80) return;
-    if (id) effectLast[id] = now;
-    post({ cmd: 'effect', effect: forceBackgroundEffect(rememberEffect(e)) });
+
+  function removeEffect(id) {
+    if (!id) return;
+    delete effectLatest[id];
+    delete effectDirty[id];
+    delete effectGeometries[id];
+    post({ cmd: 'remove', id: id });
   }
-  function throttledEffectBatch(effects) {
-    var now = Date.now();
-    if (now - lastEffectBatch < 120) return;
-    lastEffectBatch = now;
-    if (Object.prototype.toString.call(effects) === '[object Array]') {
-      effects = effects.map(forceBackgroundEffect);
-      effects = effects.map(rememberEffect);
+
+  function clearEffects() {
+    effectLatest = {};
+    effectDirty = {};
+    effectGeometries = {};
+    if (effectFlushTimer !== null) {
+      clearTimeout(effectFlushTimer);
+      effectFlushTimer = null;
     }
-    post({ cmd: 'effectBatch', effects: effects });
+    post({ cmd: 'clear' });
   }
   window.DSHTheme = {
     __dsh: true,
-    effect: throttledEffect,
-    effectBatch: throttledEffectBatch,
-    remove: function (id) { post({ cmd: 'remove', id: id }); },
-    clear: function () { post({ cmd: 'clear' }); },
+    effect: queueEffect,
+    effectBatch: function (effects) {
+      if (Object.prototype.toString.call(effects) === '[object Array]') {
+        for (var i = 0; i < effects.length; i++) queueEffect(effects[i]);
+      }
+    },
+    remove: removeEffect,
+    clear: clearEffects,
     styleComponent: function (options) { post({ cmd: 'styleComponent', options: options || {} }); },
     removeComponentStyle: function (options) {
       post({ cmd: 'removeComponentStyle', options: options || {} });
@@ -1173,11 +1213,11 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     __emitEffect: function (type, data) {
       var h = (window.__dshEffectListeners || {})[type];
       if (typeof h === 'function') h(data || {});
-      // 主题常用 document 上的 pointerdown/click 做命中检测（玉兔气泡）。
-      // Flutter 浮层把点击吃掉后 WebView 收不到原生事件，这里把 Flutter 手势
-      // 转成合成事件派发给 document，让主题自己的监听照常弹气泡。
-      if (type === 'tap' && data && data.id && effectRects[data.id]) {
-        var r = effectRects[data.id];
+      // 通用桥接：Flutter 浮层手势吃到点击后，WebView 的 document 监听
+      // 收不到原生事件。这里按特效几何中心生成合成 pointerdown/click，
+      // 使主题的 document 命中检测（气泡/按钮等）保持可用。
+      if (type === 'tap' && data && data.id && effectGeometries[data.id]) {
+        var r = effectGeometries[data.id];
         var cx = r.x + r.w / 2;
         var cy = r.y + r.h / 2;
         var opts = { clientX: cx, clientY: cy, bubbles: true, cancelable: true };
