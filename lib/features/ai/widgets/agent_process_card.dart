@@ -940,11 +940,9 @@ class _SubagentGroupState extends State<_SubagentGroup> {
           : '';
       return '思考 $chars$liveThinking';
     }
-    AgentEvent latestThinking = e;
-    for (final ev in widget.events) {
-      if (ev.kind == AgentEventKind.thinking) latestThinking = ev;
-    }
-    final target = latestThinking;
+    // 没有实时流时直接用最后一条事件：工具调用/完成/错误都能立刻显示，
+    // 不会被更早的“思考事件”盖住。
+    final target = e;
     final prefix = switch (target.kind) {
       AgentEventKind.thinking => '思考',
       AgentEventKind.answer => '正文',
