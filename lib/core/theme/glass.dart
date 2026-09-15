@@ -862,7 +862,22 @@ class _WebThemeBackground extends StatefulWidget {
 }
 
 class _WebThemeBackgroundState extends State<_WebThemeBackground> {
+  /// 预处理后的 HTML 缓存：同一个主题包 HTML 会被多个路由反复加载，
+  /// 文件读取 + CSS/JS 注入 + 桥注入不再每次重做，能明显缩短二级页
+  /// 打开时“等待玻璃效果”的空窗。
+  static final Map<String, String> _preparedHtmlCache = {};
+
   late final WebViewController _controller;
+
+  bool _htmlLoadStarted = false;
+  bool _htmlLoaded = false;
+
+  /// 非 active（被覆盖）页面预加载时，桥消息不再直接写全局浮层，
+  /// 先按 id 保留“最新状态”，等本页真正显示时一次性接管，达到秒开。
+  final Map<String, Object?> _bufferedEffects = {};
+  final Set<String> _bufferedRemoved = {};
+  final List<Map<String, dynamic>> _bufferedStyles = [];
+  final List<Map<String, dynamic>> _bufferedRemoveStyles = [];
 
   @override
   void initState() {
@@ -874,22 +889,31 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
         'DSHThemeBridge',
         onMessageReceived: _onBridgeMessage,
       );
-    if (widget.active) _load();
+    // 无论是否当前页都预加载 HTML/CSS/JS：打开二级页时 WebView 已就绪，
+    // 只有等 active 后把缓冲的特效一次性落到全局，避免 3~6 秒空窗。
+    _load();
   }
 
   @override
   void didUpdateWidget(covariant _WebThemeBackground oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 切主题、或从被覆盖的二级页回到前台时，重新加载本页 HTML/JS，
-    // 让本页自己的动画重新接管全局覆盖层。
-    if (widget.active &&
-        (oldWidget.htmlPath != widget.htmlPath || !oldWidget.active)) {
+    if (oldWidget.htmlPath != widget.htmlPath) {
+      // 主题切换：清掉旧缓冲，重新预加载新主题。
+      _bufferedEffects.clear();
+      _bufferedRemoved.clear();
+      _bufferedStyles.clear();
+      _bufferedRemoveStyles.clear();
+      _htmlLoadStarted = false;
+      _htmlLoaded = false;
       _load();
+    } else if (!oldWidget.active && widget.active) {
+      // 页面从被覆盖变成可见：HTML 已预加载，直接接管全局浮层。
+      _activate();
     }
   }
 
-  Future<void> _load() async {
-    if (!widget.active) return;
+  void _activate() {
+    if (!widget.active || !_htmlLoaded) return;
     // 当前页重新接管前清掉上一页留下的覆盖层特效和组件风格。
     ThemeEffectsController.instance.clear();
     ThemeEffectsController.instance.clearComponentStyles();
@@ -910,15 +934,27 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
         );
       } catch (_) {}
     };
+    final pkg = RegExp(r'/packages/([^/]+)/').firstMatch(widget.htmlPath);
+    ThemeEffectsController.instance.currentPackageId = pkg?.group(1);
+    _flushBuffer();
+  }
+
+  Future<void> _load() async {
+    if (_htmlLoadStarted) return;
+    _htmlLoadStarted = true;
     try {
-      final pkg = RegExp(r'/packages/([^/]+)/').firstMatch(widget.htmlPath);
-      ThemeEffectsController.instance.currentPackageId = pkg?.group(1);
       final host =
           await ProotBridge().hostPath(path: widget.htmlPath, scope: 'shell');
       if (!mounted || host.isEmpty) return;
       String? preparedHtml;
       if (File(host).existsSync()) {
-        preparedHtml = await _prepareHtml(host, widget.htmlPath);
+        final cached = _preparedHtmlCache[host];
+        if (cached != null) {
+          preparedHtml = cached;
+        } else {
+          preparedHtml = await _prepareHtml(host, widget.htmlPath);
+          _preparedHtmlCache[host] = preparedHtml;
+        }
       }
       final platform = _controller.platform;
       if (platform is AndroidWebViewController) {
@@ -935,9 +971,85 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       } else {
         await _controller.loadFile(host);
       }
+      _htmlLoaded = true;
+      if (widget.active) _activate();
     } catch (_) {
       // HTML 加载失败就留着纯色/渐变兜底，不炸 App。
     }
+  }
+
+  /// 非 active 页面：把 WebView 发来的最新状态先按 id 缓冲，不写全局。
+  void _bufferBridgeMessage(Map<String, dynamic> data) {
+    final cmd = data['cmd']?.toString() ?? '';
+    switch (cmd) {
+      case 'effect':
+        final effect = data['effect'];
+        if (effect is Map) {
+          final id = effect['id']?.toString() ?? '';
+          if (id.isNotEmpty) {
+            _bufferedEffects[id] = effect;
+            _bufferedRemoved.remove(id);
+          }
+        }
+        break;
+      case 'effectBatch':
+        final list = data['effects'];
+        if (list is List) {
+          for (final item in list) {
+            if (item is Map) {
+              final id = item['id']?.toString() ?? '';
+              if (id.isNotEmpty) {
+                _bufferedEffects[id] = item;
+                _bufferedRemoved.remove(id);
+              }
+            }
+          }
+        }
+        break;
+      case 'remove':
+        final id = data['id']?.toString() ?? '';
+        if (id.isNotEmpty) {
+          _bufferedEffects.remove(id);
+          _bufferedRemoved.add(id);
+        }
+        break;
+      case 'clear':
+        _bufferedEffects.clear();
+        _bufferedRemoved.clear();
+        break;
+      case 'styleComponent':
+        final opts = data['options'];
+        if (opts is Map) _bufferedStyles.add(Map<String, dynamic>.from(opts));
+        break;
+      case 'removeComponentStyle':
+        final opts = data['options'];
+        if (opts is Map) {
+          _bufferedRemoveStyles.add(Map<String, dynamic>.from(opts));
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  /// active 接管时把预加载期间缓冲的最新特效/样式落到全局。
+  void _flushBuffer() {
+    for (final raw in _bufferedRemoveStyles) {
+      _handleRemoveComponentStyle(raw);
+    }
+    for (final raw in _bufferedStyles) {
+      _handleStyleComponent(raw);
+    }
+    for (final id in _bufferedRemoved) {
+      ThemeEffectsController.instance.remove(id);
+    }
+    for (final raw in _bufferedEffects.values) {
+      _handleEffectMessage(raw);
+    }
+    _bufferedEffects.clear();
+    _bufferedRemoved.clear();
+    _bufferedStyles.clear();
+    _bufferedRemoveStyles.clear();
   }
 
   static const _effectMinInterval = Duration(milliseconds: 16);
@@ -961,9 +1073,6 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   }
 
   Future<void> _onBridgeMessage(JavaScriptMessage message) async {
-    // 非当前页面的 WebView 仍在跑，但它的 effect/clear 不能再影响全局浮层，
-    // 否则两级页面会来回抢同一个覆盖层造成闪烁。
-    if (!widget.active) return;
     final raw = message.message;
     Map<String, dynamic>? data;
     try {
@@ -973,6 +1082,12 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       return;
     }
     if (data == null) return;
+    // 非当前页面或 HTML 尚未加载完：先缓冲最新状态；
+    // 等本页 active 且加载完成后，再由 _activate 一次性接管全局浮层。
+    if (!widget.active || !_htmlLoaded) {
+      _bufferBridgeMessage(data);
+      return;
+    }
     final cmd = data['cmd']?.toString() ?? '';
     switch (cmd) {
       case 'effect':
@@ -1029,8 +1144,18 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     final typeFilter = type == null || type == '*' ? null : type;
     final anchors = ThemeComponentRegistry.instance
         .query(page: pageFilter, type: typeFilter);
+    final index = rawIndex is num ? rawIndex.toInt() : null;
+    // 先把规则存成“可作用于未来组件”的通配样式：主题 JS 通常在 HTML 加载完
+    // 就 style 一次，而 ListView 里很多卡片还没 build；不存规则的话，后面
+    // 滚动出来的卡片永远拿不到玻璃效果。
+    ThemeEffectsController.instance.storeComponentStyle(
+      page: page,
+      type: type,
+      index: index,
+      style: style,
+    );
     for (final a in anchors) {
-      if (rawIndex != null && a.index != (rawIndex as num).toInt()) continue;
+      if (index != null && a.index != index) continue;
       ThemeEffectsController.instance.applyComponentStyle(
         page: a.page,
         type: a.type,
@@ -1045,12 +1170,18 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     final page = options['page']?.toString();
     final type = options['type']?.toString();
     final rawIndex = options['index'];
+    final index = rawIndex is num ? rawIndex.toInt() : null;
+    ThemeEffectsController.instance.removeStoredComponentStyle(
+      page: page,
+      type: type,
+      index: index,
+    );
     final pageFilter = page == null || page == '*' ? null : page;
     final typeFilter = type == null || type == '*' ? null : type;
     final anchors = ThemeComponentRegistry.instance
         .query(page: pageFilter, type: typeFilter);
     for (final a in anchors) {
-      if (rawIndex != null && a.index != (rawIndex as num).toInt()) continue;
+      if (index != null && a.index != index) continue;
       ThemeEffectsController.instance
           .removeComponentStyle(a.page, a.type, a.index);
     }

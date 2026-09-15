@@ -467,8 +467,51 @@ class ThemeEffectsController extends ChangeNotifier {
 
   String _styleKey(String page, String type, int index) => '$page|$type|$index';
 
+  /// 主题规则可能是通配页/通配序号（page:'*' 或 index 缺省），
+  /// 即使当时组件还没 build 也要把规则留着，后续组件再查也能拿到。
+  String _styleRuleKey(String? page, String? type, int? index) =>
+      '${page ?? '*'} | ${type ?? '*'} | ${index?.toString() ?? '*'}'
+          .replaceAll(' ', '');
+
   ComponentStyle? componentStyleFor(String page, String type, int index) {
-    return _styles[_styleKey(page, type, index)];
+    return _styles[_styleKey(page, type, index)] ??
+        _styles[_styleRuleKey(null, type, index)] ??
+        _styles[_styleRuleKey(page, null, index)] ??
+        _styles[_styleRuleKey(null, null, index)] ??
+        _styles[_styleRuleKey(page, type, null)] ??
+        _styles[_styleRuleKey(null, type, null)] ??
+        _styles[_styleRuleKey(page, null, null)] ??
+        _styles[_styleRuleKey(null, null, null)];
+  }
+
+  /// 存储一条可作用于未来组件的样式规则：
+  /// - page 传 null/'*' = 任意页面；type 同；index 传 null = 任意序号。
+  void storeComponentStyle({
+    String? page,
+    String? type,
+    int? index,
+    required ComponentStyle style,
+  }) {
+    final key = _styleRuleKey(
+      (page == null || page == '*') ? null : page,
+      (type == null || type == '*') ? null : type,
+      index,
+    );
+    _styles[key] = style.merge(_styles[key]);
+    notifyListeners();
+  }
+
+  void removeStoredComponentStyle({
+    String? page,
+    String? type,
+    int? index,
+  }) {
+    final key = _styleRuleKey(
+      (page == null || page == '*') ? null : page,
+      (type == null || type == '*') ? null : type,
+      index,
+    );
+    if (_styles.remove(key) != null) notifyListeners();
   }
 
   void applyComponentStyle({
