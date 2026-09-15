@@ -872,6 +872,10 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   bool _htmlLoadStarted = false;
   bool _htmlLoaded = false;
 
+  /// 只有本页真正接管全局浮层后才处理桥消息；路由切换动画期间仍先缓冲，
+  /// 避免切页瞬间 clear + 大量重建把导航卡住。
+  bool _effectOwner = false;
+
   /// 非 active（被覆盖）页面预加载时，桥消息不再直接写全局浮层，
   /// 先按 id 保留“最新状态”，等本页真正显示时一次性接管，达到秒开。
   final Map<String, Object?> _bufferedEffects = {};
@@ -891,7 +895,10 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       );
     // 无论是否当前页都预加载 HTML/CSS/JS：打开二级页时 WebView 已就绪，
     // 只有等 active 后把缓冲的特效一次性落到全局，避免 3~6 秒空窗。
-    _load();
+    // 启动放到首帧之后，避免 WebView 初始化/路由首帧抢同一帧。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _load();
+    });
   }
 
   @override
@@ -905,15 +912,42 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       _bufferedRemoveStyles.clear();
       _htmlLoadStarted = false;
       _htmlLoaded = false;
+      _effectOwner = false;
       _load();
     } else if (!oldWidget.active && widget.active) {
-      // 页面从被覆盖变成可见：HTML 已预加载，直接接管全局浮层。
+      // 页面从被覆盖变成可见：先等路由动画结束再接管，秒切不卡。
+      _scheduleActivate();
+    } else if (oldWidget.active && !widget.active) {
+      _effectOwner = false;
+    }
+  }
+
+  void _scheduleActivate() {
+    if (!widget.active) return;
+    final route = ModalRoute.of(context);
+    final animation = route?.animation;
+    if (animation == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.active) _activate();
+      });
+      return;
+    }
+    void onStatus(AnimationStatus status) {
+      if (status != AnimationStatus.completed) return;
+      animation.removeStatusListener(onStatus);
+      if (mounted && widget.active) _activate();
+    }
+
+    if (animation.status == AnimationStatus.completed) {
       _activate();
+    } else {
+      animation.addStatusListener(onStatus);
     }
   }
 
   void _activate() {
-    if (!widget.active || !_htmlLoaded) return;
+    if (!widget.active || !_htmlLoaded || _effectOwner) return;
+    _effectOwner = true;
     // 当前页重新接管前清掉上一页留下的覆盖层特效和组件风格。
     ThemeEffectsController.instance.clear();
     ThemeEffectsController.instance.clearComponentStyles();
@@ -972,7 +1006,8 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
         await _controller.loadFile(host);
       }
       _htmlLoaded = true;
-      if (widget.active) _activate();
+      // HTML 已就绪，但等路由动画完成后再接管，保证导航本身不卡。
+      if (widget.active) _scheduleActivate();
     } catch (_) {
       // HTML 加载失败就留着纯色/渐变兜底，不炸 App。
     }
@@ -1082,9 +1117,9 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       return;
     }
     if (data == null) return;
-    // 非当前页面或 HTML 尚未加载完：先缓冲最新状态；
-    // 等本页 active 且加载完成后，再由 _activate 一次性接管全局浮层。
-    if (!widget.active || !_htmlLoaded) {
+    // 尚未真正接管浮层（路由动画中或 HTML 未加载完）：
+    // 先缓冲最新状态，等 _activate 后再一次性落到全局。
+    if (!_effectOwner) {
       _bufferBridgeMessage(data);
       return;
     }
