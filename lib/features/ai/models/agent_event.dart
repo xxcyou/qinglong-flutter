@@ -39,6 +39,7 @@ class AgentDelta {
     this.toolName = '',
     this.reset = false,
     this.turn = 0,
+    this.group = '',
   });
 
   /// 思考（reasoning_content）增量。
@@ -53,7 +54,11 @@ class AgentDelta {
   /// 前面吐出来的作废：新一轮开始、或者上一次请求失败重发。
   final bool reset;
 
+  /// 第几轮（0 = LLM 还没开始计轮）。
   final int turn;
+
+  /// 归属分组（如某个子代理 label）。空 = 主线/当前 agent。
+  final String group;
 }
 
 /// Agent 运行过程中的实时事件，用于在界面上展示“思考/工具调用/结果”。

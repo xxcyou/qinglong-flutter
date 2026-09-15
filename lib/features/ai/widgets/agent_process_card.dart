@@ -25,6 +25,11 @@ class AgentProcessCard extends StatefulWidget {
     this.totalTokens = 0,
     this.initiallyExpanded = false,
     this.onOpenCanvas,
+    this.liveSubagentReasoning = const {},
+    this.liveSubagentContent = const {},
+    this.liveSubagentTool = const {},
+    this.liveSubagentReasoningChars = const {},
+    this.liveSubagentContentChars = const {},
   });
 
   final void Function(AiCanvas canvas)? onOpenCanvas;
@@ -34,6 +39,13 @@ class AgentProcessCard extends StatefulWidget {
   final int turns;
   final int totalTokens;
   final bool initiallyExpanded;
+
+  /// 子代理实时流：group → 思考/正文尾部、工具名、真实字数。
+  final Map<String, String> liveSubagentReasoning;
+  final Map<String, String> liveSubagentContent;
+  final Map<String, String> liveSubagentTool;
+  final Map<String, int> liveSubagentReasoningChars;
+  final Map<String, int> liveSubagentContentChars;
 
   @override
   State<AgentProcessCard> createState() => _AgentProcessCardState();
@@ -258,6 +270,11 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
               events: byGroup[group]!,
               running: widget.running,
               onOpenCanvas: widget.onOpenCanvas,
+              liveReasoning: widget.liveSubagentReasoning[group] ?? '',
+              liveContent: widget.liveSubagentContent[group] ?? '',
+              liveTool: widget.liveSubagentTool[group] ?? '',
+              liveReasoningChars: widget.liveSubagentReasoningChars[group] ?? 0,
+              liveContentChars: widget.liveSubagentContentChars[group] ?? 0,
             ),
           );
         }
@@ -760,11 +777,21 @@ class _SubagentGroup extends StatefulWidget {
     required this.events,
     required this.running,
     this.onOpenCanvas,
+    this.liveReasoning = '',
+    this.liveContent = '',
+    this.liveTool = '',
+    this.liveReasoningChars = 0,
+    this.liveContentChars = 0,
   });
 
   final List<AgentEvent> events;
   final bool running;
   final void Function(AiCanvas canvas)? onOpenCanvas;
+  final String liveReasoning;
+  final String liveContent;
+  final String liveTool;
+  final int liveReasoningChars;
+  final int liveContentChars;
 
   @override
   State<_SubagentGroup> createState() => _SubagentGroupState();
@@ -895,9 +922,24 @@ class _SubagentGroupState extends State<_SubagentGroup> {
     );
   }
 
-  /// 折叠态的实时速览：优先显示最近一条“思考”，没有思考才用最后一条事件。
-  /// 这样子代理还在想问题时，不展开也能看到它在想什么。
+  /// 折叠态的实时速览：优先显示正在流的思考/工具，没有实时流才回退事件时间线。
+  /// 子代理还在想问题时，不展开也能看到它在想什么；一旦开调工具立刻切到工具名。
   String _status(AgentEvent e, String label) {
+    final liveThinking =
+        widget.liveReasoning.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final liveTool = widget.liveTool.trim();
+    if (liveTool.isNotEmpty) {
+      final thinkTail = liveThinking.isNotEmpty
+          ? ' · ${liveThinking.length > 80 ? '${liveThinking.substring(0, 80)}…' : liveThinking}'
+          : '';
+      return '调用 $liveTool$thinkTail';
+    }
+    if (liveThinking.isNotEmpty) {
+      final chars = widget.liveReasoningChars > 0
+          ? '（${widget.liveReasoningChars} 字） '
+          : '';
+      return '思考 $chars$liveThinking';
+    }
     AgentEvent latestThinking = e;
     for (final ev in widget.events) {
       if (ev.kind == AgentEventKind.thinking) latestThinking = ev;

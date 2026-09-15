@@ -51,6 +51,10 @@ class AgentTeamTools {
     /// 把子代理的过程事件透给主界面，用户能看到"工人在干什么"。
     void Function(AgentEvent event)? onEvent,
 
+    /// 把子代理的流式增量（思考/正文/工具名）也透给主界面，
+    /// 让流程卡里子代理不展开也能实时看到正在想什么/正在调什么工具。
+    void Function(AgentDelta delta)? onDelta,
+
     /// 用户设的并行度：`parallel_agents` 的默认值，同时也是它的上限。
     int parallel = defaultParallel,
 
@@ -73,6 +77,7 @@ class AgentTeamTools {
       spawn: spawn,
       seed: seed,
       onEvent: onEvent,
+      onDelta: onDelta,
       sink: subagentSink,
       maxParallel: limitCeiling,
     );
@@ -264,6 +269,7 @@ class _SubagentCoordinator {
     required this.spawn,
     required this.seed,
     required this.onEvent,
+    required this.onDelta,
     required this.sink,
     required this.maxParallel,
   }) {
@@ -273,6 +279,7 @@ class _SubagentCoordinator {
   final AgentLoop Function() spawn;
   final List<LlmMessage> Function(String task) seed;
   final void Function(AgentEvent event)? onEvent;
+  final void Function(AgentDelta delta)? onDelta;
   final AgentSubagentSink? sink;
   final int maxParallel;
 
@@ -337,6 +344,18 @@ class _SubagentCoordinator {
             group: label,
           ),
         ),
+        onDelta: onDelta == null
+            ? null
+            : (d) => onDelta!(
+                  AgentDelta(
+                    reasoning: d.reasoning,
+                    content: d.content,
+                    toolName: d.toolName,
+                    reset: d.reset,
+                    turn: d.turn,
+                    group: label,
+                  ),
+                ),
       );
       t.summary = AgentTeamTools._describe(label, result);
     } catch (e) {

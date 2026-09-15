@@ -74,6 +74,11 @@ class ChatState {
     this.liveReasoningChars = 0,
     this.liveContentChars = 0,
     this.liveTool = '',
+    this.liveSubagentReasoning = const {},
+    this.liveSubagentContent = const {},
+    this.liveSubagentTool = const {},
+    this.liveSubagentReasoningChars = const {},
+    this.liveSubagentContentChars = const {},
     this.livePlan = const AgentTaskPlan(),
     this.pendingImages = const [],
     this.toolRecords = const [],
@@ -132,9 +137,25 @@ class ChatState {
   /// 模型这一轮刚开口要调的工具名（参数还没收完就先报出来）。
   final String liveTool;
 
+  /// 子代理的实时流：group label → 思考尾部/正文尾部/刚报出的工具名。
+  /// 和主线程 liveReasoning 一样只留尾部，避免每片增量都拼整段。
+  final Map<String, String> liveSubagentReasoning;
+  final Map<String, String> liveSubagentContent;
+  final Map<String, String> liveSubagentTool;
+
+  /// 子代理思考/正文的真实字数（尾部截断不影响这个计数）。
+  final Map<String, int> liveSubagentReasoningChars;
+  final Map<String, int> liveSubagentContentChars;
+
   /// 这一轮有没有正在流的内容。
   bool get hasLiveStream =>
       liveReasoning.isNotEmpty || liveContent.isNotEmpty || liveTool.isNotEmpty;
+
+  /// 有没有任何一个子代理正在流式输出。
+  bool get hasLiveSubagent =>
+      liveSubagentReasoning.isNotEmpty ||
+      liveSubagentContent.isNotEmpty ||
+      liveSubagentTool.isNotEmpty;
 
   /// 正在跑的这一轮的任务清单：AI 每更新一步，界面上的勾就动一下。
   final AgentTaskPlan livePlan;
@@ -246,6 +267,11 @@ class ChatState {
     int? liveReasoningChars,
     int? liveContentChars,
     String? liveTool,
+    Map<String, String>? liveSubagentReasoning,
+    Map<String, String>? liveSubagentContent,
+    Map<String, String>? liveSubagentTool,
+    Map<String, int>? liveSubagentReasoningChars,
+    Map<String, int>? liveSubagentContentChars,
     bool clearLiveText = false,
     AgentTaskPlan? livePlan,
     List<AiImageAttachment>? pendingImages,
@@ -290,6 +316,20 @@ class ChatState {
       liveContentChars:
           clearLiveText ? 0 : liveContentChars ?? this.liveContentChars,
       liveTool: clearLiveText ? '' : liveTool ?? this.liveTool,
+      liveSubagentReasoning: clearLiveText
+          ? const {}
+          : liveSubagentReasoning ?? this.liveSubagentReasoning,
+      liveSubagentContent: clearLiveText
+          ? const {}
+          : liveSubagentContent ?? this.liveSubagentContent,
+      liveSubagentTool:
+          clearLiveText ? const {} : liveSubagentTool ?? this.liveSubagentTool,
+      liveSubagentReasoningChars: clearLiveText
+          ? const {}
+          : liveSubagentReasoningChars ?? this.liveSubagentReasoningChars,
+      liveSubagentContentChars: clearLiveText
+          ? const {}
+          : liveSubagentContentChars ?? this.liveSubagentContentChars,
       livePlan: livePlan ?? this.livePlan,
       pendingImages: pendingImages ?? this.pendingImages,
       toolRecords: toolRecords ?? this.toolRecords,
@@ -338,9 +378,19 @@ class _SessionRun {
   Timer? liveTimer;
   AgentTaskPlan livePlan = const AgentTaskPlan();
 
+  // 子代理流式缓冲：group label → 各自的内容。
+  final Map<String, StringBuffer> subagentReasoning = {};
+  final Map<String, StringBuffer> subagentContent = {};
+  final Map<String, String> subagentTool = {};
+  final Map<String, Timer> subagentTimers = {};
+
   void dispose() {
     liveTimer?.cancel();
     liveTimer = null;
+    for (final timer in subagentTimers.values) {
+      timer.cancel();
+    }
+    subagentTimers.clear();
   }
 }
 
@@ -2292,6 +2342,23 @@ class ChatNotifier extends Notifier<ChatState> {
       liveReasoningChars: run?.liveReasoning.length ?? 0,
       liveContentChars: run?.liveContent.length ?? 0,
       liveTool: run?.liveTool ?? '',
+      liveSubagentReasoning: {
+        for (final entry in (run?.subagentReasoning ?? const {}).entries)
+          entry.key: _tail(entry.value.toString()),
+      },
+      liveSubagentContent: {
+        for (final entry in (run?.subagentContent ?? const {}).entries)
+          entry.key: _tail(entry.value.toString()),
+      },
+      liveSubagentTool: Map<String, String>.from(run?.subagentTool ?? const {}),
+      liveSubagentReasoningChars: {
+        for (final entry in (run?.subagentReasoning ?? const {}).entries)
+          entry.key: entry.value.length,
+      },
+      liveSubagentContentChars: {
+        for (final entry in (run?.subagentContent ?? const {}).entries)
+          entry.key: entry.value.length,
+      },
       livePlan: run?.livePlan ?? const AgentTaskPlan(),
       estimatedContextTokens: _estimateContextFor(id),
     );
@@ -2559,6 +2626,89 @@ class ChatNotifier extends Notifier<ChatState> {
     if (!exists) list.add(img);
   }
 
+  /// 子代理流式增量：和主线程一样按 80ms 节流，避免几千个 token 疯狂 setState。
+  void _appendSubagentDelta(String sessionId, AgentDelta delta) {
+    final run = _runs[sessionId];
+    if (run == null) return;
+    final group = delta.group.trim();
+    if (group.isEmpty) return;
+    if (delta.reset) {
+      _clearSubagentGroup(run, group);
+      return;
+    }
+    if (delta.reasoning.isNotEmpty) {
+      run.subagentReasoning
+          .putIfAbsent(group, StringBuffer.new)
+          .write(delta.reasoning);
+    }
+    if (delta.content.isNotEmpty) {
+      run.subagentContent
+          .putIfAbsent(group, StringBuffer.new)
+          .write(delta.content);
+    }
+    if (delta.toolName.isNotEmpty &&
+        delta.toolName != run.subagentTool[group]) {
+      run.subagentTool[group] = delta.toolName;
+      _flushSubagent(run, group);
+      return;
+    }
+    run.subagentTimers[group] ??=
+        Timer(_liveFlushInterval, () => _flushSubagent(run, group));
+  }
+
+  void _flushSubagent(_SessionRun run, String group) {
+    run.subagentTimers.remove(group)?.cancel();
+    if (!_runs.containsKey(run.sessionId) ||
+        run.sessionId != state.currentSessionId) {
+      return;
+    }
+    state = state.copyWith(
+      liveSubagentReasoning: {
+        ...state.liveSubagentReasoning,
+        group: _tail(run.subagentReasoning[group]?.toString() ?? ''),
+      },
+      liveSubagentContent: {
+        ...state.liveSubagentContent,
+        group: _tail(run.subagentContent[group]?.toString() ?? ''),
+      },
+      liveSubagentTool: {
+        ...state.liveSubagentTool,
+        group: run.subagentTool[group] ?? '',
+      },
+      liveSubagentReasoningChars: {
+        ...state.liveSubagentReasoningChars,
+        group: run.subagentReasoning[group]?.length ?? 0,
+      },
+      liveSubagentContentChars: {
+        ...state.liveSubagentContentChars,
+        group: run.subagentContent[group]?.length ?? 0,
+      },
+    );
+  }
+
+  void _clearSubagentGroup(_SessionRun run, String group) {
+    run.subagentTimers.remove(group)?.cancel();
+    run.subagentReasoning.remove(group);
+    run.subagentContent.remove(group);
+    run.subagentTool.remove(group);
+    if (!_runs.containsKey(run.sessionId) ||
+        run.sessionId != state.currentSessionId) {
+      return;
+    }
+    state = state.copyWith(
+      liveSubagentReasoning: Map<String, String>.of(state.liveSubagentReasoning)
+        ..remove(group),
+      liveSubagentContent: Map<String, String>.of(state.liveSubagentContent)
+        ..remove(group),
+      liveSubagentTool: Map<String, String>.of(state.liveSubagentTool)
+        ..remove(group),
+      liveSubagentReasoningChars:
+          Map<String, int>.of(state.liveSubagentReasoningChars)..remove(group),
+      liveSubagentContentChars:
+          Map<String, int>.of(state.liveSubagentContentChars)..remove(group),
+    );
+  }
+
   void _appendAgentEvent(String sessionId, AgentEvent event) {
     final run = _runs[sessionId];
     if (run == null) return;
@@ -2573,6 +2723,13 @@ class ChatNotifier extends Notifier<ChatState> {
     if (event.kind == AgentEventKind.toolEnd ||
         event.kind == AgentEventKind.toolStart) {
       unawaited(_saveActiveRun());
+    }
+    // 子代理收尾/出错后，它的流式缓冲不再有值，清掉让折叠卡回到事件时间线。
+    if ((event.kind == AgentEventKind.done ||
+            event.kind == AgentEventKind.error) &&
+        event.group != null &&
+        event.group!.isNotEmpty) {
+      _clearSubagentGroup(run, event.group!);
     }
   }
 
@@ -2902,6 +3059,10 @@ class ChatNotifier extends Notifier<ChatState> {
               LlmMessage(role: 'user', content: task),
             ],
             onEvent: onEvent,
+            onDelta: (delta) => _appendSubagentDelta(
+              run?.sessionId ?? state.currentSessionId,
+              delta,
+            ),
             parallel: plan.parallel,
             workerModel:
                 plan.overridesModel ? workerConfig.model : llmConfig.model,

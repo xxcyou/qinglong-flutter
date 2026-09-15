@@ -1015,6 +1015,16 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                                     e.imageDataUri != null,
                                               ),
                                           totalTokens: state.lastTokens,
+                                          liveSubagentReasoning:
+                                              state.liveSubagentReasoning,
+                                          liveSubagentContent:
+                                              state.liveSubagentContent,
+                                          liveSubagentTool:
+                                              state.liveSubagentTool,
+                                          liveSubagentReasoningChars:
+                                              state.liveSubagentReasoningChars,
+                                          liveSubagentContentChars:
+                                              state.liveSubagentContentChars,
                                         ),
                                       );
                                     }
