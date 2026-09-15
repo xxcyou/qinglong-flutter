@@ -1164,6 +1164,7 @@ class _ComponentWidgetState extends State<_ComponentWidget> {
       c.text ?? '',
       textAlign: TextAlign.center,
       maxLines: c.type == 'text' ? null : 2,
+      softWrap: true,
       overflow: TextOverflow.ellipsis,
       style: TextStyle(
         color: c.textColor,
@@ -2034,25 +2035,33 @@ class _EffectWidgetState extends State<_EffectWidget>
     if (e.text != null && e.text!.isNotEmpty) {
       final bg = e.textBackgroundColor ?? e.color.withValues(alpha: 0.16);
       final border = e.textBorderColor ?? e.color.withValues(alpha: 0.6);
-      return Container(
-        padding: EdgeInsets.symmetric(
-          horizontal: e.textPadding,
-          vertical: e.textPadding * 0.5,
-        ),
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(e.textRadius),
-          border: Border.all(
-            color: border,
-            width: e.textBorderWidth,
+      // 气泡文本必须在给定 width/height 内显示；空间不足时整体缩放而不是
+      // 触发 RenderFlex/Text overflow（红黄 Overflow 警告斜线）。
+      return FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Container(
+          padding: EdgeInsets.symmetric(
+            horizontal: e.textPadding,
+            vertical: e.textPadding * 0.5,
           ),
-        ),
-        child: Text(
-          e.text!,
-          style: TextStyle(
-            color: e.color,
-            fontSize: e.fontSize,
-            fontWeight: FontWeight.w600,
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(e.textRadius),
+            border: Border.all(
+              color: border,
+              width: e.textBorderWidth,
+            ),
+          ),
+          child: Text(
+            e.text!,
+            maxLines: 2,
+            softWrap: true,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: e.color,
+              fontSize: e.fontSize,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ),
       );

@@ -1187,9 +1187,12 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   var effectLast = {};
   var lastEffectBatch = 0;
   function forceBackgroundEffect(e) {
-    // 背景浮层的特效一律不可交互：交互交给主题菜单/组件自身，避免背景
-    // WebView 的点击监听或 Flutter 命中测试在透明背景上抢输入导致 ANR。
+    // 背景浮层只做静态装饰：
+    // 1) interactive 强制关闭，避免 WebView 点击监听 / Flutter 命中测试抢输入；
+    // 2) animation 强制 none，避免玉兔 float 这类逐帧动画把主线程/渲染线程打满。
+    // 视觉效果保留（图片/文字/位置都还在），但不再逐帧动、不再可点。
     if (e && typeof e.interactive === 'boolean') e.interactive = false;
+    if (e && typeof e.animation === 'string') e.animation = 'none';
     return e;
   }
   function throttledEffect(e) {
