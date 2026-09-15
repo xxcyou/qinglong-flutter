@@ -715,10 +715,9 @@ class GlassFlowDriver extends StatelessWidget {
 /// 于是光斑每跳一格（50ms）就有 7 层背景 + 21 个径向渐变一起重建重排——
 /// 实测单帧 build 146ms，等于交互时只有 ~7fps。用户看到的就是
 /// "菜单一闪一闪 / 点了没反应 / 长按菜单出不来"。
-/// 临时安全开关：当前机型上全屏透明 WebView 背景会引发 Input ANR
-/// （即使 HTML 里没有脚本也一样）。先禁止 HTML 动态背景，保证主题稳定；
-/// 后续用更安全的承载方式（如离屏渲染/受限 WebView）后再打开。
-const _enableHtmlThemeBackground = false;
+/// HTML 动态背景开关。为修复全屏透明 WebView 的 Input ANR，
+/// 改用 Hybrid Composition 承载 WebView（透明背景不再走 Surface 模式）。
+const _enableHtmlThemeBackground = true;
 
 class _GlassBackdropScope extends InheritedWidget {
   const _GlassBackdropScope({required super.child});
@@ -1274,6 +1273,20 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
 
   @override
   Widget build(BuildContext context) {
+    final platform = _controller.platform;
+    if (platform is AndroidWebViewController) {
+      // 透明背景 + 全屏 WebView 用默认 Surface 模式在当前机型会触发
+      // Input ANR。Hybrid Composition 虽有少量性能开销，但输入/合成更稳，
+      // 主题动态背景必须靠它才不卡死。
+      return WebViewWidget.fromPlatform(
+        platform: AndroidWebViewWidget(
+          AndroidWebViewWidgetCreationParams(
+            controller: platform,
+            displayWithHybridComposition: true,
+          ),
+        ),
+      );
+    }
     return WebViewWidget(controller: _controller);
   }
 }
