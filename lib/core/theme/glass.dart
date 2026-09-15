@@ -715,6 +715,11 @@ class GlassFlowDriver extends StatelessWidget {
 /// 于是光斑每跳一格（50ms）就有 7 层背景 + 21 个径向渐变一起重建重排——
 /// 实测单帧 build 146ms，等于交互时只有 ~7fps。用户看到的就是
 /// "菜单一闪一闪 / 点了没反应 / 长按菜单出不来"。
+/// 临时安全开关：当前机型上全屏透明 WebView 背景会引发 Input ANR
+/// （即使 HTML 里没有脚本也一样）。先禁止 HTML 动态背景，保证主题稳定；
+/// 后续用更安全的承载方式（如离屏渲染/受限 WebView）后再打开。
+const _enableHtmlThemeBackground = false;
+
 class _GlassBackdropScope extends InheritedWidget {
   const _GlassBackdropScope({required super.child});
 
@@ -796,7 +801,7 @@ class GlassBackdrop extends StatelessWidget {
               );
             },
           );
-    final Widget background = bgHtml.isNotEmpty
+    final Widget background = bgHtml.isNotEmpty && _enableHtmlThemeBackground
         ? Stack(
             fit: StackFit.expand,
             children: [

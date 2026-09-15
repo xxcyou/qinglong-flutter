@@ -1658,7 +1658,18 @@ class _LiquidGlassOverlayState extends State<LiquidGlassOverlay>
     _controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 5200),
-    )..repeat();
+    );
+    if (widget.liquid.animated) _controller.repeat();
+  }
+
+  @override
+  void didUpdateWidget(covariant LiquidGlassOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.liquid.animated && !_controller.isAnimating) {
+      _controller.repeat();
+    } else if (!widget.liquid.animated && _controller.isAnimating) {
+      _controller.stop();
+    }
   }
 
   @override
@@ -1876,7 +1887,14 @@ class _EffectWidget extends StatefulWidget {
 
 class _EffectWidgetState extends State<_EffectWidget>
     with SingleTickerProviderStateMixin {
+  /// 全局动画预算：主题包一上来挂十几个带 repeat 的 effect widget，
+  /// 每个都 60fps 重建，手机上直接卡死。这里只允许少量特效有本地循环动画，
+  /// 其余保持静态；需要“动起来”的桂花等，位置仍由桥接层按帧更新。
+  static const _maxConcurrentAnimations = 4;
+  static int _runningAnimations = 0;
+
   late final AnimationController _controller;
+  bool _ownsAnimation = false;
 
   @override
   void initState() {
@@ -1885,8 +1903,21 @@ class _EffectWidgetState extends State<_EffectWidget>
       vsync: this,
       duration: Duration(milliseconds: widget.effect.durationMs),
     );
-    if (widget.effect.animation != 'none') {
+    _syncAnimation();
+  }
+
+  void _syncAnimation() {
+    final want = widget.effect.animation != 'none';
+    if (want &&
+        !_ownsAnimation &&
+        _runningAnimations < _maxConcurrentAnimations) {
+      _ownsAnimation = true;
+      _runningAnimations++;
       _controller.repeat();
+    } else if (!want && _ownsAnimation) {
+      _ownsAnimation = false;
+      _runningAnimations--;
+      _controller.stop();
     }
   }
 
@@ -1896,15 +1927,12 @@ class _EffectWidgetState extends State<_EffectWidget>
     if (oldWidget.effect.durationMs != widget.effect.durationMs) {
       _controller.duration = Duration(milliseconds: widget.effect.durationMs);
     }
-    if (widget.effect.animation != 'none') {
-      if (!_controller.isAnimating) _controller.repeat();
-    } else {
-      _controller.stop();
-    }
+    _syncAnimation();
   }
 
   @override
   void dispose() {
+    if (_ownsAnimation) _runningAnimations--;
     _controller.dispose();
     super.dispose();
   }
