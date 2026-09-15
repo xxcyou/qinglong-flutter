@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
@@ -274,127 +273,6 @@ class ComponentStyle {
 
 /// 一个覆盖在 Flutter 组件上方的万能效果图层元素。
 
-/// DSHTheme.createComponent 创建的真实 Flutter 原生互动组件。
-/// 渲染在全局浮层上，可点击/长按/输入，事件通过 onComponent 回传主题 JS。
-class ThemeComponent {
-  const ThemeComponent({
-    required this.id,
-    this.type = 'button',
-    this.x = 0,
-    this.y = 0,
-    this.width = 120,
-    this.height = 44,
-    this.text,
-    this.icon,
-    this.imagePath,
-    this.placeholder,
-    this.value,
-    this.fontSize = 16,
-    this.color = const Color(0xFF8E86C8),
-    this.textColor = const Color(0xFFFFFFFF),
-    this.borderRadius = 14,
-    this.opacity = 1,
-    this.enabled = true,
-    this.style,
-  });
-
-  final String id;
-
-  /// button / card / text / iconButton / input
-  final String type;
-
-  final double x;
-  final double y;
-  final double width;
-  final double height;
-
-  final String? text;
-  final String? icon;
-  final String? imagePath;
-  final String? placeholder;
-  final String? value;
-
-  final double fontSize;
-  final Color color;
-  final Color textColor;
-  final double borderRadius;
-  final double opacity;
-  final bool enabled;
-
-  /// 复用 styleComponent 的完整背景样式（渐变/liquid/内发光等）。
-  final ComponentStyle? style;
-}
-
-class ThemeComponentBridge {
-  static ThemeComponent? parseComponent(Object? raw) {
-    if (raw is! Map) return null;
-    final m = Map<String, dynamic>.from(raw);
-    final id = m['id']?.toString();
-    if (id == null || id.isEmpty) return null;
-    final styleMap = <String, dynamic>{};
-    final styleRaw = m['style'];
-    if (styleRaw is Map) {
-      styleMap.addAll(Map<String, dynamic>.from(styleRaw));
-    }
-    const styleKeys = [
-      'color',
-      'colors',
-      'gradientColors',
-      'angle',
-      'gradientAngle',
-      'borderColor',
-      'borderWidth',
-      'borderOpacity',
-      'fillOpacity',
-      'radius',
-      'shadowColor',
-      'shadowOpacity',
-      'shadowBlur',
-      'shadowOffsetY',
-      'glowColor',
-      'glowRadius',
-      'glowOpacity',
-      'innerGlow',
-      'innerShadow',
-      'opacity',
-      'blur',
-      'backgroundImage',
-      'texture',
-      'backgroundImageFit',
-      'backgroundImageOpacity',
-      'liquid',
-    ];
-    for (final key in styleKeys) {
-      if (!styleMap.containsKey(key) && m.containsKey(key)) {
-        styleMap[key] = m[key];
-      }
-    }
-    final style = ThemeEffectBridge.parseComponentStyle(styleMap);
-    return ThemeComponent(
-      id: id,
-      type: (m['type']?.toString() ?? 'button').toLowerCase(),
-      x: (m['x'] as num?)?.toDouble() ?? 0,
-      y: (m['y'] as num?)?.toDouble() ?? 0,
-      width: (m['width'] as num?)?.toDouble() ?? 120,
-      height: (m['height'] as num?)?.toDouble() ?? 44,
-      text: m['text']?.toString(),
-      icon: m['icon']?.toString(),
-      imagePath: m['imagePath']?.toString() ?? m['image']?.toString(),
-      placeholder: m['placeholder']?.toString(),
-      value: m['value']?.toString(),
-      fontSize: (m['fontSize'] as num?)?.toDouble() ?? 16,
-      color: ThemeEffectBridge.parseColor(m['color'] ?? m['bgColor']) ??
-          const Color(0xFF8E86C8),
-      textColor: ThemeEffectBridge.parseColor(m['textColor']) ??
-          const Color(0xFFFFFFFF),
-      borderRadius: (m['borderRadius'] as num?)?.toDouble() ?? 14,
-      opacity: ((m['opacity'] as num?)?.toDouble() ?? 1).clamp(0.0, 1.0),
-      enabled: m['enabled'] != false,
-      style: style,
-    );
-  }
-}
-
 class ThemeEffect {
   const ThemeEffect({
     required this.id,
@@ -519,20 +397,13 @@ class ThemeEffectsController extends ChangeNotifier {
   final Map<String, ThemeEffect> _pendingEffects = {};
   Timer? _effectFlushTimer;
   final Map<String, ComponentStyle> _styles = {};
-  final Map<String, ThemeComponent> _components = {};
 
   /// 主题包交互事件回调（由 WebView 背景注册）。
   Function(String id)? onEffectTap;
   Function(String id)? onEffectLongPress;
-  Function(String id)? onComponentTap;
-  Function(String id)? onComponentLongPress;
-  Function(String id, String value)? onComponentChange;
-
   List<ThemeEffect> get effects => List.unmodifiable(_effects.values);
-  List<ThemeComponent> get components => List.unmodifiable(_components.values);
 
   ThemeEffect? byId(String id) => _pendingEffects[id] ?? _effects[id];
-  ThemeComponent? componentById(String id) => _components[id];
 
   /// 把主题包 JS 传的图片路径解析成宿主可读文件路径。
   /// 支持：绝对 guest 路径、相对包内路径（image/elements/x.png）、
@@ -610,10 +481,6 @@ class ThemeEffectsController extends ChangeNotifier {
 
   void emitEffectTap(String id) => onEffectTap?.call(id);
   void emitEffectLongPress(String id) => onEffectLongPress?.call(id);
-  void emitComponentTap(String id) => onComponentTap?.call(id);
-  void emitComponentLongPress(String id) => onComponentLongPress?.call(id);
-  void emitComponentChange(String id, String value) =>
-      onComponentChange?.call(id, value);
 
   /// 高频特效合批：主题 JS 经常在 requestAnimationFrame 里每帧更新同一个
   /// effect id（桂花飘落、粒子跟随之类），如果每帧都 notifyListeners，
@@ -640,28 +507,12 @@ class ThemeEffectsController extends ChangeNotifier {
     if (_effects.remove(id) != null) notifyListeners();
   }
 
-  void upsertComponent(ThemeComponent component) {
-    _components[component.id] = component;
-    notifyListeners();
-  }
-
-  void removeComponent(String id) {
-    if (_components.remove(id) != null) notifyListeners();
-  }
-
   void clear() {
     _effectFlushTimer?.cancel();
     _effectFlushTimer = null;
     _pendingEffects.clear();
-    if (_effects.isEmpty && _components.isEmpty) return;
+    if (_effects.isEmpty) return;
     _effects.clear();
-    _components.clear();
-    notifyListeners();
-  }
-
-  void clearComponents() {
-    if (_components.isEmpty) return;
-    _components.clear();
     notifyListeners();
   }
 }
@@ -941,8 +792,7 @@ class _ThemeOverlayContentState extends State<_ThemeOverlayContent> {
       builder: (context, _) {
         final controller = ThemeEffectsController.instance;
         final effects = controller.effects;
-        final components = controller.components;
-        if (effects.isEmpty && components.isEmpty) {
+        if (effects.isEmpty) {
           return const SizedBox.expand();
         }
         final origin = controller.overlayOffset;
@@ -957,308 +807,9 @@ class _ThemeOverlayContentState extends State<_ThemeOverlayContent> {
                 height: e.height,
                 child: _EffectWidget(effect: e),
               ),
-            for (final c in components)
-              Positioned(
-                left: c.x - origin.dx,
-                top: c.y - origin.dy,
-                width: c.width,
-                height: c.height,
-                child: _ComponentWidget(component: c),
-              ),
           ],
         );
       },
-    );
-  }
-}
-
-/// 渲染 DSHTheme.createComponent 创建的原生互动组件。
-class _ComponentWidget extends StatefulWidget {
-  const _ComponentWidget({required this.component});
-
-  final ThemeComponent component;
-
-  @override
-  State<_ComponentWidget> createState() => _ComponentWidgetState();
-}
-
-class _ComponentWidgetState extends State<_ComponentWidget> {
-  TextEditingController? _inputController;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.component.type == 'input') {
-      _inputController =
-          TextEditingController(text: widget.component.value ?? '');
-    }
-  }
-
-  @override
-  void didUpdateWidget(covariant _ComponentWidget oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.component.type == 'input' &&
-        widget.component.value != null &&
-        widget.component.value != _inputController?.text) {
-      _inputController?.text = widget.component.value!;
-    }
-  }
-
-  @override
-  void dispose() {
-    _inputController?.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Opacity(
-      opacity: widget.component.opacity.clamp(0.0, 1.0),
-      child: _buildShell(context),
-    );
-  }
-
-  Widget _buildShell(BuildContext context) {
-    final c = widget.component;
-    final content = _buildContent(context);
-    switch (c.type) {
-      case 'input':
-        return _buildInput(context);
-      case 'text':
-        return _wrapTap(_shouldDecorate(widget.component)
-            ? _wrapContainer(content)
-            : content);
-      case 'iconButton':
-        return _wrapTap(
-          _wrapContainer(_buildIcon(c.icon, c.color, c.fontSize + 8)),
-        );
-      case 'card':
-      case 'button':
-      default:
-        return _wrapTap(_wrapContainer(content));
-    }
-  }
-
-  bool _shouldDecorate(ThemeComponent c) {
-    final s = c.style;
-    return s?.color != null ||
-        s?.gradientColors != null ||
-        s?.borderColor != null ||
-        s?.borderWidth != null ||
-        s?.borderOpacity != null ||
-        s?.shadowColor != null ||
-        s?.shadowOpacity != null ||
-        s?.shadowBlur != null ||
-        s?.shadowOffsetY != null ||
-        s?.glowColor != null ||
-        s?.glowRadius != null ||
-        s?.glowOpacity != null ||
-        s?.liquid != null ||
-        s?.blur != null;
-  }
-
-  Widget _wrapContainer(Widget content) {
-    final c = widget.component;
-    final s = c.style;
-    final radiusValue = s?.radius ?? c.borderRadius;
-    final br = BorderRadius.circular(radiusValue);
-    final liquid = s?.liquid;
-    final hasInner = s != null &&
-        (s.innerGlowColor != null ||
-            s.innerGlowOpacity != null ||
-            s.innerShadowColor != null ||
-            s.innerShadowOpacity != null);
-    final blur = s?.blur ?? liquid?.blur;
-
-    Widget stack = Stack(
-      children: [
-        if (liquid != null)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: LiquidGlassOverlay(
-                liquid: liquid,
-                cornerRadius: radiusValue,
-              ),
-            ),
-          ),
-        if (hasInner)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: ThemeInnerDecorPainter(
-                  style: s,
-                  cornerRadius: radiusValue,
-                ),
-              ),
-            ),
-          ),
-        Center(child: content),
-      ],
-    );
-
-    if (blur != null) {
-      stack = ClipRRect(
-        borderRadius: br,
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-          child: stack,
-        ),
-      );
-    }
-
-    return Container(
-      decoration: _decoration(),
-      clipBehavior: Clip.antiAlias,
-      child: stack,
-    );
-  }
-
-  Widget _buildInput(BuildContext context) {
-    final c = widget.component;
-    return Container(
-      decoration: _decoration(),
-      child: TextField(
-        controller: _inputController,
-        enabled: c.enabled,
-        style: TextStyle(color: c.textColor, fontSize: c.fontSize),
-        decoration: InputDecoration(
-          hintText: c.placeholder,
-          hintStyle: TextStyle(
-            color: c.textColor.withValues(alpha: 0.5),
-            fontSize: c.fontSize,
-          ),
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          border: InputBorder.none,
-        ),
-        onChanged: (value) =>
-            ThemeEffectsController.instance.emitComponentChange(c.id, value),
-      ),
-    );
-  }
-
-  Widget _buildContent(BuildContext context) {
-    final c = widget.component;
-    if (c.imagePath != null && c.imagePath!.isNotEmpty) {
-      return FutureBuilder<String>(
-        future: ThemeEffectsController.instance.resolveImagePath(c.imagePath!),
-        builder: (context, snap) {
-          final host = snap.data ?? '';
-          if (host.isEmpty) return _buildText(c);
-          return Image.file(
-            File(host),
-            fit: BoxFit.contain,
-            errorBuilder: (_, __, ___) => _buildText(c),
-          );
-        },
-      );
-    }
-    if (c.icon != null && c.icon!.isNotEmpty) {
-      return _buildIcon(c.icon, c.color, c.fontSize + 8);
-    }
-    return _buildText(c);
-  }
-
-  Widget _buildText(ThemeComponent c) {
-    return Text(
-      c.text ?? '',
-      textAlign: TextAlign.center,
-      maxLines: c.type == 'text' ? null : 2,
-      softWrap: true,
-      overflow: TextOverflow.ellipsis,
-      style: TextStyle(
-        color: c.textColor,
-        fontSize: c.fontSize,
-        fontWeight:
-            c.type == 'button' || c.type == 'card' ? FontWeight.w600 : null,
-      ),
-    );
-  }
-
-  Widget _buildIcon(String? icon, Color color, double size) {
-    final data = ThemeEffectBridge._icons[icon];
-    return Icon(data ?? Icons.circle, color: color, size: size);
-  }
-
-  BoxDecoration _decoration() {
-    final c = widget.component;
-    final s = c.style;
-    final br = BorderRadius.circular(s?.radius ?? c.borderRadius);
-    final fill = s?.fillOpacity ?? (s?.liquid != null ? 0.55 : null);
-    final baseColor = s?.color ?? c.color;
-    final bgColor =
-        fill == null ? baseColor : baseColor.withValues(alpha: fill);
-    final colors = s?.gradientColors;
-    final gradientColors = colors == null
-        ? null
-        : fill == null
-            ? colors
-            : [for (final col in colors) col.withValues(alpha: fill)];
-    final angle = s?.gradientAngle ?? 135;
-    final borderColor = s?.borderColor;
-    final borderOpacity = s?.borderOpacity ?? 1.0;
-    final shadowColor = s?.shadowColor;
-    final shadowOpacity = s?.shadowOpacity;
-    final shadowBlur = s?.shadowBlur;
-    final shadowOffsetY = s?.shadowOffsetY;
-    final glowColor = s?.glowColor;
-    final glowOpacity = s?.glowOpacity;
-    final glowRadius = s?.glowRadius;
-    final shadows = <BoxShadow>[
-      if (shadowColor != null ||
-          shadowOpacity != null ||
-          shadowBlur != null ||
-          shadowOffsetY != null)
-        BoxShadow(
-          color: (shadowColor ?? Colors.black)
-              .withValues(alpha: shadowOpacity ?? 0.2),
-          blurRadius: shadowBlur ?? 8,
-          offset: Offset(0, shadowOffsetY ?? 4),
-        ),
-      if (glowColor != null)
-        BoxShadow(
-          color: glowColor.withValues(alpha: glowOpacity ?? 0.6),
-          blurRadius: glowRadius ?? 12,
-          spreadRadius: 0,
-        ),
-    ];
-    return BoxDecoration(
-      color: bgColor,
-      gradient: s?.color == null && gradientColors != null
-          ? LinearGradient(
-              begin: Alignment(-math.cos(angle * math.pi / 180),
-                  -math.sin(angle * math.pi / 180)),
-              end: Alignment(math.cos(angle * math.pi / 180),
-                  math.sin(angle * math.pi / 180)),
-              colors: gradientColors,
-            )
-          : null,
-      borderRadius: br,
-      border: Border.all(
-        color:
-            borderColor?.withValues(alpha: borderOpacity) ?? Colors.transparent,
-        width: s?.borderWidth ?? 0,
-      ),
-      boxShadow: shadows.isEmpty ? null : shadows,
-    );
-  }
-
-  Widget _wrapTap(Widget child) {
-    final c = widget.component;
-    final hasTap =
-        c.type == 'button' || c.type == 'card' || c.type == 'iconButton';
-    if (!c.enabled || !hasTap) {
-      return IgnorePointer(child: child);
-    }
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: hasTap
-          ? () => ThemeEffectsController.instance.emitComponentTap(c.id)
-          : null,
-      onLongPress: hasTap
-          ? () => ThemeEffectsController.instance.emitComponentLongPress(c.id)
-          : null,
-      child: child,
     );
   }
 }

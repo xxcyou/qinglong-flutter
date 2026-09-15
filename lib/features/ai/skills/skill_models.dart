@@ -333,7 +333,7 @@ const builtinSkills = <AiSkill>[
 
 ## 原则
 - 高级组件特效用 DSHTheme（见 theme-effect-dev 技能），不要依赖 App 固定效果。
-- DSHTheme 支持：图片/文字特效、paint 组件重绘、styleComponent 真改组件边缘/渐变/发光、interactive 手势互动、createComponent 创建原生互动组件。
+- DSHTheme 支持：图片/文字特效、paint 组件重绘、styleComponent 真改组件边缘/渐变/发光、interactive 手势互动。
 - 图片路径必须是主题包内 guest 路径。
 ''',
   ),
@@ -383,38 +383,9 @@ DSHTheme.styleComponent({
 window.DSHTheme.onEffect('tap', function(e) { /* e.id */ });
 DSHTheme.effect({ id:'puppet', imagePath: PKG+'/puppet.png', x:10, y:10, width:80, height:80, interactive:true, animation:'bounce' });
 
-// 真实原生互动组件：button / card / text / iconButton / input
-window.DSHTheme.onComponent('tap', function(e) { /* e.id */ });
-window.DSHTheme.onComponent('change', function(e) { /* e.id, e.value */ });
-DSHTheme.createComponent({
-  id: 'btn_liquid', type: 'button',
-  x: 100, y: 300, width: 160, height: 50,
-  text: '互动按钮', fontSize: 16,
-  color: '#8E86C8', textColor: '#FFFFFF', borderRadius: 14,
-  style: { colors: ['#8E86C8', '#5E5BA8'], radius: 14,
-           liquid: { blur: 18, specular: 0.6, tintOpacity: 0.25 } }
-});
-DSHTheme.removeComponent('btn_liquid');
-```
-
-## createComponent 原生互动组件参数
-- 类型：`button` / `card` / `text` / `iconButton` / `input`。
-- 坐标：`x/y/width/height` 是**屏幕绝对坐标**（和 effect 一样），不是网页坐标。
-- 事件：
-  - `DSHTheme.onComponent('tap', fn)`、`onComponent('longPress', fn)`、`onComponent('change', fn)`。
-  - 回传对象：tap/longPress 是 `{id}`；change 是 `{id, value}`。
-- 更新/删除：
-  - `DSHTheme.updateComponent(cfg)`：同 id 覆盖（**需传完整对象**，不是增量合并）。
-  - `DSHTheme.removeComponent(id)`。
-- 样式：
-  - 放 `style` 里，支持 `styleComponent` 全部字段：`color/colors+angle/border*/fillOpacity/radius/shadow*/glow*/innerGlow/innerShadow/opacity/blur/backgroundImage/liquid`。
-  - 根级直接写 `colors/borderColor/shadowColor/glowColor/liquid/innerGlow/innerShadow/fillOpacity/blur/radius` 也会自动并入 style，但推荐统一写进 `style`。
-- 渲染能力：完整支持深色玻璃、液体玻璃、暗金细边、深投影、外发光、内发光/内阴影、半透明渐变、纹理背景。
-- 典型用法：背景音控件、右下角悬浮按钮、互动卡片、输入框。背景 WebView 里的 HTML DOM 会被 App 组件盖住、点不到，需要“真能点”的控件一律用 `createComponent`，不要用 HTML 按钮。
-
 ## 主题配置菜单（html/menu.html + DSHThemeMenu）
 - 每个主题包可带 `html/menu.html`，设置页长按该主题会弹出悬浮配置窗；**没有 `html/menu.html` 时长按不弹窗**。
-- 菜单通道：`DSHThemeMenu.getConfig(cb)` / `saveConfig(cfg)` / `close()` / `effect()` / `styleComponent()` / `createComponent()` / `queryComponents()`。
+- 菜单通道：`DSHThemeMenu.getConfig(cb)` / `saveConfig(cfg)` / `close()` / `effect()` / `styleComponent()` / `queryComponents()`。
 - 配置保存在主题包 `config.json`，导出 ZIP 会一起带走，所以可用菜单配好后导出成“带初始配置”的主题包。
 - **实时自动保存**：不要做保存按钮；控件每次变化时同时调 `saveConfig`（写 config.json）和 `effect/styleComponent`（实时生效）。
 - 示例：

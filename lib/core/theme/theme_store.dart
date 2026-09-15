@@ -437,7 +437,6 @@ class ThemeNotifier extends Notifier<ThemeState> {
     'css',
     'js',
     'html',
-    'xml/components',
     'xml/animations',
   ];
 
@@ -598,8 +597,6 @@ class ThemeNotifier extends Notifier<ThemeState> {
     b.writeln('  components: {');
     b.writeln(
         '    background: { script: \'js/background.js\', css: \'css/background.css\', html: \'html/index.html\', xml: \'xml/animations/background.xml\' },');
-    b.writeln(
-        '    chatBubble: { script: \'js/chat-bubble.js\', css: \'css/chat-bubble.css\', html: \'html/chat-bubble.html\', xml: \'xml/components/chat-bubble.xml\' },');
     b.writeln('  },');
     b.writeln('  images: \'image/elements\',');
     b.writeln('  scripts: \'scripts\',');

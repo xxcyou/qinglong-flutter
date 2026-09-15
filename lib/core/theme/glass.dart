@@ -896,30 +896,6 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
         );
       } catch (_) {}
     };
-    ThemeEffectsController.instance.onComponentTap = (id) {
-      try {
-        _controller.runJavaScript(
-          'window.DSHTheme && window.DSHTheme.__emitComponent('
-          "'tap', ${jsonEncode({'id': id})});",
-        );
-      } catch (_) {}
-    };
-    ThemeEffectsController.instance.onComponentLongPress = (id) {
-      try {
-        _controller.runJavaScript(
-          'window.DSHTheme && window.DSHTheme.__emitComponent('
-          "'longPress', ${jsonEncode({'id': id})});",
-        );
-      } catch (_) {}
-    };
-    ThemeEffectsController.instance.onComponentChange = (id, value) {
-      try {
-        _controller.runJavaScript(
-          'window.DSHTheme && window.DSHTheme.__emitComponent('
-          "'change', ${jsonEncode({'id': id, 'value': value})});",
-        );
-      } catch (_) {}
-    };
     try {
       final pkg = RegExp(r'/packages/([^/]+)/').firstMatch(widget.htmlPath);
       ThemeEffectsController.instance.currentPackageId = pkg?.group(1);
@@ -1007,16 +983,6 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       case 'removeComponentStyle':
         _handleRemoveComponentStyle(data['options']);
         break;
-      case 'createComponent':
-      case 'updateComponent':
-        _handleComponentCommand(data['options']);
-        break;
-      case 'removeComponent':
-        final cid = data['id']?.toString() ?? '';
-        if (cid.isNotEmpty) {
-          ThemeEffectsController.instance.removeComponent(cid);
-        }
-        break;
       case 'queryComponents':
         final id = data['id']?.toString() ?? '0';
         final page = data['page']?.toString();
@@ -1070,14 +1036,6 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       if (rawIndex != null && a.index != (rawIndex as num).toInt()) continue;
       ThemeEffectsController.instance
           .removeComponentStyle(a.page, a.type, a.index);
-    }
-  }
-
-  void _handleComponentCommand(Object? options) {
-    if (options is! Map) return;
-    final component = ThemeComponentBridge.parseComponent(options);
-    if (component != null) {
-      ThemeEffectsController.instance.upsertComponent(component);
     }
   }
 
@@ -1220,23 +1178,6 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     styleComponent: function (options) { post({ cmd: 'styleComponent', options: options || {} }); },
     removeComponentStyle: function (options) {
       post({ cmd: 'removeComponentStyle', options: options || {} });
-    },
-    createComponent: function (options) {
-      post({ cmd: 'createComponent', options: options || {} });
-    },
-    updateComponent: function (options) {
-      post({ cmd: 'updateComponent', options: options || {} });
-    },
-    removeComponent: function (id) {
-      post({ cmd: 'removeComponent', id: id });
-    },
-    onComponent: function (type, handler) {
-      window.__dshComponentListeners = window.__dshComponentListeners || {};
-      window.__dshComponentListeners[type] = handler;
-    },
-    __emitComponent: function (type, data) {
-      var h = (window.__dshComponentListeners || {})[type];
-      if (typeof h === 'function') h(data || {});
     },
     onEffect: function (type, handler) {
       window.__dshEffectListeners = window.__dshEffectListeners || {};

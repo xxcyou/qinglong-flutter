@@ -13,7 +13,7 @@ import '../../../core/theme/theme_store.dart';
 ///
 /// 每个主题包用自己的 `html/menu.html` + `css/*.css` + `js/*.js` 定义菜单，
 /// 通过 `window.DSHThemeMenu` 通道动态读取/保存 `config.json`，
-/// 并实时调用 effect / styleComponent / createComponent 与当前主题互动。
+/// 并实时调用 effect / styleComponent 与当前主题互动。
 Future<void> showThemeMenuWindow(
   BuildContext context, {
   required ThemeConfig theme,
@@ -290,15 +290,6 @@ html, body { height: auto !important; min-height: 100% !important; overflow-y: a
     styleComponent: function (options) {
       post({ cmd: 'styleComponent', options: options || {} });
     },
-    createComponent: function (options) {
-      post({ cmd: 'createComponent', options: options || {} });
-    },
-    updateComponent: function (options) {
-      post({ cmd: 'updateComponent', options: options || {} });
-    },
-    removeComponent: function (id) {
-      post({ cmd: 'removeComponent', id: id });
-    },
     queryComponents: function (opts) {
       opts = opts || {};
       window.__dshMenuCallbacks.__q = opts.callback || null;
@@ -372,16 +363,6 @@ html, body { height: auto !important; min-height: 100% !important; overflow-y: a
       case 'styleComponent':
         _handleStyleComponent(data['options']);
         break;
-      case 'createComponent':
-      case 'updateComponent':
-        _handleComponent(data['options']);
-        break;
-      case 'removeComponent':
-        final id = data['id']?.toString() ?? '';
-        if (id.isNotEmpty) {
-          ThemeEffectsController.instance.removeComponent(id);
-        }
-        break;
       case 'queryComponents':
         final page = data['page']?.toString();
         final type = data['type']?.toString();
@@ -417,14 +398,6 @@ html, body { height: auto !important; min-height: 100% !important; overflow-y: a
         index: a.index,
         style: style,
       );
-    }
-  }
-
-  void _handleComponent(Object? options) {
-    if (options is! Map) return;
-    final component = ThemeComponentBridge.parseComponent(options);
-    if (component != null) {
-      ThemeEffectsController.instance.upsertComponent(component);
     }
   }
 
