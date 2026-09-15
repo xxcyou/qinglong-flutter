@@ -398,6 +398,12 @@ class ChatNotifier extends Notifier<ChatState> {
   static const _prefsKey = 'ai_sessions_v1';
   static const _settingsKey = 'ai_settings_v1';
 
+  /// 会话历史改存文件，不再塞 SharedPreferences：之前一个 agent 长任务
+  /// 就能把 prefs 写到 30MB，启动同步解析直接 ANR/闪退。
+  /// 这里再做一层容量上限，历史太长时优先保最近内容。
+  static const _sessionsFileName = 'ai_sessions_v1.json';
+  static const _maxSessionsBytes = 8 * 1024 * 1024;
+
   /// 当前运行中的 Agent 取消令牌，停止按钮用它中断。
   AgentCancelToken? _cancelToken;
 
@@ -464,16 +470,84 @@ class ChatNotifier extends Notifier<ChatState> {
     return (prompt: 0, cache: 0, turns: 0, tokens: 0);
   }
 
+  Future<File> _sessionsFile() async {
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}/$_sessionsFileName');
+  }
+
+  /// 落盘前压缩：按 updateAt 新的优先，单会话只保最近 400 条，
+  /// 仍超 8MB 就继续丢最旧消息，避免再次把持久化文件撑爆。
+  List<Map<String, dynamic>> _storageReadySessions() {
+    final sorted = [...state.sessions]
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    final result = <AiSession>[];
+    var used = 0;
+    for (final s in sorted) {
+      var compact = s;
+      var encoded = _sessionsEncoded(compact);
+      while (encoded.length > _maxSessionsBytes - used &&
+          compact.messages.isNotEmpty) {
+        final keep = compact.messages.length > 80
+            ? compact.messages.length ~/ 2
+            : compact.messages.length - 1;
+        if (keep <= 0) break;
+        compact = AiSession(
+          id: compact.id,
+          title: compact.title,
+          messages: compact.messages.sublist(compact.messages.length - keep),
+          createdAt: compact.createdAt,
+          updatedAt: compact.updatedAt,
+        );
+        encoded = _sessionsEncoded(compact);
+      }
+      if (used + encoded.length > _maxSessionsBytes) {
+        if (result.isEmpty) continue; // 单条也压不进去就丢弃
+        break;
+      }
+      result.add(compact);
+      used += encoded.length;
+    }
+    return [for (final s in result) s.toJson()];
+  }
+
+  String _sessionsEncoded(AiSession session) => jsonEncode([session.toJson()]);
+
   Future<void> loadSessions() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       // 设置与会话解耦：以前设置的恢复嵌在"有持久化会话"分支里，
       // 首次安装或会话被清空时，模型与确认策略就静默丢了。
       _restoreSettings(prefs);
-      final raw = prefs.getString(_prefsKey);
-      if (raw == null || raw.isEmpty) {
+      final file = await _sessionsFile();
+      var raw = '';
+      if (await file.exists()) {
+        raw = await file.readAsString();
+      } else {
+        raw = prefs.getString(_prefsKey) ?? '';
+        // 老版本在 SharedPreferences 里的大历史迁移到文件，并立刻清掉 prefs，
+        // 防止 30MB XML 每次启动拖死 App。
+        if (raw.isNotEmpty) {
+          await file.writeAsString(raw);
+          final removed = await prefs.remove(_prefsKey);
+          Logger.d('ai', 'migrated sessions to file, prefs removed=$removed');
+        }
+      }
+      if (raw.isEmpty) {
         await _persist();
         return;
+      }
+      // 文件/旧 prefs 超过上限时，先裁一版再进内存，避免启动解析 30MB。
+      if (raw.length > _maxSessionsBytes) {
+        final decoded = jsonDecode(raw);
+        if (decoded is! List) return;
+        final sessions = [
+          for (final item in decoded)
+            if (item is Map<String, dynamic>) AiSession.fromJson(item),
+        ];
+        state = state.copyWith(sessions: sessions);
+        await _persist();
+        raw = jsonEncode(_storageReadySessions());
+        if (raw.isEmpty) return;
       }
       final decoded = jsonDecode(raw);
       if (decoded is! List) return;
@@ -550,11 +624,15 @@ class ChatNotifier extends Notifier<ChatState> {
 
   Future<void> _persist() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-        _prefsKey,
-        jsonEncode([for (final s in state.sessions) s.toJson()]),
-      );
+      final file = await _sessionsFile();
+      await file.writeAsString(jsonEncode(_storageReadySessions()));
+      // 新格式不再占用 SharedPreferences；老键留着只会在下次启动重复迁移。
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        if (prefs.containsKey(_prefsKey)) {
+          await prefs.remove(_prefsKey);
+        }
+      } catch (_) {}
     } catch (e) {
       Logger.e('ai', 'persist sessions failed', e);
     }
