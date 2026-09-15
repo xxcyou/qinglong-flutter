@@ -480,6 +480,7 @@ class ThemeEffectsController extends ChangeNotifier {
   }
 
   void emitEffectTap(String id) => onEffectTap?.call(id);
+
   void emitEffectLongPress(String id) => onEffectLongPress?.call(id);
 
   /// 高频特效合批：主题 JS 经常在 requestAnimationFrame 里每帧更新同一个

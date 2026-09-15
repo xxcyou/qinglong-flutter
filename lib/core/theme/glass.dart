@@ -1122,10 +1122,21 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     try { DSHThemeBridge.postMessage(JSON.stringify(msg)); } catch (e) {}
   }
   var effectLast = {};
+  var effectRects = {};
   var lastEffectBatch = 0;
+  function rememberEffect(e) {
+    if (e && e.id) {
+      effectRects[e.id] = {
+        x: e.x || 0, y: e.y || 0,
+        w: e.width || 0, h: e.height || 0
+      };
+    }
+    return e;
+  }
   function forceBackgroundEffect(e) {
-    // 特效层保持主题原样：允许玉兔 float 动画 + interactive 互动。
-    // 稳定性由 Surface WebView + rAF 60fps 保护，不再砍动画。
+    // 特效层保持主题原样：动画 + interactive 都保留。
+    // Flutter 手势的 tap 会由 __emitEffect 转发成 WebView 的合成点击，
+    // 让主题自己的 document 监听也能弹气泡。
     return e;
   }
   function throttledEffect(e) {
@@ -1133,7 +1144,7 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     var id = e && e.id;
     if (id && effectLast[id] && now - effectLast[id] < 80) return;
     if (id) effectLast[id] = now;
-    post({ cmd: 'effect', effect: forceBackgroundEffect(e) });
+    post({ cmd: 'effect', effect: forceBackgroundEffect(rememberEffect(e)) });
   }
   function throttledEffectBatch(effects) {
     var now = Date.now();
@@ -1141,6 +1152,7 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     lastEffectBatch = now;
     if (Object.prototype.toString.call(effects) === '[object Array]') {
       effects = effects.map(forceBackgroundEffect);
+      effects = effects.map(rememberEffect);
     }
     post({ cmd: 'effectBatch', effects: effects });
   }
@@ -1161,6 +1173,26 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     __emitEffect: function (type, data) {
       var h = (window.__dshEffectListeners || {})[type];
       if (typeof h === 'function') h(data || {});
+      // 主题常用 document 上的 pointerdown/click 做命中检测（玉兔气泡）。
+      // Flutter 浮层把点击吃掉后 WebView 收不到原生事件，这里把 Flutter 手势
+      // 转成合成事件派发给 document，让主题自己的监听照常弹气泡。
+      if (type === 'tap' && data && data.id && effectRects[data.id]) {
+        var r = effectRects[data.id];
+        var cx = r.x + r.w / 2;
+        var cy = r.y + r.h / 2;
+        var opts = { clientX: cx, clientY: cy, bubbles: true, cancelable: true };
+        try {
+          if (window.PointerEvent) {
+            document.dispatchEvent(new PointerEvent('pointerdown', opts));
+          } else {
+            document.dispatchEvent(new MouseEvent('mousedown', opts));
+          }
+        } catch (e) {}
+        try {
+          document.dispatchEvent(new MouseEvent('mousedown', opts));
+          document.dispatchEvent(new MouseEvent('click', opts));
+        } catch (e) {}
+      }
     },
     queryComponents: function (opts) {
       opts = opts || {};
