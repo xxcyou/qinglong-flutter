@@ -757,6 +757,11 @@ class GlassBackdrop extends StatelessWidget {
               ])
         : [visual.gradientStart, visual.gradientCenter, visual.gradientEnd];
     final bgHtml = visual?.backgroundHtml ?? '';
+    // 一个路由/页面只允许一个背景实例驱动全局特效层：
+    // 当前路由 && TickerMode 开启才算 active；被覆盖的页面只保活不发声，
+    // 避免“大页面动画”和“二级页面动画”抢同一个浮层来回闪。
+    final route = ModalRoute.of(context);
+    final isActiveRoute = (route?.isCurrent ?? true) && TickerMode.of(context);
     final Widget pureBackground = bgPath.isEmpty
         ? DecoratedBox(
             decoration: BoxDecoration(
@@ -809,7 +814,10 @@ class GlassBackdrop extends StatelessWidget {
               const ColoredBox(color: Color(0xFF101014)),
               Positioned.fill(
                 child: IgnorePointer(
-                  child: _WebThemeBackground(htmlPath: bgHtml),
+                  child: _WebThemeBackground(
+                    htmlPath: bgHtml,
+                    active: isActiveRoute,
+                  ),
                 ),
               ),
             ],
@@ -841,9 +849,13 @@ class GlassBackdrop extends StatelessWidget {
 /// 浮在上面，CSS/JS/视频/粒子/落叶都能跑，而且纯色主题没有这个字段 = 不建
 /// WebView，不浪费渲染空间。
 class _WebThemeBackground extends StatefulWidget {
-  const _WebThemeBackground({required this.htmlPath});
+  const _WebThemeBackground({required this.htmlPath, required this.active});
 
   final String htmlPath;
+
+  /// 当前页面是否是可见的“声音源”。非 active 的背景 WebView 继续保活，
+  /// 但它发来的 effect/clear 等桥消息会被忽略，避免多层背景互相覆盖。
+  final bool active;
 
   @override
   State<_WebThemeBackground> createState() => _WebThemeBackgroundState();
@@ -862,21 +874,23 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
         'DSHThemeBridge',
         onMessageReceived: _onBridgeMessage,
       );
-    _load();
+    if (widget.active) _load();
   }
 
   @override
   void didUpdateWidget(covariant _WebThemeBackground oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 切换主题后 htmlPath 变化会走到这里；必须重新加载 HTML/JS，
-    // 否则新主题的 controller.js/background.js 不会立即生效。
-    if (oldWidget.htmlPath != widget.htmlPath) {
+    // 切主题、或从被覆盖的二级页回到前台时，重新加载本页 HTML/JS，
+    // 让本页自己的动画重新接管全局覆盖层。
+    if (widget.active &&
+        (oldWidget.htmlPath != widget.htmlPath || !oldWidget.active)) {
       _load();
     }
   }
 
   Future<void> _load() async {
-    // 换主题/重载背景时清掉旧主题留下的覆盖层特效和组件风格，避免串台。
+    if (!widget.active) return;
+    // 当前页重新接管前清掉上一页留下的覆盖层特效和组件风格。
     ThemeEffectsController.instance.clear();
     ThemeEffectsController.instance.clearComponentStyles();
     // 交互事件回传 WebView：主题 JS 用 DSHTheme.onEffect('tap', fn) 监听。
@@ -947,6 +961,9 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   }
 
   Future<void> _onBridgeMessage(JavaScriptMessage message) async {
+    // 非当前页面的 WebView 仍在跑，但它的 effect/clear 不能再影响全局浮层，
+    // 否则两级页面会来回抢同一个覆盖层造成闪烁。
+    if (!widget.active) return;
     final raw = message.message;
     Map<String, dynamic>? data;
     try {
