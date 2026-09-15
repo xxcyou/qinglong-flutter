@@ -925,13 +925,17 @@ class _SubagentGroupState extends State<_SubagentGroup> {
   /// 折叠态的实时速览：优先显示正在流的思考/工具，没有实时流才回退事件时间线。
   /// 子代理还在想问题时，不展开也能看到它在想什么；一旦开调工具立刻切到工具名。
   String _status(AgentEvent e, String label) {
-    final liveThinking =
+    final rawThinking =
         widget.liveReasoning.replaceAll(RegExp(r'\s+'), ' ').trim();
+    // 折叠卡只有两行，不能直接贴几千字尾部：那样显示的是尾部段的开头，
+    // 最新冒出来的字全被 ellipsis 截掉了。这里只取最后 120 字，
+    // 保证两行里看到的一定是最新的思考尾巴。
+    final liveThinking = rawThinking.length <= 120
+        ? rawThinking
+        : '…${rawThinking.substring(rawThinking.length - 120)}';
     final liveTool = widget.liveTool.trim();
     if (liveTool.isNotEmpty) {
-      final thinkTail = liveThinking.isNotEmpty
-          ? ' · ${liveThinking.length > 80 ? '${liveThinking.substring(0, 80)}…' : liveThinking}'
-          : '';
+      final thinkTail = liveThinking.isNotEmpty ? ' · $liveThinking' : '';
       return '调用 $liveTool$thinkTail';
     }
     if (liveThinking.isNotEmpty) {
