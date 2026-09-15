@@ -230,18 +230,18 @@ class _SubAgentSection extends ConsumerWidget {
                 const SizedBox(height: 2),
                 Text(
                   'parallel_agents 一次最多同时跑 ${plan.parallel} 个子代理。'
-                  '手机上 2-3 个比较稳：再多就是自己抢 CPU 和网络，'
-                  '而且终端、浏览器是全机唯一的，用到它们的子代理只会排队。',
+                  '手机上 2-3 个比较稳；你在桌面转发上可以调到 64。'
+                  '终端、浏览器是全机唯一的，用到它们的子代理会自动排队。',
                   style: TextStyle(
                     fontSize: 12.5,
                     color: scheme.onSurfaceVariant,
                   ),
                 ),
                 Slider(
-                  value: plan.parallel.toDouble().clamp(1, 8),
+                  value: plan.parallel.toDouble().clamp(1, 64),
                   min: 1,
-                  max: 8,
-                  divisions: 7,
+                  max: 64,
+                  divisions: 63,
                   label: '${plan.parallel}',
                   onChanged: (v) =>
                       notifier.setSubAgent(plan.copyWith(parallel: v.round())),

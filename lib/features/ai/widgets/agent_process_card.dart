@@ -894,7 +894,7 @@ class _SubagentGroupState extends State<_SubagentGroup> {
               padding: const EdgeInsets.only(top: 4, left: 4),
               child: Text(
                 _status(last, label),
-                maxLines: 2,
+                maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: 11,
@@ -927,9 +927,9 @@ class _SubagentGroupState extends State<_SubagentGroup> {
   String _status(AgentEvent e, String label) {
     final rawThinking =
         widget.liveReasoning.replaceAll(RegExp(r'\s+'), ' ').trim();
-    // 折叠卡只有两行，不能直接贴几千字尾部：那样显示的是尾部段的开头，
+    // 折叠卡只有一行，不能直接贴几千字尾部：那样显示的是尾部段的开头，
     // 最新冒出来的字全被 ellipsis 截掉了。这里只取最后 120 字，
-    // 保证两行里看到的一定是最新的思考尾巴。
+    // 保证一行里看到的一定是最新的思考尾巴。
     final liveThinking = rawThinking.length <= 120
         ? rawThinking
         : '…${rawThinking.substring(rawThinking.length - 120)}';

@@ -23,7 +23,8 @@ import 'external_tool.dart';
 ///    两个子代理同时用只会一前一后，不会交叉。这是"多个 agent 同时操作终端
 ///    会不会卡住"的答案——不会卡死，会排队，等太久会明确报错而不是无限挂着。
 /// 2. **子代理不能再开子代理**：工具清单里剔掉了自己，避免无限分裂。
-/// 3. **并行度有上限**：默认 3，最多 4。手机上再多就是自己抢 CPU 和网络带宽。
+/// 3. **并行度可配置**：默认 3，设置里可调到 64。手机上太多就是自己抢 CPU 和网络带宽，
+///    但终端/浏览器是全机唯一的，用到它们的子代理会自动排队，不会互相踩。
 ///
 /// 剩下一类冲突软件层面挡不住：两个子代理被派去改同一个文件。所以拆任务时
 /// 必须按"互不重叠的目标"来拆，工具描述里对模型明确说了这一条。
@@ -35,10 +36,10 @@ class AgentTeamTools {
   /// 用户可以在设置里调（SubAgentPlan.maxTurns）。
   static const subMaxTurns = 16;
 
-  /// 并行度的硬上限。以前写死 4，现在放到 8——挡的是"手机 CPU + 一条网络"，
-  /// 但有人把 Base URL 指到桌面上的转发服务，那边扛得住更多。
-  /// 真正生效的上限是用户在设置里定的那个数，这里只兜住手滑输入。
-  static const maxParallel = 8;
+  /// 并行度的硬上限：按用户设置放行（用了 64 就允许 64）。
+  /// 手机本地一下跑太多会抢 CPU/网络，所以真正调度仍由终端/浏览器锁排队；
+  /// 这里不再替用户把上限砍成 8。
+  static const maxParallel = 64;
   static const defaultParallel = 3;
 
   static List<ExternalTool> build({
@@ -285,6 +286,7 @@ class _SubagentCoordinator {
 
   final Map<String, _Subtask> _tasks = {};
   final List<_Subtask> _pending = [];
+  final Map<String, DateTime> _lastProgress = {};
   int _active = 0;
   int _seq = 0;
 
@@ -330,23 +332,28 @@ class _SubagentCoordinator {
     try {
       final result = await spawn().run(
         history: seed(t.task),
-        onEvent: (e) => onEvent?.call(
-          AgentEvent(
-            kind: e.kind,
-            message: '[$label] ${e.message}',
-            toolName: e.toolName,
-            args: e.args,
-            result: e.result,
-            fullResult: e.fullResult,
-            durationMs: e.durationMs,
-            ok: e.ok,
-            turn: e.turn,
-            group: label,
-          ),
-        ),
+        onEvent: (e) {
+          _lastProgress[t.id] = DateTime.now();
+          onEvent?.call(
+            AgentEvent(
+              kind: e.kind,
+              message: '[$label] ${e.message}',
+              toolName: e.toolName,
+              args: e.args,
+              result: e.result,
+              fullResult: e.fullResult,
+              durationMs: e.durationMs,
+              ok: e.ok,
+              turn: e.turn,
+              group: label,
+            ),
+          );
+        },
         onDelta: onDelta == null
             ? null
-            : (d) => onDelta!(
+            : (d) {
+                _lastProgress[t.id] = DateTime.now();
+                onDelta!(
                   AgentDelta(
                     reasoning: d.reasoning,
                     content: d.content,
@@ -355,7 +362,8 @@ class _SubagentCoordinator {
                     turn: d.turn,
                     group: label,
                   ),
-                ),
+                );
+              },
       );
       t.summary = AgentTeamTools._describe(label, result);
     } catch (e) {
@@ -380,26 +388,61 @@ class _SubagentCoordinator {
 
   /// 等所有已启动但还没结束的子代理跑完。
   Future<void> waitAll() async {
-    final all = _tasks.values.toList();
-    for (final t in all.where((t) => !t.done)) {
-      await t.completer.future;
+    for (final t in _tasks.values.toList()) {
+      await _waitFor(t);
     }
+  }
+
+  /// 等一个子代理：有新进展就继续等；连续 [idleTimeout] 没有任何新事件才
+  /// 视为“疑似卡住”，返回 false 让调用方决定是否把进度交还给主模型。
+  static const idleTimeout = Duration(minutes: 5);
+
+  Future<bool> _waitFor(_Subtask t) async {
+    if (t.done) return true;
+    while (!t.done) {
+      final before =
+          _lastProgress[t.id] ?? DateTime.fromMillisecondsSinceEpoch(0);
+      try {
+        await t.completer.future.timeout(idleTimeout);
+        return true;
+      } on TimeoutException {
+        final after = _lastProgress[t.id];
+        if (after == null || after == before) return false;
+        // 这段时间有新的思考/工具/正文事件，说明还在干活，继续等。
+      }
+    }
+    return true;
   }
 
   Future<String> wait([String? id]) async {
     if (id != null) {
       final t = _tasks[id];
       if (t == null) return '没有找到子代理 id：$id（用 subagent_status 查看）。';
-      await t.completer.future;
+      final completed = await _waitFor(t);
+      if (!completed) {
+        return '⏳ 子代理「${t.label}」仍在运行，但已连续 ${idleTimeout.inMinutes} 分钟没有新进展。'
+            '它可能卡住了；也可以用 subagent_status 再看一眼，或让主模型去处理。';
+      }
       // 已经主动取走结果，就不再让 AgentLoop 下次再自动并入一遍。
       sink?.removeById(id);
       return t.summary;
     }
     final all = _tasks.values.toList();
-    for (final t in all.where((t) => !t.done)) {
-      await t.completer.future;
-    }
+    final pending = all.where((t) => !t.done).toList();
     if (all.isEmpty) return '当前没有已启动的子代理。';
+    for (final t in pending) {
+      final completed = await _waitFor(t);
+      if (!completed) {
+        final stuck =
+            pending.where((x) => !x.done).map((x) => '⏳ ${x.label}').join('、');
+        final doneSummaries =
+            all.where((t) => t.done).map((t) => t.summary).join('\n\n');
+        final head = doneSummaries.isEmpty
+            ? '部分子代理仍在运行，且已连续 ${idleTimeout.inMinutes} 分钟没有新进展：$stuck'
+            : '已完成的子代理：\n$doneSummaries\n\n仍在运行且暂无新进展：$stuck';
+        return head;
+      }
+    }
     for (final t in all) {
       sink?.removeById(t.id);
     }

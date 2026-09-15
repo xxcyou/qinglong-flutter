@@ -344,9 +344,16 @@ class AgentLoop {
 
   static const _subagentToolTimeout = Duration(minutes: 30);
 
+  /// subagent_wait 本身不设短死线；什么时候算“等不下去”由调度器按
+  /// “长时间零进展”来判断。这里只给一个很大的兜底，防程序错误导致永久挂死。
+  static const _subagentWaitTimeout = Duration(days: 1);
+
   static Duration _timeoutFor(String name) {
     if (name == 'task_worker' || name == 'parallel_agents') {
       return _subagentToolTimeout;
+    }
+    if (name == 'subagent_wait') {
+      return _subagentWaitTimeout;
     }
     const slow = [
       'shell_exec',
