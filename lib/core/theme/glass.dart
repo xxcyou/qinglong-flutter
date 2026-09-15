@@ -1092,7 +1092,7 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   if (window.DSHTheme && window.DSHTheme.__dsh) return;
 
   // App 侧性能看门狗：不修改主题包文件，只在注入时对每个主题生效。
-  // 1) 把 requestAnimationFrame 压到 30fps——three.js/canvas 再重也不会拖死 UI；
+  // 1) HTML 背景保持 60fps 流畅；只在外层做输入/消息保护，不砍 WebView 动画；
   // 2) DSHTheme.effect / effectBatch 在 JS 侧先限流，减少 WebView→Flutter 桥消息量；
   // 3) 背景 WebView 是装饰层，不允许它注册点击/触摸监听（玉兔这类组件加到
   //    document 上的 pointerdown 会和 Flutter 输入分发抢事件，触发 ANR）。
@@ -1115,7 +1115,7 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       };
     } catch (e) {}
 
-    var minFrame = 1000 / 30;
+    var minFrame = 1000 / 60;
     var oldRaf = window.requestAnimationFrame && window.requestAnimationFrame.bind(window);
     var oldCaf = window.cancelAnimationFrame && window.cancelAnimationFrame.bind(window);
     var lastFrame = 0;
