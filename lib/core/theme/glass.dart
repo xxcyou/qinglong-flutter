@@ -946,6 +946,26 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     }
   }
 
+  static const _effectMinInterval = Duration(milliseconds: 16);
+
+  final Map<String, DateTime> _lastEffectAt = {};
+
+  /// 主题 JS 常见的动画写法是 requestAnimationFrame 里每帧对同一个 effect id
+  /// 发一次更新（桂花、粒子）。直接每个消息 parse + notify 会打爆主线程。
+  /// 这里同一个 id 至少隔 16ms 才真正解析一次，再配合
+  /// [ThemeEffectsController.upsert] 的合批落盘，把 60fps 洪水降成按帧刷新。
+  void _handleEffectMessage(Object? raw) {
+    if (raw is! Map) return;
+    final id = raw['id']?.toString() ?? '';
+    if (id.isEmpty) return;
+    final now = DateTime.now();
+    final last = _lastEffectAt[id];
+    if (last != null && now.difference(last) < _effectMinInterval) return;
+    _lastEffectAt[id] = now;
+    final effect = ThemeEffectBridge.parseEffect(raw);
+    if (effect != null) ThemeEffectsController.instance.upsert(effect);
+  }
+
   Future<void> _onBridgeMessage(JavaScriptMessage message) async {
     final raw = message.message;
     Map<String, dynamic>? data;
@@ -959,15 +979,13 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     final cmd = data['cmd']?.toString() ?? '';
     switch (cmd) {
       case 'effect':
-        final effect = ThemeEffectBridge.parseEffect(data['effect']);
-        if (effect != null) ThemeEffectsController.instance.upsert(effect);
+        _handleEffectMessage(data['effect']);
         break;
       case 'effectBatch':
         final list = data['effects'];
         if (list is List) {
           for (final item in list) {
-            final effect = ThemeEffectBridge.parseEffect(item);
-            if (effect != null) ThemeEffectsController.instance.upsert(effect);
+            _handleEffectMessage(item);
           }
         }
         break;

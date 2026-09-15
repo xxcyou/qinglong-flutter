@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui';
@@ -515,6 +516,8 @@ class ThemeEffectsController extends ChangeNotifier {
   Offset overlayOffset = Offset.zero;
 
   final Map<String, ThemeEffect> _effects = {};
+  final Map<String, ThemeEffect> _pendingEffects = {};
+  Timer? _effectFlushTimer;
   final Map<String, ComponentStyle> _styles = {};
   final Map<String, ThemeComponent> _components = {};
 
@@ -528,7 +531,7 @@ class ThemeEffectsController extends ChangeNotifier {
   List<ThemeEffect> get effects => List.unmodifiable(_effects.values);
   List<ThemeComponent> get components => List.unmodifiable(_components.values);
 
-  ThemeEffect? byId(String id) => _effects[id];
+  ThemeEffect? byId(String id) => _pendingEffects[id] ?? _effects[id];
   ThemeComponent? componentById(String id) => _components[id];
 
   /// 把主题包 JS 传的图片路径解析成宿主可读文件路径。
@@ -612,12 +615,28 @@ class ThemeEffectsController extends ChangeNotifier {
   void emitComponentChange(String id, String value) =>
       onComponentChange?.call(id, value);
 
+  /// 高频特效合批：主题 JS 经常在 requestAnimationFrame 里每帧更新同一个
+  /// effect id（桂花飘落、粒子跟随之类），如果每帧都 notifyListeners，
+  /// 50 多个特效会把主线程直接打挂（ANR/闪退）。
+  /// 这里攒 16ms（约一帧）再一次性落盘 + 通知。
   void upsert(ThemeEffect effect) {
-    _effects[effect.id] = effect;
+    _pendingEffects[effect.id] = effect;
+    _effectFlushTimer ??= Timer(
+      const Duration(milliseconds: 16),
+      _flushPendingEffects,
+    );
+  }
+
+  void _flushPendingEffects() {
+    _effectFlushTimer = null;
+    if (_pendingEffects.isEmpty) return;
+    _effects.addAll(_pendingEffects);
+    _pendingEffects.clear();
     notifyListeners();
   }
 
   void remove(String id) {
+    _pendingEffects.remove(id);
     if (_effects.remove(id) != null) notifyListeners();
   }
 
@@ -631,6 +650,9 @@ class ThemeEffectsController extends ChangeNotifier {
   }
 
   void clear() {
+    _effectFlushTimer?.cancel();
+    _effectFlushTimer = null;
+    _pendingEffects.clear();
     if (_effects.isEmpty && _components.isEmpty) return;
     _effects.clear();
     _components.clear();
