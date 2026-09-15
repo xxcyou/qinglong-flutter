@@ -1517,6 +1517,10 @@ class _EffectWidgetState extends State<_EffectWidget>
     } else {
       child = _iconOrText(e);
     }
+    // 闭包引用局部变量时按引用捕获：先把当前 child 存成不可变局部变量，
+    // 否则闭包拿到的是重新赋值后的 child（AnimatedBuilder 自身），
+    // 会无限嵌套并触发 Stack Overflow。
+    final baseChild = child;
     if (e.animation != 'none') {
       child = AnimatedBuilder(
         animation: _controller,
@@ -1553,7 +1557,7 @@ class _EffectWidgetState extends State<_EffectWidget>
               offset: offset,
               child: Transform.rotate(
                 angle: angle,
-                child: Transform.scale(scale: scale, child: child),
+                child: Transform.scale(scale: scale, child: baseChild),
               ),
             ),
           );

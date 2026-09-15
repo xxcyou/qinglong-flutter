@@ -1092,30 +1092,10 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   if (window.DSHTheme && window.DSHTheme.__dsh) return;
 
   // App 侧性能看门狗：不修改主题包文件，只在注入时对每个主题生效。
-  // 1) HTML 背景保持 60fps 流畅；只在外层做输入/消息保护，不砍 WebView 动画；
+  // 1) HTML 背景保持 60fps 流畅；只在外层做消息保护，不砍 WebView 动画；
   // 2) DSHTheme.effect / effectBatch 在 JS 侧先限流，减少 WebView→Flutter 桥消息量；
-  // 3) 背景 WebView 是装饰层，不允许它注册点击/触摸监听（玉兔这类组件加到
-  //    document 上的 pointerdown 会和 Flutter 输入分发抢事件，触发 ANR）。
-  (function () {
-    var ignoredInputEvents = {
-      pointerdown: 1, pointerup: 1, pointermove: 1,
-      touchstart: 1, touchmove: 1, touchend: 1,
-      mousedown: 1, mouseup: 1, mousemove: 1, click: 1
-    };
-    try {
-      var origAdd = document.addEventListener.bind(document);
-      document.addEventListener = function (type, fn, opts) {
-        if (ignoredInputEvents[String(type).toLowerCase()]) return;
-        return origAdd(type, fn, opts);
-      };
-      var origRemove = document.removeEventListener.bind(document);
-      document.removeEventListener = function (type, fn, opts) {
-        if (ignoredInputEvents[String(type).toLowerCase()]) return;
-        return origRemove(type, fn, opts);
-      };
-    } catch (e) {}
-
-    var minFrame = 1000 / 60;
+  // 3) 玉兔等主题自带的 document 点击/触摸监听保留，允许主题自身处理互动。
+  var minFrame = 1000 / 60;
     var oldRaf = window.requestAnimationFrame && window.requestAnimationFrame.bind(window);
     var oldCaf = window.cancelAnimationFrame && window.cancelAnimationFrame.bind(window);
     var lastFrame = 0;
@@ -1145,10 +1125,8 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   var effectLast = {};
   var lastEffectBatch = 0;
   function forceBackgroundEffect(e) {
-    // 背景浮层禁止逐帧动画（玉兔 float 这类会把主线程/渲染线程打满），
-    // 但保留 interactive：互动统一走特效层的 Flutter 手势 + onEffect 回调，
-    // 不再使用已删除的 createComponent 实体组件接口。
-    if (e && typeof e.animation === 'string') e.animation = 'none';
+    // 特效层保持主题原样：允许玉兔 float 动画 + interactive 互动。
+    // 稳定性由 Surface WebView + rAF 60fps 保护，不再砍动画。
     return e;
   }
   function throttledEffect(e) {
