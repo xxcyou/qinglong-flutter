@@ -1145,11 +1145,9 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   var effectLast = {};
   var lastEffectBatch = 0;
   function forceBackgroundEffect(e) {
-    // 背景浮层只做静态装饰：
-    // 1) interactive 强制关闭，避免 WebView 点击监听 / Flutter 命中测试抢输入；
-    // 2) animation 强制 none，避免玉兔 float 这类逐帧动画把主线程/渲染线程打满。
-    // 视觉效果保留（图片/文字/位置都还在），但不再逐帧动、不再可点。
-    if (e && typeof e.interactive === 'boolean') e.interactive = false;
+    // 背景浮层禁止逐帧动画（玉兔 float 这类会把主线程/渲染线程打满），
+    // 但保留 interactive：互动统一走特效层的 Flutter 手势 + onEffect 回调，
+    // 不再使用已删除的 createComponent 实体组件接口。
     if (e && typeof e.animation === 'string') e.animation = 'none';
     return e;
   }
