@@ -719,26 +719,35 @@ class GlassFlowDriver extends StatelessWidget {
 /// 改用 Hybrid Composition 承载 WebView（透明背景不再走 Surface 模式）。
 const _enableHtmlThemeBackground = true;
 
-class _GlassBackdropScope extends InheritedWidget {
-  const _GlassBackdropScope({required super.child});
+/// 标记“这条祖先链或 App 根上已经有全局背景了”。
+/// 页面里的 GlassBackdrop 看到它就直接透传，不再为每个路由建 WebView。
+class ThemeBackgroundScope extends InheritedWidget {
+  const ThemeBackgroundScope({super.key, required super.child});
 
   static bool of(BuildContext context) =>
-      context.dependOnInheritedWidgetOfExactType<_GlassBackdropScope>() != null;
+      context.dependOnInheritedWidgetOfExactType<ThemeBackgroundScope>() !=
+      null;
 
   @override
-  bool updateShouldNotify(_GlassBackdropScope oldWidget) => false;
+  bool updateShouldNotify(ThemeBackgroundScope oldWidget) => false;
 }
 
-class GlassBackdrop extends StatelessWidget {
-  const GlassBackdrop({super.key, required this.child});
+/// 全局唯一背景层：渐变/图片/HTML 主题 + 流动光斑。
+///
+/// 放在 MaterialApp.builder 的 Stack 最底层、Navigator 之下所有页面共用，
+/// 这样进入/退出二级页面时不会再创建或销毁 WebView，返回也就不会卡。
+class ThemeBackgroundLayer extends StatelessWidget {
+  const ThemeBackgroundLayer({super.key});
 
-  final Widget child;
+  @override
+  Widget build(BuildContext context) => const _GlassBackgroundView();
+}
+
+class _GlassBackgroundView extends StatelessWidget {
+  const _GlassBackgroundView();
 
   @override
   Widget build(BuildContext context) {
-    // 外层已经有背景了：直接透传。背景是全屏同一套渐变+光斑，
-    // 叠七层和叠一层长得一模一样，只有最上面那层看得见。
-    if (_GlassBackdropScope.of(context)) return child;
     final scheme = Theme.of(context).colorScheme;
     final dark = scheme.brightness == Brightness.dark;
     final visual = Theme.of(context).extension<ThemeVisual>();
@@ -757,11 +766,6 @@ class GlassBackdrop extends StatelessWidget {
               ])
         : [visual.gradientStart, visual.gradientCenter, visual.gradientEnd];
     final bgHtml = visual?.backgroundHtml ?? '';
-    // 一个路由/页面只允许一个背景实例驱动全局特效层：
-    // 当前路由 && TickerMode 开启才算 active；被覆盖的页面只保活不发声，
-    // 避免“大页面动画”和“二级页面动画”抢同一个浮层来回闪。
-    final route = ModalRoute.of(context);
-    final isActiveRoute = (route?.isCurrent ?? true) && TickerMode.of(context);
     final Widget pureBackground = bgPath.isEmpty
         ? DecoratedBox(
             decoration: BoxDecoration(
@@ -814,26 +818,43 @@ class GlassBackdrop extends StatelessWidget {
               const ColoredBox(color: Color(0xFF101014)),
               Positioned.fill(
                 child: IgnorePointer(
-                  child: _WebThemeBackground(
-                    htmlPath: bgHtml,
-                    active: isActiveRoute,
-                  ),
+                  child: _WebThemeBackground(htmlPath: bgHtml, active: true),
                 ),
               ),
             ],
           )
         : pureBackground;
-    return _GlassBackdropScope(
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Positioned.fill(child: background),
+        // 光斑单独一层并且 RepaintBoundary 包住：它每 50ms 重画一次，
+        // 不隔离的话整页内容会跟着一起重画。
+        Positioned.fill(
+          child: RepaintBoundary(
+            child: IgnorePointer(child: _FlowingBlobs(scheme: scheme)),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class GlassBackdrop extends StatelessWidget {
+  const GlassBackdrop({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    // 根上已经有全局背景（ThemeBackgroundLayer）了：直接透传。
+    // 背景是全屏同一套渐变+光斑+HTML 特效，叠多层和叠一层长得一模一样，
+    // 但每层都建 WebView 会让切页/返回变卡。
+    if (ThemeBackgroundScope.of(context)) return child;
+    return ThemeBackgroundScope(
       child: Stack(
         children: [
-          Positioned.fill(child: background),
-          // 光斑单独一层并且 RepaintBoundary 包住：它每 50ms 重画一次，
-          // 不隔离的话整页内容会跟着一起重画。
-          Positioned.fill(
-            child: RepaintBoundary(
-              child: IgnorePointer(child: _FlowingBlobs(scheme: scheme)),
-            ),
-          ),
+          const Positioned.fill(child: _GlassBackgroundView()),
           Positioned.fill(child: child),
           // 主题包 JS 通过 DSHTheme 发来的万能特效覆盖层：默认空，不挡点击。
           const Positioned.fill(child: ThemeEffectsOverlay()),

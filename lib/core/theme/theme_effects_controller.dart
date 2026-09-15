@@ -797,7 +797,7 @@ class _ThemeEffectsOverlayState extends State<ThemeEffectsOverlay> {
         return;
       }
       _entry = OverlayEntry(
-        builder: (_) => Positioned.fill(
+        builder: (_) => const Positioned.fill(
           child: _ThemeOverlayContent(),
         ),
       );
@@ -820,7 +820,19 @@ class _ThemeEffectsOverlayState extends State<ThemeEffectsOverlay> {
   Widget build(BuildContext context) => const SizedBox.shrink();
 }
 
+/// 直接作为页面级/App 级 Stack 子节点的特效层。
+/// 与 [ThemeEffectsOverlay] 的差异：不需要插入根 Overlay，
+/// 交给调用方用 Positioned.fill 放在导航层之上。
+class ThemeEffectsLayer extends StatelessWidget {
+  const ThemeEffectsLayer({super.key});
+
+  @override
+  Widget build(BuildContext context) => const _ThemeOverlayContent();
+}
+
 class _ThemeOverlayContent extends StatefulWidget {
+  const _ThemeOverlayContent();
+
   @override
   State<_ThemeOverlayContent> createState() => _ThemeOverlayContentState();
 }
