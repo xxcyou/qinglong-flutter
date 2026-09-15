@@ -1135,8 +1135,28 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
 
   // App 侧性能看门狗：不修改主题包文件，只在注入时对每个主题生效。
   // 1) 把 requestAnimationFrame 压到 30fps——three.js/canvas 再重也不会拖死 UI；
-  // 2) DSHTheme.effect / effectBatch 在 JS 侧先限流，减少 WebView→Flutter 桥消息量。
+  // 2) DSHTheme.effect / effectBatch 在 JS 侧先限流，减少 WebView→Flutter 桥消息量；
+  // 3) 背景 WebView 是装饰层，不允许它注册点击/触摸监听（玉兔这类组件加到
+  //    document 上的 pointerdown 会和 Flutter 输入分发抢事件，触发 ANR）。
   (function () {
+    var ignoredInputEvents = {
+      pointerdown: 1, pointerup: 1, pointermove: 1,
+      touchstart: 1, touchmove: 1, touchend: 1,
+      mousedown: 1, mouseup: 1, mousemove: 1, click: 1
+    };
+    try {
+      var origAdd = document.addEventListener.bind(document);
+      document.addEventListener = function (type, fn, opts) {
+        if (ignoredInputEvents[String(type).toLowerCase()]) return;
+        return origAdd(type, fn, opts);
+      };
+      var origRemove = document.removeEventListener.bind(document);
+      document.removeEventListener = function (type, fn, opts) {
+        if (ignoredInputEvents[String(type).toLowerCase()]) return;
+        return origRemove(type, fn, opts);
+      };
+    } catch (e) {}
+
     var minFrame = 1000 / 30;
     var oldRaf = window.requestAnimationFrame && window.requestAnimationFrame.bind(window);
     var oldCaf = window.cancelAnimationFrame && window.cancelAnimationFrame.bind(window);
@@ -1166,17 +1186,26 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   }
   var effectLast = {};
   var lastEffectBatch = 0;
+  function forceBackgroundEffect(e) {
+    // 背景浮层的特效一律不可交互：交互交给主题菜单/组件自身，避免背景
+    // WebView 的点击监听或 Flutter 命中测试在透明背景上抢输入导致 ANR。
+    if (e && typeof e.interactive === 'boolean') e.interactive = false;
+    return e;
+  }
   function throttledEffect(e) {
     var now = Date.now();
     var id = e && e.id;
     if (id && effectLast[id] && now - effectLast[id] < 80) return;
     if (id) effectLast[id] = now;
-    post({ cmd: 'effect', effect: e });
+    post({ cmd: 'effect', effect: forceBackgroundEffect(e) });
   }
   function throttledEffectBatch(effects) {
     var now = Date.now();
     if (now - lastEffectBatch < 120) return;
     lastEffectBatch = now;
+    if (Object.prototype.toString.call(effects) === '[object Array]') {
+      effects = effects.map(forceBackgroundEffect);
+    }
     post({ cmd: 'effectBatch', effects: effects });
   }
   window.DSHTheme = {
