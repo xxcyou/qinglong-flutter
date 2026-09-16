@@ -1296,23 +1296,14 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   if (window.DSHTheme && window.DSHTheme.__dsh) return;
 
   // App 侧性能看门狗：不修改主题包文件，只在注入时对每个主题生效。
-  // 1) HTML 背景保持 60fps 流畅；只在外层做消息保护，不砍 WebView 动画；
+  // 1) HTML 动画使用 WebView 原生 rAF，不限制帧率，让高刷屏跑满设备刷新率；
   // 2) DSHTheme.effect / effectBatch 在 JS 侧合并最新值后批量发送，减少桥消息量；
   // 3) 主题自带的 document 点击/触摸监听保留，允许主题自身处理互动。
-  var minFrame = 1000 / 60;
   var oldRaf = window.requestAnimationFrame && window.requestAnimationFrame.bind(window);
   var oldCaf = window.cancelAnimationFrame && window.cancelAnimationFrame.bind(window);
-  var lastFrame = 0;
   window.requestAnimationFrame = function (cb) {
     var now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    var wait = Math.max(0, minFrame - (now - lastFrame));
-    if (wait > 0) {
-      return setTimeout(function () {
-        lastFrame = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        cb(lastFrame);
-      }, wait);
-    }
-    lastFrame = now;
+    // 不节流：直接交给 WebView 原生 rAF，由系统/设备刷新率决定实际帧率。
     return oldRaf ? oldRaf(cb) : setTimeout(function () { cb(now); }, 16);
   };
   window.cancelAnimationFrame = function (id) {
@@ -1540,8 +1531,8 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   @override
   Widget build(BuildContext context) {
     // 保持默认 Surface 渲染。早期怀疑需要 Hybrid Composition，但在当前
-    // Android 上 Hybrid 反而会触发 FocusEvent ANR；配合注入的 rAF 30fps
-    // + effect/effectBatch 限流后，Surface 模式全屏动态背景已稳定。
+    // Android 上 Hybrid 反而会触发 FocusEvent ANR；rAF 已不做帧率限制，
+    // effect/effectBatch 只在 JS 侧合并批量发送，Surface 模式全屏动态背景稳定。
     return WebViewWidget(controller: _controller);
   }
 }

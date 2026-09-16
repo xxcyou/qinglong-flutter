@@ -2730,6 +2730,8 @@ class ChatNotifier extends Notifier<ChatState> {
   }
 
   void deleteSession(String id) {
+    // 会话删掉后本地完整轮归档也一起删干净，不留任何残留文件。
+    unawaited(RoundArchiveService.instance.deleteSession(id));
     if (state.sessions.length <= 1) {
       clear();
       return;

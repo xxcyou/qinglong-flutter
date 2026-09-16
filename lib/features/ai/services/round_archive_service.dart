@@ -5,6 +5,8 @@ import 'dart:math';
 
 import 'package:path_provider/path_provider.dart';
 
+import '../../../core/utils/logger.dart';
+
 import '../models/agent_event.dart';
 import '../models/agent_task_plan.dart';
 
@@ -349,6 +351,16 @@ class RoundArchiveService {
       if (endedAt != null) manifest['updatedAt'] = endedAt.toIso8601String();
       await _saveManifest(sessionId, manifest);
     });
+  }
+
+  /// 删除整个会话归档目录（含 manifest、session、rounds 全部文件）。
+  Future<void> deleteSession(String sessionId) async {
+    try {
+      final dir = await _sessionDir(sessionId);
+      if (await dir.exists()) await dir.delete(recursive: true);
+    } catch (e) {
+      Logger.e('archive', 'delete session dir failed: $e');
+    }
   }
 
   /// 立即对所有会话执行一次容量清理（AI 设置里改完上限后调用）。
