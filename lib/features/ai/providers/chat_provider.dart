@@ -726,7 +726,73 @@ class ChatNotifier extends Notifier<ChatState> {
         }
       }
     }
+    // 用户说“继续”时，把上一轮还没收尾的任务清单交回去。否则模型只能看到
+    // 上一轮的文字总结，看不到“目标/第几步已完成/下一步是什么”，就会反问
+    // “你想让我继续做什么？”。
+    if (_isContinuationIntent(userInput)) {
+      final note = _lastTaskPlanNote(sessionId);
+      if (note != null) {
+        if (history.length > 1) {
+          final last = history.last;
+          history = [
+            ...history.take(history.length - 1),
+            LlmMessage(
+              role: last.role,
+              content: last.content.trim().isEmpty
+                  ? note
+                  : '${last.content}\n\n$note',
+            ),
+          ];
+        } else {
+          history.add(LlmMessage(role: 'user', content: note));
+        }
+      }
+    }
     return history;
+  }
+
+  bool _isContinuationIntent(String input) {
+    final s = input.trim().toLowerCase();
+    if (s.isEmpty) return false;
+    const exact = {
+      '继续',
+      '继续做',
+      '继续完成',
+      '接着',
+      '接着做',
+      '接着搞',
+      'continue',
+      'continue doing',
+      'go on',
+      'keep going',
+    };
+    if (exact.contains(s)) return true;
+    if (s.startsWith('继续') || s.startsWith('接着')) return true;
+    return false;
+  }
+
+  /// 找到最近一条还没收尾、且带任务清单的 assistant 消息，拼成续跑提示。
+  String? _lastTaskPlanNote(String? sessionId) {
+    final sessionMessages = sessionId == null
+        ? state.messages
+        : (_sessionById(sessionId)?.messages ?? const <AiChatMessage>[]);
+    for (final m in sessionMessages.reversed) {
+      if (m.role != 'assistant') continue;
+      if (m.taskPlan.isEmpty) continue;
+      // 明确“完成”且清单全 done 的旧任务，不需要再塞给“继续”。
+      if (m.outcome == 'completed' &&
+          m.taskPlan.doneCount == m.taskPlan.items.length) {
+        continue;
+      }
+      final lines = m.taskPlan.promptLines();
+      if (lines.isEmpty) continue;
+      return '（系统记录 · 上一轮任务还没有完全收尾。下面是上一轮的任务清单：\n'
+          '$lines\n'
+          '用户现在说“继续”，通常就是让你接着这个目标做，不要反问“要继续做什么”。'
+          '先核对清单里已完成/未完成的部分，接着往下推进；'
+          '如果清单已经全部完成，就直接告诉用户完成结果。）';
+    }
+    return null;
   }
 
   /// 把"消息 + 这条消息的簿记"编织成最终 payload。
