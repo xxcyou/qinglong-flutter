@@ -62,28 +62,46 @@ class ThemeConfig {
     final primary = color('primary', const Color(0xFF66BB6A));
     final secondary = color('accent', const Color(0xFF4FC3F7));
     final tertiary = color('accent', const Color(0xFF4FC3F7));
+    final surfaceBg = color(
+        'background', dark ? const Color(0xFF0F1115) : const Color(0xFFF7FAF8));
+    final rawOnSurface = color(
+        'onSurface', dark ? const Color(0xFFE8EAED) : const Color(0xFF1A1C1E));
+    final onSurface = _readableOn(surfaceBg, rawOnSurface);
+    final rawOnSurfaceVariant = color('onSurfaceVariant',
+        dark ? const Color(0xFF9AA0A6) : const Color(0xFF44484C));
+    final onSurfaceVariant = _readableOn(surfaceBg, rawOnSurfaceVariant);
     return ColorScheme(
       brightness: dark ? Brightness.dark : Brightness.light,
       primary: primary,
-      onPrimary: colors.containsKey('onPrimary')
-          ? color('onPrimary', dark ? const Color(0xFF0B1F12) : Colors.white)
-          : (dark ? const Color(0xFF0B1F12) : _onColor(primary)),
+      onPrimary: _readableOn(
+        primary,
+        colors.containsKey('onPrimary')
+            ? color('onPrimary', dark ? const Color(0xFF0B1F12) : Colors.white)
+            : (dark ? const Color(0xFF0B1F12) : _onColor(primary)),
+      ),
       primaryContainer: color('primaryContainer',
           dark ? const Color(0xFF1C4030) : const Color(0xFFC8E6C9)),
       onPrimaryContainer: color('onPrimaryContainer',
           dark ? const Color(0xFFB9F6CA) : const Color(0xFF0B3D0B)),
       secondary: secondary,
-      onSecondary: colors.containsKey('onSecondary')
-          ? color('onSecondary', dark ? const Color(0xFF06222E) : Colors.white)
-          : (dark ? const Color(0xFF06222E) : _onColor(secondary)),
+      onSecondary: _readableOn(
+        secondary,
+        colors.containsKey('onSecondary')
+            ? color(
+                'onSecondary', dark ? const Color(0xFF06222E) : Colors.white)
+            : (dark ? const Color(0xFF06222E) : _onColor(secondary)),
+      ),
       secondaryContainer: color('secondaryContainer',
           dark ? const Color(0xFF134A5C) : const Color(0xFFB3E5FC)),
       onSecondaryContainer: color('onSecondaryContainer',
           dark ? const Color(0xFFB3E5FC) : const Color(0xFF00344C)),
       tertiary: tertiary,
-      onTertiary: colors.containsKey('onTertiary')
-          ? color('onTertiary', dark ? const Color(0xFF06222E) : Colors.white)
-          : (dark ? const Color(0xFF06222E) : _onColor(tertiary)),
+      onTertiary: _readableOn(
+        tertiary,
+        colors.containsKey('onTertiary')
+            ? color('onTertiary', dark ? const Color(0xFF06222E) : Colors.white)
+            : (dark ? const Color(0xFF06222E) : _onColor(tertiary)),
+      ),
       tertiaryContainer: color('secondaryContainer',
           dark ? const Color(0xFF134A5C) : const Color(0xFFB3E5FC)),
       onTertiaryContainer: color('onSecondaryContainer',
@@ -96,8 +114,7 @@ class ThemeConfig {
           dark ? const Color(0xFFF8BBD0) : const Color(0xFF2B0A0A)),
       surface: color('background',
           dark ? const Color(0xFF0F1115) : const Color(0xFFF7FAF8)),
-      onSurface: color('onSurface',
-          dark ? const Color(0xFFE8EAED) : const Color(0xFF1A1C1E)),
+      onSurface: onSurface,
       surfaceContainerLowest: color('surfaceLowest',
           dark ? const Color(0xFF0B0D10) : const Color(0xFFFFFFFF)),
       surfaceContainerLow: color('surfaceLow',
@@ -108,8 +125,7 @@ class ThemeConfig {
           dark ? const Color(0xFF22262F) : const Color(0xFFDDE6E0)),
       surfaceContainerHighest: color('surfaceHighest',
           dark ? const Color(0xFF2A2F38) : const Color(0xFFD2DDD6)),
-      onSurfaceVariant: color('onSurfaceVariant',
-          dark ? const Color(0xFF9AA0A6) : const Color(0xFF44484C)),
+      onSurfaceVariant: onSurfaceVariant,
       outline: color(
           'outline', dark ? const Color(0xFF8A9096) : const Color(0xFF74777B)),
       outlineVariant: color('outlineVariant',
@@ -128,6 +144,18 @@ class ThemeConfig {
   /// 根据背景亮度选出可读的前景色：浅底用深字，深底用白字。
   static Color _onColor(Color c) {
     return c.computeLuminance() > 0.45 ? const Color(0xFF1A1C1E) : Colors.white;
+  }
+
+  /// 可读性保护：即使主题显式把 onSurface/onPrimary 写成白色，
+  /// 只要和底色对比度不够，就自动换成可读色；对比足够时尊重主题。
+  static Color _readableOn(Color background, Color preferred) {
+    final b = background.computeLuminance();
+    final p = preferred.computeLuminance();
+    final hi = b > p ? b : p;
+    final lo = b > p ? p : b;
+    final contrast = (hi + 0.05) / (lo + 0.05);
+    if (contrast >= 2.8) return preferred;
+    return b > 0.5 ? const Color(0xFF1A1C1E) : Colors.white;
   }
 
   ThemeConfig copyWith({

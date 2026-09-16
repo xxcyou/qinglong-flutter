@@ -1401,7 +1401,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                           width: 5,
                           height: 76,
                           decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.65),
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant
+                                .withValues(alpha: 0.5),
                             borderRadius: BorderRadius.circular(3),
                           ),
                         ),
