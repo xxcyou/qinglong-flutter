@@ -189,9 +189,69 @@ class _FontSettingsScopeState extends State<FontSettingsScope> {
       shadows: shadows,
     );
 
-    return DefaultTextStyle(
-      style: style,
-      child: widget.child,
+    final baseTheme = Theme.of(context);
+    final media = MediaQuery.of(context);
+    final sizeBase = effective.size ?? 16.0;
+    final scaledMedia = media.copyWith(
+      textScaler: TextScaler.linear((sizeBase / 16.0).clamp(0.5, 3.0)),
+    );
+    final fontTheme = baseTheme.copyWith(
+      textTheme: _applyTextTheme(
+        baseTheme.textTheme,
+        family,
+        effective.weight,
+        color,
+        effective.strikethrough ? TextDecoration.lineThrough : null,
+        effective.goldBorder ? const Color(0xFFD4AF37) : color,
+        shadows,
+      ),
+    );
+
+    return MediaQuery(
+      data: scaledMedia,
+      child: Theme(
+        data: fontTheme,
+        child: DefaultTextStyle(
+          style: style,
+          child: widget.child,
+        ),
+      ),
+    );
+  }
+
+  TextTheme _applyTextTheme(
+    TextTheme t,
+    String? family,
+    FontWeight? weight,
+    Color color,
+    TextDecoration? decoration,
+    Color? decorationColor,
+    List<Shadow>? shadows,
+  ) {
+    TextStyle? apply(TextStyle? s) => s?.copyWith(
+          fontFamily: family,
+          fontWeight: weight,
+          color: color,
+          decoration: decoration,
+          decorationColor: decorationColor,
+          shadows: shadows,
+        );
+    return TextTheme(
+      displayLarge: apply(t.displayLarge),
+      displayMedium: apply(t.displayMedium),
+      displaySmall: apply(t.displaySmall),
+      headlineLarge: apply(t.headlineLarge),
+      headlineMedium: apply(t.headlineMedium),
+      headlineSmall: apply(t.headlineSmall),
+      titleLarge: apply(t.titleLarge),
+      titleMedium: apply(t.titleMedium),
+      titleSmall: apply(t.titleSmall),
+      bodyLarge: apply(t.bodyLarge),
+      bodyMedium: apply(t.bodyMedium),
+      bodySmall: apply(t.bodySmall),
+      labelLarge: apply(t.labelLarge),
+      labelMedium: apply(t.labelMedium),
+      labelSmall: apply(t.labelSmall),
     );
   }
 
