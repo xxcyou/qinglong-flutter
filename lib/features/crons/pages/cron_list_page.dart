@@ -14,9 +14,11 @@ import '../../../shared/glass_scaffold.dart';
 import '../../../shared/loading_view.dart';
 import '../../../shared/search_field.dart';
 import '../../panels/providers/panel_list_provider.dart';
+import '../../scripts/api/script_api.dart';
 import '../../subscriptions/providers/subscription_list_provider.dart';
 import '../../scripts/pages/script_edit_page.dart';
 import '../../settings/providers/settings_provider.dart';
+import '../api/cron_api.dart';
 import '../models/cron_task.dart';
 import '../providers/cron_list_provider.dart';
 import '../widgets/cron_run_log_sheet.dart';
@@ -298,14 +300,12 @@ class _CronListPageState extends ConsumerState<CronListPage> {
     List<CronTask> items,
     Map<int, String> subNames,
   ) {
-    final groups = _sourceGroups(items, subNames);
-    final entries = <Object>[];
-    for (final group in groups) {
-      entries.add(_GroupHeader(
-        title: group.title,
-        count: group.tasks.length,
-      ));
-      entries.addAll(group.tasks);
+    final groups = _sourceSubGroups(items, subNames);
+    if (groups.isEmpty) {
+      return const EmptyView(
+        message: '当前已加载的任务里没有订阅任务\n可在「管理 → 订阅管理」添加订阅',
+        icon: Icons.cloud_outlined,
+      );
     }
 
     return RefreshIndicator(
@@ -313,80 +313,169 @@ class _CronListPageState extends ConsumerState<CronListPage> {
       child: ListView.separated(
         controller: _scrollController,
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 110),
-        itemCount: entries.length + (state.isLoadingMore ? 1 : 0),
-        separatorBuilder: (_, index) {
-          if (index >= entries.length) return const SizedBox.shrink();
-          final prev = entries[index];
-          final next = entries[index + 1];
-          if (prev is _GroupHeader || next is _GroupHeader) {
-            return const SizedBox(height: 4);
-          }
-          return const SizedBox(height: 8);
-        },
+        itemCount: groups.length + (state.isLoadingMore ? 1 : 0),
+        separatorBuilder: (_, index) => index == groups.length
+            ? const SizedBox.shrink()
+            : const SizedBox(height: 8),
         itemBuilder: (context, index) {
-          if (index == entries.length) {
+          if (index == groups.length) {
             return const _LoadingMoreItem();
           }
-          final entry = entries[index];
-          if (entry is _GroupHeader) return entry;
-          if (entry is CronTask) return _taskTile(context, entry);
-          return const SizedBox.shrink();
+          final group = groups[index];
+          return _SubscriptionTile(
+            name: group.title,
+            tasks: group.tasks,
+            onDelete: () => _deleteSubscription(
+              group.subId!,
+              group.title,
+              group.tasks,
+            ),
+            taskBuilder: (task) => _taskTile(context, task),
+          );
         },
       ),
     );
   }
 
-  List<_TaskGroup> _sourceGroups(
+  List<_TaskGroup> _sourceSubGroups(
     List<CronTask> items,
     Map<int, String> subNames,
   ) {
-    final ai = <CronTask>[];
     final bySub = <int, List<CronTask>>{};
-    final mine = <CronTask>[];
-
     for (final task in items) {
-      if (_isAiTask(task)) {
-        ai.add(task);
-        continue;
-      }
       final subId = task.subId;
-      if (subId != null) {
-        bySub.putIfAbsent(subId, () => []).add(task);
-      } else {
-        mine.add(task);
-      }
+      if (subId == null) continue;
+      bySub.putIfAbsent(subId, () => []).add(task);
     }
 
-    final groups = <_TaskGroup>[];
-    if (ai.isNotEmpty) groups.add(_TaskGroup('AI 创建', ai));
     final subIds = bySub.keys.toList()
       ..sort((a, b) {
         final na = (subNames[a] ?? '').toLowerCase();
         final nb = (subNames[b] ?? '').toLowerCase();
         return na.compareTo(nb);
       });
-    for (final subId in subIds) {
-      groups.add(_TaskGroup(
-        subNames[subId] ?? '订阅 #$subId',
-        bySub[subId]!,
-      ));
-    }
-    if (mine.isNotEmpty) groups.add(_TaskGroup('我的任务', mine));
-    return groups;
+    return [
+      for (final subId in subIds)
+        _TaskGroup(subNames[subId] ?? '订阅 #$subId', bySub[subId]!,
+            subId: subId),
+    ];
   }
 
-  bool _isAiTask(CronTask task) {
-    for (final label in task.labels) {
-      final lower = label.trim().toLowerCase();
-      if (lower == 'ai' ||
-          lower == 'ai创建' ||
-          lower == 'ai创建' ||
-          lower == 'ai 创建' ||
-          lower.contains('ai创建')) {
-        return true;
+  /// 删除订阅前先确认，并可选连它带来的任务和脚本文件一起清掉。
+  Future<void> _deleteSubscription(
+    int subId,
+    String subName,
+    List<CronTask> loadedTasks,
+  ) async {
+    var deleteAssociated = false;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setInner) => AlertDialog(
+          title: Text('删除订阅「$subName」？'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('订阅记录会被永久删除。'),
+              const SizedBox(height: 8),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                value: deleteAssociated,
+                onChanged: (v) => setInner(() => deleteAssociated = v ?? false),
+                title: const Text(
+                  '同时删除这个订阅带来的定时任务和脚本文件',
+                  style: TextStyle(fontSize: 13.5),
+                ),
+                subtitle: const Text(
+                  '不勾选只删订阅，任务和脚本保留',
+                  style: TextStyle(fontSize: 11.5),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.error,
+              ),
+              child: const Text('确认删除'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      // 勾选一起删时，先抓这个订阅下的全部任务，删完订阅/任务后再删脚本文件。
+      final allSubTasks =
+          deleteAssociated ? await _fetchAllSubTasks(subId) : <CronTask>[];
+      final scriptPaths = <String>{
+        for (final task in deleteAssociated ? allSubTasks : loadedTasks)
+          if (_extractScriptPath(task) != null) _extractScriptPath(task)!,
+      };
+
+      await ref.read(subListProvider.notifier).delete(
+        [subId],
+        force: deleteAssociated,
+      );
+
+      if (deleteAssociated) {
+        final panel = ref.read(currentPanelProvider);
+        if (panel != null) {
+          for (final path in scriptPaths) {
+            try {
+              await ScriptApi.delete(
+                apiBaseUrl: panel.apiBaseUrl,
+                path: path,
+              );
+            } catch (_) {
+              // 单个脚本删不掉（可能已被订阅删除或权限限制）不阻断整体流程。
+            }
+          }
+        }
       }
+
+      await ref.read(cronListProvider.notifier).refresh();
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              deleteAssociated ? '已删除订阅及其任务和脚本' : '已删除订阅，任务和脚本已保留',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) Logger.showError(context, e);
     }
-    return false;
+  }
+
+  Future<List<CronTask>> _fetchAllSubTasks(int subId) async {
+    final panel = ref.read(currentPanelProvider);
+    if (panel == null) return const [];
+    const pageSize = 100;
+    final result = <CronTask>[];
+    var page = 1;
+    while (true) {
+      final batch = await CronApi.list(
+        apiBaseUrl: panel.apiBaseUrl,
+        page: page,
+        pageSize: pageSize,
+      );
+      result.addAll(batch.items.where((t) => t.subId == subId));
+      if (batch.items.isEmpty || batch.items.length < pageSize) break;
+      page++;
+    }
+    return result;
   }
 
   Widget _taskTile(BuildContext context, CronTask task) {
@@ -558,44 +647,89 @@ class _CronListPageState extends ConsumerState<CronListPage> {
 }
 
 class _TaskGroup {
-  const _TaskGroup(this.title, this.tasks);
+  const _TaskGroup(this.title, this.tasks, {this.subId});
 
   final String title;
   final List<CronTask> tasks;
+  final int? subId;
 }
 
-class _GroupHeader extends StatelessWidget {
-  const _GroupHeader({required this.title, required this.count});
+class _SubscriptionTile extends StatelessWidget {
+  const _SubscriptionTile({
+    required this.name,
+    required this.tasks,
+    required this.onDelete,
+    required this.taskBuilder,
+  });
 
-  final String title;
-  final int count;
+  final String name;
+  final List<CronTask> tasks;
+  final VoidCallback onDelete;
+  final Widget Function(CronTask task) taskBuilder;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 10, 4, 2),
-      child: Row(
-        children: [
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: scheme.onSurface,
+    return Card(
+      margin: EdgeInsets.zero,
+      elevation: 0,
+      clipBehavior: Clip.antiAlias,
+      color: scheme.surfaceContainerLow.withValues(alpha: 0.55),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: scheme.outlineVariant.withValues(alpha: 0.35),
+        ),
+      ),
+      child: ExpansionTile(
+        leading: Container(
+          width: 38,
+          height: 38,
+          decoration: BoxDecoration(
+            color: scheme.primaryContainer.withValues(alpha: 0.6),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(
+            Icons.cloud_download_outlined,
+            size: 20,
+            color: scheme.primary,
+          ),
+        ),
+        title: Text(
+          name,
+          style: TextStyle(
+            fontSize: 14.5,
+            fontWeight: FontWeight.w700,
+            color: scheme.onSurface,
+          ),
+        ),
+        subtitle: Text(
+          '${tasks.length} 个任务',
+          style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: '删除订阅',
+              icon: Icon(
+                Icons.delete_outline,
+                size: 20,
+                color: scheme.error,
+              ),
+              onPressed: onDelete,
             ),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            '$count',
-            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
-          ),
-          const Spacer(),
-          Icon(
-            Icons.grid_view_rounded,
-            size: 14,
-            color: scheme.onSurfaceVariant,
-          ),
+            Icon(Icons.expand_more, color: scheme.onSurfaceVariant),
+          ],
+        ),
+        expandedCrossAxisAlignment: CrossAxisAlignment.start,
+        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+        children: [
+          for (final task in tasks)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: taskBuilder(task),
+            ),
         ],
       ),
     );
