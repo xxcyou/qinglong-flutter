@@ -585,7 +585,7 @@ class _Row extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(bottom: 6),
       child: GlassCard(
         onTap: onTap,
         child: Row(

@@ -853,7 +853,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
   }) {
     const bubble = 56.0;
     const height = 44.0;
-    const rowHeight = 38.0;
+    const rowHeight = 34.0;
     final scheme = Theme.of(context).colorScheme;
     // 和球之间留 6：视觉上连着，又不至于圆角互相咬。
     final room = onRight ? left - 12 : size.width - (left + bubble) - 12;
@@ -2501,7 +2501,7 @@ class _Hints extends StatelessWidget {
       '把某个环境变量改成新值',
     ];
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 4, 14, 10),
+      padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2643,8 +2643,8 @@ class _MiniBubbleState extends State<_MiniBubble> {
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
-        margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         constraints: BoxConstraints(
           maxWidth: MediaQuery.sizeOf(context).width * 0.78,
         ),
@@ -2787,8 +2787,8 @@ class _MiniConfirm extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final accent = irreversible ? scheme.error : scheme.primary;
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(10),
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: accent.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(12),

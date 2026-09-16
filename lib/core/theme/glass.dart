@@ -119,12 +119,12 @@ class GlassPanel extends StatelessWidget {
   const GlassPanel({
     super.key,
     required this.child,
-    this.radius = 22,
+    this.radius = 18,
     this.blur = Glass.blur,
     this.padding,
     this.margin,
     this.opacity = 1,
-    this.shadowY = 8,
+    this.shadowY = 6,
     this.borderWidth = 1,
     this.tint,
     this.onTap,
@@ -190,7 +190,7 @@ class GlassPanel extends StatelessWidget {
             style?.shadowColor ?? visual?.shadowColor ?? Colors.black;
         final effectiveShadowOpacity = style?.shadowOpacity ??
             (visual?.glassShadowOpacity ??
-                (scheme.brightness == Brightness.dark ? 0.42 : 0.14));
+                (scheme.brightness == Brightness.dark ? 0.34 : 0.10));
         final effectiveShadowBlur =
             style?.shadowBlur ?? (effectiveShadowY * 2.2);
         final effectiveShadowOffsetY = style?.shadowOffsetY ?? effectiveShadowY;

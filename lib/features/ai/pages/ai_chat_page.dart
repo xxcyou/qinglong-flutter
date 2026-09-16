@@ -1483,19 +1483,19 @@ class _WelcomeView extends StatelessWidget {
             ),
             child: Icon(
               Icons.smart_toy_outlined,
-              size: 32,
+              size: 26,
               color: scheme.onPrimaryContainer,
             ),
           ),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 10),
         const Center(
           child: Text(
             '青龙专用 AI 助手',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
           ),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 4),
         Center(
           child: Text(
             '会自己查证再回答，改东西之前按策略征求你的同意',
@@ -1503,10 +1503,10 @@ class _WelcomeView extends StatelessWidget {
             textAlign: TextAlign.center,
           ),
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 16),
         for (final (icon, title, prompt) in examples)
           Padding(
-            padding: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.only(bottom: 6),
             child: Material(
               // 半透：背景那三团流动的光斑要能透过示例卡。
               color: scheme.surfaceContainerLow.withValues(alpha: 0.55),
@@ -1516,8 +1516,8 @@ class _WelcomeView extends StatelessWidget {
                 onTap: () => onTap(prompt),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 12,
+                    horizontal: 12,
+                    vertical: 9,
                   ),
                   child: Row(
                     children: [
@@ -1622,8 +1622,8 @@ class _MessageBubble extends StatelessWidget {
             type: 'bubble',
             index: anchorIndex ?? 0,
             child: Container(
-              margin: const EdgeInsets.only(bottom: 10),
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+              margin: const EdgeInsets.only(bottom: 6),
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
               constraints: BoxConstraints(
                 maxWidth:
                     MediaQuery.sizeOf(context).width * (isUser ? 0.82 : 0.92),

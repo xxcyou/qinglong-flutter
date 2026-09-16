@@ -25,7 +25,7 @@ class GlassScaffold extends StatelessWidget {
     this.floatingActionButton,
     this.bottomBar,
     this.showBack = false,
-    this.bodyTopPadding = 8,
+    this.bodyTopPadding = 6,
   });
 
   final String title;
@@ -187,8 +187,8 @@ class GlassCard extends StatelessWidget {
     required this.child,
     this.onTap,
     this.onLongPress,
-    this.padding = const EdgeInsets.all(14),
-    this.radius = 18,
+    this.padding = const EdgeInsets.all(12),
+    this.radius = 14,
     this.selected = false,
     this.accent,
     this.anchorIndex,
@@ -220,9 +220,9 @@ class GlassCard extends StatelessWidget {
         final liquidActive = style?.liquid != null;
         final defaultLiquidFill = liquidActive ? 0.55 : null;
         final baseFill =
-            style?.fillOpacity ?? defaultLiquidFill ?? (dark ? 0.46 : 0.78);
+            style?.fillOpacity ?? defaultLiquidFill ?? (dark ? 0.42 : 0.72);
         final deepFill = style?.fillOpacity == null
-            ? (defaultLiquidFill ?? (dark ? 0.28 : 0.56))
+            ? (defaultLiquidFill ?? (dark ? 0.26 : 0.52))
             : style!.fillOpacity! * 0.7;
         final List<Color> gradientColors = style?.gradientColors ??
             [
@@ -265,9 +265,9 @@ class GlassCard extends StatelessWidget {
         final styleAngle = style?.gradientAngle ?? 135;
         final shadowColor =
             style?.shadowColor ?? Colors.black.withValues(alpha: 0);
-        final shadowOpacity = style?.shadowOpacity ?? (dark ? 0.22 : 0.08);
-        final shadowBlur = style?.shadowBlur ?? 12;
-        final shadowOffsetY = style?.shadowOffsetY ?? 4;
+        final shadowOpacity = style?.shadowOpacity ?? (dark ? 0.16 : 0.06);
+        final shadowBlur = style?.shadowBlur ?? 8;
+        final shadowOffsetY = style?.shadowOffsetY ?? 3;
         final glow = style?.glowColor != null
             ? [
                 BoxShadow(
@@ -425,7 +425,7 @@ class SectionLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 14, 4, 8),
+      padding: const EdgeInsets.fromLTRB(4, 10, 4, 6),
       child: Row(
         children: [
           Expanded(
