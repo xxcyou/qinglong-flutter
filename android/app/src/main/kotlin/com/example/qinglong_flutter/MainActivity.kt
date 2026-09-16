@@ -1,10 +1,25 @@
 package com.example.qinglong_flutter
 
 import android.content.Intent
+import android.os.Build
+import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 
 class MainActivity : FlutterActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // 高刷屏不锁 60：把窗口首选模式指到设备支持的最高刷新率，
+        // 让 Flutter 层和 WebView 的 HTML 动画都能吃满 120/144/240Hz。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val mode = display?.supportedModes?.maxByOrNull { it.refreshRate }
+            if (mode != null) {
+                val params = window.attributes
+                params.preferredDisplayModeId = mode.modeId
+                window.attributes = params
+            }
+        }
+    }
     /// 留着引用：系统文件选择器（SAF）的结果回到 Activity，得转交给它。
     private var prootBridge: ProotBridge? = null
 
