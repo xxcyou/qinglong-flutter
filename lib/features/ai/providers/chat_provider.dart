@@ -1670,8 +1670,7 @@ class ChatNotifier extends Notifier<ChatState> {
     final run = _SessionRun(sessionId: session.id)
       ..resumeEvents = resumeEvents ?? const []
       ..isResume = resumeEvents != null
-      ..roundId = resumeFrom ??
-          'r${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
+      ..roundId = resumeFrom ?? RoundArchiveService.newRoundId();
     // 续跑时把中断前的事件直接放进新 run 的事件流：流程卡片从旧事件接着长，
     // 不会一继续就“清空重来”只看到后面新跑的。
     if (resumeEvents != null && resumeEvents.isNotEmpty) {
@@ -3737,6 +3736,11 @@ class ChatNotifier extends Notifier<ChatState> {
               'type': 'boolean',
               'description': 'true=返回完整 JSON，默认 false 返回可读摘要',
             },
+            'sections': {
+              'type': 'string',
+              'description':
+                  '可选，只取指定部分：meta,user,assistant,task,events,usage，逗号分隔；默认全部',
+            },
           },
           'required': ['round_id'],
         },
@@ -3744,11 +3748,12 @@ class ChatNotifier extends Notifier<ChatState> {
         invoke: (args) async {
           final rid = args['round_id']?.toString().trim() ?? '';
           final full = args['full'] == true;
+          final sections = args['sections']?.toString().trim() ?? 'default';
           final sid = sessionId ?? state.currentSessionId;
           if (rid.isEmpty) return '请提供 round_id。';
           try {
             return await RoundArchiveService.instance
-                .readRound(sid, rid, full: full);
+                .readRound(sid, rid, full: full, sections: sections);
           } catch (e) {
             return '读取完整轮失败：$e';
           }
