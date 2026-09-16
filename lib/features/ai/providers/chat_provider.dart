@@ -83,10 +83,10 @@ class ChatState {
     this.livePlan = const AgentTaskPlan(),
     this.pendingImages = const [],
     this.toolRecords = const [],
-    this.pendingPlan = const [],
-    this.pendingQuestion,
+    this.pendingPlanBySession = const {},
+    this.pendingQuestionBySession = const {},
     this.queue = const [],
-    this.interruptedRun,
+    this.interruptedRunBySession = const {},
     this.lastPromptTokens = 0,
     this.lastCacheHitTokens = 0,
     this.estimatedContextTokens = 0,
@@ -164,16 +164,30 @@ class ChatState {
   /// 待发送的图片附件（选了图但还没点发送）。
   final List<AiImageAttachment> pendingImages;
   final List<ToolCallRecord> toolRecords;
-  final List<AiPlanAction> pendingPlan;
 
-  /// 模型正在等用户回答的问题（ask_user）。非空时聊天页显示提问卡片。
-  final AgentQuestion? pendingQuestion;
+  /// 每个会话各自的待确认操作（app_approve 等）。
+  final Map<String, List<AiPlanAction>> pendingPlanBySession;
+
+  /// 每个会话各自的待回答提问（ask_user）。
+  final Map<String, AgentQuestion?> pendingQuestionBySession;
 
   /// 排队待发的消息：AI 还在跑时用户继续输入，先排队，跑完自动依次发出。
   final List<QueuedMessage> queue;
 
-  /// 上次被闪退/杀进程打断的运行，可在界面上一键继续。
-  final InterruptedRun? interruptedRun;
+  /// 每个会话各自上次被闪退/杀进程打断的运行，可在界面上按会话一键继续。
+  final Map<String, InterruptedRun?> interruptedRunBySession;
+
+  /// 当前会话的待确认操作。
+  List<AiPlanAction> get pendingPlan =>
+      pendingPlanBySession[currentSessionId] ?? const [];
+
+  /// 当前会话的待回答提问。
+  AgentQuestion? get pendingQuestion =>
+      pendingQuestionBySession[currentSessionId];
+
+  /// 当前会话的上次打断运行。
+  InterruptedRun? get interruptedRun =>
+      interruptedRunBySession[currentSessionId];
 
   /// 上一轮真实的 prompt_tokens（上下文实际占用），与累计计费量区分。
   final int lastPromptTokens;
@@ -247,6 +261,35 @@ class ChatState {
     return 1;
   }
 
+  static Map<String, List<AiPlanAction>> _withCurrentPlan(
+    Map<String, List<AiPlanAction>> source,
+    String sessionId,
+    List<AiPlanAction>? plan,
+  ) {
+    if (plan == null) return source;
+    return {...source, sessionId: plan};
+  }
+
+  static Map<String, AgentQuestion?> _withCurrentQuestion(
+    Map<String, AgentQuestion?> source,
+    String sessionId,
+    bool clear,
+    AgentQuestion? question,
+  ) {
+    if (!clear && question == null) return source;
+    return {...source, sessionId: clear ? null : question};
+  }
+
+  static Map<String, InterruptedRun?> _withCurrentInterrupted(
+    Map<String, InterruptedRun?> source,
+    String sessionId,
+    bool clear,
+    InterruptedRun? run,
+  ) {
+    if (!clear && run == null) return source;
+    return {...source, sessionId: clear ? null : run};
+  }
+
   ChatState copyWith({
     List<AiSession>? sessions,
     String? currentSessionId,
@@ -280,6 +323,9 @@ class ChatState {
     List<AiPlanAction>? pendingPlan,
     AgentQuestion? pendingQuestion,
     bool clearPendingQuestion = false,
+    Map<String, List<AiPlanAction>>? pendingPlanBySession,
+    Map<String, AgentQuestion?>? pendingQuestionBySession,
+    Map<String, InterruptedRun?>? interruptedRunBySession,
     List<QueuedMessage>? queue,
     InterruptedRun? interruptedRun,
     bool clearInterruptedRun = false,
@@ -334,12 +380,27 @@ class ChatState {
       livePlan: livePlan ?? this.livePlan,
       pendingImages: pendingImages ?? this.pendingImages,
       toolRecords: toolRecords ?? this.toolRecords,
-      pendingPlan: pendingPlan ?? this.pendingPlan,
-      pendingQuestion:
-          clearPendingQuestion ? null : pendingQuestion ?? this.pendingQuestion,
+      pendingPlanBySession: pendingPlanBySession ??
+          _withCurrentPlan(
+            this.pendingPlanBySession,
+            currentSessionId ?? this.currentSessionId,
+            pendingPlan,
+          ),
+      pendingQuestionBySession: pendingQuestionBySession ??
+          _withCurrentQuestion(
+            this.pendingQuestionBySession,
+            currentSessionId ?? this.currentSessionId,
+            clearPendingQuestion,
+            pendingQuestion,
+          ),
       queue: queue ?? this.queue,
-      interruptedRun:
-          clearInterruptedRun ? null : interruptedRun ?? this.interruptedRun,
+      interruptedRunBySession: interruptedRunBySession ??
+          _withCurrentInterrupted(
+            this.interruptedRunBySession,
+            currentSessionId ?? this.currentSessionId,
+            clearInterruptedRun,
+            interruptedRun,
+          ),
       lastPromptTokens: lastPromptTokens ?? this.lastPromptTokens,
       lastCacheHitTokens: lastCacheHitTokens ?? this.lastCacheHitTokens,
       estimatedContextTokens:
@@ -1622,10 +1683,9 @@ class ChatNotifier extends Notifier<ChatState> {
       );
       if (idx < 0) break;
       // 该会话挂起等回答/等确认时不允许自动接下一条。
-      if (sid == state.currentSessionId &&
-          (state.pendingQuestion != null || state.pendingPlan.isNotEmpty)) {
-        break;
-      }
+      final pendingQuestion = state.pendingQuestionBySession[sid];
+      final pendingPlan = state.pendingPlanBySession[sid] ?? const [];
+      if (pendingQuestion != null || pendingPlan.isNotEmpty) break;
       final next = state.queue[idx];
       state = state.copyWith(
         queue: [
@@ -1692,12 +1752,27 @@ class ChatNotifier extends Notifier<ChatState> {
     } catch (e) {
       Logger.e('ai', 'start round archive failed', e);
     }
+    final clearPlanMap = {
+      ...state.pendingPlanBySession,
+      session.id: const <AiPlanAction>[],
+    };
+    final clearQuestionMap = {
+      ...state.pendingQuestionBySession,
+      session.id: null,
+    };
+    final clearInterruptedMap = {
+      ...state.interruptedRunBySession,
+      session.id: null,
+    };
     if (session.id == state.currentSessionId) {
       state = state.copyWith(
         isLoading: true,
         pendingPlan: const [],
         clearPendingQuestion: true,
         clearInterruptedRun: true,
+        pendingPlanBySession: clearPlanMap,
+        pendingQuestionBySession: clearQuestionMap,
+        interruptedRunBySession: clearInterruptedMap,
         liveAgentEvents: resumeEvents?.isNotEmpty == true
             ? List<AgentEvent>.from(resumeEvents!)
             : const [],
@@ -1707,7 +1782,12 @@ class ChatNotifier extends Notifier<ChatState> {
       );
     } else {
       // 后台会话开跑：不能把当前会话的 isLoading/直播内容顶掉。
-      state = state.copyWith(runningSessionIds: {..._runs.keys});
+      state = state.copyWith(
+        pendingPlanBySession: clearPlanMap,
+        pendingQuestionBySession: clearQuestionMap,
+        interruptedRunBySession: clearInterruptedMap,
+        runningSessionIds: {..._runs.keys},
+      );
     }
 
     if (appendUser) {
@@ -1805,13 +1885,25 @@ class ChatNotifier extends Notifier<ChatState> {
       );
       _runs.remove(session.id);
       run.dispose();
-      if (question != null) _surfaceQuestion();
+      if (question != null && session.id == state.currentSessionId) {
+        _surfaceQuestion();
+      }
+      final planMap = {
+        ...state.pendingPlanBySession,
+        session.id: result.pendingActions,
+      };
+      final questionMap = {
+        ...state.pendingQuestionBySession,
+        session.id: question,
+      };
       if (session.id == state.currentSessionId) {
         state = state.copyWith(
           toolRecords: result.toolRecords,
           pendingPlan: result.pendingActions,
+          pendingPlanBySession: planMap,
           pendingQuestion: question,
           clearPendingQuestion: question == null,
+          pendingQuestionBySession: questionMap,
           isLoading: false,
           liveAgentEvents: const [],
           clearLiveText: true,
@@ -1823,7 +1915,11 @@ class ChatNotifier extends Notifier<ChatState> {
           runningSessionIds: {..._runs.keys},
         );
       } else {
-        state = state.copyWith(runningSessionIds: {..._runs.keys});
+        state = state.copyWith(
+          pendingPlanBySession: planMap,
+          pendingQuestionBySession: questionMap,
+          runningSessionIds: {..._runs.keys},
+        );
       }
       _auditRun(result);
       // 正常收尾：清掉"未完成运行"标记，重开 APP 不该再提示继续。
@@ -1876,14 +1972,18 @@ class ChatNotifier extends Notifier<ChatState> {
       // 无论是不是“继续”来的，任何中断（网络、模型错误、超时等）都保留一份
       // 可续跑的快照：用户修好网络/换个模型后点“继续”，会用已跑过的工具事件
       // 接着续轮，而不是整段从头再来。
+      final interrupted = InterruptedRun(
+        sessionId: session.id,
+        userInput: value,
+        events: List<AgentEvent>.from(run.events),
+        startedAt: DateTime.now(),
+        roundId: run.roundId,
+      );
       state = state.copyWith(
-        interruptedRun: InterruptedRun(
-          sessionId: session.id,
-          userInput: value,
-          events: List<AgentEvent>.from(run.events),
-          startedAt: DateTime.now(),
-          roundId: run.roundId,
-        ),
+        interruptedRunBySession: {
+          ...state.interruptedRunBySession,
+          session.id: interrupted,
+        },
         liveAgentEvents: List<AgentEvent>.from(run.events),
       );
       await _saveActiveRun();
@@ -1962,10 +2062,9 @@ class ChatNotifier extends Notifier<ChatState> {
     // 挂起等回答 / 等确认时不许自动接下一条：那会立刻开新一轮，
     // 把提问卡（clearPendingQuestion）连问题一起抹掉，用户答什么都没了。
     // 队列不会丢，等这个问题答完，_sendNow 收尾时自然接上。
-    if (sid == state.currentSessionId &&
-        (state.pendingQuestion != null || state.pendingPlan.isNotEmpty)) {
-      return;
-    }
+    final pendingQuestion = state.pendingQuestionBySession[sid];
+    final pendingPlan = state.pendingPlanBySession[sid] ?? const [];
+    if (pendingQuestion != null || pendingPlan.isNotEmpty) return;
     unawaited(_drainQueue(sid));
   }
 
@@ -2018,10 +2117,16 @@ class ChatNotifier extends Notifier<ChatState> {
       final prefs = await SharedPreferences.getInstance();
       final run = InterruptedRun.decode(prefs.getString(_activeRunKey) ?? '');
       if (run == null) return;
+      final showNow =
+          run.sessionId.isEmpty || run.sessionId == state.currentSessionId;
       state = state.copyWith(
-        interruptedRun: run,
-        // 把已有过程直接摆回界面上，用户能看到"上次做到哪了"。
-        liveAgentEvents: run.events,
+        interruptedRunBySession: {
+          ...state.interruptedRunBySession,
+          run.sessionId: run,
+        },
+        // 只有当前会话正好是中断会话时才把过程摆回界面，
+        // 否则切到别的会话（包括新建话题）不该看到这段旧流程。
+        liveAgentEvents: showNow ? run.events : const [],
       );
     } catch (e) {
       Logger.e('ai', 'load interrupted run failed', e);
@@ -2032,8 +2137,13 @@ class ChatNotifier extends Notifier<ChatState> {
   Future<void> resumeInterruptedRun() async {
     final run = state.interruptedRun;
     if (run == null || _runs.containsKey(state.currentSessionId)) return;
-    state =
-        state.copyWith(clearInterruptedRun: true, liveAgentEvents: const []);
+    state = state.copyWith(
+      interruptedRunBySession: {
+        ...state.interruptedRunBySession,
+        run.sessionId: null,
+      },
+      liveAgentEvents: const [],
+    );
     if (run.sessionId.isNotEmpty &&
         run.sessionId != state.currentSessionId &&
         state.sessions.any((s) => s.id == run.sessionId)) {
@@ -2076,8 +2186,24 @@ class ChatNotifier extends Notifier<ChatState> {
     };
     final session = state.currentSession;
     if (session == null) return;
-    final run = _SessionRun(sessionId: session.id);
+    final run = _SessionRun(sessionId: session.id)
+      ..roundId = RoundArchiveService.newRoundId();
     _runs[session.id] = run;
+    final confirmInput = '确认执行：${plan.map((a) => a.type).join(', ')}';
+    try {
+      final archiveSettings = ref.read(settingsProvider);
+      RoundArchiveService.instance.configure(
+        maxRounds: archiveSettings.roundArchiveMaxRounds,
+        maxBytes: archiveSettings.roundArchiveMaxSizeMB * 1024 * 1024,
+      );
+      await RoundArchiveService.instance.startRound(
+        session.id,
+        run.roundId,
+        userInput: confirmInput,
+      );
+    } catch (e) {
+      Logger.e('ai', 'start confirm round archive failed', e);
+    }
     state = state.copyWith(
       pendingPlan: const [],
       isLoading: true,
@@ -2094,6 +2220,23 @@ class ChatNotifier extends Notifier<ChatState> {
       if (_runs[session.id] != run) return;
       final current = _sessionById(session.id);
       if (current == null) return;
+      final confirmContent =
+          result.content.isNotEmpty ? result.content : '计划已执行，请到对应模块查看结果。';
+      unawaited(
+        RoundArchiveService.instance.updateRound(
+          session.id,
+          run.roundId,
+          assistantContent: confirmContent,
+          taskPlan: result.taskPlan,
+          outcome: result.outcome.name,
+          turns: result.turns,
+          usage: {
+            'totalTokens': result.usage.totalTokens,
+            'promptTokens': result.lastPromptTokens,
+            'cachedTokens': result.lastCacheHitTokens,
+          },
+        ),
+      );
       _replaceSession(
         AiSession(
           id: current.id,
@@ -2102,9 +2245,7 @@ class ChatNotifier extends Notifier<ChatState> {
             ...current.messages,
             AiChatMessage(
               role: 'assistant',
-              content: result.content.isNotEmpty
-                  ? result.content
-                  : '计划已执行，请到对应模块查看结果。',
+              content: confirmContent,
               images: List<AiImageAttachment>.from(
                 _toolScreenshotsBySession[session.id] ?? const [],
               ),
@@ -2117,6 +2258,7 @@ class ChatNotifier extends Notifier<ChatState> {
               cachedTokens: result.lastCacheHitTokens,
               taskPlan: result.taskPlan,
               canvases: result.canvases,
+              roundId: run.roundId,
             ),
           ],
           createdAt: current.createdAt,
@@ -2147,6 +2289,13 @@ class ChatNotifier extends Notifier<ChatState> {
       _pumpQueue(session.id);
     } catch (e) {
       if (_runs[session.id] != run) return;
+      unawaited(
+        RoundArchiveService.instance.updateRound(
+          session.id,
+          run.roundId,
+          outcome: 'failed',
+        ),
+      );
       _runs.remove(session.id);
       run.dispose();
       if (session.id == state.currentSessionId) {
@@ -2484,6 +2633,7 @@ class ChatNotifier extends Notifier<ChatState> {
       livePlan: const AgentTaskPlan(),
       pendingQuestion: null,
       clearPendingQuestion: true,
+      clearInterruptedRun: true,
       isLoading: false,
       clearError: true,
       // 新话题是干净的，不能把上一个话题的上下文占用/用量统计带过来。
@@ -2542,12 +2692,14 @@ class ChatNotifier extends Notifier<ChatState> {
       lastTurns: lastStats.turns,
       lastTokens: lastStats.tokens,
       toolRecords: const [],
-      pendingPlan: const [],
       clearError: true,
       isLoading: run != null,
       runningSessionIds: {..._runs.keys},
-      liveAgentEvents:
-          run == null ? const [] : List<AgentEvent>.from(run.events),
+      liveAgentEvents: run != null
+          ? List<AgentEvent>.from(run.events)
+          : List<AgentEvent>.from(
+              state.interruptedRunBySession[id]?.events ?? const [],
+            ),
       liveReasoning: run == null ? '' : _tail(run.liveReasoning.toString()),
       liveContent: run == null ? '' : _tail(run.liveContent.toString()),
       liveContentFull: '',
@@ -2592,7 +2744,6 @@ class ChatNotifier extends Notifier<ChatState> {
       sessions: sessions,
       currentSessionId: current,
       toolRecords: const [],
-      pendingPlan: const [],
       lastPromptTokens: switched ? lastStats.prompt : state.lastPromptTokens,
       lastCacheHitTokens: switched ? lastStats.cache : state.lastCacheHitTokens,
       lastTurns: switched ? lastStats.turns : state.lastTurns,
