@@ -320,13 +320,6 @@ class GlassCard extends StatelessWidget {
         final liquidGlass = style?.liquid;
         final cardStack = Stack(
           children: [
-            Positioned.fill(
-              child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(gradient: Glass.sheen(scheme)),
-                ),
-              ),
-            ),
             if (bgLayer != null) bgLayer,
             if (liquidGlass != null)
               Positioned.fill(

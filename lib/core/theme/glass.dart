@@ -128,7 +128,7 @@ class GlassPanel extends StatelessWidget {
     this.borderWidth = 1,
     this.tint,
     this.onTap,
-    this.sheen = true,
+    this.sheen = false,
     this.anchorIndex,
   });
 
@@ -824,17 +824,12 @@ class _GlassBackgroundView extends StatelessWidget {
             ],
           )
         : pureBackground;
+    // App 自带光斑层已移除：界面只保留主题包/视觉主题自己的背景与特效，
+    // 不再叠加与主题无关的彩色光晕。
     return Stack(
       fit: StackFit.expand,
       children: [
         Positioned.fill(child: background),
-        // 光斑单独一层并且 RepaintBoundary 包住：它每 50ms 重画一次，
-        // 不隔离的话整页内容会跟着一起重画。
-        Positioned.fill(
-          child: RepaintBoundary(
-            child: IgnorePointer(child: _FlowingBlobs(scheme: scheme)),
-          ),
-        ),
       ],
     );
   }
@@ -1534,117 +1529,6 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     // Android 上 Hybrid 反而会触发 FocusEvent ANR；rAF 已不做帧率限制，
     // effect/effectBatch 只在 JS 侧合并批量发送，Surface 模式全屏动态背景稳定。
     return WebViewWidget(controller: _controller);
-  }
-}
-
-/// 三团慢慢漂的色斑。
-class _FlowingBlobs extends StatelessWidget {
-  const _FlowingBlobs({required this.scheme});
-
-  final ColorScheme scheme;
-
-  @override
-  Widget build(BuildContext context) {
-    // 离屏的标签页不订阅相位：IndexedStack 用 Visibility.maintain 保活，
-    // 六个页面都还在树上，不掐断的话光斑每跳一格就把六页背景全重建一遍。
-    if (!TickerMode.of(context)) return const SizedBox.expand();
-    return ValueListenableBuilder<double>(
-      valueListenable: GlassFlow.instance.phase,
-      builder: (context, t, _) {
-        final dark = scheme.brightness == Brightness.dark;
-        return LayoutBuilder(
-          builder: (context, box) {
-            final w = box.maxWidth;
-            final h = box.maxHeight;
-            // 三条不同周期的轨迹（1 圈 / 1.3 圈 / 0.7 圈）：周期互质才不会
-            // 三团一起同步来回，那样看起来像整块画面在平移而不是"流动"。
-            final a = 2 * math.pi * t;
-            final blobs = <_BlobSpec>[
-              _BlobSpec(
-                color: scheme.primary,
-                size: w * 0.85,
-                dx: w * (0.62 + 0.16 * math.sin(a)),
-                dy: h * (0.06 + 0.10 * math.cos(a * 1.1)),
-                alpha: dark ? 0.30 : 0.42,
-              ),
-              _BlobSpec(
-                color: scheme.tertiary,
-                size: w * 0.72,
-                dx: w * (0.10 + 0.18 * math.cos(a * 1.3)),
-                dy: h * (0.66 + 0.12 * math.sin(a * 1.3)),
-                alpha: dark ? 0.26 : 0.36,
-              ),
-              _BlobSpec(
-                color: scheme.secondary,
-                size: w * 0.6,
-                dx: w * (0.42 + 0.22 * math.sin(a * 0.7 + 1.2)),
-                dy: h * (0.38 + 0.16 * math.cos(a * 0.7)),
-                alpha: dark ? 0.16 : 0.22,
-              ),
-            ];
-            return Stack(
-              children: [
-                for (final b in blobs)
-                  Positioned(
-                    left: b.dx - b.size / 2,
-                    top: b.dy - b.size / 2,
-                    child: _Blob(
-                      color: b.color,
-                      size: b.size,
-                      alpha: b.alpha,
-                    ),
-                  ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-}
-
-class _BlobSpec {
-  const _BlobSpec({
-    required this.color,
-    required this.size,
-    required this.dx,
-    required this.dy,
-    required this.alpha,
-  });
-
-  final Color color;
-  final double size;
-  final double dx;
-  final double dy;
-  final double alpha;
-}
-
-class _Blob extends StatelessWidget {
-  const _Blob({required this.color, required this.size, this.alpha = 0.28});
-
-  final Color color;
-  final double size;
-  final double alpha;
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: RadialGradient(
-            colors: [
-              color.withValues(alpha: alpha),
-              color.withValues(alpha: alpha * 0.45),
-              color.withValues(alpha: 0.0),
-            ],
-            stops: const [0, 0.45, 1],
-          ),
-        ),
-      ),
-    );
   }
 }
 
