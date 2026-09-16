@@ -24,6 +24,7 @@ import '../providers/cron_list_provider.dart';
 import '../widgets/cron_run_log_sheet.dart';
 import '../widgets/cron_tile.dart';
 import 'cron_edit_page.dart';
+import 'subscription_tasks_page.dart';
 import 'cron_log_page.dart';
 
 class CronListPage extends ConsumerStatefulWidget {
@@ -324,13 +325,24 @@ class _CronListPageState extends ConsumerState<CronListPage> {
           final group = groups[index];
           return _SubscriptionTile(
             name: group.title,
-            tasks: group.tasks,
+            taskCount: group.tasks.length,
+            onTap: () {
+              final subId = group.subId;
+              if (subId == null) return;
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => SubscriptionTasksPage(
+                    subId: subId,
+                    subName: group.title,
+                  ),
+                ),
+              );
+            },
             onDelete: () => _deleteSubscription(
               group.subId!,
               group.title,
               group.tasks,
             ),
-            taskBuilder: (task) => _taskTile(context, task),
           );
         },
       ),
@@ -654,42 +666,22 @@ class _TaskGroup {
   final int? subId;
 }
 
-class _SubscriptionTile extends StatefulWidget {
+class _SubscriptionTile extends StatelessWidget {
   const _SubscriptionTile({
     required this.name,
-    required this.tasks,
+    required this.taskCount,
+    required this.onTap,
     required this.onDelete,
-    required this.taskBuilder,
   });
 
   final String name;
-  final List<CronTask> tasks;
+  final int taskCount;
+  final VoidCallback onTap;
   final VoidCallback onDelete;
-  final Widget Function(CronTask task) taskBuilder;
-
-  @override
-  State<_SubscriptionTile> createState() => _SubscriptionTileState();
-}
-
-class _SubscriptionTileState extends State<_SubscriptionTile> {
-  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final tasks = widget.tasks;
-    // 收起时不构建任务卡片，展开时才真正生成，避免一次把整个订阅的任务
-    // 全部 build 出来导致展开/滚动卡顿。
-    final children = _expanded
-        ? [
-            for (final task in tasks)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: widget.taskBuilder(task),
-              ),
-          ]
-        : const <Widget>[];
-
     return Card(
       margin: EdgeInsets.zero,
       elevation: 0,
@@ -701,53 +693,64 @@ class _SubscriptionTileState extends State<_SubscriptionTile> {
           color: scheme.outlineVariant.withValues(alpha: 0.35),
         ),
       ),
-      child: ExpansionTile(
-        onExpansionChanged: (value) {
-          if (_expanded != value) setState(() => _expanded = value);
-        },
-        leading: Container(
-          width: 38,
-          height: 38,
-          decoration: BoxDecoration(
-            color: scheme.primaryContainer.withValues(alpha: 0.6),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Icon(
-            Icons.cloud_download_outlined,
-            size: 20,
-            color: scheme.primary,
-          ),
-        ),
-        title: Text(
-          widget.name,
-          style: TextStyle(
-            fontSize: 14.5,
-            fontWeight: FontWeight.w700,
-            color: scheme.onSurface,
-          ),
-        ),
-        subtitle: Text(
-          '${tasks.length} 个任务',
-          style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              tooltip: '删除订阅',
-              icon: Icon(
-                Icons.delete_outline,
-                size: 20,
-                color: scheme.error,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: scheme.primaryContainer.withValues(alpha: 0.6),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  Icons.cloud_download_outlined,
+                  size: 20,
+                  color: scheme.primary,
+                ),
               ),
-              onPressed: widget.onDelete,
-            ),
-            Icon(Icons.expand_more, color: scheme.onSurfaceVariant),
-          ],
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: TextStyle(
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w700,
+                        color: scheme.onSurface,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '$taskCount 个任务',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: '删除订阅',
+                icon: Icon(
+                  Icons.delete_outline,
+                  size: 20,
+                  color: scheme.error,
+                ),
+                onPressed: onDelete,
+              ),
+              Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
+            ],
+          ),
         ),
-        expandedCrossAxisAlignment: CrossAxisAlignment.start,
-        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-        children: children,
       ),
     );
   }
