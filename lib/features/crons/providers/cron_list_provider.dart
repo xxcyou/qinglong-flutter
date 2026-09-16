@@ -14,6 +14,16 @@ enum CronFilter {
   final String label;
 }
 
+/// 任务列表的视图组织方式。
+enum CronViewMode {
+  list('列表'),
+  source('按来源'),
+  tag('按标签');
+
+  const CronViewMode(this.label);
+  final String label;
+}
+
 class CronListState {
   const CronListState({
     this.items = const [],
@@ -22,6 +32,8 @@ class CronListState {
     this.pageSize = 20,
     this.search = '',
     this.filter = CronFilter.all,
+    this.viewMode = CronViewMode.list,
+    this.selectedTag,
     this.isLoading = false,
     this.isRefreshing = false,
     this.isLoadingMore = false,
@@ -34,6 +46,8 @@ class CronListState {
   final int pageSize;
   final String search;
   final CronFilter filter;
+  final CronViewMode viewMode;
+  final String? selectedTag;
   final bool isLoading;
   final bool isRefreshing;
   final bool isLoadingMore;
@@ -48,6 +62,9 @@ class CronListState {
     int? pageSize,
     String? search,
     CronFilter? filter,
+    CronViewMode? viewMode,
+    String? selectedTag,
+    bool clearSelectedTag = false,
     bool? isLoading,
     bool? isRefreshing,
     bool? isLoadingMore,
@@ -61,6 +78,8 @@ class CronListState {
       pageSize: pageSize ?? this.pageSize,
       search: search ?? this.search,
       filter: filter ?? this.filter,
+      viewMode: viewMode ?? this.viewMode,
+      selectedTag: clearSelectedTag ? null : selectedTag ?? this.selectedTag,
       isLoading: isLoading ?? this.isLoading,
       isRefreshing: isRefreshing ?? this.isRefreshing,
       isLoadingMore: isLoadingMore ?? this.isLoadingMore,
@@ -170,6 +189,19 @@ class CronListNotifier extends Notifier<CronListState> {
     if (state.filter == filter) return;
     state = state.copyWith(filter: filter, items: const [], page: 1);
     loadFirst();
+  }
+
+  void setViewMode(CronViewMode mode) {
+    if (state.viewMode == mode) return;
+    state = state.copyWith(viewMode: mode);
+  }
+
+  void setSelectedTag(String? tag) {
+    if (state.selectedTag == tag) return;
+    state = state.copyWith(
+      selectedTag: tag,
+      clearSelectedTag: tag == null,
+    );
   }
 
   Future<void> create(CronTask task) async {

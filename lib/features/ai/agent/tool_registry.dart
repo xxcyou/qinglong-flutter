@@ -1055,15 +1055,22 @@ class QlToolRegistry {
         });
 
       case 'cron_create':
+        final cronLabels = <String>[
+          ...(args['labels'] as List? ?? const []).map((e) => e.toString()),
+        ];
+        // AI 创建的任务自动带来源标签，任务页“按来源”视图能可靠归组。
+        final hasAiTag = cronLabels.any((l) {
+          final lower = l.trim().toLowerCase();
+          return lower == 'ai' || lower.contains('ai创建');
+        });
+        if (!hasAiTag) cronLabels.add('AI创建');
         await CronApi.create(
           apiBaseUrl: base,
           task: CronTask(
             name: args['name'] as String,
             command: args['command'] as String,
             schedule: args['schedule'] as String,
-            labels: (args['labels'] as List? ?? const [])
-                .map((e) => e.toString())
-                .toList(),
+            labels: cronLabels,
           ),
         );
         return '已创建任务 ${args['name']}';

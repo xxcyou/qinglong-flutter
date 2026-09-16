@@ -14,6 +14,7 @@ import '../../../shared/glass_scaffold.dart';
 import '../../../shared/loading_view.dart';
 import '../../../shared/search_field.dart';
 import '../../panels/providers/panel_list_provider.dart';
+import '../../subscriptions/providers/subscription_list_provider.dart';
 import '../../scripts/pages/script_edit_page.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../models/cron_task.dart';
@@ -42,7 +43,12 @@ class _CronListPageState extends ConsumerState<CronListPage> {
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
-    Future.microtask(() => ref.read(cronListProvider.notifier).loadFirst());
+    Future.microtask(() {
+      ref.read(cronListProvider.notifier).loadFirst();
+      if (ref.read(currentPanelProvider) != null) {
+        ref.read(subListProvider.notifier).load();
+      }
+    });
     _startPolling();
   }
 
@@ -85,6 +91,11 @@ class _CronListPageState extends ConsumerState<CronListPage> {
   Widget build(BuildContext context) {
     final state = ref.watch(cronListProvider);
     final currentPanel = ref.watch(currentPanelProvider);
+    final subState = ref.watch(subListProvider);
+    final subNames = <int, String>{
+      for (final sub in subState.items)
+        if (sub.id != null) sub.id!: sub.name.isNotEmpty ? sub.name : sub.alias,
+    };
     final notifier = ref.read(cronListProvider.notifier);
 
     // 未选面板时整页为空态。
@@ -95,7 +106,10 @@ class _CronListPageState extends ConsumerState<CronListPage> {
       );
     }
 
-    final visibleItems = state.items.where((t) {
+    final allTags = <String>{
+      for (final t in state.items) ...t.labels,
+    };
+    var visibleItems = state.items.where((t) {
       if (state.filter == CronFilter.enabled && t.isDisabled) return false;
       if (state.filter == CronFilter.disabled && !t.isDisabled) return false;
       if (state.filter == CronFilter.running && (t.pid == null || t.pid == 0)) {
@@ -103,6 +117,13 @@ class _CronListPageState extends ConsumerState<CronListPage> {
       }
       return true;
     }).toList();
+    if (state.viewMode == CronViewMode.tag &&
+        state.selectedTag != null &&
+        state.selectedTag!.isNotEmpty) {
+      visibleItems = visibleItems
+          .where((t) => t.labels.contains(state.selectedTag))
+          .toList();
+    }
 
     return GlassScaffold(
       title: '定时任务',
@@ -117,21 +138,74 @@ class _CronListPageState extends ConsumerState<CronListPage> {
       ),
       headerBottom: Padding(
         padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-        child: SizedBox(
-          height: 34,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: CronFilter.values.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 8),
-            itemBuilder: (context, index) {
-              final f = CronFilter.values[index];
-              return ChoiceChip(
-                label: Text(f.label),
-                selected: state.filter == f,
-                onSelected: (_) => notifier.setFilter(f),
-              );
-            },
-          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              height: 32,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: CronFilter.values.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  final f = CronFilter.values[index];
+                  return ChoiceChip(
+                    label: Text(f.label),
+                    selected: state.filter == f,
+                    onSelected: (_) => notifier.setFilter(f),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 4),
+            SizedBox(
+              height: 30,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: CronViewMode.values.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  final mode = CronViewMode.values[index];
+                  return ChoiceChip(
+                    label: Text(mode.label),
+                    selected: state.viewMode == mode,
+                    onSelected: (_) {
+                      notifier.setViewMode(mode);
+                      if (mode != CronViewMode.tag) {
+                        notifier.setSelectedTag(null);
+                      }
+                    },
+                  );
+                },
+              ),
+            ),
+            if (state.viewMode == CronViewMode.tag) ...[
+              const SizedBox(height: 4),
+              SizedBox(
+                height: 30,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: allTags.length + 1,
+                  separatorBuilder: (_, __) => const SizedBox(width: 6),
+                  itemBuilder: (context, index) {
+                    if (index == 0) {
+                      return ChoiceChip(
+                        label: const Text('全部标签'),
+                        selected: state.selectedTag == null,
+                        onSelected: (_) => notifier.setSelectedTag(null),
+                      );
+                    }
+                    final tag = allTags.elementAt(index - 1);
+                    return ChoiceChip(
+                      label: Text(tag),
+                      selected: state.selectedTag == tag,
+                      onSelected: (_) => notifier.setSelectedTag(tag),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ],
         ),
       ),
       actions: [
@@ -164,11 +238,15 @@ class _CronListPageState extends ConsumerState<CronListPage> {
               onDelete: _deleteSelected,
             )
           : null,
-      body: _buildBody(state, visibleItems),
+      body: _buildBody(state, visibleItems, subNames),
     );
   }
 
-  Widget _buildBody(CronListState state, List<CronTask> items) {
+  Widget _buildBody(
+    CronListState state,
+    List<CronTask> items,
+    Map<int, String> subNames,
+  ) {
     if (state.isLoading && items.isEmpty) {
       return const LoadingView();
     }
@@ -180,11 +258,22 @@ class _CronListPageState extends ConsumerState<CronListPage> {
     }
     if (items.isEmpty) {
       return EmptyView(
-        message: state.search.isNotEmpty ? '没有匹配的任务' : '暂无定时任务\n点击右下角 + 新建',
+        message: state.viewMode == CronViewMode.tag && state.selectedTag != null
+            ? '该标签下没有任务'
+            : state.search.isNotEmpty
+                ? '没有匹配的任务'
+                : '暂无定时任务\n点击右下角 + 新建',
         icon: Icons.event_note_outlined,
       );
     }
 
+    if (state.viewMode == CronViewMode.source) {
+      return _buildSourceBody(state, items, subNames);
+    }
+    return _buildFlatBody(state, items);
+  }
+
+  Widget _buildFlatBody(CronListState state, List<CronTask> items) {
     return RefreshIndicator(
       onRefresh: () => ref.read(cronListProvider.notifier).refresh(),
       child: ListView.separated(
@@ -196,58 +285,147 @@ class _CronListPageState extends ConsumerState<CronListPage> {
             : const SizedBox(height: 8),
         itemBuilder: (context, index) {
           if (index == items.length) {
-            return const Padding(
-              padding: EdgeInsets.all(16),
-              child: Center(
-                child: SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-            );
+            return const _LoadingMoreItem();
           }
-          final task = items[index];
-          return CronTile(
-            task: task,
-            selected: _selectedIds.contains(task.id),
-            onTap: () {
-              if (_selecting) {
-                setState(() {
-                  if (task.id == null) return;
-                  if (!_selectedIds.remove(task.id)) _selectedIds.add(task.id!);
-                });
-              } else {
-                _openEdit(context, task: task);
-              }
-            },
-            onLongPress: () {
-              if (task.id != null) {
-                setState(() => _selectedIds.add(task.id!));
-              }
-            },
-            onRun: () => _runOne(task),
-            onStop: () => _batch(ref.read(cronListProvider.notifier).stop,
-                ids: [task.id!]),
-            onLog: task.id == null
-                ? () {}
-                : () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => CronLogPage(
-                          cronId: task.id!,
-                          taskName: task.name,
-                          logPath: task.logPath,
-                        ),
-                      ),
-                    ),
-            onDelete: () => _deleteOne(task),
-            onSendToAi: () => _sendToAi(task),
-            onOpenScript: _extractScriptPath(task) == null
-                ? null
-                : () => _openScript(task),
-          );
+          return _taskTile(context, items[index]);
         },
       ),
+    );
+  }
+
+  Widget _buildSourceBody(
+    CronListState state,
+    List<CronTask> items,
+    Map<int, String> subNames,
+  ) {
+    final groups = _sourceGroups(items, subNames);
+    final entries = <Object>[];
+    for (final group in groups) {
+      entries.add(_GroupHeader(
+        title: group.title,
+        count: group.tasks.length,
+      ));
+      entries.addAll(group.tasks);
+    }
+
+    return RefreshIndicator(
+      onRefresh: () => ref.read(cronListProvider.notifier).refresh(),
+      child: ListView.separated(
+        controller: _scrollController,
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 110),
+        itemCount: entries.length + (state.isLoadingMore ? 1 : 0),
+        separatorBuilder: (_, index) {
+          if (index >= entries.length) return const SizedBox.shrink();
+          final prev = entries[index];
+          final next = entries[index + 1];
+          if (prev is _GroupHeader || next is _GroupHeader) {
+            return const SizedBox(height: 4);
+          }
+          return const SizedBox(height: 8);
+        },
+        itemBuilder: (context, index) {
+          if (index == entries.length) {
+            return const _LoadingMoreItem();
+          }
+          final entry = entries[index];
+          if (entry is _GroupHeader) return entry;
+          if (entry is CronTask) return _taskTile(context, entry);
+          return const SizedBox.shrink();
+        },
+      ),
+    );
+  }
+
+  List<_TaskGroup> _sourceGroups(
+    List<CronTask> items,
+    Map<int, String> subNames,
+  ) {
+    final ai = <CronTask>[];
+    final bySub = <int, List<CronTask>>{};
+    final mine = <CronTask>[];
+
+    for (final task in items) {
+      if (_isAiTask(task)) {
+        ai.add(task);
+        continue;
+      }
+      final subId = task.subId;
+      if (subId != null) {
+        bySub.putIfAbsent(subId, () => []).add(task);
+      } else {
+        mine.add(task);
+      }
+    }
+
+    final groups = <_TaskGroup>[];
+    if (ai.isNotEmpty) groups.add(_TaskGroup('AI 创建', ai));
+    final subIds = bySub.keys.toList()
+      ..sort((a, b) {
+        final na = (subNames[a] ?? '').toLowerCase();
+        final nb = (subNames[b] ?? '').toLowerCase();
+        return na.compareTo(nb);
+      });
+    for (final subId in subIds) {
+      groups.add(_TaskGroup(
+        subNames[subId] ?? '订阅 #$subId',
+        bySub[subId]!,
+      ));
+    }
+    if (mine.isNotEmpty) groups.add(_TaskGroup('我的任务', mine));
+    return groups;
+  }
+
+  bool _isAiTask(CronTask task) {
+    for (final label in task.labels) {
+      final lower = label.trim().toLowerCase();
+      if (lower == 'ai' ||
+          lower == 'ai创建' ||
+          lower == 'ai创建' ||
+          lower == 'ai 创建' ||
+          lower.contains('ai创建')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Widget _taskTile(BuildContext context, CronTask task) {
+    return CronTile(
+      task: task,
+      selected: _selectedIds.contains(task.id),
+      onTap: () {
+        if (_selecting) {
+          setState(() {
+            if (task.id == null) return;
+            if (!_selectedIds.remove(task.id)) _selectedIds.add(task.id!);
+          });
+        } else {
+          _openEdit(context, task: task);
+        }
+      },
+      onLongPress: () {
+        if (task.id != null) {
+          setState(() => _selectedIds.add(task.id!));
+        }
+      },
+      onRun: () => _runOne(task),
+      onStop: () =>
+          _batch(ref.read(cronListProvider.notifier).stop, ids: [task.id!]),
+      onLog: task.id == null
+          ? () {}
+          : () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => CronLogPage(
+                    cronId: task.id!,
+                    taskName: task.name,
+                    logPath: task.logPath,
+                  ),
+                ),
+              ),
+      onDelete: () => _deleteOne(task),
+      onSendToAi: () => _sendToAi(task),
+      onOpenScript:
+          _extractScriptPath(task) == null ? null : () => _openScript(task),
     );
   }
 
@@ -376,6 +554,69 @@ class _CronListPageState extends ConsumerState<CronListPage> {
     if (ok) {
       await _batch(ref.read(cronListProvider.notifier).delete);
     }
+  }
+}
+
+class _TaskGroup {
+  const _TaskGroup(this.title, this.tasks);
+
+  final String title;
+  final List<CronTask> tasks;
+}
+
+class _GroupHeader extends StatelessWidget {
+  const _GroupHeader({required this.title, required this.count});
+
+  final String title;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 10, 4, 2),
+      child: Row(
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: scheme.onSurface,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '$count',
+            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+          ),
+          const Spacer(),
+          Icon(
+            Icons.grid_view_rounded,
+            size: 14,
+            color: scheme.onSurfaceVariant,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LoadingMoreItem extends StatelessWidget {
+  const _LoadingMoreItem();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.all(16),
+      child: Center(
+        child: SizedBox(
+          width: 24,
+          height: 24,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+    );
   }
 }
 
