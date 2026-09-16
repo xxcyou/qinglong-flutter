@@ -330,6 +330,22 @@ document.getElementById('vol').addEventListener('input', function () {
 4. **组件背景动态布偶撞来撞去**：这是"组件内部背景动画"——主题包先 `queryComponents` 取组件矩形，再用 JS 把布偶位置限制在该矩形内做弹跳，通过 DSHTheme 实时更新。
 5. **给 AI 输入框/列表等指定序号**：主题包用 `queryComponents({type:...)})` 返回 `index`，用 `index` 精确控制某个组件；也支持 `page/type/index` 自由组合。
 
+### 字体排版（主题包控制全局文字）
+主题包可以通过 `controller.js` 的 `typography` 字段控制 App 全局文字：
+```javascript
+typography: {
+  family: '/workspace/.ql_themes/packages/<id>/fonts/custom.ttf', // 或系统字体名，缺省系统
+  size: '16',            // 字号
+  weight: '600',         // 100~900
+  color: '#D4AF37',      // 文字颜色
+  opacity: '1',          // 0~1 透明度
+  strikethrough: 'false',// 是否删除线
+  gold: 'true'           // 是否金边字
+}
+```
+- `family` 可以是主题包内 .ttf/.otf 的 guest 路径，App 会自动加载；也可以是系统字体名。
+- 用户可在设置 → 字体设置里开启“自定义字体”覆盖这份主题排版。
+
 ### 主题包制作/安装流程
 - 用 `theme_manage create` 生成基础 ZIP 包。
 - 用 shell 写 `html/index.html`、`js/*.js`、`css/*.css`、`image/elements/*`，在 controller.js 里声明资源。

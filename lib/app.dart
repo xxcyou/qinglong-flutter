@@ -6,6 +6,7 @@ import 'core/debug/api_debug_log.dart';
 import 'core/llm/llm_registry_provider.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/theme_config.dart';
+import 'core/theme/font_settings_scope.dart';
 import 'core/theme/glass.dart';
 import 'core/theme/theme_effects_controller.dart';
 import 'core/theme/theme_store.dart';
@@ -95,7 +96,13 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
                 key: const ValueKey('app-router'),
                 // 标记根上已有全局背景，页面里的 GlassBackdrop 直接透传，
                 // 不再为每个二级页新建一套背景 WebView。
-                child: ThemeBackgroundScope(child: child),
+                child: ThemeBackgroundScope(
+                  child: FontSettingsScope(
+                    settings: settings,
+                    theme: activeTheme,
+                    child: child,
+                  ),
+                ),
               ),
             // 全局特效覆盖层：主题 DSHTheme.effect 绘制这里，位于导航层之上。
             const Positioned.fill(

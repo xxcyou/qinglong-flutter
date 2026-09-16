@@ -18,6 +18,7 @@ class ThemeConfig {
     this.backgroundHtml = '',
     this.colors = const {},
     this.effects = const {},
+    this.typography = const {},
   });
 
   final String id;
@@ -40,6 +41,10 @@ class ThemeConfig {
   /// 效果表。见 [defaultEffects]。
   final Map<String, double> effects;
 
+  /// 字体排版表。见 [defaultTypography]。
+  /// 键：family / size / weight / color / opacity / strikethrough / gold。
+  final Map<String, String> typography;
+
   bool get isDark => brightness != 'light';
 
   Color color(String key, Color fallback) {
@@ -54,6 +59,9 @@ class ThemeConfig {
   }
 
   double effect(String key, double fallback) => effects[key] ?? fallback;
+
+  /// 主题包内的字体排版控制；没有配置时返回空样式（交给 App 设置）。
+  ThemeFontConfig get fontStyle => ThemeFontConfig.fromMap(typography);
 
   ColorScheme scheme() {
     final dark = isDark;
@@ -186,6 +194,7 @@ class ThemeConfig {
     String? backgroundHtml,
     Map<String, String>? colors,
     Map<String, double>? effects,
+    Map<String, String>? typography,
   }) {
     return ThemeConfig(
       id: id ?? this.id,
@@ -195,6 +204,7 @@ class ThemeConfig {
       backgroundHtml: backgroundHtml ?? this.backgroundHtml,
       colors: colors ?? this.colors,
       effects: effects ?? this.effects,
+      typography: typography ?? this.typography,
     );
   }
 
@@ -221,6 +231,25 @@ class ThemeConfig {
     'errorContainer',
     'onErrorContainer',
   ];
+
+  /// 字体排版的默认骨架（AI 生成新版主题包模板时可参考）。
+  static const List<String> typographyKeys = [
+    'family',
+    'size',
+    'weight',
+    'color',
+    'opacity',
+    'strikethrough',
+    'gold',
+  ];
+
+  static const Map<String, String> defaultTypography = {
+    'size': '16',
+    'weight': '400',
+    'opacity': '1',
+    'strikethrough': 'false',
+    'gold': 'false',
+  };
 
   static const Map<String, String> defaultColors = {
     'primary': '#66BB6A',
@@ -285,5 +314,111 @@ class ThemeConfig {
         'onErrorContainer': '#2B0A0A',
       },
     };
+  }
+}
+
+/// 主题包/App 通用的字体排版配置。
+class ThemeFontConfig {
+  const ThemeFontConfig({
+    this.family = '',
+    this.size,
+    this.weight,
+    this.color,
+    this.opacity = 1,
+    this.strikethrough = false,
+    this.goldBorder = false,
+  });
+
+  final String family;
+  final double? size;
+  final FontWeight? weight;
+  final Color? color;
+  final double opacity;
+  final bool strikethrough;
+  final bool goldBorder;
+
+  bool get isEmpty =>
+      family.isEmpty &&
+      size == null &&
+      weight == null &&
+      color == null &&
+      opacity == 1 &&
+      !strikethrough &&
+      !goldBorder;
+
+  static ThemeFontConfig fromMap(Map<String, String> map) {
+    if (map.isEmpty) return const ThemeFontConfig();
+    double? parseD(String key) {
+      final raw = map[key]?.trim() ?? '';
+      if (raw.isEmpty) return null;
+      return double.tryParse(raw);
+    }
+
+    int? parseI(String key) {
+      final raw = map[key]?.trim() ?? '';
+      if (raw.isEmpty) return null;
+      return int.tryParse(raw);
+    }
+
+    bool parseB(String key) {
+      return (map[key]?.trim().toLowerCase() ?? '') == 'true';
+    }
+
+    Color? parseColor(String key) {
+      final raw = map[key]?.trim() ?? '';
+      if (raw.isEmpty) return null;
+      var hex = raw.replaceFirst('#', '');
+      final value = int.tryParse(hex, radix: 16);
+      if (value == null) return null;
+      if (hex.length == 6) return Color(0xFF000000 | value);
+      if (hex.length == 8) return Color(value);
+      return null;
+    }
+
+    final weight = switch (parseI('weight')) {
+      100 => FontWeight.w100,
+      200 => FontWeight.w200,
+      300 => FontWeight.w300,
+      400 => FontWeight.w400,
+      500 => FontWeight.w500,
+      600 => FontWeight.w600,
+      700 => FontWeight.w700,
+      800 => FontWeight.w800,
+      900 => FontWeight.w900,
+      _ => null,
+    };
+    return ThemeFontConfig(
+      family: map['family']?.trim() ?? '',
+      size: parseD('size'),
+      weight: weight,
+      color: parseColor('color'),
+      opacity: parseD('opacity')?.clamp(0.0, 1.0) ?? 1,
+      strikethrough: parseB('strikethrough'),
+      goldBorder: parseB('gold'),
+    );
+  }
+
+  Map<String, String> toMap() => {
+        if (family.isNotEmpty) 'family': family,
+        if (size != null) 'size': size.toString(),
+        if (weight != null) 'weight': weight!.value.toString(),
+        if (color != null)
+          'color':
+              '#${color!.toARGB32().toRadixString(16).padLeft(8, '0').substring(2)}',
+        if (opacity != 1) 'opacity': opacity.toString(),
+        if (strikethrough) 'strikethrough': 'true',
+        if (goldBorder) 'gold': 'true',
+      };
+
+  ThemeFontConfig merge(ThemeFontConfig other) {
+    return ThemeFontConfig(
+      family: other.family.isNotEmpty ? other.family : family,
+      size: other.size ?? size,
+      weight: other.weight ?? weight,
+      color: other.color ?? color,
+      opacity: other.opacity == 1 ? opacity : other.opacity,
+      strikethrough: other.strikethrough || strikethrough,
+      goldBorder: other.goldBorder || goldBorder,
+    );
   }
 }

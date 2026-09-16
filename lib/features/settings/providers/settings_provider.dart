@@ -39,6 +39,14 @@ class AppSettings {
     this.cacheCleanupEnabled = true,
     this.cacheMaxAgeDays = 30,
     this.cacheMaxSizeMB = 200,
+    this.fontCustomEnabled = false,
+    this.fontFamily = '',
+    this.fontSize = 16,
+    this.fontWeight = 400,
+    this.fontColor = 0xFF1A1C1E,
+    this.fontOpacity = 1,
+    this.fontStrikethrough = false,
+    this.fontGoldBorder = false,
   });
 
   final ThemeMode themeMode;
@@ -119,6 +127,30 @@ class AppSettings {
   /// 缓存总大小超过多少 MB 时按旧数据优先清理。
   final int cacheMaxSizeMB;
 
+  /// 是否启用自定义字体设置（关 = 跟随主题包/系统默认）。
+  final bool fontCustomEnabled;
+
+  /// 自定义字体文件路径或系统字体名，空 = 系统默认。
+  final String fontFamily;
+
+  /// 全局字号。
+  final double fontSize;
+
+  /// 全局字重（400/500/600…）。
+  final double fontWeight;
+
+  /// 全局文字颜色（ARGB int）。
+  final int fontColor;
+
+  /// 全局文字透明度。
+  final double fontOpacity;
+
+  /// 是否显示删除线。
+  final bool fontStrikethrough;
+
+  /// 是否启用金边字（金色描边/发光）。
+  final bool fontGoldBorder;
+
   /// 解析额外 JSON，坏了就当空——配置错不该让对话直接不可用。
   Map<String, dynamic> get extraBodyMap => _decodeMap(llmExtraBody);
 
@@ -169,6 +201,14 @@ class AppSettings {
     bool? cacheCleanupEnabled,
     int? cacheMaxAgeDays,
     int? cacheMaxSizeMB,
+    bool? fontCustomEnabled,
+    String? fontFamily,
+    double? fontSize,
+    double? fontWeight,
+    int? fontColor,
+    double? fontOpacity,
+    bool? fontStrikethrough,
+    bool? fontGoldBorder,
     // 采样参数需要"清空"语义，单独给显式清除开关。
     bool clearTemperature = false,
     bool clearTopP = false,
@@ -194,6 +234,14 @@ class AppSettings {
       cacheCleanupEnabled: cacheCleanupEnabled ?? this.cacheCleanupEnabled,
       cacheMaxAgeDays: cacheMaxAgeDays ?? this.cacheMaxAgeDays,
       cacheMaxSizeMB: cacheMaxSizeMB ?? this.cacheMaxSizeMB,
+      fontCustomEnabled: fontCustomEnabled ?? this.fontCustomEnabled,
+      fontFamily: fontFamily ?? this.fontFamily,
+      fontSize: fontSize ?? this.fontSize,
+      fontWeight: fontWeight ?? this.fontWeight,
+      fontColor: fontColor ?? this.fontColor,
+      fontOpacity: fontOpacity ?? this.fontOpacity,
+      fontStrikethrough: fontStrikethrough ?? this.fontStrikethrough,
+      fontGoldBorder: fontGoldBorder ?? this.fontGoldBorder,
       languageCode: languageCode ?? this.languageCode,
       llmBaseUrl: llmBaseUrl ?? this.llmBaseUrl,
       llmModel: llmModel ?? this.llmModel,
@@ -233,6 +281,14 @@ class AppSettings {
         'cacheCleanupEnabled': cacheCleanupEnabled,
         'cacheMaxAgeDays': cacheMaxAgeDays,
         'cacheMaxSizeMB': cacheMaxSizeMB,
+        'fontCustomEnabled': fontCustomEnabled,
+        'fontFamily': fontFamily,
+        'fontSize': fontSize,
+        'fontWeight': fontWeight,
+        'fontColor': fontColor,
+        'fontOpacity': fontOpacity,
+        'fontStrikethrough': fontStrikethrough,
+        'fontGoldBorder': fontGoldBorder,
         'languageCode': languageCode,
         'llmBaseUrl': llmBaseUrl,
         'llmModel': llmModel,
@@ -279,6 +335,14 @@ class SettingsNotifier extends Notifier<AppSettings> {
       cacheCleanupEnabled: prefs.getBool('cacheCleanupEnabled') ?? true,
       cacheMaxAgeDays: prefs.getInt('cacheMaxAgeDays') ?? 30,
       cacheMaxSizeMB: prefs.getInt('cacheMaxSizeMB') ?? 200,
+      fontCustomEnabled: prefs.getBool('fontCustomEnabled') ?? false,
+      fontFamily: prefs.getString('fontFamily') ?? '',
+      fontSize: prefs.getDouble('fontSize') ?? 16,
+      fontWeight: prefs.getDouble('fontWeight') ?? 400,
+      fontColor: prefs.getInt('fontColor') ?? 0xFF1A1C1E,
+      fontOpacity: prefs.getDouble('fontOpacity') ?? 1,
+      fontStrikethrough: prefs.getBool('fontStrikethrough') ?? false,
+      fontGoldBorder: prefs.getBool('fontGoldBorder') ?? false,
       languageCode: prefs.getString('languageCode') ?? 'zh',
       llmBaseUrl: prefs.getString('llmBaseUrl') ?? '',
       llmModel: prefs.getString('llmModel') ?? '',
@@ -330,6 +394,14 @@ class SettingsNotifier extends Notifier<AppSettings> {
     await prefs.setBool('cacheCleanupEnabled', next.cacheCleanupEnabled);
     await prefs.setInt('cacheMaxAgeDays', next.cacheMaxAgeDays);
     await prefs.setInt('cacheMaxSizeMB', next.cacheMaxSizeMB);
+    await prefs.setBool('fontCustomEnabled', next.fontCustomEnabled);
+    await prefs.setString('fontFamily', next.fontFamily);
+    await prefs.setDouble('fontSize', next.fontSize);
+    await prefs.setDouble('fontWeight', next.fontWeight);
+    await prefs.setInt('fontColor', next.fontColor);
+    await prefs.setDouble('fontOpacity', next.fontOpacity);
+    await prefs.setBool('fontStrikethrough', next.fontStrikethrough);
+    await prefs.setBool('fontGoldBorder', next.fontGoldBorder);
     await prefs.setString('languageCode', next.languageCode);
     await prefs.setString('llmBaseUrl', next.llmBaseUrl);
     await prefs.setString('llmModel', next.llmModel);

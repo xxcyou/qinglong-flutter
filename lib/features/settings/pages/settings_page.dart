@@ -14,6 +14,7 @@ import '../../ai/providers/chat_provider.dart';
 import '../../debug/pages/api_debug_page.dart';
 import '../providers/settings_provider.dart';
 import 'ai_settings_page.dart';
+import 'font_settings_page.dart';
 
 class SettingsPage extends ConsumerWidget {
   const SettingsPage({super.key});
@@ -30,6 +31,20 @@ class SettingsPage extends ConsumerWidget {
         children: [
           const SectionLabel('外观'),
           const _ThemeSchemeCard(),
+          const SizedBox(height: 8),
+          GlassCard(
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.text_fields),
+              title: const Text('字体设置',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('字体文件 / 字号 / 字重 / 颜色 / 删除线 / 金边字'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const FontSettingsPage()),
+              ),
+            ),
+          ),
           const SizedBox(height: 8),
           const SectionLabel('刷新与轮询'),
           _StepperCard(

@@ -206,6 +206,13 @@ class ThemeNotifier extends Notifier<ThemeState> {
               ThemeConfig.defaultEffects[e.key.toString()] ??
               0,
     };
+    final rawTypography = data['typography'];
+    final typography = <String, String>{
+      ...ThemeConfig.defaultTypography,
+      if (rawTypography is Map)
+        for (final e in rawTypography.entries)
+          e.key.toString(): e.value.toString(),
+    };
 
     var backgroundImage = data['backgroundImage']?.toString() ?? '';
     var backgroundHtml = '';
@@ -251,6 +258,7 @@ class ThemeNotifier extends Notifier<ThemeState> {
       backgroundHtml: backgroundHtml,
       colors: colors,
       effects: effects,
+      typography: typography,
     );
   }
 
@@ -479,6 +487,13 @@ class ThemeNotifier extends Notifier<ThemeState> {
                   ThemeConfig.defaultEffects[e.key.toString()] ??
                   0,
         };
+        final rawTypography = map['typography'];
+        final typography = <String, String>{
+          ...ThemeConfig.defaultTypography,
+          if (rawTypography is Map)
+            for (final e in rawTypography.entries)
+              e.key.toString(): e.value.toString(),
+        };
         await _writeController(
           hostDir,
           ThemeConfig(
@@ -489,6 +504,7 @@ class ThemeNotifier extends Notifier<ThemeState> {
             backgroundHtml: map['backgroundHtml']?.toString() ?? '',
             colors: colors,
             effects: effects,
+            typography: typography,
           ),
         );
       } else {
@@ -514,6 +530,13 @@ class ThemeNotifier extends Notifier<ThemeState> {
                   ThemeConfig.defaultEffects[e.key.toString()] ??
                   0,
         };
+        final rawTypography = data['typography'];
+        final typography = <String, String>{
+          ...ThemeConfig.defaultTypography,
+          if (rawTypography is Map)
+            for (final e in rawTypography.entries)
+              e.key.toString(): e.value.toString(),
+        };
         await _writeController(
           hostDir,
           ThemeConfig(
@@ -524,6 +547,7 @@ class ThemeNotifier extends Notifier<ThemeState> {
             backgroundHtml: data['backgroundHtml']?.toString() ?? '',
             colors: colors,
             effects: effects,
+            typography: typography,
           ),
         );
       }
@@ -590,6 +614,7 @@ class ThemeNotifier extends Notifier<ThemeState> {
     b.writeln('  backgroundImage: \'${_jsEscape(theme.backgroundImage)}\',');
     b.writeln('  colors: ${jsonEncode(theme.colors)},');
     b.writeln('  effects: ${jsonEncode(theme.effects)},');
+    b.writeln('  typography: ${jsonEncode(theme.typography)},');
     b.writeln('};');
     b.writeln('');
     b.writeln('// 主题资源路由：controller.js 在这里分配各组件的子脚本/样式/HTML/XML。');
