@@ -2733,7 +2733,32 @@ class ChatNotifier extends Notifier<ChatState> {
     // 会话删掉后本地完整轮归档也一起删干净，不留任何残留文件。
     unawaited(RoundArchiveService.instance.deleteSession(id));
     if (state.sessions.length <= 1) {
-      clear();
+      // 只剩最后一个会话时也不能留下旧会话的 id/标题/归档残留：
+      // 原地换一个全新空会话，旧会话真正"没有"。
+      final session = AiSession(
+        id: 's${DateTime.now().millisecondsSinceEpoch}',
+        title: '新会话',
+      );
+      state = state.copyWith(
+        sessions: [session],
+        currentSessionId: session.id,
+        toolRecords: const [],
+        pendingPlan: const [],
+        liveAgentEvents: const [],
+        clearLiveText: true,
+        livePlan: const AgentTaskPlan(),
+        pendingQuestion: null,
+        clearPendingQuestion: true,
+        clearInterruptedRun: true,
+        isLoading: false,
+        clearError: true,
+        estimatedContextTokens: 0,
+        lastPromptTokens: 0,
+        lastCacheHitTokens: 0,
+        lastTurns: 0,
+        lastTokens: 0,
+      );
+      _persist();
       return;
     }
     final sessions =
