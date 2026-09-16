@@ -49,6 +49,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/runtime/
+    - assets/images/
 
   # 代码编辑器和终端都靠等宽字体活着。Android 自带的 monospace（Droid Sans Mono）
   # 字形窄、没有连字、和中文混排时基线乱跳，看起来就是"很丑"。

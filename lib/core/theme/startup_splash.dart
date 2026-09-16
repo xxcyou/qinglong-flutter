@@ -15,10 +15,11 @@ class StartupSplash extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 84,
-              height: 84,
+              width: 96,
+              height: 96,
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: scheme.primaryContainer.withValues(alpha: 0.55),
+                color: scheme.surface.withValues(alpha: 0.92),
                 borderRadius: BorderRadius.circular(26),
                 border: Border.all(
                   color: scheme.primary.withValues(alpha: 0.4),
@@ -31,10 +32,14 @@ class StartupSplash extends StatelessWidget {
                   ),
                 ],
               ),
-              child: Icon(
-                Icons.auto_awesome,
-                size: 44,
-                color: scheme.primary,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: Image.asset(
+                  'assets/images/app_icon.png',
+                  width: 76,
+                  height: 76,
+                  fit: BoxFit.cover,
+                ),
               ),
             ),
             const SizedBox(height: 20),

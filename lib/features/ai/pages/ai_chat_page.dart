@@ -1475,16 +1475,19 @@ class _WelcomeView extends StatelessWidget {
       children: [
         Center(
           child: Container(
-            width: 62,
-            height: 62,
+            width: 64,
+            height: 64,
             decoration: BoxDecoration(
-              color: scheme.primaryContainer,
+              color: scheme.primaryContainer.withValues(alpha: 0.85),
               shape: BoxShape.circle,
             ),
-            child: Icon(
-              Icons.smart_toy_outlined,
-              size: 26,
-              color: scheme.onPrimaryContainer,
+            child: ClipOval(
+              child: Image.asset(
+                'assets/images/app_icon.png',
+                width: 64,
+                height: 64,
+                fit: BoxFit.cover,
+              ),
             ),
           ),
         ),
