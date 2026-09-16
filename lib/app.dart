@@ -27,14 +27,17 @@ class QingLongApp extends ConsumerStatefulWidget {
 }
 
 class _QingLongAppState extends ConsumerState<QingLongApp> {
+  /// 启动 Logo 是否已移除；淡出动画完成后才置 true。
+  bool _splashRemoved = false;
+
   /// 启动 Logo 最短展示时长；主题没加载完会继续等到加载完。
-  bool _splashDone = false;
+  bool _minSplashDone = false;
 
   @override
   void initState() {
     super.initState();
-    Future.delayed(const Duration(milliseconds: 1500), () {
-      if (mounted) setState(() => _splashDone = true);
+    Future.delayed(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() => _minSplashDone = true);
     });
     ref.listenManual(currentPanelProvider, (previous, next) {
       configureDioForPanel(next);
@@ -52,11 +55,18 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
     });
   }
 
+  void _finishSplash() {
+    if (mounted && !_splashRemoved) {
+      setState(() => _splashRemoved = true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final themeState = ref.watch(themeProvider);
-    final showSplash = !_splashDone || !themeState.loaded;
+    final splashReady = _minSplashDone && themeState.loaded;
+    final showSplash = !_splashRemoved;
     final activeTheme = themeState.active;
     final router = ref.watch(routerProvider);
     final defaultLight = ThemeConfig(
@@ -155,9 +165,12 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
               ),
             ),
             if (showSplash)
-              const Positioned.fill(
-                key: ValueKey('startup-splash'),
-                child: StartupSplash(),
+              Positioned.fill(
+                key: const ValueKey('startup-splash'),
+                child: StartupSplash(
+                  ready: splashReady,
+                  onFinished: _finishSplash,
+                ),
               ),
           ],
         ),
