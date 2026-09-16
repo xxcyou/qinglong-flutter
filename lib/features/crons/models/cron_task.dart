@@ -76,7 +76,7 @@ class CronTask {
       labels: parseList(json['labels']),
       isDisabled: asBool(json['isDisabled']) ?? false,
       isPinned: asBool(json['isPinned']) ?? false,
-      subId: asInt(json['subId']),
+      subId: asInt(json['subId'] ?? json['sub_id'] ?? json['subid']),
       extraSchedules: parseList(json['extraSchedules']),
       taskBefore:
           json['task_before'] as String? ?? json['taskBefore'] as String?,
