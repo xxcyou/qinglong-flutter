@@ -749,6 +749,17 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     // 球贴右边 → 输入条往左长；贴左边 → 往右长。永远往空的那一侧伸。
     final onRight = left + bubble / 2 > size.width / 2;
 
+    // 贴边后自动“滑进去”：只留一小条标志，不占整颗球的位置。
+    // 快问条伸出或面板展开时仍用完整球，保证打字/发送不缩水。
+    final docked = !dock.quickOpen &&
+        !dock.expanded &&
+        (dock.dx <= 0.03 || dock.dx >= 0.97);
+    const dockedTabWidth = 24.0;
+    const dockedTabHeight = 44.0;
+    final renderLeft =
+        docked ? (onRight ? size.width - dockedTabWidth - 2.0 : 2.0) : left;
+    final renderTop = docked ? top + (bubble - dockedTabHeight) / 2 : top;
+
     return [
       // 输入条先入栈：球画在它上面，两者视觉上是连在一起的一个整体。
       if (dock.quickOpen)
@@ -762,8 +773,8 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
           onRight: onRight,
         ),
       Positioned(
-        left: left,
-        top: top,
+        left: renderLeft,
+        top: renderTop,
         child: GestureDetector(
           onPanDown: (_) => _bubbleMoved = 0,
           onPanUpdate: (d) {
@@ -816,22 +827,30 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
               notifier.setQuickDraft(_quick.text);
             }
           },
-          child: _Bubble(
-            busy: busy,
-            pending: pending,
-            chips: dock.chips.length,
-            unread: dock.unread,
-            sendMode: dock.quickOpen,
-            quickBusy: dock.quickBusy,
-          ),
+          child: docked
+              ? _DockedBubble(
+                  busy: busy,
+                  pending: pending,
+                  chips: dock.chips.length,
+                  unread: dock.unread,
+                  onRight: onRight,
+                )
+              : _Bubble(
+                  busy: busy,
+                  pending: pending,
+                  chips: dock.chips.length,
+                  unread: dock.unread,
+                  sendMode: dock.quickOpen,
+                  quickBusy: dock.quickBusy,
+                ),
         ),
       ),
       if (status.isNotEmpty)
         _statusLabel(
           context: context,
           size: size,
-          left: left,
-          top: top,
+          left: renderLeft,
+          top: renderTop,
           text: status,
         ),
     ];
@@ -1425,6 +1444,91 @@ class _Bubble extends StatelessWidget {
                   badge,
                   style: TextStyle(
                     fontSize: 10.5,
+                    fontWeight: FontWeight.bold,
+                    color: pending ? scheme.onError : scheme.onPrimary,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 贴边收起后只露出的小标签：占位远小于整颗球，点/长按行为与完整球一致。
+class _DockedBubble extends StatelessWidget {
+  const _DockedBubble({
+    required this.busy,
+    required this.pending,
+    required this.chips,
+    required this.unread,
+    required this.onRight,
+  });
+
+  final bool busy;
+  final bool pending;
+  final int chips;
+  final int unread;
+  final bool onRight;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final badge = pending
+        ? '!'
+        : chips > 0
+            ? '$chips'
+            : unread > 0
+                ? '$unread'
+                : null;
+    return SizedBox(
+      width: 24,
+      height: 44,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          GlassPanel(
+            radius: 14,
+            blur: 14,
+            shadowY: 3,
+            child: SizedBox(
+              width: 24,
+              height: 44,
+              child: Center(
+                child: busy
+                    ? SizedBox(
+                        width: 13,
+                        height: 13,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: scheme.primary,
+                        ),
+                      )
+                    : Icon(
+                        Icons.auto_awesome,
+                        size: 15,
+                        color: pending ? scheme.error : scheme.primary,
+                      ),
+              ),
+            ),
+          ),
+          if (badge != null)
+            Positioned(
+              right: onRight ? -2 : null,
+              left: onRight ? null : -2,
+              top: -3,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                decoration: BoxDecoration(
+                  color: pending ? scheme.error : scheme.primary,
+                  borderRadius: BorderRadius.circular(9),
+                  boxShadow: Glass.shadow(scheme, y: 2),
+                ),
+                child: Text(
+                  badge,
+                  style: TextStyle(
+                    fontSize: 9.5,
                     fontWeight: FontWeight.bold,
                     color: pending ? scheme.onError : scheme.onPrimary,
                   ),
