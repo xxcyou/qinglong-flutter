@@ -100,11 +100,13 @@ class _StartupSplashState extends State<StartupSplash>
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    // 背景必须一开始就是实色，整层盖住还没加载完的主界面；
-    // 只有 Logo/文字做淡入淡出，否则淡入过程会透出主界面。
+    // 启动页背景必须保持固定深色，不跟随主题切换：
+    // 否则主题在 Logo 期间从暗色切到亮色，会出现“暗→卡→亮”的跳变。
+    const bg = Color(0xFF0F1115);
+    const primaryText = Color(0xFFE8EAED);
+    const secondaryText = Color(0xFF9AA0A6);
     return Material(
-      color: scheme.surface,
+      color: bg,
       child: Center(
         child: FadeTransition(
           opacity: _opacity,
@@ -116,16 +118,16 @@ class _StartupSplashState extends State<StartupSplash>
                 height: 96,
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: scheme.surface.withValues(alpha: 0.92),
+                  color: const Color(0xFFFFFFFF).withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(26),
                   border: Border.all(
-                    color: scheme.primary.withValues(alpha: 0.4),
+                    color: const Color(0xFFFFFFFF).withValues(alpha: 0.22),
                   ),
-                  boxShadow: [
+                  boxShadow: const [
                     BoxShadow(
-                      color: scheme.primary.withValues(alpha: 0.18),
+                      color: Color(0x33000000),
                       blurRadius: 28,
-                      offset: const Offset(0, 10),
+                      offset: Offset(0, 10),
                     ),
                   ],
                 ),
@@ -140,22 +142,22 @@ class _StartupSplashState extends State<StartupSplash>
                 ),
               ),
               const SizedBox(height: 20),
-              Text(
+              const Text(
                 '青龙面板',
                 style: TextStyle(
                   fontSize: 22,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 2,
-                  color: scheme.onSurface,
+                  color: primaryText,
                 ),
               ),
               const SizedBox(height: 6),
-              Text(
+              const Text(
                 'QingLong Shell',
                 style: TextStyle(
                   fontSize: 12,
                   letterSpacing: 1.4,
-                  color: scheme.onSurfaceVariant,
+                  color: secondaryText,
                 ),
               ),
             ],

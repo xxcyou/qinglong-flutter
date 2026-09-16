@@ -654,7 +654,7 @@ class _TaskGroup {
   final int? subId;
 }
 
-class _SubscriptionTile extends StatelessWidget {
+class _SubscriptionTile extends StatefulWidget {
   const _SubscriptionTile({
     required this.name,
     required this.tasks,
@@ -668,8 +668,28 @@ class _SubscriptionTile extends StatelessWidget {
   final Widget Function(CronTask task) taskBuilder;
 
   @override
+  State<_SubscriptionTile> createState() => _SubscriptionTileState();
+}
+
+class _SubscriptionTileState extends State<_SubscriptionTile> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final tasks = widget.tasks;
+    // 收起时不构建任务卡片，展开时才真正生成，避免一次把整个订阅的任务
+    // 全部 build 出来导致展开/滚动卡顿。
+    final children = _expanded
+        ? [
+            for (final task in tasks)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: widget.taskBuilder(task),
+              ),
+          ]
+        : const <Widget>[];
+
     return Card(
       margin: EdgeInsets.zero,
       elevation: 0,
@@ -682,6 +702,9 @@ class _SubscriptionTile extends StatelessWidget {
         ),
       ),
       child: ExpansionTile(
+        onExpansionChanged: (value) {
+          if (_expanded != value) setState(() => _expanded = value);
+        },
         leading: Container(
           width: 38,
           height: 38,
@@ -696,7 +719,7 @@ class _SubscriptionTile extends StatelessWidget {
           ),
         ),
         title: Text(
-          name,
+          widget.name,
           style: TextStyle(
             fontSize: 14.5,
             fontWeight: FontWeight.w700,
@@ -717,20 +740,14 @@ class _SubscriptionTile extends StatelessWidget {
                 size: 20,
                 color: scheme.error,
               ),
-              onPressed: onDelete,
+              onPressed: widget.onDelete,
             ),
             Icon(Icons.expand_more, color: scheme.onSurfaceVariant),
           ],
         ),
         expandedCrossAxisAlignment: CrossAxisAlignment.start,
         childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-        children: [
-          for (final task in tasks)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: taskBuilder(task),
-            ),
-        ],
+        children: children,
       ),
     );
   }
