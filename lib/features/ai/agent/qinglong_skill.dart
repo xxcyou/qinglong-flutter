@@ -346,6 +346,13 @@ typography: {
 - `family` 可以是主题包内 .ttf/.otf 的 guest 路径，App 会自动加载；也可以是系统字体名。
 - 用户可在设置 → 字体设置里开启“自定义字体”覆盖这份主题排版。
 
+### 完整轮归档（历史轮次本地回溯）
+App 会把每次“完整轮”的数据存到本地会话目录（每会话一个文件夹、每轮一个 ID，实时写入）。这些数据**不进当前上下文**，需要时主动调工具：
+- `round_list`：列当前会话的完整轮 ID/时间/结果/目标/摘要。
+- `round_search`：按关键词搜历史完整轮，返回 round_id 和命中片段。
+- `round_read`：给 round_id 读某轮详情；`full=true` 可读完整 JSON（工具事件/原始结果）。
+用户问“之前是不是做过…/上一次做到哪/把第几轮的内容给我”时，先 round_list / round_search 找到轮次，再 round_read。
+
 ### 主题包制作/安装流程
 - 用 `theme_manage create` 生成基础 ZIP 包。
 - 用 shell 写 `html/index.html`、`js/*.js`、`css/*.css`、`image/elements/*`，在 controller.js 里声明资源。

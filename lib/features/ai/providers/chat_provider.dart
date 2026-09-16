@@ -33,6 +33,7 @@ import '../../editor/editor_tools.dart';
 import '../../../shared/editor_bus.dart';
 import '../agent/meta_tools.dart';
 import '../agent/qinglong_skill.dart';
+import '../services/round_archive_service.dart';
 import '../agent/tool_registry.dart';
 import '../mcp/mcp_provider.dart';
 import '../memory/memory_provider.dart';
@@ -367,6 +368,9 @@ class _SessionRun {
 
   /// 这次发送是否由“继续中断任务”触发；失败时用来保留中断快照，避免丢了没法再试。
   bool isResume = false;
+
+  /// 本地完整轮归档 ID。同一完整轮中断/继续复用同一个，新开完整轮才换新 ID。
+  String roundId = '';
 
   /// 运行期间用户新发的待插消息。AgentLoop 会在每轮之间的安全点消费。
   final AgentInbox inbox = AgentInbox();
@@ -1397,6 +1401,7 @@ class ChatNotifier extends Notifier<ChatState> {
       sessionId: sid,
       images: images,
       resumeEvents: _resumeEventsFromCancelled(sid),
+      resumeRoundId: _roundIdFromCancelled(sid),
     );
     // 这里不再无条件 drain：_sendNow 收尾时已经按"是否挂起"判断过一次。
     _pumpQueue(sid);
@@ -1490,6 +1495,7 @@ class ChatNotifier extends Notifier<ChatState> {
         sessionId: sid,
         images: item.images,
         resumeEvents: _resumeEventsFromCancelled(sid),
+        resumeRoundId: _roundIdFromCancelled(sid),
       );
       _pumpQueue(sid);
       return;
@@ -1593,6 +1599,18 @@ class ChatNotifier extends Notifier<ChatState> {
     return null;
   }
 
+  String? _roundIdFromCancelled(String sessionId) {
+    final session = _sessionById(sessionId);
+    if (session == null) return null;
+    for (final m in session.messages.reversed) {
+      if (m.isUser) return null;
+      if (m.role != 'assistant') continue;
+      if (m.outcome != 'cancelled') return null;
+      return m.roundId.isNotEmpty ? m.roundId : null;
+    }
+    return null;
+  }
+
   /// 依次把某个会话的排队消息发出去。
   Future<void> _drainQueue([String? targetSessionId]) async {
     final sid = targetSessionId ?? state.currentSessionId;
@@ -1620,6 +1638,7 @@ class ChatNotifier extends Notifier<ChatState> {
         sessionId: sid,
         images: next.images,
         resumeEvents: _resumeEventsFromCancelled(sid),
+        resumeRoundId: _roundIdFromCancelled(sid),
       );
     }
   }
@@ -1638,6 +1657,7 @@ class ChatNotifier extends Notifier<ChatState> {
     bool appendUser = true,
     String? sessionId,
     List<AgentEvent>? resumeEvents,
+    String? resumeRoundId,
     List<AiImageAttachment> images = const [],
   }) async {
     final session =
@@ -1645,15 +1665,29 @@ class ChatNotifier extends Notifier<ChatState> {
     if (session == null) return;
 
     // 每个会话独立一个运行态：话题 1 还在跑时，话题 2 可以立刻另起一个 run。
+    final resumeFrom =
+        (resumeRoundId == null || resumeRoundId.isEmpty) ? null : resumeRoundId;
     final run = _SessionRun(sessionId: session.id)
       ..resumeEvents = resumeEvents ?? const []
-      ..isResume = resumeEvents != null;
+      ..isResume = resumeEvents != null
+      ..roundId = resumeFrom ??
+          'r${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
     // 续跑时把中断前的事件直接放进新 run 的事件流：流程卡片从旧事件接着长，
     // 不会一继续就“清空重来”只看到后面新跑的。
     if (resumeEvents != null && resumeEvents.isNotEmpty) {
       run.events.addAll(resumeEvents);
     }
     _runs[session.id] = run;
+    try {
+      await RoundArchiveService.instance.startRound(
+        session.id,
+        run.roundId,
+        userInput: value,
+        resumeFrom: resumeFrom,
+      );
+    } catch (e) {
+      Logger.e('ai', 'start round archive failed', e);
+    }
     if (session.id == state.currentSessionId) {
       state = state.copyWith(
         isLoading: true,
@@ -1720,6 +1754,21 @@ class ChatNotifier extends Notifier<ChatState> {
               if (question.options.isNotEmpty)
                 '候选：${question.options.join(' / ')}',
             ].join('\n');
+      unawaited(
+        RoundArchiveService.instance.updateRound(
+          session.id,
+          run.roundId,
+          assistantContent: assistantContent,
+          taskPlan: result.taskPlan,
+          outcome: result.outcome.name,
+          turns: result.turns,
+          usage: {
+            'totalTokens': result.usage.totalTokens,
+            'promptTokens': result.lastPromptTokens,
+            'cachedTokens': result.lastCacheHitTokens,
+          },
+        ),
+      );
       final assistantMessage = AiChatMessage(
         role: 'assistant',
         content: assistantContent,
@@ -1739,6 +1788,7 @@ class ChatNotifier extends Notifier<ChatState> {
         cachedTokens: result.lastCacheHitTokens,
         taskPlan: result.taskPlan,
         canvases: result.canvases,
+        roundId: run.roundId,
       );
       _replaceSession(
         AiSession(
@@ -1828,10 +1878,20 @@ class ChatNotifier extends Notifier<ChatState> {
           userInput: value,
           events: List<AgentEvent>.from(run.events),
           startedAt: DateTime.now(),
+          roundId: run.roundId,
         ),
         liveAgentEvents: List<AgentEvent>.from(run.events),
       );
       await _saveActiveRun();
+      unawaited(
+        RoundArchiveService.instance.updateRound(
+          session.id,
+          run.roundId,
+          outcome: 'failed',
+          turns:
+              run.events.where((e) => e.kind == AgentEventKind.toolEnd).length,
+        ),
+      );
       _runs.remove(session.id);
       run.dispose();
       if (session.id == state.currentSessionId) {
@@ -1928,6 +1988,7 @@ class ChatNotifier extends Notifier<ChatState> {
                 ? List<AgentEvent>.from(_runEvents)
                 : List<AgentEvent>.from(run.events),
             startedAt: DateTime.now(),
+            roundId: run?.roundId ?? '',
           ),
         ),
       );
@@ -1989,6 +2050,7 @@ class ChatNotifier extends Notifier<ChatState> {
       appendUser: !alreadyThere,
       sessionId: state.currentSessionId,
       resumeEvents: run.events,
+      resumeRoundId: run.roundId,
     );
     _pumpQueue(state.currentSessionId);
   }
@@ -2859,6 +2921,15 @@ class ChatNotifier extends Notifier<ChatState> {
     final run = _runs[sessionId];
     if (run == null) return;
     run.events.add(event);
+    if (run.roundId.isNotEmpty) {
+      unawaited(
+        RoundArchiveService.instance.appendEvent(
+          sessionId,
+          run.roundId,
+          event,
+        ),
+      );
+    }
     if (sessionId == state.currentSessionId) {
       state = state.copyWith(
         liveAgentEvents: [...state.liveAgentEvents, event],
@@ -2915,6 +2986,7 @@ class ChatNotifier extends Notifier<ChatState> {
               createdAt: DateTime.now(),
               agentEvents: List<AgentEvent>.from(run.events),
               outcome: 'cancelled',
+              roundId: run.roundId,
             ),
           ],
           createdAt: current.createdAt,
@@ -2930,6 +3002,13 @@ class ChatNotifier extends Notifier<ChatState> {
       clearError: true,
     );
     unawaited(_clearActiveRun());
+    unawaited(
+      RoundArchiveService.instance.updateRound(
+        run.sessionId,
+        run.roundId,
+        outcome: 'cancelled',
+      ),
+    );
     unawaited(BrowserEngine.instance.settleAfterRun());
     // 中断往往是为了先发那条急事，这里立刻把当前会话排队里的第一条顶上去。
     unawaited(_drainQueue(state.currentSessionId));
@@ -3151,6 +3230,7 @@ class ChatNotifier extends Notifier<ChatState> {
         includeImageTool: !mainCaps.supportsImage,
         registry: registry,
         extraTools: [canvasTool],
+        sessionId: run?.sessionId,
       );
       // 后台子代理完成结果自动并回主代理上下文的槽。
       final subagentSink = AgentSubagentSink();
@@ -3531,6 +3611,7 @@ class ChatNotifier extends Notifier<ChatState> {
     bool includeImageTool = true,
     QlToolRegistry? registry,
     List<ExternalTool> extraTools = const [],
+    String? sessionId,
   }) {
     final tools = <ExternalTool>[
       if (includeImageTool)
@@ -3569,6 +3650,110 @@ class ChatNotifier extends Notifier<ChatState> {
           origin: '图片识别',
           invoke: _recognizeImage,
         ),
+      // ===== 完整轮本地归档工具 =====
+      // 这些工具只是“备查档案”：存档不进当前 Agent 上下文，
+      // 只有 AI 明确要查/要读时才把对应完整轮的数据取回来。
+      ExternalTool(
+        name: 'round_list',
+        description: '列出当前会话所有“完整轮”的本地归档（ID/时间/结果/目标/一句话摘要）。'
+            '当用户说“去看一下上一轮/前几轮做过什么”时先用它找到 round_id，'
+            '再用 round_read 读取。',
+        parameters: const {
+          'type': 'object',
+          'properties': {},
+        },
+        origin: '完整轮归档',
+        invoke: (args) async {
+          final sid = sessionId ?? state.currentSessionId;
+          try {
+            final rounds = await RoundArchiveService.instance.listRounds(sid);
+            if (rounds.isEmpty) return '当前会话还没有完整轮归档。';
+            final lines = <String>['当前会话共 ${rounds.length} 个完整轮：'];
+            for (final r in rounds.take(50)) {
+              final time =
+                  (r['startedAt'] as String? ?? '').replaceAll('T', ' ');
+              lines.add(
+                '· ${r['roundId']} | ${r['outcome'] ?? ''} | $time'
+                '${(r['goal'] as String? ?? '').isEmpty ? '' : ' | 目标：${r['goal']}'}'
+                '${(r['summary'] as String? ?? '').isEmpty ? '' : ' | ${r['summary']}'}',
+              );
+            }
+            return lines.join('\n');
+          } catch (e) {
+            return '读取完整轮列表失败：$e';
+          }
+        },
+      ),
+      ExternalTool(
+        name: 'round_search',
+        description: '在当前会话的完整轮归档里按关键词搜索，返回命中的 round_id 和片段。'
+            '适合用户问“之前是不是有过 xxx / 之前做过 xxx 吗”。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'query': {'type': 'string', 'description': '要搜索的内容关键词'},
+            'max_results': {
+              'type': 'integer',
+              'description': '最多返回几个命中轮，默认 5',
+            },
+          },
+          'required': ['query'],
+        },
+        origin: '完整轮归档',
+        invoke: (args) async {
+          final q = args['query']?.toString().trim() ?? '';
+          final max = (args['max_results'] as num?)?.toInt() ?? 5;
+          final sid = sessionId ?? state.currentSessionId;
+          if (q.isEmpty) return '请提供 query 搜索关键词。';
+          try {
+            final hits = await RoundArchiveService.instance
+                .searchRounds(sid, q, maxResults: max);
+            if (hits.isEmpty) return '没在完整轮归档里搜到「$q」。';
+            final lines = <String>['搜到 ${hits.length} 个命中完整轮：'];
+            for (final h in hits) {
+              final snippets = h['snippets'] as List? ?? const [];
+              lines.add(
+                  '· ${h['roundId']} | ${h['startedAt']} | ${h['outcome']}');
+              for (final sn in snippets.take(2)) {
+                lines.add('  > ${sn.toString().replaceAll('\n', ' ')}');
+              }
+            }
+            return lines.join('\n');
+          } catch (e) {
+            return '搜索完整轮归档失败：$e';
+          }
+        },
+      ),
+      ExternalTool(
+        name: 'round_read',
+        description: '读取一个具体完整轮的本地归档。round_id 从 round_list/round_search 得到；'
+            '默认返回摘要（用户输入、AI 最终回复、最近工具过程），'
+            '传 full=true 返回完整 JSON（所有事件/原始结果，可能很大）。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'round_id': {'type': 'string', 'description': '完整轮 ID'},
+            'full': {
+              'type': 'boolean',
+              'description': 'true=返回完整 JSON，默认 false 返回可读摘要',
+            },
+          },
+          'required': ['round_id'],
+        },
+        origin: '完整轮归档',
+        invoke: (args) async {
+          final rid = args['round_id']?.toString().trim() ?? '';
+          final full = args['full'] == true;
+          final sid = sessionId ?? state.currentSessionId;
+          if (rid.isEmpty) return '请提供 round_id。';
+          try {
+            return await RoundArchiveService.instance
+                .readRound(sid, rid, full: full);
+          } catch (e) {
+            return '读取完整轮失败：$e';
+          }
+        },
+      ),
       ExternalTool(
         name: 'browser_screenshot',
         description: '截取内置浏览器当前画面（不改变浏览器显示/隐藏状态）。'

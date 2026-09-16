@@ -80,6 +80,7 @@ class InterruptedRun {
     required this.events,
     required this.startedAt,
     this.confirmedKeys = const [],
+    this.roundId = '',
   });
 
   final String sessionId;
@@ -94,6 +95,9 @@ class InterruptedRun {
   /// 已确认过的写操作键，继续时不必再问一遍。
   final List<String> confirmedKeys;
 
+  /// 本地完整轮归档 ID；继续时沿用同一个文件，不新建完整轮。
+  final String roundId;
+
   bool get isEmpty => userInput.trim().isEmpty && events.isEmpty;
 
   Map<String, dynamic> toJson() => {
@@ -102,6 +106,7 @@ class InterruptedRun {
         'events': [for (final e in events) e.toJson()],
         'startedAt': startedAt.toIso8601String(),
         'confirmedKeys': confirmedKeys,
+        if (roundId.isNotEmpty) 'roundId': roundId,
       };
 
   factory InterruptedRun.fromJson(Map<String, dynamic> json) => InterruptedRun(
@@ -117,6 +122,7 @@ class InterruptedRun {
           for (final k in (json['confirmedKeys'] as List? ?? const []))
             k.toString(),
         ],
+        roundId: json['roundId']?.toString() ?? '',
       );
 
   static String encode(InterruptedRun run) => jsonEncode(run.toJson());

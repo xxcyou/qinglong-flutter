@@ -175,6 +175,7 @@ class AgentResult {
     this.lastCacheHitTokens = 0,
     this.taskPlan = const AgentTaskPlan(),
     this.canvases = const [],
+    this.roundId = '',
   });
 
   final String content;
@@ -205,6 +206,9 @@ class AgentResult {
 
   /// 本轮生成的 HTML 互动卡片。
   final List<AiCanvas> canvases;
+
+  /// 本地完整轮归档 ID；同一轮中断/继续都复用同一个。
+  final String roundId;
 }
 
 /// 模型主动提问：一句问题 + 可选的候选答案。

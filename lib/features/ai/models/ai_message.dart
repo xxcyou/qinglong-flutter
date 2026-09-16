@@ -78,6 +78,7 @@ class AiChatMessage {
     this.cachedTokens = 0,
     this.taskPlan = const AgentTaskPlan(),
     this.canvases = const [],
+    this.roundId = '',
     this.sendError = '',
   });
 
@@ -110,6 +111,9 @@ class AiChatMessage {
   /// 本条回复生成的 HTML 互动卡片。弹窗关掉后靠这份数据重新打开。
   final List<AiCanvas> canvases;
 
+  /// 本地完整轮归档 ID；中断/继续同一轮时复用。
+  final String roundId;
+
   /// 这条消息**没发出去**：模型调用本身失败了（网络、鉴权、限流、网关报错）。
   ///
   /// 只会出现在 user 消息上，内容是给用户看的错误原因。
@@ -139,6 +143,7 @@ class AiChatMessage {
         cachedTokens: cachedTokens,
         taskPlan: taskPlan,
         canvases: canvases,
+        roundId: roundId,
         sendError: sendError ?? this.sendError,
       );
 
@@ -164,6 +169,7 @@ class AiChatMessage {
         if (taskPlan.isNotEmpty) 'taskPlan': taskPlan.toJson(),
         if (canvases.isNotEmpty)
           'canvases': [for (final c in canvases) c.toJson()],
+        if (roundId.isNotEmpty) 'roundId': roundId,
         if (sendError.isNotEmpty) 'sendError': sendError,
       };
 
@@ -205,6 +211,7 @@ class AiChatMessage {
       totalTokens: (json['totalTokens'] as num?)?.toInt() ?? 0,
       promptTokens: (json['promptTokens'] as num?)?.toInt() ?? 0,
       cachedTokens: (json['cachedTokens'] as num?)?.toInt() ?? 0,
+      roundId: json['roundId']?.toString() ?? '',
     );
   }
 }
