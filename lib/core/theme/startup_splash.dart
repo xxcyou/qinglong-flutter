@@ -88,11 +88,13 @@ class _StartupSplashState extends State<StartupSplash>
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return FadeTransition(
-      opacity: _opacity,
-      child: Material(
-        color: scheme.surface,
-        child: Center(
+    // 背景必须一开始就是实色，整层盖住还没加载完的主界面；
+    // 只有 Logo/文字做淡入淡出，否则淡入过程会透出主界面。
+    return Material(
+      color: scheme.surface,
+      child: Center(
+        child: FadeTransition(
+          opacity: _opacity,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
