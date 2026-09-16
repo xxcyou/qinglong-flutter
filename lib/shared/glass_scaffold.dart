@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../core/theme/glass.dart';
 import '../core/theme/theme_effects_controller.dart';
+import '../core/theme/theme_visual.dart';
 
 /// 全站统一的页面骨架：全面屏（内容自己延伸到状态栏下）+ 玻璃标题条。
 ///
@@ -211,6 +212,7 @@ class GlassCard extends StatelessWidget {
       builder: (context, _) {
         final scheme = Theme.of(context).colorScheme;
         final dark = scheme.brightness == Brightness.dark;
+        final visual = Theme.of(context).extension<ThemeVisual>();
         final page = ModalRoute.of(context)?.settings.name ?? 'default';
         final style = ThemeEffectsController.instance
             .componentStyleFor(page, 'card', anchorIndex ?? 0);
@@ -237,22 +239,23 @@ class GlassCard extends StatelessWidget {
                       c.withValues(alpha: gradientAlpha)
                   ]
                 : gradientColors;
+        // 与 GlassPanel 保持一致：默认边框颜色跟随主题配置的 border 色，
+        // 而不是硬编码白色；否则改主题边框色时 GlassCard 还是白边。
         final borderColor = style?.borderColor ??
             (selected
                 ? scheme.primary
-                : (accent ?? Colors.white).withValues(
-                    alpha: selected
-                        ? 1
-                        : accent != null
-                            ? 0.42
-                            : (dark ? 0.12 : 0.6),
-                  ));
+                : (accent?.withValues(alpha: 0.42) ??
+                    visual?.borderColor ??
+                    Colors.white));
         final borderExplicit = style?.borderWidth != null ||
             style?.borderColor != null ||
             style?.borderOpacity != null;
         final borderOpacity = (liquidActive && !borderExplicit)
             ? 0.0
-            : (style?.borderOpacity ?? 1.0);
+            : (style?.borderOpacity ??
+                (style?.borderColor != null
+                    ? 1.0
+                    : (visual?.glassBorderOpacity ?? (dark ? 0.16 : 0.78))));
         final borderWidth = (liquidActive && !borderExplicit)
             ? 0.0
             : (style?.borderWidth ?? (selected ? 1.4 : 1));
