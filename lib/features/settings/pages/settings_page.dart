@@ -499,13 +499,19 @@ class _ThemeSchemeCardState extends ConsumerState<_ThemeSchemeCard> {
               leading: _ThemePreview(theme: theme),
               title: Text(
                 theme.name,
-                style:
-                    const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
               ),
               subtitle: Text(
                 '${theme.id} · ${theme.isDark ? '暗色' : '亮色'}'
                 '${theme.backgroundImage.isEmpty ? ' · 纯配色' : ' · 背景图'}',
-                style: const TextStyle(fontSize: 11.5),
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,

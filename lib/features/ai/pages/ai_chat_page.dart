@@ -526,9 +526,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                   Expanded(
                     child: Text(
                       '${r.name} · ${r.hook}',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
+                        color: scheme.onSurface,
                       ),
                     ),
                   ),
@@ -600,7 +601,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
       children: [
         Text(
           title,
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: scheme.onSurface,
+          ),
         ),
         const SizedBox(height: 6),
         _kvSection('正文 content', content, scheme),
@@ -641,10 +646,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
           const SizedBox(height: 4),
           SelectableText(
             display,
-            style: const TextStyle(
+            style: TextStyle(
               fontFamily: 'monospace',
               fontSize: 11.5,
               height: 1.35,
+              color: scheme.onSurface,
             ),
           ),
         ],
@@ -672,7 +678,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
       children: [
         Text(
           title,
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: scheme.onSurface,
+          ),
         ),
         const SizedBox(height: 6),
         Container(
@@ -684,10 +694,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
           ),
           child: SelectableText(
             text,
-            style: const TextStyle(
+            style: TextStyle(
               fontFamily: 'monospace',
               fontSize: 11.5,
               height: 1.35,
+              color: scheme.onSurface,
             ),
           ),
         ),
@@ -715,18 +726,28 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
           maxChildSize: 0.95,
           builder: (context, scrollController) {
             final logs = audit.logs;
+            final scheme = Theme.of(context).colorScheme;
             return Column(
               children: [
-                const Padding(
-                  padding: EdgeInsets.all(12),
+                Padding(
+                  padding: const EdgeInsets.all(12),
                   child: Text(
                     'AI / QL 操作审计',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: scheme.onSurface,
+                    ),
                   ),
                 ),
                 Expanded(
                   child: logs.isEmpty
-                      ? const Center(child: Text('暂无审计记录'))
+                      ? Center(
+                          child: Text(
+                            '暂无审计记录',
+                            style: TextStyle(color: scheme.onSurfaceVariant),
+                          ),
+                        )
                       : ListView.builder(
                           controller: scrollController,
                           itemCount: logs.length,
@@ -735,11 +756,21 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                             final log = logs[index];
                             return Card(
                               child: ListTile(
-                                title: Text('${log.action} · ${log.result}'),
-                                subtitle: Text('${log.module}｜${log.detail}'),
+                                title: Text(
+                                  '${log.action} · ${log.result}',
+                                  style: TextStyle(color: scheme.onSurface),
+                                ),
+                                subtitle: Text(
+                                  '${log.module}｜${log.detail}',
+                                  style:
+                                      TextStyle(color: scheme.onSurfaceVariant),
+                                ),
                                 trailing: Text(
                                   '${log.time.hour.toString().padLeft(2, '0')}:${log.time.minute.toString().padLeft(2, '0')}',
-                                  style: const TextStyle(fontSize: 12),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: scheme.onSurfaceVariant,
+                                  ),
                                 ),
                               ),
                             );

@@ -98,6 +98,7 @@ class _AiSessionListState extends ConsumerState<AiSessionList> {
                   style: TextStyle(
                     fontSize: dense ? 13 : 16,
                     fontWeight: FontWeight.bold,
+                    color: scheme.onSurface,
                   ),
                 ),
               ),
@@ -131,7 +132,9 @@ class _AiSessionListState extends ConsumerState<AiSessionList> {
         ),
         Expanded(
           child: sessions.isEmpty
-              ? const Center(child: Text('还没有会话'))
+              ? Center(
+                  child: Text('还没有会话',
+                      style: TextStyle(color: scheme.onSurfaceVariant)))
               : ListView.builder(
                   controller: widget.scroll,
                   itemCount: sessions.length,
@@ -175,12 +178,16 @@ class _AiSessionListState extends ConsumerState<AiSessionList> {
                             fontSize: dense ? 12.5 : 15,
                             fontWeight:
                                 current ? FontWeight.w700 : FontWeight.w500,
+                            color: scheme.onSurface,
                           ),
                         ),
                         subtitle: Text(
                           '${session.messages.length} 条 · ${_stamp(session.updatedAt)}'
                           '${running ? ' · 执行中' : ''}',
-                          style: TextStyle(fontSize: dense ? 10.5 : 13),
+                          style: TextStyle(
+                            fontSize: dense ? 10.5 : 13,
+                            color: scheme.onSurfaceVariant,
+                          ),
                         ),
                         onTap: () {
                           notifier.selectSession(session.id);
@@ -274,7 +281,10 @@ class _AiSessionListState extends ConsumerState<AiSessionList> {
               child: TextField(
                 controller: _renameInput,
                 autofocus: true,
-                style: TextStyle(fontSize: dense ? 12.5 : 15),
+                style: TextStyle(
+                  fontSize: dense ? 12.5 : 15,
+                  color: scheme.onSurface,
+                ),
                 decoration: const InputDecoration(
                   isDense: true,
                   // filled: false 是必须的：主题给输入框上了玻璃填充，
