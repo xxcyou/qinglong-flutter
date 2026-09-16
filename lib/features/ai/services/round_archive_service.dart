@@ -34,11 +34,21 @@ class RoundArchiveService {
   static const dirName = 'ai_rounds';
   static const schemaVersion = 1;
 
-  /// 每个会话最多保留的完整轮数量。
-  static const maxRoundsPerSession = 200;
+  /// 每个会话最多保留的完整轮数量（AI 设置里可调）。
+  int maxRoundsPerSession = 200;
 
-  /// 每个会话归档目录总字节上限（含 manifest/rounds）。
-  static const maxBytesPerSession = 200 * 1024 * 1024;
+  /// 每个会话归档目录总字节上限（AI 设置里可调）。
+  int maxBytesPerSession = 200 * 1024 * 1024;
+
+  /// 由外部设置同步；不改动已存在数据，只影响之后的清理策略。
+  void configure({int? maxRounds, int? maxBytes}) {
+    if (maxRounds != null && maxRounds > 0) {
+      maxRoundsPerSession = maxRounds;
+    }
+    if (maxBytes != null && maxBytes > 0) {
+      maxBytesPerSession = maxBytes;
+    }
+  }
 
   /// 每个 roundId 一个写锁，避免并发 appendEvent 读改写互相覆盖。
   final Map<String, Future<void>> _roundLocks = {};
@@ -341,6 +351,22 @@ class RoundArchiveService {
     });
   }
 
+  /// 立即对所有会话执行一次容量清理（AI 设置里改完上限后调用）。
+  Future<void> enforceLimits() async {
+    final root = await _root();
+    if (!await root.exists()) return;
+    await for (final entity in root.list()) {
+      if (entity is! Directory) continue;
+      final name = entity.uri.pathSegments.where((s) => s.isNotEmpty).last;
+      if (name.isEmpty) continue;
+      try {
+        await _withManifest(name, (manifest) async {
+          await _cleanupIfNeeded(name, manifest);
+        });
+      } catch (_) {}
+    }
+  }
+
   Future<List<Map<String, dynamic>>> listRounds(String sessionId) async {
     final manifest = await _loadManifest(sessionId);
     final rounds =
@@ -539,12 +565,11 @@ class RoundArchiveService {
     Map<String, dynamic> manifest,
   ) async {
     final rounds = manifest['rounds'] as List<Map<String, dynamic>>? ?? [];
-    if (rounds.length <= maxRoundsPerSession) return;
-
     final roundsDir = await _roundsDir(sessionId);
     if (!await roundsDir.exists()) return;
-    // 只清“已结束”的最旧轮；running 永远保留。
-    var removable = rounds.where((r) {
+
+    // 只清“已结束”的最旧轮；running / 等回答 / 等确认永远保留。
+    final removable = rounds.where((r) {
       final status = r['status']?.toString() ?? '';
       return status != 'running' &&
           status != 'awaitingInput' &&
@@ -552,21 +577,64 @@ class RoundArchiveService {
     }).toList()
       ..sort((a, b) => (a['startedAt'] as String? ?? '')
           .compareTo(b['startedAt'] as String? ?? ''));
-    const keep = maxRoundsPerSession;
-    final toRemove = removable.take(
-      removable.length > keep ? removable.length - keep : 0,
-    );
-    for (final r in toRemove) {
-      final id = r['id']?.toString() ?? '';
-      if (id.isEmpty) continue;
-      try {
-        final f = File('${roundsDir.path}/$id.json');
-        if (await f.exists()) await f.delete();
-      } catch (_) {}
+
+    final removedIds = <String>{};
+    var totalBytes = await _dirSize(roundsDir);
+
+    // 1) 轮数上限
+    final overflow = rounds.length - maxRoundsPerSession;
+    if (overflow > 0) {
+      for (final r in removable) {
+        if (removedIds.length >= overflow) break;
+        final id = r['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        removedIds.add(id);
+        totalBytes -= await _deleteRoundFile(roundsDir, id);
+      }
     }
-    manifest['rounds'] =
-        rounds.where((r) => !toRemove.any((x) => x['id'] == r['id'])).toList();
+
+    // 2) 字节上限：继续从最旧已结束轮开始删，至少保留当前最新 1 轮。
+    if (totalBytes > maxBytesPerSession) {
+      for (final r in removable) {
+        if (totalBytes <= maxBytesPerSession) break;
+        if (rounds.length - removedIds.length <= 1) break;
+        final id = r['id']?.toString() ?? '';
+        if (id.isEmpty || removedIds.contains(id)) continue;
+        removedIds.add(id);
+        totalBytes -= await _deleteRoundFile(roundsDir, id);
+      }
+    }
+
+    if (removedIds.isEmpty) return;
+    manifest['rounds'] = rounds
+        .where((r) => !removedIds.contains(r['id']?.toString() ?? ''))
+        .toList();
     await _saveManifest(sessionId, manifest);
+  }
+
+  Future<int> _dirSize(Directory dir) async {
+    if (!await dir.exists()) return 0;
+    var total = 0;
+    await for (final entity in dir.list(recursive: true)) {
+      if (entity is File) {
+        try {
+          total += await entity.length();
+        } catch (_) {}
+      }
+    }
+    return total;
+  }
+
+  Future<int> _deleteRoundFile(Directory roundsDir, String id) async {
+    try {
+      final f = File('${roundsDir.path}/$id.json');
+      if (!await f.exists()) return 0;
+      final size = await f.length();
+      await f.delete();
+      return size;
+    } catch (_) {
+      return 0;
+    }
   }
 
   Future<List<Map<String, dynamic>>> _scanRoundsFallback(

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -12,6 +14,7 @@ import '../../ai/models/approval_mode.dart';
 import '../../ai/pages/mcp_server_page.dart';
 import '../../ai/pages/skill_list_page.dart';
 import '../../ai/providers/chat_provider.dart';
+import '../../ai/services/round_archive_service.dart';
 import '../providers/settings_provider.dart';
 import 'llm_provider_page.dart';
 
@@ -190,6 +193,13 @@ class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
                 _update(settings.copyWith(llmDefaultContextLimit: n));
               },
             ),
+          ),
+          _Row(
+            icon: Icons.archive_outlined,
+            title: '完整轮归档上限',
+            value:
+                '每会话 ${settings.roundArchiveMaxRounds} 轮 / ${settings.roundArchiveMaxSizeMB} MB',
+            onTap: _editArchiveLimits,
           ),
           const SectionLabel('行为'),
           _Row(
@@ -466,6 +476,66 @@ class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
     );
     if (chosen == null) return;
     ref.read(chatProvider.notifier).setReasoningEffort(chosen);
+  }
+
+  Future<void> _editArchiveLimits() async {
+    final settings = ref.read(settingsProvider);
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.format_list_numbered),
+              title: const Text('最多保留轮数'),
+              subtitle: Text(
+                '当前 ${settings.roundArchiveMaxRounds} 轮；超出后清最旧的已完成轮',
+                style: const TextStyle(fontSize: 12),
+              ),
+              onTap: () => Navigator.pop(context, 'rounds'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.sd_storage_outlined),
+              title: const Text('单会话存储上限'),
+              subtitle: Text(
+                '当前 ${settings.roundArchiveMaxSizeMB} MB；超出后继续清最旧已完成轮',
+                style: const TextStyle(fontSize: 12),
+              ),
+              onTap: () => Navigator.pop(context, 'size'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    if (choice == 'rounds') {
+      await _editNumber(
+        title: '最多保留轮数',
+        initial: '${settings.roundArchiveMaxRounds}',
+        helper: '每个会话最多保留多少个完整轮，最小 10',
+        onSave: (v) {
+          final n = int.tryParse(v);
+          if (n == null || n < 10) return;
+          RoundArchiveService.instance.configure(maxRounds: n);
+          _update(settings.copyWith(roundArchiveMaxRounds: n));
+          unawaited(RoundArchiveService.instance.enforceLimits());
+        },
+      );
+    } else if (choice == 'size') {
+      await _editNumber(
+        title: '单会话存储上限 (MB)',
+        initial: '${settings.roundArchiveMaxSizeMB}',
+        helper: '每个会话完整轮归档目录最多占多少 MB，最小 10',
+        onSave: (v) {
+          final n = int.tryParse(v);
+          if (n == null || n < 10) return;
+          RoundArchiveService.instance.configure(maxBytes: n * 1024 * 1024);
+          _update(settings.copyWith(roundArchiveMaxSizeMB: n));
+          unawaited(RoundArchiveService.instance.enforceLimits());
+        },
+      );
+    }
   }
 
   Future<void> _pickApproval() async {

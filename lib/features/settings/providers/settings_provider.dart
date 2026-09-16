@@ -47,6 +47,8 @@ class AppSettings {
     this.fontOpacity = 1,
     this.fontStrikethrough = false,
     this.fontGoldBorder = false,
+    this.roundArchiveMaxRounds = 200,
+    this.roundArchiveMaxSizeMB = 200,
   });
 
   final ThemeMode themeMode;
@@ -151,6 +153,12 @@ class AppSettings {
   /// 是否启用金边字（金色描边/发光）。
   final bool fontGoldBorder;
 
+  /// 完整轮归档每个会话最多保留的轮数。
+  final int roundArchiveMaxRounds;
+
+  /// 完整轮归档每个会话最多占用的 MB。
+  final int roundArchiveMaxSizeMB;
+
   /// 解析额外 JSON，坏了就当空——配置错不该让对话直接不可用。
   Map<String, dynamic> get extraBodyMap => _decodeMap(llmExtraBody);
 
@@ -209,6 +217,8 @@ class AppSettings {
     double? fontOpacity,
     bool? fontStrikethrough,
     bool? fontGoldBorder,
+    int? roundArchiveMaxRounds,
+    int? roundArchiveMaxSizeMB,
     // 采样参数需要"清空"语义，单独给显式清除开关。
     bool clearTemperature = false,
     bool clearTopP = false,
@@ -242,6 +252,10 @@ class AppSettings {
       fontOpacity: fontOpacity ?? this.fontOpacity,
       fontStrikethrough: fontStrikethrough ?? this.fontStrikethrough,
       fontGoldBorder: fontGoldBorder ?? this.fontGoldBorder,
+      roundArchiveMaxRounds:
+          roundArchiveMaxRounds ?? this.roundArchiveMaxRounds,
+      roundArchiveMaxSizeMB:
+          roundArchiveMaxSizeMB ?? this.roundArchiveMaxSizeMB,
       languageCode: languageCode ?? this.languageCode,
       llmBaseUrl: llmBaseUrl ?? this.llmBaseUrl,
       llmModel: llmModel ?? this.llmModel,
@@ -289,6 +303,8 @@ class AppSettings {
         'fontOpacity': fontOpacity,
         'fontStrikethrough': fontStrikethrough,
         'fontGoldBorder': fontGoldBorder,
+        'roundArchiveMaxRounds': roundArchiveMaxRounds,
+        'roundArchiveMaxSizeMB': roundArchiveMaxSizeMB,
         'languageCode': languageCode,
         'llmBaseUrl': llmBaseUrl,
         'llmModel': llmModel,
@@ -343,6 +359,8 @@ class SettingsNotifier extends Notifier<AppSettings> {
       fontOpacity: prefs.getDouble('fontOpacity') ?? 1,
       fontStrikethrough: prefs.getBool('fontStrikethrough') ?? false,
       fontGoldBorder: prefs.getBool('fontGoldBorder') ?? false,
+      roundArchiveMaxRounds: prefs.getInt('roundArchiveMaxRounds') ?? 200,
+      roundArchiveMaxSizeMB: prefs.getInt('roundArchiveMaxSizeMB') ?? 200,
       languageCode: prefs.getString('languageCode') ?? 'zh',
       llmBaseUrl: prefs.getString('llmBaseUrl') ?? '',
       llmModel: prefs.getString('llmModel') ?? '',
@@ -402,6 +420,14 @@ class SettingsNotifier extends Notifier<AppSettings> {
     await prefs.setDouble('fontOpacity', next.fontOpacity);
     await prefs.setBool('fontStrikethrough', next.fontStrikethrough);
     await prefs.setBool('fontGoldBorder', next.fontGoldBorder);
+    await prefs.setInt(
+      'roundArchiveMaxRounds',
+      next.roundArchiveMaxRounds,
+    );
+    await prefs.setInt(
+      'roundArchiveMaxSizeMB',
+      next.roundArchiveMaxSizeMB,
+    );
     await prefs.setString('languageCode', next.languageCode);
     await prefs.setString('llmBaseUrl', next.llmBaseUrl);
     await prefs.setString('llmModel', next.llmModel);

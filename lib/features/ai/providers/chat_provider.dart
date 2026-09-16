@@ -1678,6 +1678,11 @@ class ChatNotifier extends Notifier<ChatState> {
     }
     _runs[session.id] = run;
     try {
+      final archiveSettings = ref.read(settingsProvider);
+      RoundArchiveService.instance.configure(
+        maxRounds: archiveSettings.roundArchiveMaxRounds,
+        maxBytes: archiveSettings.roundArchiveMaxSizeMB * 1024 * 1024,
+      );
       await RoundArchiveService.instance.startRound(
         session.id,
         run.roundId,
