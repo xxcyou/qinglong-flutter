@@ -29,49 +29,6 @@ class SettingsPage extends ConsumerWidget {
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 44),
         children: [
           const SectionLabel('外观'),
-          GlassCard(
-            child: Row(
-              children: [
-                const Icon(Icons.palette_outlined),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '主题',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        _themeName(settings.themeMode),
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),
-                DropdownButton<ThemeMode>(
-                  value: settings.themeMode,
-                  items: const [
-                    DropdownMenuItem(
-                        value: ThemeMode.system, child: Text('跟随系统')),
-                    DropdownMenuItem(value: ThemeMode.light, child: Text('亮色')),
-                    DropdownMenuItem(value: ThemeMode.dark, child: Text('暗色')),
-                  ],
-                  onChanged: (v) {
-                    if (v != null) {
-                      notifier.update(settings.copyWith(themeMode: v));
-                    }
-                  },
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
           const _ThemeSchemeCard(),
           const SizedBox(height: 8),
           const SectionLabel('刷新与轮询'),
@@ -431,12 +388,6 @@ class SettingsPage extends ConsumerWidget {
       ),
     );
   }
-
-  String _themeName(ThemeMode mode) => switch (mode) {
-        ThemeMode.system => '跟随系统',
-        ThemeMode.light => '亮色',
-        ThemeMode.dark => '暗色',
-      };
 }
 
 /// 主题方案：显示配色预览点，点击应用，支持导入导出。
