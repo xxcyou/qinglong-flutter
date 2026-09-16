@@ -240,8 +240,7 @@ class _CurrentPanelCard extends StatelessWidget {
                 ],
               ),
             ),
-            child:
-                const Icon(Icons.dns_outlined, size: 21, color: Colors.white),
+            child: Icon(Icons.dns_outlined, size: 21, color: scheme.onPrimary),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -407,7 +406,13 @@ class _ModuleCard extends StatelessWidget {
                 ],
               ),
             ),
-            child: Icon(module.icon, size: 18, color: Colors.white),
+            child: Icon(
+              module.icon,
+              size: 18,
+              color: module.accent.computeLuminance() > 0.45
+                  ? const Color(0xFF1A1C1E)
+                  : Colors.white,
+            ),
           ),
           const SizedBox(height: 10),
           Text(

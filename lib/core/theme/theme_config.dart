@@ -57,25 +57,33 @@ class ThemeConfig {
 
   ColorScheme scheme() {
     final dark = isDark;
+    // 亮色主题下很多主题只有 primary/accent，没有显式 onPrimary/onSecondary；
+    // 如果直接给白字，浅粉/浅蓝底会白到看不清。这里按底色的亮度自动选深字/白字。
+    final primary = color('primary', const Color(0xFF66BB6A));
+    final secondary = color('accent', const Color(0xFF4FC3F7));
+    final tertiary = color('accent', const Color(0xFF4FC3F7));
     return ColorScheme(
       brightness: dark ? Brightness.dark : Brightness.light,
-      primary: color('primary', const Color(0xFF66BB6A)),
-      onPrimary:
-          color('onPrimary', dark ? const Color(0xFF0B1F12) : Colors.white),
+      primary: primary,
+      onPrimary: colors.containsKey('onPrimary')
+          ? color('onPrimary', dark ? const Color(0xFF0B1F12) : Colors.white)
+          : (dark ? const Color(0xFF0B1F12) : _onColor(primary)),
       primaryContainer: color('primaryContainer',
           dark ? const Color(0xFF1C4030) : const Color(0xFFC8E6C9)),
       onPrimaryContainer: color('onPrimaryContainer',
           dark ? const Color(0xFFB9F6CA) : const Color(0xFF0B3D0B)),
-      secondary: color('accent', const Color(0xFF4FC3F7)),
-      onSecondary:
-          color('onSecondary', dark ? const Color(0xFF06222E) : Colors.white),
+      secondary: secondary,
+      onSecondary: colors.containsKey('onSecondary')
+          ? color('onSecondary', dark ? const Color(0xFF06222E) : Colors.white)
+          : (dark ? const Color(0xFF06222E) : _onColor(secondary)),
       secondaryContainer: color('secondaryContainer',
           dark ? const Color(0xFF134A5C) : const Color(0xFFB3E5FC)),
       onSecondaryContainer: color('onSecondaryContainer',
           dark ? const Color(0xFFB3E5FC) : const Color(0xFF00344C)),
-      tertiary: color('accent', const Color(0xFF4FC3F7)),
-      onTertiary:
-          color('onSecondary', dark ? const Color(0xFF06222E) : Colors.white),
+      tertiary: tertiary,
+      onTertiary: colors.containsKey('onTertiary')
+          ? color('onTertiary', dark ? const Color(0xFF06222E) : Colors.white)
+          : (dark ? const Color(0xFF06222E) : _onColor(tertiary)),
       tertiaryContainer: color('secondaryContainer',
           dark ? const Color(0xFF134A5C) : const Color(0xFFB3E5FC)),
       onTertiaryContainer: color('onSecondaryContainer',
@@ -115,6 +123,11 @@ class ThemeConfig {
       inversePrimary: color('accent', const Color(0xFF80D8FF)),
       surfaceTint: color('primary', const Color(0xFF66BB6A)),
     );
+  }
+
+  /// 根据背景亮度选出可读的前景色：浅底用深字，深底用白字。
+  static Color _onColor(Color c) {
+    return c.computeLuminance() > 0.45 ? const Color(0xFF1A1C1E) : Colors.white;
   }
 
   ThemeConfig copyWith({
