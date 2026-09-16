@@ -154,9 +154,19 @@ class _FontSettingsScopeState extends State<FontSettingsScope> {
     }
 
     final rawColor = effective.color ?? base;
+    // 亮色主题下如果主题包/用户把字色写成白色，直接使用会白底白字。
+    // 这里按背景亮度做可读性保护：对比度不足时退回主题的标准文字色。
+    final surfaceLuminance = scheme.surface.computeLuminance();
+    final rawLuminance = rawColor.computeLuminance();
+    final hi =
+        surfaceLuminance > rawLuminance ? surfaceLuminance : rawLuminance;
+    final lo =
+        surfaceLuminance > rawLuminance ? rawLuminance : surfaceLuminance;
+    final contrast = (hi + 0.05) / (lo + 0.05);
+    final readableColor = contrast >= 2.8 ? rawColor : base;
     final opacity = effective.opacity.clamp(0.0, 1.0);
-    final color = rawColor.withValues(
-      alpha: (rawColor.a * opacity).clamp(0.0, 1.0),
+    final color = readableColor.withValues(
+      alpha: (readableColor.a * opacity).clamp(0.0, 1.0),
     );
 
     final shadows = effective.goldBorder

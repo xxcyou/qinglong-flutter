@@ -165,9 +165,18 @@ class AppTheme {
           borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
         ),
       ),
-      listTileTheme: const ListTileThemeData(
-        titleTextStyle: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600),
-        subtitleTextStyle: TextStyle(fontSize: 12),
+      listTileTheme: ListTileThemeData(
+        textColor: scheme.onSurface,
+        selectedColor: scheme.onSurface,
+        titleTextStyle: TextStyle(
+          fontSize: 14.5,
+          fontWeight: FontWeight.w600,
+          color: scheme.onSurface,
+        ),
+        subtitleTextStyle: TextStyle(
+          fontSize: 12,
+          color: scheme.onSurfaceVariant,
+        ),
       ),
       chipTheme: ChipThemeData(
         side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6)),
