@@ -9,6 +9,7 @@ import 'core/theme/theme_config.dart';
 import 'core/theme/font_settings_scope.dart';
 import 'core/theme/glass.dart';
 import 'core/theme/theme_effects_controller.dart';
+import 'core/theme/startup_splash.dart';
 import 'core/theme/theme_store.dart';
 import 'features/ai/floating/ai_dock_overlay.dart';
 import 'features/browser/browser_host.dart';
@@ -26,9 +27,15 @@ class QingLongApp extends ConsumerStatefulWidget {
 }
 
 class _QingLongAppState extends ConsumerState<QingLongApp> {
+  /// 启动 Logo 最短展示时长；主题没加载完会继续等到加载完。
+  bool _splashDone = false;
+
   @override
   void initState() {
     super.initState();
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      if (mounted) setState(() => _splashDone = true);
+    });
     ref.listenManual(currentPanelProvider, (previous, next) {
       configureDioForPanel(next);
     });
@@ -49,6 +56,7 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final themeState = ref.watch(themeProvider);
+    final showSplash = !_splashDone || !themeState.loaded;
     final activeTheme = themeState.active;
     final router = ref.watch(routerProvider);
     final defaultLight = ThemeConfig(
@@ -146,6 +154,11 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
                 ),
               ),
             ),
+            if (showSplash)
+              const Positioned.fill(
+                key: ValueKey('startup-splash'),
+                child: StartupSplash(),
+              ),
           ],
         ),
       ),
