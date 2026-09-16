@@ -323,7 +323,7 @@ const builtinSkills = <AiSkill>[
 - `html/index.html`：背景 HTML。
 - `css/`、`js/`：背景样式与脚本（兄弟目录，相对 html 用 `../css/`、`../js/`）。
 - `image/elements/`：布偶、花瓣、角标等图片。
-- `xml/`：动画/组件定义。
+- `xml/animations/background.xml`：App 启动/激活时解析成 DSHTheme 组件特效的声明式 XML。
 
 ## 流程
 1. `theme_manage create` 生成基础包。

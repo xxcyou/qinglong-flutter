@@ -440,7 +440,6 @@ class ThemeNotifier extends Notifier<ThemeState> {
   /// 标准主题包目录骨架：除了 README.md 和 controller.js，其余都是目录。
   static const _packageDirs = [
     'image/elements',
-    'scripts',
     'audio',
     'css',
     'js',
@@ -624,7 +623,6 @@ class ThemeNotifier extends Notifier<ThemeState> {
         '    background: { script: \'js/background.js\', css: \'css/background.css\', html: \'html/index.html\', xml: \'xml/animations/background.xml\' },');
     b.writeln('  },');
     b.writeln('  images: \'image/elements\',');
-    b.writeln('  scripts: \'scripts\',');
     b.writeln('  audio: \'audio\',');
     b.writeln('};');
     b.writeln('export default themeResources;');

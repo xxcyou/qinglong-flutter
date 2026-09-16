@@ -9,6 +9,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import 'theme_effects_controller.dart';
+import 'theme_xml_effects.dart';
 import 'theme_visual.dart';
 import '../local_shell/proot_bridge.dart';
 
@@ -899,6 +900,9 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
   final List<Map<String, dynamic>> _bufferedStyles = [];
   final List<Map<String, dynamic>> _bufferedRemoveStyles = [];
 
+  /// 主题包 xml/ 声明的静态组件/特效，激活时一次性落到全局浮层。
+  List<ThemeEffect> _xmlEffects = [];
+
   @override
   void initState() {
     super.initState();
@@ -929,6 +933,7 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       _htmlLoadStarted = false;
       _htmlLoaded = false;
       _effectOwner = false;
+      _xmlEffects = [];
       _load();
     } else if (!oldWidget.active && widget.active) {
       // 页面从被覆盖变成可见：先等路由动画结束再接管，秒切不卡。
@@ -967,6 +972,10 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     // 当前页重新接管前清掉上一页留下的覆盖层特效和组件风格。
     ThemeEffectsController.instance.clear();
     ThemeEffectsController.instance.clearComponentStyles();
+    // XML 组件构造：先落静态组件，再让 JS 的实时 effect 叠加。
+    for (final effect in _xmlEffects) {
+      ThemeEffectsController.instance.upsert(effect);
+    }
     // 交互事件回传 WebView：主题 JS 用 DSHTheme.onEffect('tap', fn) 监听。
     ThemeEffectsController.instance.onEffectTap = (id) {
       try {
@@ -996,6 +1005,11 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       final host =
           await ProotBridge().hostPath(path: widget.htmlPath, scope: 'shell');
       if (!mounted || host.isEmpty) return;
+      // XML 组件构造：xml/ 目录里的声明直接转成 DSHTheme effect。
+      final hostPackageRoot = File(host).parent.parent;
+      if (hostPackageRoot.existsSync()) {
+        _xmlEffects = await loadThemeXmlEffects(hostPackageRoot.path);
+      }
       String? preparedHtml;
       if (File(host).existsSync()) {
         final cached = _preparedHtmlCache[host];
@@ -1462,7 +1476,7 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
     // 脚本统一放到 </body> 前，避免阻塞渲染。
     if (!hasScriptTag) {
       final scriptParts = StringBuffer();
-      for (final dirName in ['js', 'scripts']) {
+      for (final dirName in ['js']) {
         final dir = Directory('${packageRoot.path}/$dirName');
         if (!dir.existsSync()) continue;
         for (final f in dir.listSync().whereType<File>()) {
