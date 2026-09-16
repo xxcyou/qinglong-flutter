@@ -23,7 +23,10 @@ class _StartupSplashState extends State<StartupSplash>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
   late final Animation<double> _opacity;
-  bool _fadingOut = false;
+
+  /// 主题未就绪时 Logo 最多淡到这个“半显”程度，不让它先完成加载。
+  static const double _partialValue = 0.12;
+  bool _readySequenceStarted = false;
 
   @override
   void initState() {
@@ -49,33 +52,43 @@ class _StartupSplashState extends State<StartupSplash>
       ),
     ]).animate(_controller);
     _controller.value = 0;
-    // 先走到“全显阶段结束”（约 70%）：淡入 + 全显停留。
-    _controller.animateTo(
-      0.7,
-      duration: const Duration(milliseconds: 1000),
-      curve: Curves.linear,
-    ).whenComplete(() {
-      if (mounted && widget.ready) _fadeOut();
-    });
+    if (widget.ready) {
+      // 主题已经就绪：直接走完整淡入 → 全显 → 淡出。
+      _startReadySequence();
+    } else {
+      // 主题还没加载完：Logo 只淡到半显，等主题就绪后再走完剩余动画。
+      _controller.animateTo(
+        _partialValue,
+        duration: const Duration(milliseconds: 700),
+        curve: Curves.easeInCubic,
+      );
+    }
   }
 
   @override
   void didUpdateWidget(covariant StartupSplash oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.ready && !oldWidget.ready && !_fadingOut) {
-      _fadeOut();
+    if (widget.ready && !oldWidget.ready && !_readySequenceStarted) {
+      _startReadySequence();
     }
   }
 
-  void _fadeOut() {
-    if (_fadingOut) return;
-    _fadingOut = true;
-    _controller.animateTo(
+  /// 主题就绪后接管动画：从当前（半显）位置继续到全显，再停留并淡出。
+  void _startReadySequence() {
+    if (_readySequenceStarted) return;
+    _readySequenceStarted = true;
+    _controller.stop();
+    final start = _controller.value;
+    final remaining = (1.0 - start).clamp(0.0, 1.0);
+    final durationMs = (remaining * 1200).round().clamp(400, 1200);
+    _controller
+        .animateTo(
       1.0,
-      duration: const Duration(milliseconds: 600),
-      curve: Curves.easeOutCubic,
-    ).whenComplete(() {
-      widget.onFinished?.call();
+      duration: Duration(milliseconds: durationMs),
+      curve: Curves.easeInOutCubic,
+    )
+        .whenComplete(() {
+      if (mounted) widget.onFinished?.call();
     });
   }
 
