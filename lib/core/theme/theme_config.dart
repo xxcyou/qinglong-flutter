@@ -70,6 +70,36 @@ class ThemeConfig {
     final rawOnSurfaceVariant = color('onSurfaceVariant',
         dark ? const Color(0xFF9AA0A6) : const Color(0xFF44484C));
     final onSurfaceVariant = _readableOn(surfaceBg, rawOnSurfaceVariant);
+    final primaryContainer = color('primaryContainer',
+        dark ? const Color(0xFF1C4030) : const Color(0xFFC8E6C9));
+    final rawOnPrimaryContainer = color('onPrimaryContainer',
+        dark ? const Color(0xFFB9F6CA) : const Color(0xFF0B3D0B));
+    final onPrimaryContainer =
+        _readableOn(primaryContainer, rawOnPrimaryContainer);
+    final secondaryContainer = color('secondaryContainer',
+        dark ? const Color(0xFF134A5C) : const Color(0xFFB3E5FC));
+    final rawOnSecondaryContainer = color('onSecondaryContainer',
+        dark ? const Color(0xFFB3E5FC) : const Color(0xFF00344C));
+    final onSecondaryContainer =
+        _readableOn(secondaryContainer, rawOnSecondaryContainer);
+    final tertiaryContainer = color('secondaryContainer',
+        dark ? const Color(0xFF134A5C) : const Color(0xFFB3E5FC));
+    final rawOnTertiaryContainer = color('onSecondaryContainer',
+        dark ? const Color(0xFFB3E5FC) : const Color(0xFF00344C));
+    final onTertiaryContainer =
+        _readableOn(tertiaryContainer, rawOnTertiaryContainer);
+    final error = color('error', const Color(0xFFE57373));
+    final onError = _readableOn(error, Colors.white);
+    final errorContainer = color('errorContainer',
+        dark ? const Color(0xFF5F1111) : const Color(0xFFF8BBD0));
+    final rawOnErrorContainer = color('onErrorContainer',
+        dark ? const Color(0xFFF8BBD0) : const Color(0xFF2B0A0A));
+    final onErrorContainer = _readableOn(errorContainer, rawOnErrorContainer);
+    final inverseSurface = color('inverseSurface',
+        dark ? const Color(0xFFE8EAED) : const Color(0xFF2A2E33));
+    final rawOnInverseSurface = color('onInverseSurface',
+        dark ? const Color(0xFF1A1C1E) : const Color(0xFFF2F2F2));
+    final onInverseSurface = _readableOn(inverseSurface, rawOnInverseSurface);
     return ColorScheme(
       brightness: dark ? Brightness.dark : Brightness.light,
       primary: primary,
@@ -79,10 +109,8 @@ class ThemeConfig {
             ? color('onPrimary', dark ? const Color(0xFF0B1F12) : Colors.white)
             : (dark ? const Color(0xFF0B1F12) : _onColor(primary)),
       ),
-      primaryContainer: color('primaryContainer',
-          dark ? const Color(0xFF1C4030) : const Color(0xFFC8E6C9)),
-      onPrimaryContainer: color('onPrimaryContainer',
-          dark ? const Color(0xFFB9F6CA) : const Color(0xFF0B3D0B)),
+      primaryContainer: primaryContainer,
+      onPrimaryContainer: onPrimaryContainer,
       secondary: secondary,
       onSecondary: _readableOn(
         secondary,
@@ -91,10 +119,8 @@ class ThemeConfig {
                 'onSecondary', dark ? const Color(0xFF06222E) : Colors.white)
             : (dark ? const Color(0xFF06222E) : _onColor(secondary)),
       ),
-      secondaryContainer: color('secondaryContainer',
-          dark ? const Color(0xFF134A5C) : const Color(0xFFB3E5FC)),
-      onSecondaryContainer: color('onSecondaryContainer',
-          dark ? const Color(0xFFB3E5FC) : const Color(0xFF00344C)),
+      secondaryContainer: secondaryContainer,
+      onSecondaryContainer: onSecondaryContainer,
       tertiary: tertiary,
       onTertiary: _readableOn(
         tertiary,
@@ -102,16 +128,12 @@ class ThemeConfig {
             ? color('onTertiary', dark ? const Color(0xFF06222E) : Colors.white)
             : (dark ? const Color(0xFF06222E) : _onColor(tertiary)),
       ),
-      tertiaryContainer: color('secondaryContainer',
-          dark ? const Color(0xFF134A5C) : const Color(0xFFB3E5FC)),
-      onTertiaryContainer: color('onSecondaryContainer',
-          dark ? const Color(0xFFB3E5FC) : const Color(0xFF00344C)),
-      error: color('error', const Color(0xFFE57373)),
-      onError: Colors.white,
-      errorContainer: color('errorContainer',
-          dark ? const Color(0xFF5F1111) : const Color(0xFFF8BBD0)),
-      onErrorContainer: color('onErrorContainer',
-          dark ? const Color(0xFFF8BBD0) : const Color(0xFF2B0A0A)),
+      tertiaryContainer: tertiaryContainer,
+      onTertiaryContainer: onTertiaryContainer,
+      error: error,
+      onError: onError,
+      errorContainer: errorContainer,
+      onErrorContainer: onErrorContainer,
       surface: color('background',
           dark ? const Color(0xFF0F1115) : const Color(0xFFF7FAF8)),
       onSurface: onSurface,
@@ -132,10 +154,8 @@ class ThemeConfig {
           dark ? const Color(0xFF3A4048) : const Color(0xFFC1C7C2)),
       shadow: color('shadow', Colors.black),
       scrim: color('shadow', Colors.black),
-      inverseSurface: color('inverseSurface',
-          dark ? const Color(0xFFE8EAED) : const Color(0xFF2A2E33)),
-      onInverseSurface: color('onInverseSurface',
-          dark ? const Color(0xFF1A1C1E) : const Color(0xFFF2F2F2)),
+      inverseSurface: inverseSurface,
+      onInverseSurface: onInverseSurface,
       inversePrimary: color('accent', const Color(0xFF80D8FF)),
       surfaceTint: color('primary', const Color(0xFF66BB6A)),
     );
