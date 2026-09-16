@@ -63,7 +63,7 @@ class ThemeConfig {
     final secondary = color('accent', const Color(0xFF4FC3F7));
     final tertiary = color('accent', const Color(0xFF4FC3F7));
     final surfaceBg = color(
-        'background', dark ? const Color(0xFF0F1115) : const Color(0xFFF7FAF8));
+        'surface', dark ? const Color(0xFF1A1D24) : const Color(0xFFFFFFFF));
     final rawOnSurface = color(
         'onSurface', dark ? const Color(0xFFE8EAED) : const Color(0xFF1A1C1E));
     final onSurface = _readableOn(surfaceBg, rawOnSurface);
