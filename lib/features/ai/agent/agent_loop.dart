@@ -700,9 +700,9 @@ class AgentLoop {
 
   /// 调了这么多次工具还没有任务清单，就提醒模型拆一次。
   ///
-  /// 取 5：普通一句话任务不会走到 5 次工具；走到 5 次基本可以确定是多步活，
-  /// 该让用户看到进度了。
-  static const _planNudgeToolCalls = 5;
+  /// 取 3：普通一句话任务不会连续调 3 次工具；走到 3 次还在继续，
+  /// 基本可以确定是多步活，该让用户看到进度了。
+  static const _planNudgeToolCalls = 3;
 
   /// 同一个只读工具连着调这么多次还没收敛，就提醒它收窄条件。
   ///
@@ -1131,8 +1131,9 @@ class AgentLoop {
     var outcome = AgentOutcome.exhausted;
     var turnsUsed = 0;
     var nudged = false;
-    // "该拆任务了"只推一次，推过就不再烦它。
-    var planNudged = false;
+    // "该拆任务了"按工具数间隔提醒：第一次 3 次，之后每再涨 4 次催一次，
+    // 直到模型真的建出清单。不能只推一次——模型无视一次就永远没清单了。
+    var lastPlanNudgeToolCalls = 0;
     // "问题别写正文里"纠正过几次。
     //
     // 原来是个 bool（整轮只纠一次）。连着问三个问题时，第一次纠完就永久置位，
@@ -2692,18 +2693,17 @@ class AgentLoop {
         // 细节里忘了拆。这里只推一次，而且要在它确实已经调了很多次之后才推，
         // 不会去烦一问一答的短任务。
         if (enableTaskPlan &&
-            !planNudged &&
             plan.isEmpty &&
             records.length >= _planNudgeToolCalls &&
-            turnsUsed >= 2) {
-          planNudged = true;
+            records.length >= lastPlanNudgeToolCalls + 4) {
+          lastPlanNudgeToolCalls = records.length;
           messages.add(
             LlmMessage(
               role: 'user',
-              content: '你已经调了 ${records.length} 次工具。'
-                  '如果这是多步任务、用户也确实需要看进度，就用 task_plan 拆一下'
-                  '（已做完的直接标 done）。'
-                  '如果剩下的活其实很简单/只剩一步，直接做完给结论，不用拆清单。',
+              content: '你已经调了 ${records.length} 次工具、跑了 $turnsUsed 轮还没完，'
+                  '这种规模的多步任务必须让用户看到进度。'
+                  '现在立刻用 task_plan 拆成 2-8 个可验证步骤（已做完的直接标 done），'
+                  '然后继续做。不要再继续闷头调工具不拆清单。',
             ),
           );
           emit(
