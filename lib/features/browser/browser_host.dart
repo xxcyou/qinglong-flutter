@@ -174,13 +174,13 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     final allow = await showDialog<bool>(
       context: ctx,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('外部跳转确认'),
+        title: Text('是否跳转到「${_externalAppName(req.url)}」？'),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('网页想跳到外部链接：'),
+              const Text('网页请求打开以下外部链接：'),
               const SizedBox(height: 8),
               SelectableText(
                 req.url,
@@ -200,7 +200,7 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
               const SizedBox(height: 10),
               const Text(
                 '可能是第三方登录（QQ/微信/支付宝），也可能是流氓下载/拉起其它 App。'
-                '确认是你要的操作再允许。',
+                '确认是你要的操作再跳转。',
                 style: TextStyle(fontSize: 12.5),
               ),
             ],
@@ -213,12 +213,52 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('允许跳转'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.primary,
+            ),
+            child: const Text('跳转'),
           ),
         ],
       ),
     );
     return allow ?? false;
+  }
+
+  String _externalAppName(String url) {
+    final lower = url.toLowerCase();
+    if (lower.startsWith('weixin://') || lower.startsWith('wechat://')) {
+      return '微信';
+    }
+    if (lower.startsWith('mqq://') ||
+        lower.startsWith('wtloginmqq://') ||
+        lower.startsWith('qq://')) {
+      return 'QQ';
+    }
+    if (lower.startsWith('alipays://') || lower.startsWith('alipay://')) {
+      return '支付宝';
+    }
+    if (lower.startsWith('taobao://') || lower.startsWith('tbopen://')) {
+      return '淘宝';
+    }
+    if (lower.startsWith('jd://') || lower.startsWith('openapp.jdmobile://')) {
+      return '京东';
+    }
+    if (lower.startsWith('bilibili://')) {
+      return '哔哩哔哩';
+    }
+    if (lower.startsWith('douyin://') || lower.startsWith('snssdk1128://')) {
+      return '抖音';
+    }
+    if (lower.startsWith('intent://')) {
+      final pkg = RegExp(r'[?&]package=([^&]+)').firstMatch(url)?.group(1);
+      return pkg ?? 'Android 应用';
+    }
+    if (lower.startsWith('mailto:')) return '邮件';
+    if (lower.startsWith('tel:')) return '电话';
+    if (lower.startsWith('sms:')) return '短信';
+    final scheme = Uri.tryParse(url)?.scheme;
+    if (scheme == null || scheme.isEmpty) return '外部 App';
+    return '「$scheme」App';
   }
 
   @override

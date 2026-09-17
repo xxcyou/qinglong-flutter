@@ -1280,34 +1280,43 @@ return JSON.stringify({
     String? sourceUrl,
   }) async {
     if (url.isEmpty) return NavigationDecision.prevent;
-    // 第三方登录不再强制留在 APP 内置浏览器：交给 Android 系统默认方式处理，
-    // 该调默认浏览器就调默认浏览器。
     final uri = Uri.tryParse(url);
-    _lastExternalJump = ExternalJumpRequest(
+    final request = ExternalJumpRequest(
       id: 'jump${++_jumpSeq}',
       url: url,
       sourceUrl: sourceUrl ?? currentUrl.value,
       createdAt: DateTime.now(),
     );
+
+    // 先弹确认框（类似 Via 的“是否跳转 xxx App”）。
+    // 只有用户点“跳转”才真的交给系统打开，不能偷偷拉起第三方应用。
+    if (externalJumpPrompt != null) {
+      final allow = await externalJumpPrompt!(request);
+      if (!allow) return NavigationDecision.prevent;
+    }
+
     if (uri != null) {
       try {
         final opened = await launchUrl(
           uri,
           mode: LaunchMode.platformDefault,
         );
-        if (!opened) {
+        if (opened) {
+          // 真的可能跳到外部 App 了，记住来源页，等用户回来后自动切回来。
+          _lastExternalJump = request;
+        } else {
           // 系统没有能处理这个 scheme 的应用：记录下来供 AI 排查，
-          // 但不弹 APP 确认框打扰用户。
+          // 但不反复弹 APP 确认框打扰用户。
           pendingExternalJumps.value = [
             ...pendingExternalJumps.value,
-            _lastExternalJump!
+            request,
           ];
         }
       } catch (_) {
-        // 同上：打不开时不弹 APP 弹窗，只留一条记录。
+        // 同上：打不开时留一条记录。
         pendingExternalJumps.value = [
           ...pendingExternalJumps.value,
-          _lastExternalJump!
+          request,
         ];
       }
     }
