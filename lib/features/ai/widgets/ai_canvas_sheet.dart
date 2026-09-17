@@ -940,7 +940,63 @@ class _StepRow extends StatelessWidget {
                           : scheme.onSurfaceVariant,
                     ),
                   ),
+                if (item.hasSubtasks) ...[
+                  const SizedBox(height: 4),
+                  for (var j = 0; j < item.subtasks.length; j++)
+                    _SubtaskRow(
+                        index: '$index.${j + 1}', item: item.subtasks[j]),
+                ],
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SubtaskRow extends StatelessWidget {
+  const _SubtaskRow({required this.index, required this.item});
+
+  final String index;
+  final AgentSubtask item;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final (icon, color) = switch (item.status) {
+      SubtaskStatus.done => (Icons.check_circle_outline, Colors.green.shade500),
+      SubtaskStatus.failed => (Icons.error_outline, scheme.error),
+      SubtaskStatus.running => (Icons.autorenew, scheme.primary),
+      SubtaskStatus.skipped => (Icons.remove_circle_outline, scheme.outline),
+      SubtaskStatus.pending => (
+          Icons.radio_button_unchecked,
+          scheme.onSurfaceVariant,
+        ),
+    };
+    return Padding(
+      padding: const EdgeInsets.only(left: 22, top: 2, bottom: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 13, color: color),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '$index. ${item.title}',
+              style: TextStyle(
+                fontSize: 11.5,
+                height: 1.3,
+                decoration: item.status == SubtaskStatus.skipped
+                    ? TextDecoration.lineThrough
+                    : null,
+                color: item.status == SubtaskStatus.pending
+                    ? scheme.onSurfaceVariant
+                    : scheme.onSurface,
+                fontWeight: item.status == SubtaskStatus.running
+                    ? FontWeight.w700
+                    : FontWeight.w500,
+              ),
             ),
           ),
         ],

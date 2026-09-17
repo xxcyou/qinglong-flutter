@@ -698,11 +698,11 @@ class AgentLoop {
     return heads.any(name.startsWith);
   }
 
-  /// 调了这么多次工具还没有任务清单，就提醒模型拆一次。
+  /// 调了这么多次工具还没有任务清单，才提醒模型拆一次。
   ///
-  /// 取 4：提示词里的判定线是"3 个以上工具调用就该拆"，留一格余量给
-  /// "顺手多查一个只读接口"这种单步任务，第 4 次基本可以确定是多步活了。
-  static const _planNudgeToolCalls = 4;
+  /// 取 8：简单任务连续查几个只读接口是很正常的，不要第 4 次就逼它上清单。
+  /// 只有明显在多步里打转、用户又看不到进度时才提醒。
+  static const _planNudgeToolCalls = 8;
 
   /// 同一个只读工具连着调这么多次还没收敛，就提醒它收窄条件。
   ///
@@ -780,11 +780,13 @@ class AgentLoop {
     },
   );
 
-  /// 任务清单工具：把复杂需求拆成可勾选的步骤。
+  /// 任务清单工具：构建清单，支持“部分步骤已完成”和二级子任务。
   static const _taskPlanSpec = LlmFunctionSpec(
     name: 'task_plan',
-    description: '把一个复杂需求拆成 2-8 个可执行步骤，界面会显示成任务清单让用户看进度。'
+    description: '构建任务清单：把一个复杂需求拆成 2-8 个可执行步骤，界面会显示成任务清单让用户看进度。'
         '只在需求确实需要多步时用；一句话就能办完的事不要拆。'
+        '已经做过/完成过的步骤直接标 status=done，不用从白板开始。'
+        '某一步内部还要再拆时，用 subtasks 给它挂二级子任务。'
         '拆完立刻开始做第一步，不要等用户点什么。',
     parameters: {
       'type': 'object',
@@ -792,18 +794,111 @@ class AgentLoop {
         'goal': {'type': 'string', 'description': '一句话总目标'},
         'steps': {
           'type': 'array',
-          'items': {'type': 'string'},
-          'description': '2-8 个步骤，每条一句话，动词开头，可独立验证',
+          'description':
+              '2-8 个步骤。每条可以是字符串，也可以是对象 {title, status?, note?, subtasks?}。'
+                  'subtasks 是二级子任务数组，元素同格式；status 取值 pending/running/done/failed/skipped。',
+          'items': {
+            'type': 'object',
+            'properties': {
+              'title': {'type': 'string', 'description': '步骤一句话，动词开头，可独立验证'},
+              'status': {
+                'type': 'string',
+                'enum': ['pending', 'running', 'done', 'failed', 'skipped'],
+              },
+              'note': {'type': 'string'},
+              'subtasks': {
+                'type': 'array',
+                'description': '该步骤下的二级子任务；也可以直接传字符串标题',
+                'items': {
+                  'type': 'object',
+                  'properties': {
+                    'title': {'type': 'string'},
+                    'status': {'type': 'string'},
+                  },
+                },
+              },
+            },
+          },
         },
       },
       'required': ['steps'],
     },
   );
 
+  /// 任务清单追加：已建清单不够用时，往里补步骤。
+  static const _taskAppendSpec = LlmFunctionSpec(
+    name: 'task_append',
+    description: '向已有任务清单追加步骤。当原步骤太粗、某个环节需要继续拆分时使用，'
+        '追加后原清单变成更完整的清单。格式和 task_plan 的 steps 相同，支持 subtasks 二级子任务。',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'steps': {
+          'type': 'array',
+          'description':
+              '要追加的步骤，元素格式同 task_plan steps（字符串或含 status/subtasks 的对象）',
+          'items': {
+            'type': 'object',
+            'properties': {
+              'title': {'type': 'string'},
+              'status': {
+                'type': 'string',
+                'enum': ['pending', 'running', 'done', 'failed', 'skipped'],
+              },
+              'note': {'type': 'string'},
+              'subtasks': {'type': 'array'},
+            },
+          },
+        },
+      },
+      'required': ['steps'],
+    },
+  );
+
+  /// 给现有步骤挂二级子任务。
+  static const _taskAddSubtaskSpec = LlmFunctionSpec(
+    name: 'task_add_subtask',
+    description: '给任务清单里某个大步骤添加/追加二级子任务。'
+        '当这步内容较多、需要展示“这步下面还有哪些”时使用。',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'index': {'type': 'integer', 'description': '顶层第几步（从 1 开始）'},
+        'subtasks': {
+          'type': 'array',
+          'description': '要添加的二级子任务，字符串标题或对象 {title, status?}',
+          'items': {'type': 'object'},
+        },
+      },
+      'required': ['index', 'subtasks'],
+    },
+  );
+
+  /// 更新二级子任务状态。
+  static const _taskSubstepSpec = LlmFunctionSpec(
+    name: 'task_substep',
+    description: '更新任务清单里某个二级子任务的状态。'
+        '父步骤用 task_step 更新，子步骤用这个更新。',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'index': {'type': 'integer', 'description': '顶层第几步（从 1 开始）'},
+        'subindex': {'type': 'integer', 'description': '该步骤下第几个子任务（从 1 开始）'},
+        'status': {
+          'type': 'string',
+          'enum': ['pending', 'running', 'done', 'failed', 'skipped'],
+        },
+        'note': {'type': 'string'},
+      },
+      'required': ['index', 'subindex', 'status'],
+    },
+  );
+
   /// 任务清单更新：标记某一步的状态。
   static const _taskStepSpec = LlmFunctionSpec(
     name: 'task_step',
-    description: '更新任务清单里某一步的状态。做完一步就立刻更新，让用户看到进度。',
+    description: '更新任务清单里某一步的状态。做完一步就立刻更新，让用户看到进度。'
+        '二级子任务请用 task_substep，不要拿 task_step 改子任务。',
     parameters: {
       'type': 'object',
       'properties': {
@@ -821,6 +916,52 @@ class AgentLoop {
       'required': ['index', 'status'],
     },
   );
+
+  SubtaskStatus _parseSubtaskStatus(Object? raw) {
+    final name = raw?.toString() ?? 'pending';
+    return SubtaskStatus.values.firstWhere(
+      (s) => s.name == name,
+      orElse: () => SubtaskStatus.pending,
+    );
+  }
+
+  AgentSubtask _parseSubtaskRaw(Object? raw, String id) {
+    if (raw is String) {
+      return AgentSubtask(id: id, title: raw.trim());
+    }
+    if (raw is Map) {
+      final title = raw['title']?.toString().trim() ?? '';
+      final rawSubtasks = raw['subtasks'];
+      return AgentSubtask(
+        id: id,
+        title: title,
+        status: _parseSubtaskStatus(raw['status']),
+        note: raw['note']?.toString().trim() ?? '',
+        subtasks: _parseSubtaskList(rawSubtasks, id),
+      );
+    }
+    return AgentSubtask(id: id, title: raw?.toString() ?? '');
+  }
+
+  List<AgentSubtask> _parseSubtaskList(Object? raw, String parentId) {
+    if (raw is List) {
+      return [
+        for (var i = 0; i < raw.length; i++)
+          _parseSubtaskRaw(raw[i], '${parentId}_${i + 1}'),
+      ];
+    }
+    return const [];
+  }
+
+  List<AgentSubtask> _parsePlanSteps(Object? raw) {
+    if (raw is List) {
+      return [
+        for (var i = 0; i < raw.length; i++)
+          _parseSubtaskRaw(raw[i], 'step${i + 1}'),
+      ];
+    }
+    return const [];
+  }
 
   /// HTML 互动卡片：文字表达不了的东西直接画出来，还能收用户的操作结果。
   static const _canvasSpec = LlmFunctionSpec(
@@ -975,6 +1116,9 @@ class AgentLoop {
       _taskCompleteSpec.name,
       if (enableTaskPlan) _taskPlanSpec.name,
       if (enableTaskPlan) _taskStepSpec.name,
+      if (enableTaskPlan) _taskAppendSpec.name,
+      if (enableTaskPlan) _taskAddSubtaskSpec.name,
+      if (enableTaskPlan) _taskSubstepSpec.name,
       _canvasSpec.name,
     };
     var lastPromptTokens = 0;
@@ -1137,6 +1281,9 @@ class AgentLoop {
                     _taskCompleteSpec,
                     if (enableTaskPlan) _taskPlanSpec,
                     if (enableTaskPlan) _taskStepSpec,
+                    if (enableTaskPlan) _taskAppendSpec,
+                    if (enableTaskPlan) _taskAddSubtaskSpec,
+                    if (enableTaskPlan) _taskSubstepSpec,
                     _canvasSpec,
                   ]
                 : null,
@@ -1634,26 +1781,159 @@ class AgentLoop {
         // 确认策略与只读缓存，纯粹是"跟界面说句话"。
         for (final call in response.toolCalls) {
           if (call.name == _taskPlanSpec.name) {
-            final steps = <String>[
-              for (final s in (call.arguments['steps'] as List? ?? const []))
-                s.toString().trim(),
-            ].where((s) => s.isNotEmpty).toList();
+            final steps = _parsePlanSteps(call.arguments['steps'])
+                .where((s) => s.title.isNotEmpty)
+                .toList();
             if (steps.isEmpty) {
               toolMessages.add(_toolReply(call, 'steps 是空的，清单没建立。'));
               continue;
             }
             plan = AgentTaskPlan(
               goal: call.arguments['goal']?.toString().trim() ?? '',
-              items: [
-                for (var i = 0; i < steps.length; i++)
-                  AgentSubtask(id: 'step${i + 1}', title: steps[i]),
-              ],
+              items: steps,
             );
+            final done = plan.doneCount;
             toolMessages.add(
               _toolReply(
                 call,
-                '清单已建立（${steps.length} 步），已显示给用户。'
-                '现在开始做第 1 步，每做完一步调用 task_step 更新状态。',
+                '清单已建立（${steps.length} 步，其中 $done 步已完成），已显示给用户。'
+                '现在开始做下一步，做完一步调用 task_step / task_substep 更新状态。',
+              ),
+            );
+            onPlan?.call(plan);
+            emit(
+              AgentEvent(
+                kind: AgentEventKind.taskPlan,
+                message: plan.promptLines(),
+                toolName: call.name,
+                args: call.arguments,
+                turn: turnsUsed,
+              ),
+            );
+            continue;
+          }
+          if (call.name == _taskAppendSpec.name) {
+            if (plan.isEmpty) {
+              toolMessages.add(
+                _toolReply(call, '还没有任务清单，先调用 task_plan 建立。'),
+              );
+              continue;
+            }
+            final append = _parsePlanSteps(call.arguments['steps'])
+                .where((s) => s.title.isNotEmpty)
+                .toList();
+            if (append.isEmpty) {
+              toolMessages.add(_toolReply(call, '待追加的 steps 是空的。'));
+              continue;
+            }
+            final oldCount = plan.items.length;
+            plan = plan.copyWith(items: [...plan.items, ...append]);
+            toolMessages.add(
+              _toolReply(
+                call,
+                '已追加 ${append.length} 步（原 $oldCount 步 → 现 ${plan.items.length} 步），'
+                '清单已更新给用户。',
+              ),
+            );
+            onPlan?.call(plan);
+            emit(
+              AgentEvent(
+                kind: AgentEventKind.taskPlan,
+                message: plan.promptLines(),
+                toolName: call.name,
+                args: call.arguments,
+                turn: turnsUsed,
+              ),
+            );
+            continue;
+          }
+          if (call.name == _taskAddSubtaskSpec.name) {
+            if (plan.isEmpty) {
+              toolMessages.add(
+                _toolReply(call, '还没有任务清单，先调用 task_plan 建立。'),
+              );
+              continue;
+            }
+            final rawIndex = call.arguments['index'];
+            final index = rawIndex is num
+                ? rawIndex.toInt()
+                : int.tryParse(rawIndex?.toString() ?? '') ?? 0;
+            if (index < 1 || index > plan.items.length) {
+              toolMessages.add(
+                _toolReply(call, 'index 越界：清单只有 ${plan.items.length} 步。'),
+              );
+              continue;
+            }
+            final subs = _parseSubtaskList(
+              call.arguments['subtasks'],
+              'step$index',
+            ).where((s) => s.title.isNotEmpty).toList();
+            if (subs.isEmpty) {
+              toolMessages.add(
+                _toolReply(call, 'subtasks 是空的，没有添加子任务。'),
+              );
+              continue;
+            }
+            final items = List<AgentSubtask>.from(plan.items);
+            final parent = items[index - 1];
+            items[index - 1] = parent.copyWith(
+              subtasks: [...parent.subtasks, ...subs],
+            );
+            plan = plan.copyWith(items: items);
+            toolMessages.add(
+              _toolReply(
+                call,
+                '已在第 $index 步下添加 ${subs.length} 个二级子任务。',
+              ),
+            );
+            onPlan?.call(plan);
+            emit(
+              AgentEvent(
+                kind: AgentEventKind.taskPlan,
+                message: plan.promptLines(),
+                toolName: call.name,
+                args: call.arguments,
+                turn: turnsUsed,
+              ),
+            );
+            continue;
+          }
+          if (call.name == _taskSubstepSpec.name) {
+            if (plan.isEmpty) {
+              toolMessages.add(
+                _toolReply(call, '还没有任务清单，先调用 task_plan 建立。'),
+              );
+              continue;
+            }
+            final rawIndex = call.arguments['index'];
+            final index = rawIndex is num
+                ? rawIndex.toInt()
+                : int.tryParse(rawIndex?.toString() ?? '') ?? 0;
+            final rawSub = call.arguments['subindex'];
+            final subindex = rawSub is num
+                ? rawSub.toInt()
+                : int.tryParse(rawSub?.toString() ?? '') ?? 0;
+            final status = _parseSubtaskStatus(call.arguments['status']);
+            final updated = plan.updateSubtask(
+              index: index,
+              subindex: subindex,
+              status: status,
+              note: call.arguments['note']?.toString().trim() ?? '',
+            );
+            if (updated == null) {
+              toolMessages.add(
+                _toolReply(
+                  call,
+                  '找不到第 $index 步的第 $subindex 个子任务，请先 task_add_subtask 添加。',
+                ),
+              );
+              continue;
+            }
+            plan = updated;
+            toolMessages.add(
+              _toolReply(
+                call,
+                '第 $index 步的子任务 $subindex 已标记为 ${status.label}。',
               ),
             );
             onPlan?.call(plan);
@@ -1860,6 +2140,9 @@ class AgentLoop {
           if (call.name == _askUserSpec.name ||
               call.name == _taskPlanSpec.name ||
               call.name == _taskStepSpec.name ||
+              call.name == _taskAppendSpec.name ||
+              call.name == _taskAddSubtaskSpec.name ||
+              call.name == _taskSubstepSpec.name ||
               call.name == _canvasSpec.name) {
             continue;
           }
@@ -2285,9 +2568,9 @@ class AgentLoop {
 
         // 一直在埋头调工具却没有清单：提醒它这是个多步任务，该拆了。
         //
-        // 提示词里写了"3 个以上工具调用就先 task_plan"，但模型经常一头扎进
-        // 细节里忘了拆——用户的原话是"工具和技能不是摆设"。这里只推一次，
-        // 而且是在它已经证明"这活确实不止一步"之后推，不会去烦一问一答。
+        // 提示词已经改成"简单任务不要拆、复杂任务才拆"，但模型偶尔还是会一头扎进
+        // 细节里忘了拆。这里只推一次，而且要在它确实已经调了很多次之后才推，
+        // 不会去烦一问一答的短任务。
         if (enableTaskPlan &&
             !planNudged &&
             plan.isEmpty &&
@@ -2298,11 +2581,10 @@ class AgentLoop {
           messages.add(
             LlmMessage(
               role: 'user',
-              content: '你已经调了 ${records.length} 次工具，说明这不是一步能完的事，'
-                  '但到现在还没有任务清单——用户看不到你打算做几步、做到哪了。'
-                  '现在用 task_plan 把剩下的活拆成 2-8 个可验证的步骤（已经做完的直接标 done），'
-                  '然后继续做，每做完一步用 task_step 更新。'
-                  '如果剩下的活确实只有一步，就直接做完给结论，不用拆。',
+              content: '你已经调了 ${records.length} 次工具。'
+                  '如果这是多步任务、用户也确实需要看进度，就用 task_plan 拆一下'
+                  '（已做完的直接标 done）。'
+                  '如果剩下的活其实很简单/只剩一步，直接做完给结论，不用拆清单。',
             ),
           );
           emit(

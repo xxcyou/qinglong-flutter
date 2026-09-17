@@ -5,6 +5,7 @@ class AgentSubtask {
     required this.title,
     this.status = SubtaskStatus.pending,
     this.note = '',
+    this.subtasks = const [],
   });
 
   final String id;
@@ -14,16 +15,23 @@ class AgentSubtask {
   /// 完成/失败时的一句说明。
   final String note;
 
+  /// 二级子任务。主任务用它在“大步骤”下展示更细的待办。
+  final List<AgentSubtask> subtasks;
+
+  bool get hasSubtasks => subtasks.isNotEmpty;
+
   AgentSubtask copyWith({
     String? title,
     SubtaskStatus? status,
     String? note,
+    List<AgentSubtask>? subtasks,
   }) {
     return AgentSubtask(
       id: id,
       title: title ?? this.title,
       status: status ?? this.status,
       note: note ?? this.note,
+      subtasks: subtasks ?? this.subtasks,
     );
   }
 
@@ -32,10 +40,13 @@ class AgentSubtask {
         'title': title,
         'status': status.name,
         if (note.isNotEmpty) 'note': note,
+        if (subtasks.isNotEmpty)
+          'subtasks': [for (final s in subtasks) s.toJson()],
       };
 
   factory AgentSubtask.fromJson(Map<String, dynamic> json) {
     final raw = json['status']?.toString() ?? 'pending';
+    final rawSubtasks = json['subtasks'];
     return AgentSubtask(
       id: json['id']?.toString() ?? '',
       title: json['title']?.toString() ?? '',
@@ -44,6 +55,12 @@ class AgentSubtask {
         orElse: () => SubtaskStatus.pending,
       ),
       note: json['note']?.toString() ?? '',
+      subtasks: rawSubtasks is List
+          ? [
+              for (final item in rawSubtasks)
+                if (item is Map<String, dynamic>) AgentSubtask.fromJson(item),
+            ]
+          : const [],
     );
   }
 }
@@ -86,6 +103,27 @@ class AgentTaskPlan {
     return null;
   }
 
+  /// 更新某个二级子任务状态。index=顶层步骤，subindex=该步骤下第几个子任务（1 起）。
+  /// 找不到返回 null。
+  AgentTaskPlan? updateSubtask({
+    required int index,
+    required int subindex,
+    required SubtaskStatus status,
+    String note = '',
+  }) {
+    if (index < 1 || index > items.length) return null;
+    final parent = items[index - 1];
+    if (subindex < 1 || subindex > parent.subtasks.length) return null;
+    final updatedChildren = List<AgentSubtask>.from(parent.subtasks);
+    updatedChildren[subindex - 1] = updatedChildren[subindex - 1].copyWith(
+      status: status,
+      note: note,
+    );
+    final updatedItems = List<AgentSubtask>.from(items);
+    updatedItems[index - 1] = parent.copyWith(subtasks: updatedChildren);
+    return copyWith(items: updatedItems);
+  }
+
   /// 给模型看的紧凑文本：它每轮都要知道自己走到哪一步了。
   String promptLines() {
     if (items.isEmpty) return '';
@@ -105,6 +143,22 @@ class AgentTaskPlan {
         '$mark ${i + 1}. ${item.title}'
         '${item.note.isEmpty ? '' : ' —— ${item.note}'}',
       );
+      if (item.hasSubtasks) {
+        for (var j = 0; j < item.subtasks.length; j++) {
+          final child = item.subtasks[j];
+          final childMark = switch (child.status) {
+            SubtaskStatus.done => '[x]',
+            SubtaskStatus.failed => '[!]',
+            SubtaskStatus.running => '[>]',
+            SubtaskStatus.skipped => '[-]',
+            SubtaskStatus.pending => '[ ]',
+          };
+          buffer.writeln(
+            '    $childMark ${i + 1}.${j + 1} ${child.title}'
+            '${child.note.isEmpty ? '' : ' —— ${child.note}'}',
+          );
+        }
+      }
     }
     return buffer.toString().trimRight();
   }
