@@ -685,7 +685,7 @@ class _TaskGroup {
   final int? subId;
 }
 
-class _SubscriptionTile extends StatelessWidget {
+class _SubscriptionTile extends StatefulWidget {
   const _SubscriptionTile({
     required this.name,
     required this.taskCount,
@@ -696,7 +696,24 @@ class _SubscriptionTile extends StatelessWidget {
   final String name;
   final int taskCount;
   final VoidCallback onTap;
-  final VoidCallback onDelete;
+  final Future<void> Function() onDelete;
+
+  @override
+  State<_SubscriptionTile> createState() => _SubscriptionTileState();
+}
+
+class _SubscriptionTileState extends State<_SubscriptionTile> {
+  bool _deleting = false;
+
+  Future<void> _handleDelete() async {
+    if (_deleting) return;
+    setState(() => _deleting = true);
+    try {
+      await widget.onDelete();
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -712,64 +729,117 @@ class _SubscriptionTile extends StatelessWidget {
           color: scheme.outlineVariant.withValues(alpha: 0.35),
         ),
       ),
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
-          child: Row(
-            children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: scheme.primaryContainer.withValues(alpha: 0.6),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(
-                  Icons.cloud_download_outlined,
-                  size: 20,
-                  color: scheme.primary,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      name,
-                      style: TextStyle(
-                        fontSize: 14.5,
-                        fontWeight: FontWeight.w700,
-                        color: scheme.onSurface,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: _deleting ? null : widget.onTap,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: scheme.primaryContainer.withValues(alpha: 0.6),
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '$taskCount 个任务',
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        color: scheme.onSurfaceVariant,
-                      ),
+                    child: Icon(
+                      Icons.cloud_download_outlined,
+                      size: 20,
+                      color: scheme.primary,
                     ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.name,
+                          style: TextStyle(
+                            fontSize: 14.5,
+                            fontWeight: FontWeight.w700,
+                            color: scheme.onSurface,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _deleting ? '正在删除…' : '${widget.taskCount} 个任务',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: _deleting
+                                ? scheme.error
+                                : scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (_deleting)
+                    const Padding(
+                      padding: EdgeInsets.all(10),
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  else ...[
+                    IconButton(
+                      tooltip: '删除订阅',
+                      icon: Icon(
+                        Icons.delete_outline,
+                        size: 20,
+                        color: scheme.error,
+                      ),
+                      onPressed: _handleDelete,
+                    ),
+                    Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
                   ],
-                ),
+                ],
               ),
-              IconButton(
-                tooltip: '删除订阅',
-                icon: Icon(
-                  Icons.delete_outline,
-                  size: 20,
-                  color: scheme.error,
-                ),
-                onPressed: onDelete,
-              ),
-              Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
-            ],
+            ),
           ),
-        ),
+          if (_deleting)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.delete_sweep_outlined,
+                        size: 14,
+                        color: scheme.error,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        '正在删除「${widget.name}」的订阅、任务和脚本…',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  LinearProgressIndicator(
+                    minHeight: 3,
+                    borderRadius: BorderRadius.circular(2),
+                    color: scheme.error,
+                    backgroundColor:
+                        scheme.errorContainer.withValues(alpha: 0.35),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }
