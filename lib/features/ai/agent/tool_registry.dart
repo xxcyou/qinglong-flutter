@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 
 import '../../../core/network/dio_client.dart';
 import '../../../core/storage/secure_storage.dart';
+import '../knowledge/knowledge_store.dart';
 import '../../panels/models/panel_info.dart';
 import '../../panels/providers/panel_token_manager.dart';
 import '../../configs/api/config_api.dart';
@@ -932,6 +933,14 @@ class QlToolRegistry {
           name: 'panel_auth_info',
           description: '返回当前选中面板的 API 根地址、登录类型和已登录的授权 token（Authorization 值）。'
               '仅供 AI 调用青龙接口时使用，不要在回复里回显 token。',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'panel_api_docs_status',
+          description: '检查当前面板版本的知识库 API 文档是否已同步。'
+              '调 panel_api 遇到版本不兼容/报 4xx/5xx 时，先调这个工具：'
+              '返回当前面板版本、知识库里是否有该版本文档、是否需要联网同步。',
           parameters: _obj([], {}),
           isWrite: false,
         ),
@@ -2177,6 +2186,39 @@ else:
           'stdout': aResult.stdout,
         });
 
+      case 'panel_api_docs_status':
+        {
+          final currentPanel = panel;
+          if (currentPanel == null) {
+            return jsonEncode({'error': '未选择面板'});
+          }
+          final info = await SystemApi.info(apiBaseUrl: base);
+          final version = info.version.trim();
+          final store = KnowledgeStore();
+          final hits = await store.search(
+            '青龙面板 API $version panel-api',
+            limit: 20,
+          );
+          final matched = <String>[];
+          for (final doc in hits) {
+            if (doc.title.contains(version) ||
+                doc.tags.any((t) => t == version)) {
+              matched.add(doc.path);
+            }
+          }
+          return jsonEncode({
+            'panel': currentPanel.name,
+            'version': version,
+            'docs_found': matched.isNotEmpty,
+            'matched_paths': matched,
+            'action': matched.isNotEmpty ? 'up_to_date' : 'sync_needed',
+            'hint': matched.isNotEmpty
+                ? '知识库已有当前版本文档，可直接使用。'
+                : '知识库没有当前版本文档，用 web_search/web_fetch 找该版本官方 API 文档，'
+                    '再 kb_write 写入（标题带版本号）；已有旧版就用 kb_update 原地更新。',
+          });
+        }
+
       case 'panel_auth_info':
         {
           final currentPanel = panel;
@@ -2262,6 +2304,8 @@ else:
               'url': e.requestOptions.uri.toString(),
               'status': e.response?.statusCode,
               'detail': detail,
+              'hint': '如果面板刚升级，很可能是版本不兼容。先调 panel_api_docs_status '
+                  '检查/同步该面板版本的 API 文档，再按文档修正 path 或参数。',
             });
           }
         }

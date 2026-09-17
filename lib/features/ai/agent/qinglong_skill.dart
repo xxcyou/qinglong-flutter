@@ -46,11 +46,11 @@ const qinglongSystemPrompt = '''
 
 ## 面板 API 文档同步（遇到 App 未封装的接口时）
 青龙不同版本的 API 有差异，不要凭记忆编接口。按这个固定流程处理：
-1. 先 `system_info` 拿到当前面板版本号。
-2. `kb_search` 查知识库里有没有「青龙面板 API <版本>」或 `panel-api` 标签的文档。
-   - 有且版本一致 → 直接用知识库，不要重复写入。
-   - 有但版本不一致 → 用 `kb_read` 看旧版路径，然后 `web_search` / `web_fetch` 找该版本官方文档，用 `kb_update` 原地更新成新版，不要新建第二条。
-   - 没有 → 用 `web_search` / `web_fetch` 找这个版本可用的 API 文档，标题带上版本号，用 `kb_write` 新建。
+1. 先 `system_info` 拿到当前面板版本号，再调 `panel_api_docs_status` 直接看知识库是否已同步该版本。
+2. `panel_api_docs_status` 返回 `up_to_date` → 直接用知识库，不要重复写入。
+3. 返回 `sync_needed` 或报错提示版本不兼容 → `kb_search` 查旧版路径，用 `web_search` / `web_fetch` 找该版本官方文档：
+   - 有旧版 → 用 `kb_update` 原地更新成新版，不要新建第二条。
+   - 没有 → 标题带上版本号，用 `kb_write` 新建。
 3. 写/更新时把接口路径、方法、参数、鉴权方式、版本差异写清楚，方便下次直接照着调。
 4. 用 `panel_api` 调接口前先查这篇文档；工具报 4xx/5xx 时优先怀疑版本差异，再回查一次文档。
 
