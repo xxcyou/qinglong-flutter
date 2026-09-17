@@ -108,6 +108,7 @@ class AgentSubagentResult {
     required this.id,
     required this.label,
     required this.summary,
+    this.entries = const [],
     this.planIndex,
     this.planSubindex,
   });
@@ -115,6 +116,9 @@ class AgentSubagentResult {
   final String id;
   final String label;
   final String summary;
+
+  /// 注入主上下文的具体条目；为空时按 summary 单条注入。
+  final List<String> entries;
 
   /// 这个子代理对应任务清单里的顶层步骤(1 起)；为空表示不自动更新清单。
   final int? planIndex;
@@ -1261,17 +1265,20 @@ class AgentLoop {
       if (sink == null) return const [];
       final results = sink.takeCompleted();
       for (final r in results) {
-        messages.add(
-          LlmMessage(
-            role: 'user',
-            content: '【子代理「${r.label}」已完成】\n${r.summary}',
-          ),
-        );
+        final entries = r.entries.isNotEmpty ? r.entries : [r.summary];
+        for (final entry in entries) {
+          messages.add(
+            LlmMessage(
+              role: 'user',
+              content: '【子代理「${r.label}」上下文注入】\n$entry',
+            ),
+          );
+        }
         emit(
           AgentEvent(
             kind: AgentEventKind.thinking,
-            message: '子代理「${r.label}」已完成，结果已并入上下文',
-            result: r.summary,
+            message: '${r.label}注入上下文（${entries.length}条）',
+            result: entries.join('\n'),
             group: r.label,
           ),
         );

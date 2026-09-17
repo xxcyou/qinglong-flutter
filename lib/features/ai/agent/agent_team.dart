@@ -255,7 +255,8 @@ class AgentTeamTools {
   ///
   /// 只留结论 + 关键异常：过程细节留在子代理那边，搬到主代理这里就等于
   /// 白拆一次任务。
-  static String _describe(String label, AgentResult result) {
+  static ({String summary, List<String> entries}) _buildReport(
+      String label, AgentResult result) {
     final parts = <String>['### $label'];
     final content = result.content.trim();
     parts.add(content.isEmpty ? '（子代理没有给出结论）' : content);
@@ -283,7 +284,7 @@ class AgentTeamTools {
       parts.add('（子代理把 $subMaxTurns 轮预算用完了，任务可能只做了一部分——'
           '这通常说明这个子任务还该再拆细一点。）');
     }
-    return parts.join('\n');
+    return (summary: parts.join('\n'), entries: parts);
   }
 }
 
@@ -304,6 +305,7 @@ class _Subtask {
   final int? planSubindex;
   final Completer<void> completer = Completer<void>();
   String summary = '';
+  List<String> entries = const [];
   bool done = false;
 }
 
@@ -437,9 +439,12 @@ class _SubagentCoordinator {
                 );
               },
       );
-      t.summary = AgentTeamTools._describe(label, result);
+      final report = AgentTeamTools._buildReport(label, result);
+      t.summary = report.summary;
+      t.entries = report.entries;
     } catch (e) {
       t.summary = '### $label\n执行出错：$e';
+      t.entries = ['### $label', '执行出错：$e'];
     } finally {
       t.done = true;
       if (!t.completer.isCompleted) t.completer.complete();
@@ -450,6 +455,7 @@ class _SubagentCoordinator {
             id: t.id,
             label: label,
             summary: t.summary,
+            entries: t.entries,
             planIndex: t.planIndex,
             planSubindex: t.planSubindex,
           ),
