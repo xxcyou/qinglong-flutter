@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/network/api_overrides.dart';
+
 import '../../../core/network/dio_client.dart';
 import '../../../core/storage/prefs.dart';
 import '../../../core/storage/secure_storage.dart';
@@ -167,6 +169,8 @@ class PanelListNotifier extends StateNotifier<List<PanelInfo>> {
 /// 换票逻辑全部交给 [PanelTokenManager]：它会看到期时间提前续期、并发合流，
 /// 所以这里只是把它接到 Dio 上。
 void configureDioForPanel(PanelInfo? panel) {
+  // 每个面板独立维护 API 覆盖规则/版本，切换面板后内置请求自动按该面板规则走。
+  ApiOverrideRegistry.currentPanelId = panel?.id ?? '';
   DioClient.configure(
     tokenProvider: () async {
       if (panel == null) return null;

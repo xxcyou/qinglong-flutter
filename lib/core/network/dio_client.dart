@@ -6,6 +6,7 @@ import 'package:dio/io.dart';
 
 import '../debug/api_debug_log.dart';
 import 'api_exception.dart';
+import 'api_overrides.dart';
 import 'auth_interceptor.dart';
 import 'error_handler.dart';
 
@@ -54,6 +55,13 @@ class DioClient {
           return client;
         },
       );
+      // 面板升级后的接口覆盖规则必须先于鉴权执行：改写后的 path 才去拼 token。
+      dio.interceptors.add(InterceptorsWrapper(
+        onRequest: (options, handler) async {
+          await ApiOverrideRegistry.apply(options);
+          handler.next(options);
+        },
+      ));
       dio.interceptors.add(AuthInterceptor(
         tokenProvider: () => _tokenProvider?.call() ?? Future.value(null),
         retryDio: dio,

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 
+import '../../../core/network/api_overrides.dart';
 import '../../../core/network/dio_client.dart';
 import '../../../core/storage/secure_storage.dart';
 import '../knowledge/knowledge_store.dart';
@@ -943,6 +944,53 @@ class QlToolRegistry {
               '返回当前面板版本、知识库里是否有该版本文档、是否需要联网同步。',
           parameters: _obj([], {}),
           isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'app_api_override_list',
+          description: '列出当前 APP 内置接口的运行时覆盖规则（用于让内置页面适配面板版本）。',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'app_api_override_update',
+          description: '更新 APP 内置接口的运行时覆盖规则。面板升级导致内置页面接口不兼容时，'
+              '按新面板 API 文档生成规则写入，APP 无需重装即可适配。'
+              'rules 会整体替换现有规则，所以先 app_api_override_list 看当前规则再合并。'
+              'version 可选，写入后作为当前面板版本标识，规则里的 version 只在该版本身效。',
+          parameters: _obj([
+            'rules'
+          ], {
+            'rules': {
+              'type': 'array',
+              'description':
+                  '覆盖规则列表，每项 {method,path,newPath,queryAdd?,queryRemove?,version?,reason?}。'
+                      'method 如 GET/*；path 是相对 /api 或 /open 的路径后缀，如 /crons；'
+                      'newPath 是改写后的后缀；queryAdd 追加查询参数；queryRemove 移除查询参数。',
+              'items': {
+                'type': 'object',
+                'properties': {
+                  'method': {'type': 'string'},
+                  'path': {'type': 'string'},
+                  'newPath': {'type': 'string'},
+                  'version': {'type': 'string'},
+                  'queryAdd': {'type': 'object'},
+                  'queryRemove': {
+                    'type': 'array',
+                    'items': {'type': 'string'}
+                  },
+                  'reason': {'type': 'string'},
+                },
+              },
+            },
+            'version': {
+              'type': 'string',
+              'description': '当前面板版本，如 2.16.0；并作为规则版本过滤依据',
+            },
+          }),
+          isWrite: true,
+          impact: '改写 APP 内置页面请求青龙接口的路径/参数，可能影响所有功能',
+          reversible: true,
+          danger: false,
         ),
         ToolDefinition(
           name: 'panel_api',
@@ -2194,6 +2242,8 @@ else:
           }
           final info = await SystemApi.info(apiBaseUrl: base);
           final version = info.version.trim();
+          ApiOverrideRegistry.currentPanelId = currentPanel.id;
+          await ApiOverrideRegistry.save(version: version);
           final store = KnowledgeStore();
           final hits = await store.search(
             '青龙面板 API $version panel-api',
@@ -2216,6 +2266,56 @@ else:
                 ? '知识库已有当前版本文档，可直接使用。'
                 : '知识库没有当前版本文档，用 web_search/web_fetch 找该版本官方 API 文档，'
                     '再 kb_write 写入（标题带版本号）；已有旧版就用 kb_update 原地更新。',
+          });
+        }
+
+      case 'app_api_override_list':
+        {
+          final currentPanel = panel;
+          if (currentPanel == null) {
+            return jsonEncode({'error': '未选择面板'});
+          }
+          ApiOverrideRegistry.currentPanelId = currentPanel.id;
+          await ApiOverrideRegistry.ensureLoaded();
+          final rules = ApiOverrideRegistry.rules;
+          return jsonEncode({
+            'panel': currentPanel.name,
+            'version': ApiOverrideRegistry.currentVersion,
+            'count': rules.length,
+            'rules': [for (final r in rules) r.toJson()],
+          });
+        }
+
+      case 'app_api_override_update':
+        {
+          final currentPanel = panel;
+          if (currentPanel == null) {
+            return jsonEncode({'error': '未选择面板'});
+          }
+          ApiOverrideRegistry.currentPanelId = currentPanel.id;
+          final raw = args['rules'];
+          if (raw is! List) {
+            return jsonEncode({'error': 'rules 必须是数组'});
+          }
+          final rules = <ApiOverrideRule>[];
+          for (final item in raw) {
+            if (item is! Map<String, dynamic>) continue;
+            try {
+              rules.add(ApiOverrideRule.fromJson(item));
+            } catch (_) {
+              // 单条规则不合法就跳过，不让整批写入失败。
+            }
+          }
+          final version = args['version']?.toString().trim() ?? '';
+          await ApiOverrideRegistry.save(
+            rules: rules,
+            version: version.isEmpty ? null : version,
+          );
+          return jsonEncode({
+            'ok': true,
+            'saved': rules.length,
+            'version': ApiOverrideRegistry.currentVersion,
+            'hint': '规则已生效，APP 内置接口下一次请求自动按新路径/参数执行。',
           });
         }
 
