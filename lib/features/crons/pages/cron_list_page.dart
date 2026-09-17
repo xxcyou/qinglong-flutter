@@ -339,10 +339,11 @@ class _CronListPageState extends ConsumerState<CronListPage> {
                 ),
               );
             },
-            onDelete: () => _deleteSubscription(
+            onDelete: (progress) => _deleteSubscription(
               group.subId!,
               group.title,
               group.tasks,
+              onProgress: progress,
             ),
           );
         },
@@ -378,8 +379,9 @@ class _CronListPageState extends ConsumerState<CronListPage> {
   Future<void> _deleteSubscription(
     int subId,
     String subName,
-    List<CronTask> loadedTasks,
-  ) async {
+    List<CronTask> loadedTasks, {
+    _DeleteProgressCallback? onProgress,
+  }) async {
     var deleteAssociated = false;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -431,10 +433,25 @@ class _CronListPageState extends ConsumerState<CronListPage> {
       // 勾选一起删时，先抓这个订阅下的全部任务，删完订阅/任务后再删脚本文件。
       final allSubTasks =
           deleteAssociated ? await _fetchAllSubTasks(subId) : <CronTask>[];
+      final taskIds = <int>[
+        for (final t in allSubTasks)
+          if (t.id != null) t.id!,
+      ];
+      final taskNameById = <int, String>{
+        for (final t in allSubTasks)
+          if (t.id != null) t.id!: t.name,
+      };
       final scriptPaths = <String>{
         for (final task in deleteAssociated ? allSubTasks : loadedTasks)
           if (_extractScriptPath(task) != null) _extractScriptPath(task)!,
       };
+      final panel = ref.read(currentPanelProvider);
+
+      // 真实进度：订阅 1 条 + 每个任务 + 每个脚本文件。
+      final total = deleteAssociated && panel != null
+          ? 1 + taskIds.length + scriptPaths.length
+          : 1;
+      onProgress?.call(0, total, '开始删除…');
 
       // force 参数在部分面板版本上并不会把任务/脚本一起删干净，
       // 所以这里统一只删订阅本体，勾选“一起删”时由 App 显式删任务和脚本。
@@ -442,37 +459,37 @@ class _CronListPageState extends ConsumerState<CronListPage> {
         [subId],
         force: false,
       );
+      var done = 1;
+      onProgress?.call(done, total, '订阅已删除');
 
-      if (deleteAssociated) {
-        final panel = ref.read(currentPanelProvider);
-        if (panel != null) {
-          final taskIds = <int>[
-            for (final t in allSubTasks)
-              if (t.id != null) t.id!,
-          ];
-          for (var i = 0; i < taskIds.length; i += 50) {
-            final end = (i + 50).clamp(0, taskIds.length);
-            final chunk = taskIds.sublist(i, end);
-            if (chunk.isEmpty) continue;
-            try {
-              await CronApi.delete(
-                apiBaseUrl: panel.apiBaseUrl,
-                ids: chunk,
-              );
-            } catch (_) {
-              // 单个批次删不掉不阻断，继续删脚本和剩余批次。
-            }
+      if (deleteAssociated && panel != null) {
+        for (final id in taskIds) {
+          final name = taskNameById[id] ?? '任务#$id';
+          onProgress?.call(done, total, '正在删除任务 $name…');
+          try {
+            await CronApi.delete(apiBaseUrl: panel.apiBaseUrl, ids: [id]);
+          } catch (_) {
+            // 单个任务删不掉不阻断，继续删后面的。
           }
-          for (final path in scriptPaths) {
-            try {
-              await ScriptApi.delete(
-                apiBaseUrl: panel.apiBaseUrl,
-                path: path,
-              );
-            } catch (_) {
-              // 单个脚本删不掉（可能已不存在或权限限制）不阻断整体流程。
-            }
+          done++;
+          onProgress?.call(done, total, '已删除任务 $name');
+        }
+
+        for (final path in scriptPaths) {
+          final short = path.contains('/')
+              ? path.substring(path.lastIndexOf('/') + 1)
+              : path;
+          onProgress?.call(done, total, '正在删除 $short 脚本…');
+          try {
+            await ScriptApi.delete(
+              apiBaseUrl: panel.apiBaseUrl,
+              path: path,
+            );
+          } catch (_) {
+            // 单个脚本删不掉（可能已不存在或权限限制）不阻断整体流程。
           }
+          done++;
+          onProgress?.call(done, total, '已删除 $short 脚本');
         }
       }
 
@@ -672,6 +689,9 @@ class _CronListPageState extends ConsumerState<CronListPage> {
   }
 }
 
+typedef _DeleteProgressCallback = void Function(
+    int done, int total, String label);
+
 class _TaskGroup {
   const _TaskGroup(this.title, this.tasks, {this.subId});
 
@@ -691,7 +711,7 @@ class _SubscriptionTile extends StatefulWidget {
   final String name;
   final int taskCount;
   final VoidCallback onTap;
-  final Future<void> Function() onDelete;
+  final Future<void> Function(_DeleteProgressCallback progress) onDelete;
 
   @override
   State<_SubscriptionTile> createState() => _SubscriptionTileState();
@@ -699,20 +719,43 @@ class _SubscriptionTile extends StatefulWidget {
 
 class _SubscriptionTileState extends State<_SubscriptionTile> {
   bool _deleting = false;
+  int _done = 0;
+  int _total = 0;
+  String _progressLabel = '正在准备…';
 
   Future<void> _handleDelete() async {
     if (_deleting) return;
-    setState(() => _deleting = true);
+    setState(() {
+      _deleting = true;
+      _done = 0;
+      _total = 0;
+      _progressLabel = '正在准备…';
+    });
     try {
-      await widget.onDelete();
+      await widget.onDelete((done, total, label) {
+        if (!mounted) return;
+        setState(() {
+          _done = done;
+          _total = total;
+          _progressLabel = label;
+        });
+      });
     } finally {
-      if (mounted) setState(() => _deleting = false);
+      if (mounted) {
+        setState(() {
+          _deleting = false;
+          _done = 0;
+          _total = 0;
+          _progressLabel = '正在准备…';
+        });
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final progressValue = _total > 0 ? (_done / _total).clamp(0.0, 1.0) : null;
     return Card(
       margin: EdgeInsets.zero,
       elevation: 0,
@@ -764,7 +807,9 @@ class _SubscriptionTileState extends State<_SubscriptionTile> {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          _deleting ? '正在删除…' : '${widget.taskCount} 个任务',
+                          _deleting
+                              ? (_total > 0 ? '正在删除 $_done/$_total' : '正在准备…')
+                              : '${widget.taskCount} 个任务',
                           style: TextStyle(
                             fontSize: 11.5,
                             color: _deleting
@@ -814,18 +859,23 @@ class _SubscriptionTileState extends State<_SubscriptionTile> {
                         color: scheme.error,
                       ),
                       const SizedBox(width: 6),
-                      Text(
-                        '正在删除「${widget.name}」的订阅、任务和脚本…',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: scheme.onSurfaceVariant,
+                      Expanded(
+                        child: Text(
+                          _progressLabel,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 8),
                   LinearProgressIndicator(
-                    minHeight: 3,
+                    value: progressValue,
+                    minHeight: 4,
                     borderRadius: BorderRadius.circular(2),
                     color: scheme.error,
                     backgroundColor:
