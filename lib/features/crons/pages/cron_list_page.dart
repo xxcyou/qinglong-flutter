@@ -447,9 +447,10 @@ class _CronListPageState extends ConsumerState<CronListPage> {
       };
       final panel = ref.read(currentPanelProvider);
 
-      // 真实进度：订阅 1 条 + 每个任务 + 每个脚本文件。
+      // 进度按“任务数量”算，脚本清理只作为状态文字展示，不把它算进总进度，
+      // 这样进度条和订阅卡上显示的“N 个任务”保持一致。
       final total = deleteAssociated && panel != null
-          ? 1 + taskIds.length + scriptPaths.length
+          ? (taskIds.isEmpty ? 1 : taskIds.length)
           : 1;
       onProgress?.call(0, total, '开始删除…');
 
@@ -459,8 +460,8 @@ class _CronListPageState extends ConsumerState<CronListPage> {
         [subId],
         force: false,
       );
-      var done = 1;
-      onProgress?.call(done, total, '订阅已删除');
+      var done = 0;
+      onProgress?.call(done, total, '订阅已删除，开始清任务…');
 
       if (deleteAssociated && panel != null) {
         for (final id in taskIds) {
