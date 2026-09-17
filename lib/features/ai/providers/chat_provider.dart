@@ -1502,9 +1502,23 @@ class ChatNotifier extends Notifier<ChatState> {
     state = state.copyWith(
       queue: state.queue.where((q) => q.id != id).toList(),
     );
+    // 这条消息在 send() 时已经同时塞进了当前运行的 inbox。
+    // 只从排队区移除还不够，必须把 inbox 里的对应消息也拿掉，
+    // 否则 UI 上“取消”了，AgentLoop 下一轮还是会把它当输入发出去。
+    for (final run in _runs.values) {
+      run.inbox.removeById(id);
+    }
   }
 
-  void clearQueue() => state = state.copyWith(queue: const []);
+  void clearQueue() {
+    final ids = state.queue.map((q) => q.id).toSet();
+    state = state.copyWith(queue: const []);
+    for (final run in _runs.values) {
+      for (final id in ids) {
+        run.inbox.removeById(id);
+      }
+    }
+  }
 
   /// 拖拽重排：把 [oldIndex] 的那条挪到 [newIndex]。
   void reorderQueue(int oldIndex, int newIndex) {
