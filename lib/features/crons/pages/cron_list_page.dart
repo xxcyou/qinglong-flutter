@@ -16,6 +16,8 @@ import '../../../shared/loading_view.dart';
 import '../../../shared/search_field.dart';
 import '../../panels/providers/panel_list_provider.dart';
 import '../../scripts/api/script_api.dart';
+import '../../subscriptions/api/subscription_api.dart';
+import '../../subscriptions/models/subscription.dart';
 import '../../subscriptions/providers/subscription_list_provider.dart';
 import '../../scripts/pages/script_edit_page.dart';
 import '../../settings/providers/settings_provider.dart';
@@ -447,6 +449,25 @@ class _CronListPageState extends ConsumerState<CronListPage> {
       };
       final panel = ref.read(currentPanelProvider);
 
+      // 订阅脚本通常放在 /ql/scripts/<alias>/ 整个目录里。
+      // 删除前先取订阅详情，拿到 alias 后按目录整体删，避免只删任务引用的单个文件、
+      // 仓库里其它没建任务的脚本还残留在脚本管理页。
+      Subscription? deletingSub;
+      if (deleteAssociated && panel != null) {
+        try {
+          deletingSub = await SubscriptionApi.detail(
+            apiBaseUrl: panel.apiBaseUrl,
+            id: subId,
+          );
+        } catch (_) {
+          // 拿不到订阅详情就不猜目录，后面仍按任务命令逐文件删除。
+          deletingSub = null;
+        }
+      }
+      final scriptDir = deletingSub?.alias.trim().isNotEmpty == true
+          ? deletingSub!.alias.trim()
+          : null;
+
       // 进度按“任务数量”算，脚本清理只作为状态文字展示，不把它算进总进度，
       // 这样进度条和订阅卡上显示的“N 个任务”保持一致。
       final total = deleteAssociated && panel != null
@@ -476,21 +497,43 @@ class _CronListPageState extends ConsumerState<CronListPage> {
           onProgress?.call(done, total, '已删除任务 $name');
         }
 
-        for (final path in scriptPaths) {
-          final short = path.contains('/')
-              ? path.substring(path.lastIndexOf('/') + 1)
-              : path;
-          onProgress?.call(done, total, '正在删除 $short 脚本…');
+        var dirDeleted = false;
+        if (scriptDir != null) {
+          onProgress?.call(done, total, '正在删除 $scriptDir 仓库目录…');
           try {
             await ScriptApi.delete(
               apiBaseUrl: panel.apiBaseUrl,
-              path: path,
+              path: scriptDir,
+              isDirectory: true,
             );
+            dirDeleted = true;
+            onProgress?.call(done, total, '已删除 $scriptDir 目录');
           } catch (_) {
-            // 单个脚本删不掉（可能已不存在或权限限制）不阻断整体流程。
+            onProgress?.call(
+              done,
+              total,
+              '$scriptDir 目录不存在或删除失败，逐个删除任务引用脚本…',
+            );
           }
-          done++;
-          onProgress?.call(done, total, '已删除 $short 脚本');
+        }
+
+        // 目录整体删除成功就不用再逐个删；失败或没有 alias 时退回到任务命令里的文件。
+        if (!dirDeleted) {
+          for (final path in scriptPaths) {
+            final short = path.contains('/')
+                ? path.substring(path.lastIndexOf('/') + 1)
+                : path;
+            onProgress?.call(done, total, '正在删除 $short 脚本…');
+            try {
+              await ScriptApi.delete(
+                apiBaseUrl: panel.apiBaseUrl,
+                path: path,
+              );
+            } catch (_) {
+              // 单个脚本删不掉（可能已不存在或权限限制）不阻断整体流程。
+            }
+            onProgress?.call(done, total, '已删除 $short 脚本');
+          }
         }
       }
 
