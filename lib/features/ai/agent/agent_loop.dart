@@ -1137,6 +1137,10 @@ class AgentLoop {
     // "该拆任务了"按工具数间隔提醒：第一次 3 次，之后每再涨 4 次催一次，
     // 直到模型真的建出清单。不能只推一次——模型无视一次就永远没清单了。
     var lastPlanNudgeToolCalls = 0;
+    // 清单催了还不建时的兜底开关，只兜底一次，避免系统替 AI 反复造清单。
+    var planFallbackCreated = false;
+    // 长时间没用子代理时提醒一次；连续做很多独立小活时，串行硬扛是重点。
+    var lastSubagentNudgeToolCalls = 0;
     // "问题别写正文里"纠正过几次。
     //
     // 原来是个 bool（整轮只纠一次）。连着问三个问题时，第一次纠完就永久置位，
@@ -2715,6 +2719,114 @@ class AgentLoop {
               message: '已调用 ${records.length} 次工具仍无任务清单，提醒模型拆分任务',
               result: '已调用 ${records.length} 次工具仍无任务清单，提醒模型拆分任务',
               turn: turnsUsed,
+            ),
+          );
+        }
+
+        // 催了一轮还是没清单：系统直接落一份兜底清单，保证用户至少看得到进度。
+        // 清单内容按当前进展粗粒度生成，AI 后面可以用 task_append /
+        // task_add_subtask / task_step 继续细化维护。
+        if (enableTaskPlan &&
+            plan.isEmpty &&
+            !planFallbackCreated &&
+            records.length >= _planNudgeToolCalls + 5) {
+          planFallbackCreated = true;
+          const wroteTools = {
+            'script_write',
+            'script_patch',
+            'script_modify_range',
+            'cron_create',
+            'cron_update',
+            'cron_delete',
+            'cron_run',
+            'cron_stop',
+            'env_create',
+            'env_update',
+            'env_delete',
+            'config_save',
+            'sub_create',
+            'sub_update',
+            'sub_delete',
+            'sub_run',
+            'sub_stop',
+            'shell_write_file',
+            'shell_write_binary',
+            'shell_modify_range',
+            'shell_exec',
+            'shell_script',
+            'browser_script',
+            'browser_hook',
+            'browser_session',
+            'browser_control',
+            'dep_install',
+            'dep_reinstall',
+            'dep_remove',
+            'mcp_add',
+            'mcp_update',
+            'mcp_remove',
+          };
+          final wroteAlready =
+              records.any((r) => wroteTools.contains(r.toolName));
+          final fallback = _parsePlanSteps([
+            {'title': '收集并核对现状', 'status': 'done'},
+            {
+              'title': '确定处理方案',
+              'status': wroteAlready ? 'done' : 'running',
+            },
+            {
+              'title': '执行处理',
+              'status': wroteAlready ? 'running' : 'pending',
+            },
+            {'title': '验证结果', 'status': 'pending'},
+            {'title': '总结并交付', 'status': 'pending'},
+          ]);
+          plan = AgentTaskPlan(goal: '根据当前会话继续完成用户需求', items: fallback);
+          messages.add(
+            LlmMessage(
+              role: 'user',
+              content: '系统兜底：你已经调了 ${records.length} 次工具仍未建立任务清单，'
+                  '现在已按当前进展自动生成一份粗清单显示给用户。'
+                  '请基于它继续推进：步骤不够细用 task_append 追加，'
+                  '某一步要拆开用 task_add_subtask 挂二级子任务，'
+                  '完成一步用 task_step / task_substep 更新状态；'
+                  '不要重建清单覆盖它。',
+            ),
+          );
+          onPlan?.call(plan);
+          emit(
+            AgentEvent(
+              kind: AgentEventKind.taskPlan,
+              message: plan.promptLines(),
+              toolName: 'task_plan',
+              turn: turnsUsed,
+            ),
+          );
+        }
+
+        // 连续多次工具调用还没用过子代理：如果手上有多个独立小活，应该派出去。
+        if (records.length >= 6 &&
+            records.length >= lastSubagentNudgeToolCalls + 6 &&
+            !records.any(
+              (r) =>
+                  r.toolName == 'task_worker' ||
+                  r.toolName == 'parallel_agents',
+            )) {
+          lastSubagentNudgeToolCalls = records.length;
+          messages.add(
+            const LlmMessage(
+              role: 'user',
+              content: '提醒：如果你手上是多个互不依赖的独立小活'
+                  '（多个脚本各查一遍、多份日志各分析、多个接口各验证），'
+                  '不要全部串行自己扛，用 parallel_agents 并行派出去；'
+                  '如果是单个过程很重、结论很短的探索任务，用 task_worker 派出去，'
+                  '你继续做别的。派出去的活不需要等结果自动会回来。',
+            ),
+          );
+          emit(
+            const AgentEvent(
+              kind: AgentEventKind.thinking,
+              message: '连续多轮未使用子代理，提醒模型可并行/派发独立子任务',
+              result: '可考虑 parallel_agents / task_worker',
             ),
           );
         }
