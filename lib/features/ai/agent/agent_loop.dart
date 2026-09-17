@@ -828,7 +828,8 @@ class AgentLoop {
   /// 任务清单追加：已建清单不够用时，往里补步骤。
   static const _taskAppendSpec = LlmFunctionSpec(
     name: 'task_append',
-    description: '向已有任务清单追加步骤。当原步骤太粗、某个环节需要继续拆分时使用，'
+    description: '向已有任务清单追加步骤。当原步骤太粗、某个环节需要继续拆分时使用——'
+        '这是你自己维护清单的活，步骤不够就主动补，不用等用户提醒。'
         '追加后原清单变成更完整的清单。格式和 task_plan 的 steps 相同，支持 subtasks 二级子任务。',
     parameters: {
       'type': 'object',
@@ -873,7 +874,8 @@ class AgentLoop {
     name: 'task_add_subtask',
     description: '给任务清单里某个大步骤添加/插入二级子任务。'
         '支持指定子任务位置：subindex + position 可插在第几个子任务前/后。'
-        '当这步内容较多、需要展示“这步下面还有哪些”时使用。',
+        '当这步内容较多、需要展示“这步下面还有哪些”时使用——'
+        '这是主动把步骤拆细用的，不用等用户点名。',
     parameters: {
       'type': 'object',
       'properties': {
@@ -901,7 +903,7 @@ class AgentLoop {
   static const _taskSubstepSpec = LlmFunctionSpec(
     name: 'task_substep',
     description: '更新任务清单里某个二级子任务的状态。'
-        '父步骤用 task_step 更新，子步骤用这个更新。',
+        '父步骤用 task_step 更新，子步骤用这个更新；状态一变就主动更新，不用用户催。',
     parameters: {
       'type': 'object',
       'properties': {
@@ -920,7 +922,8 @@ class AgentLoop {
   /// 任务清单更新：标记某一步的状态。
   static const _taskStepSpec = LlmFunctionSpec(
     name: 'task_step',
-    description: '更新任务清单里某一步的状态。做完一步就立刻更新，让用户看到进度。'
+    description: '更新任务清单里某一步的状态。做完一步就立刻更新，让用户看到进度——'
+        '这是主动维护，不用等用户提醒。'
         '二级子任务请用 task_substep，不要拿 task_step 改子任务。',
     parameters: {
       'type': 'object',
