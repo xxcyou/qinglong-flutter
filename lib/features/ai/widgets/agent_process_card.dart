@@ -93,6 +93,8 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
           stepCards.add({
             'message': stepEvent.message,
             'result': stepEvent.result,
+            'args': stepEvent.args,
+            'durationMs': stepEvent.durationMs,
             'depth': _TimelineRowState._workflowDepth(stepEvent),
             'ok': stepEvent.ok,
           });
@@ -1025,6 +1027,30 @@ class _WorkflowStepNode extends StatelessWidget {
   final Map<String, dynamic> step;
   final bool isLast;
 
+  void _openDetail(BuildContext context) {
+    HapticFeedback.selectionClick();
+    final rawArgs = step['args'];
+    final args = rawArgs is Map
+        ? rawArgs.map((k, v) => MapEntry(k.toString(), v))
+        : <String, dynamic>{};
+    final message =
+        (step['message'] as String? ?? '').replaceFirst('条件执行 · ', '');
+    final result = (step['result'] as String? ?? '').trim();
+    ToolDetailSheet.show(
+      context,
+      AgentEvent(
+        kind: AgentEventKind.workflowStep,
+        message: message,
+        toolName: 'condition_exec',
+        args: args,
+        result: result,
+        fullResult: result,
+        ok: step['ok'] != false,
+        durationMs: (step['durationMs'] as num?)?.toInt(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1049,85 +1075,89 @@ class _WorkflowStepNode extends StatelessWidget {
         left: depth * 16.0,
         bottom: isLast ? 0 : 8,
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 22,
-            height: 22,
-            margin: const EdgeInsets.only(top: 1),
-            decoration: BoxDecoration(
-              color: meta.color.withValues(alpha: 0.16),
-              shape: BoxShape.circle,
+      child: InkWell(
+        onTap: () => _openDetail(context),
+        borderRadius: BorderRadius.circular(10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 22,
+              height: 22,
+              margin: const EdgeInsets.only(top: 1),
+              decoration: BoxDecoration(
+                color: meta.color.withValues(alpha: 0.16),
+                shape: BoxShape.circle,
+              ),
+              alignment: Alignment.center,
+              child: Icon(meta.icon, size: 13, color: meta.color),
             ),
-            alignment: Alignment.center,
-            child: Icon(meta.icon, size: 13, color: meta.color),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        text,
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          height: 1.3,
-                          fontWeight: FontWeight.w600,
-                          color: scheme.onSurface,
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          text,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            height: 1.3,
+                            fontWeight: FontWeight.w600,
+                            color: scheme.onSurface,
+                          ),
                         ),
                       ),
-                    ),
-                    if (branch != null)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 6),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 1,
-                          ),
-                          decoration: BoxDecoration(
-                            color:
-                                (branch == 'THEN' ? Colors.green : Colors.red)
-                                    .shade600
-                                    .withValues(alpha: 0.18),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            branch,
-                            style: TextStyle(
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.w800,
-                              color: branch == 'THEN'
-                                  ? Colors.green.shade700
-                                  : Colors.red.shade700,
+                      if (branch != null)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 6),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color:
+                                  (branch == 'THEN' ? Colors.green : Colors.red)
+                                      .shade600
+                                      .withValues(alpha: 0.18),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              branch,
+                              style: TextStyle(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w800,
+                                color: branch == 'THEN'
+                                    ? Colors.green.shade700
+                                    : Colors.red.shade700,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                  ],
-                ),
-                if (clipped.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      clipped,
-                      style: TextStyle(
-                        fontSize: 10,
-                        height: 1.25,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    ],
                   ),
-              ],
+                  if (clipped.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        clipped,
+                        style: TextStyle(
+                          fontSize: 10,
+                          height: 1.25,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

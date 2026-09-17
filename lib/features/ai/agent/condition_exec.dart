@@ -153,7 +153,12 @@ class ConditionExecEngine {
   }) {
     emitStep(
       message: message,
-      args: {...?args, '_depth': depth},
+      args: {
+        ...?args,
+        '_depth': depth,
+        // 每一步都留一份当时的变量快照，方便查看“走到这里时变量是什么”。
+        '_vars': Map<String, dynamic>.from(_vars),
+      },
       result: result,
       ok: ok,
       durationMs: durationMs,
