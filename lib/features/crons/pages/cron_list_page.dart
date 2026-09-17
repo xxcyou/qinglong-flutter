@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/glass.dart';
+import '../../../core/utils/cron_script_path.dart';
 import '../../../core/utils/error_text.dart';
 import '../../../core/utils/logger.dart';
 import '../../../shared/ask_ai.dart';
@@ -495,6 +496,7 @@ class _CronListPageState extends ConsumerState<CronListPage> {
     if (panel == null) return const [];
     const pageSize = 100;
     final result = <CronTask>[];
+    final seenIds = <int>{};
     var page = 1;
     while (true) {
       final batch = await CronApi.list(
@@ -502,8 +504,19 @@ class _CronListPageState extends ConsumerState<CronListPage> {
         page: page,
         pageSize: pageSize,
       );
-      result.addAll(batch.items.where((t) => t.subId == subId));
-      if (batch.items.isEmpty || batch.items.length < pageSize) break;
+      for (final task in batch.items) {
+        if (task.subId != subId) continue;
+        if (task.id != null && !seenIds.add(task.id!)) continue;
+        result.add(task);
+      }
+      // 面板分页工作不正常时（每页都返回同一批 100 条），不能无限翻页。
+      final total = batch.total;
+      if (batch.items.isEmpty) break;
+      if (batch.items.length < pageSize) break;
+      if (total > 0 && (result.length >= total || page * pageSize >= total)) {
+        break;
+      }
+      if (page >= 1000) break;
       page++;
     }
     return result;
@@ -549,25 +562,7 @@ class _CronListPageState extends ConsumerState<CronListPage> {
     );
   }
 
-  String? _extractScriptPath(CronTask task) {
-    final command = task.command.trim();
-    var file = command;
-    if (command.startsWith('task ')) {
-      file = command.substring(5).trim().split(RegExp(r'\s+')).first;
-    } else if (command.startsWith('python3 ') ||
-        command.startsWith('python ')) {
-      file = command.split(RegExp(r'\s+')).skip(1).first;
-    }
-    if (file.isEmpty) return null;
-    final lower = file.toLowerCase();
-    if (lower.endsWith('.js') ||
-        lower.endsWith('.py') ||
-        lower.endsWith('.ts') ||
-        lower.endsWith('.sh')) {
-      return file;
-    }
-    return null;
-  }
+  String? _extractScriptPath(CronTask task) => extractCronScriptPath(task);
 
   void _openScript(CronTask task) {
     final path = _extractScriptPath(task);

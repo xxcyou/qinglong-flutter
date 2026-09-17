@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/utils/cron_script_path.dart';
 import '../../../core/utils/logger.dart';
 import '../../../shared/ask_ai.dart';
 import '../../../shared/confirm_dialog.dart';
@@ -86,25 +87,7 @@ class SubscriptionTasksPage extends ConsumerWidget {
     );
   }
 
-  String? _extractScriptPath(CronTask task) {
-    final command = task.command.trim();
-    var file = command;
-    if (command.startsWith('task ')) {
-      file = command.substring(5).trim().split(RegExp(r'\s+')).first;
-    } else if (command.startsWith('python3 ') ||
-        command.startsWith('python ')) {
-      file = command.split(RegExp(r'\s+')).skip(1).first;
-    }
-    if (file.isEmpty) return null;
-    final lower = file.toLowerCase();
-    if (lower.endsWith('.js') ||
-        lower.endsWith('.py') ||
-        lower.endsWith('.ts') ||
-        lower.endsWith('.sh')) {
-      return file;
-    }
-    return null;
-  }
+  String? _extractScriptPath(CronTask task) => extractCronScriptPath(task);
 
   void _openScript(BuildContext context, CronTask task) {
     final path = _extractScriptPath(task);
