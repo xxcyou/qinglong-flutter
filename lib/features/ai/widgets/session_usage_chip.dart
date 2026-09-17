@@ -29,7 +29,6 @@ class SessionUsageChip extends ConsumerWidget {
 
     // 运行中：把当前这一轮也算上，用户看到的数字才是"此刻"的。
     final totalRequests = requests + liveTurn;
-    if (tokens == 0 && totalRequests == 0) return const SizedBox.shrink();
 
     final strong = TextStyle(
       fontSize: 12,
