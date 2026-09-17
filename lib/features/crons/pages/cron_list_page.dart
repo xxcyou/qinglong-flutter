@@ -435,14 +435,33 @@ class _CronListPageState extends ConsumerState<CronListPage> {
           if (_extractScriptPath(task) != null) _extractScriptPath(task)!,
       };
 
+      // force 参数在部分面板版本上并不会把任务/脚本一起删干净，
+      // 所以这里统一只删订阅本体，勾选“一起删”时由 App 显式删任务和脚本。
       await ref.read(subListProvider.notifier).delete(
         [subId],
-        force: deleteAssociated,
+        force: false,
       );
 
       if (deleteAssociated) {
         final panel = ref.read(currentPanelProvider);
         if (panel != null) {
+          final taskIds = <int>[
+            for (final t in allSubTasks)
+              if (t.id != null) t.id!,
+          ];
+          for (var i = 0; i < taskIds.length; i += 50) {
+            final end = (i + 50).clamp(0, taskIds.length);
+            final chunk = taskIds.sublist(i, end);
+            if (chunk.isEmpty) continue;
+            try {
+              await CronApi.delete(
+                apiBaseUrl: panel.apiBaseUrl,
+                ids: chunk,
+              );
+            } catch (_) {
+              // 单个批次删不掉不阻断，继续删脚本和剩余批次。
+            }
+          }
           for (final path in scriptPaths) {
             try {
               await ScriptApi.delete(
@@ -450,7 +469,7 @@ class _CronListPageState extends ConsumerState<CronListPage> {
                 path: path,
               );
             } catch (_) {
-              // 单个脚本删不掉（可能已被订阅删除或权限限制）不阻断整体流程。
+              // 单个脚本删不掉（可能已不存在或权限限制）不阻断整体流程。
             }
           }
         }
