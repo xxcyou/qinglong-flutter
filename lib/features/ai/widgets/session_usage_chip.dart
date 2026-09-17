@@ -30,6 +30,9 @@ class SessionUsageChip extends ConsumerWidget {
     // 运行中：把当前这一轮也算上，用户看到的数字才是"此刻"的。
     final totalRequests = requests + liveTurn;
 
+    // 一次都还没跑过就不显示，避免新会话刚打开就顶着 0 tok · 0 次。
+    if (tokens == 0 && totalRequests == 0) return const SizedBox.shrink();
+
     final strong = TextStyle(
       fontSize: 12,
       height: 1.15,

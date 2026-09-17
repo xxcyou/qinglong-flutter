@@ -2338,6 +2338,7 @@ class ChatNotifier extends Notifier<ChatState> {
       return;
     }
     ref.read(auditProvider.notifier).add(
+          sessionId: state.currentSessionId,
           module: 'ai',
           action: 'plan_reject',
           detail: state.pendingPlan.map((a) => a.type).join(', '),
@@ -4975,7 +4976,10 @@ class ChatNotifier extends Notifier<ChatState> {
         result: result.outcome.name,
       ),
     );
-    ref.read(auditProvider.notifier).addAll(entries);
+    ref.read(auditProvider.notifier).addAll(
+          entries,
+          sessionId: state.currentSessionId,
+        );
   }
 
   /// 按工具名前缀归类模块，审计列表里好筛。

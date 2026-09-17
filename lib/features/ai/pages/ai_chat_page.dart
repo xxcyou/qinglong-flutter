@@ -714,7 +714,8 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   }
 
   void _showAudit() {
-    ref.read(auditProvider.notifier).load();
+    final sessionId = ref.read(chatProvider).currentSessionId;
+    ref.read(auditProvider.notifier).load(sessionId);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,

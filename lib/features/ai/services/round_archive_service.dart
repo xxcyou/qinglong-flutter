@@ -69,6 +69,10 @@ class RoundArchiveService {
     return Directory('${root.path}/${_safeSessionId(sessionId)}');
   }
 
+  /// 对外暴露会话目录：审计等会话绑定数据统一放这里，删会话时整个目录一起删。
+  Future<Directory> sessionDirectory(String sessionId) =>
+      _sessionDir(sessionId);
+
   Future<Directory> _roundsDir(String sessionId) async {
     final dir = await _sessionDir(sessionId);
     return Directory('${dir.path}/rounds');
