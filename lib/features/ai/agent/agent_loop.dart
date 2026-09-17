@@ -836,7 +836,7 @@ class AgentLoop {
         'steps': {
           'type': 'array',
           'description':
-              '要追加的步骤，元素格式同 task_plan steps（字符串或含 status/subtasks 的对象）',
+              '要插入的步骤，元素格式同 task_plan steps（字符串或含 status/subtasks 的对象）',
           'items': {
             'type': 'object',
             'properties': {
@@ -850,6 +850,19 @@ class AgentLoop {
             },
           },
         },
+        'index': {
+          'type': 'integer',
+          'description': '插入位置（1 起）。不传=追加到末尾。parent 填了时表示该大步骤下第几个子任务位置',
+        },
+        'position': {
+          'type': 'string',
+          'enum': ['before', 'after'],
+          'description': '在 index 前面还是后面插入，默认 after',
+        },
+        'parent': {
+          'type': 'integer',
+          'description': '可选。顶层步骤序号（1 起）；填了表示 steps 作为它的二级子任务插入',
+        },
       },
       'required': ['steps'],
     },
@@ -858,12 +871,22 @@ class AgentLoop {
   /// 给现有步骤挂二级子任务。
   static const _taskAddSubtaskSpec = LlmFunctionSpec(
     name: 'task_add_subtask',
-    description: '给任务清单里某个大步骤添加/追加二级子任务。'
+    description: '给任务清单里某个大步骤添加/插入二级子任务。'
+        '支持指定子任务位置：subindex + position 可插在第几个子任务前/后。'
         '当这步内容较多、需要展示“这步下面还有哪些”时使用。',
     parameters: {
       'type': 'object',
       'properties': {
         'index': {'type': 'integer', 'description': '顶层第几步（从 1 开始）'},
+        'subindex': {
+          'type': 'integer',
+          'description': '子任务插入位置（1 起）。不传=追加到该步骤子任务末尾',
+        },
+        'position': {
+          'type': 'string',
+          'enum': ['before', 'after'],
+          'description': '在 subindex 前/后插入，默认 after',
+        },
         'subtasks': {
           'type': 'array',
           'description': '要添加的二级子任务，字符串标题或对象 {title, status?}',
@@ -916,6 +939,40 @@ class AgentLoop {
       'required': ['index', 'status'],
     },
   );
+
+  AgentSubtask _withRenumber(AgentSubtask item, String id) {
+    return AgentSubtask(
+      id: id,
+      title: item.title,
+      status: item.status,
+      note: item.note,
+      subtasks: [
+        for (var j = 0; j < item.subtasks.length; j++)
+          _withRenumber(item.subtasks[j], '${id}_${j + 1}'),
+      ],
+    );
+  }
+
+  /// 插入/追加后统一重编号，保证顶层和子任务 id 不重复。
+  List<AgentSubtask> _renumberPlanItems(List<AgentSubtask> items) {
+    return [
+      for (var i = 0; i < items.length; i++)
+        _withRenumber(items[i], 'step${i + 1}'),
+    ];
+  }
+
+  /// 解析插入位置。index 为空时返回末尾（children.length）。
+  /// 返回 0-based 插入下标；position=befor 时插到目标前，否则插到目标后。
+  int _insertAt({
+    required int? index,
+    required int length,
+    required String position,
+  }) {
+    final raw = index;
+    if (raw == null || raw < 1) return length;
+    final pos = position == 'before' ? raw - 1 : raw;
+    return pos.clamp(0, length);
+  }
 
   SubtaskStatus _parseSubtaskStatus(Object? raw) {
     final name = raw?.toString() ?? 'pending';
@@ -1826,15 +1883,62 @@ class AgentLoop {
               toolMessages.add(_toolReply(call, '待追加的 steps 是空的。'));
               continue;
             }
-            final oldCount = plan.items.length;
-            plan = plan.copyWith(items: [...plan.items, ...append]);
-            toolMessages.add(
-              _toolReply(
-                call,
-                '已追加 ${append.length} 步（原 $oldCount 步 → 现 ${plan.items.length} 步），'
-                '清单已更新给用户。',
-              ),
-            );
+            final rawIndex = call.arguments['index'];
+            final index = rawIndex is num
+                ? rawIndex.toInt()
+                : int.tryParse(rawIndex?.toString() ?? '');
+            final position = call.arguments['position']?.toString() == 'before'
+                ? 'before'
+                : 'after';
+            final rawParent = call.arguments['parent'];
+            final parentIndex = rawParent is num
+                ? rawParent.toInt()
+                : int.tryParse(rawParent?.toString() ?? '');
+
+            String reply;
+            if (parentIndex != null) {
+              if (parentIndex < 1 || parentIndex > plan.items.length) {
+                toolMessages.add(
+                  _toolReply(
+                    call,
+                    'parent 越界：清单只有 ${plan.items.length} 个顶层步骤。',
+                  ),
+                );
+                continue;
+              }
+              final items = List<AgentSubtask>.from(plan.items);
+              final parent = items[parentIndex - 1];
+              final insertAt = _insertAt(
+                index: index,
+                length: parent.subtasks.length,
+                position: position,
+              );
+              final children = List<AgentSubtask>.from(parent.subtasks);
+              children.insertAll(insertAt, append);
+              items[parentIndex - 1] = parent.copyWith(subtasks: children);
+              plan = plan.copyWith(items: _renumberPlanItems(items));
+              final posText = position == 'before' ? '前' : '后';
+              final childPosText =
+                  index == null ? '末尾' : '第 $index 个子任务$posText';
+              reply = '已在第 $parentIndex 步$childPosText插入 '
+                  '${append.length} 个二级子任务，清单已更新。';
+            } else {
+              final insertAt = _insertAt(
+                index: index,
+                length: plan.items.length,
+                position: position,
+              );
+              final items = List<AgentSubtask>.from(plan.items);
+              items.insertAll(insertAt, append);
+              final oldCount = plan.items.length;
+              plan = plan.copyWith(items: _renumberPlanItems(items));
+              final posText = position == 'before' ? '前' : '后';
+              reply = index == null
+                  ? '已追加 ${append.length} 步（原 $oldCount 步 → 现 ${plan.items.length} 步）。'
+                  : '已插入 ${append.length} 步到第 $index 步$posText'
+                      '（原共 $oldCount 步 → 现 ${plan.items.length} 步）。';
+            }
+            toolMessages.add(_toolReply(call, reply));
             onPlan?.call(plan);
             emit(
               AgentEvent(
@@ -1874,16 +1978,32 @@ class AgentLoop {
               );
               continue;
             }
+            final rawSub = call.arguments['subindex'];
+            final subindex = rawSub is num
+                ? rawSub.toInt()
+                : int.tryParse(rawSub?.toString() ?? '');
+            final position = call.arguments['position']?.toString() == 'before'
+                ? 'before'
+                : 'after';
             final items = List<AgentSubtask>.from(plan.items);
             final parent = items[index - 1];
-            items[index - 1] = parent.copyWith(
-              subtasks: [...parent.subtasks, ...subs],
+            final insertAt = _insertAt(
+              index: subindex,
+              length: parent.subtasks.length,
+              position: position,
             );
-            plan = plan.copyWith(items: items);
+            final children = List<AgentSubtask>.from(parent.subtasks);
+            children.insertAll(insertAt, subs);
+            items[index - 1] = parent.copyWith(subtasks: children);
+            plan = plan.copyWith(items: _renumberPlanItems(items));
             toolMessages.add(
               _toolReply(
                 call,
-                '已在第 $index 步下添加 ${subs.length} 个二级子任务。',
+                subindex == null
+                    ? '已在第 $index 步下添加 ${subs.length} 个二级子任务。'
+                    : '已在第 $index 步的第 $subindex 个子任务'
+                        '${position == 'before' ? '前' : '后'}'
+                        '插入 ${subs.length} 个二级子任务。',
               ),
             );
             onPlan?.call(plan);
