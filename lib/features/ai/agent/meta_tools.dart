@@ -92,6 +92,45 @@ class MetaTools {
         },
       ),
       ExternalTool(
+        name: 'memory_update',
+        description: '更新一条已有记忆。写新结论前先 memory_search 找到原 id，'
+            '用这个工具原地更新，不要重复新建。找不到 id 会返回失败。',
+        parameters: {
+          'type': 'object',
+          'properties': {
+            'id': {
+              'type': 'string',
+              'description': '记忆 id，memory_search 返回 [id] 里的内容'
+            },
+            'content': {'type': 'string', 'description': '新内容；不传则保留原文'},
+            'tags': {
+              'type': 'array',
+              'items': {'type': 'string'}
+            },
+            'importance': {'type': 'integer', 'description': '1-5'},
+            'pinned': {'type': 'boolean'},
+          },
+          'required': ['id'],
+        },
+        origin: '记忆库',
+        isWrite: true,
+        invoke: (args) async {
+          final id = args['id']?.toString().trim() ?? '';
+          if (id.isEmpty) return '缺少记忆 id。';
+          final ok = await memory.update(
+            id,
+            content: args['content']?.toString().trim(),
+            tags: [
+              for (final t in (args['tags'] as List? ?? const []))
+                t.toString().trim(),
+            ].where((t) => t.isNotEmpty).toList(),
+            importance: (args['importance'] as num?)?.toInt(),
+            pinned: args['pinned'] == true,
+          );
+          return ok ? '已更新记忆 $id。' : '没有 id 为 $id 的记忆。';
+        },
+      ),
+      ExternalTool(
         name: 'memory_search',
         description: '检索长期记忆。系统提示里已注入相关记忆，'
             '只在需要更多历史结论时用它。',
@@ -247,6 +286,45 @@ class MetaTools {
         },
       ),
       ExternalTool(
+        name: 'kb_update',
+        description: '更新一条已有知识。写知识前先 kb_search / kb_list 找到原 path，'
+            '用这个工具原地覆盖，不要新建重复条目。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'path': {
+              'type': 'string',
+              'description': '已有知识文档路径，如 /workspace/.knowledge/xxx.md'
+            },
+            'title': {'type': 'string', 'description': '新标题'},
+            'content': {'type': 'string', 'description': '新正文'},
+            'tags': {
+              'type': 'array',
+              'items': {'type': 'string'}
+            },
+          },
+          'required': ['path', 'title', 'content'],
+        },
+        origin: '知识库',
+        isWrite: true,
+        invoke: (args) async {
+          try {
+            final doc = await store.write(
+              title: args['title']?.toString() ?? '',
+              content: args['content']?.toString() ?? '',
+              tags: [
+                for (final t in (args['tags'] as List? ?? const []))
+                  t.toString().trim(),
+              ].where((t) => t.isNotEmpty).toList(),
+              existingPath: args['path']?.toString(),
+            );
+            return '已更新知识「${doc.title}」→ ${doc.path}';
+          } catch (e) {
+            return '更新知识失败：$e';
+          }
+        },
+      ),
+      ExternalTool(
         name: 'kb_delete',
         description: '删除一条过时/错误的知识。发现知识库里有不再成立或写错的条目时主动清理。',
         parameters: const {
@@ -369,6 +447,43 @@ class MetaTools {
           );
           return '${rawId.isEmpty ? '已创建' : '已更新'}技能「$name」（id=$id），'
               '下一轮对话起生效。';
+        },
+      ),
+      ExternalTool(
+        name: 'skill_update',
+        description: '更新一个已有技能。改技能前先 skill_list 找到 id，'
+            '用这个工具原地覆盖，不要新建重复技能。内置技能不可覆盖。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '已有技能 id，skill_list 查'},
+            'name': {'type': 'string', 'description': '技能名'},
+            'description': {'type': 'string', 'description': '一句话说明'},
+            'when_to_use': {'type': 'string', 'description': '什么场景用'},
+            'instructions': {'type': 'string', 'description': '正文，Markdown'},
+          },
+          'required': ['id'],
+        },
+        origin: '本地技能库',
+        isWrite: true,
+        invoke: (args) async {
+          final id = args['id']?.toString().trim() ?? '';
+          if (id.isEmpty) return '缺少技能 id。';
+          final matched = skillList.where((s) => s.id == id);
+          if (matched.isEmpty) return '没有 id 为 $id 的技能。';
+          if (matched.first.builtin) {
+            return '「${matched.first.name}」是内置技能，不能覆盖。';
+          }
+          final next = matched.first.copyWith(
+            name: args['name']?.toString().trim().isNotEmpty == true
+                ? args['name'].toString().trim()
+                : matched.first.name,
+            description: args['description']?.toString().trim(),
+            whenToUse: args['when_to_use']?.toString().trim(),
+            instructions: args['instructions']?.toString().trim(),
+          );
+          await skills.upsert(next);
+          return '已更新技能「${next.name}」（id=$id），下一轮对话起生效。';
         },
       ),
       ExternalTool(
@@ -515,6 +630,58 @@ class MetaTools {
         },
       ),
       ExternalTool(
+        name: 'mcp_update',
+        description: '更新一个已有 MCP 服务器配置。改配置前先 mcp_list 找到 id，'
+            '用这个工具原地更新，不要重复添加。',
+        parameters: const {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '已有服务器 id，mcp_list 查'},
+            'name': {'type': 'string'},
+            'url': {'type': 'string'},
+            'token': {'type': 'string'},
+            'header_name': {'type': 'string'},
+            'header_prefix': {'type': 'string'},
+            'tool_prefix': {'type': 'string'},
+          },
+          'required': ['id'],
+        },
+        origin: 'MCP 管理',
+        isWrite: true,
+        danger: true,
+        invoke: (args) async {
+          final id = args['id']?.toString().trim() ?? '';
+          if (id.isEmpty) return '缺少服务器 id。';
+          final matched = mcpState.servers.where((s) => s.id == id);
+          if (matched.isEmpty) return '没有 id 为 $id 的服务器。';
+          final old = matched.first;
+          final updated = McpServerConfig(
+            id: id,
+            name: args['name']?.toString().trim().isNotEmpty == true
+                ? args['name'].toString().trim()
+                : old.name,
+            url: args['url']?.toString().trim().isNotEmpty == true
+                ? args['url'].toString().trim()
+                : old.url,
+            token: args['token']?.toString() ?? old.token,
+            headerName:
+                args['header_name']?.toString().trim().isNotEmpty == true
+                    ? args['header_name'].toString().trim()
+                    : old.headerName,
+            headerPrefix: args['header_prefix']?.toString() ?? old.headerPrefix,
+            toolPrefix:
+                args['tool_prefix']?.toString().trim() ?? old.toolPrefix,
+          );
+          await mcp.upsert(updated);
+          final st = mcp.statusOf(id);
+          return st == null
+              ? '已更新服务器「${updated.name}」（id=$id）。'
+              : st.ok
+                  ? '已更新「${updated.name}」，连接正常，${st.toolCount} 个工具。'
+                  : '已更新「${updated.name}」，但连接失败：${st.error}。';
+        },
+      ),
+      ExternalTool(
         name: 'mcp_remove',
         description: '移除一个 MCP 服务器及其全部工具。',
         parameters: const {
@@ -622,20 +789,20 @@ class MetaTools {
   }) {
     return [
       '## 自我管理能力（元工具）',
-      '- 记忆：memory_write / memory_search / memory_delete。当前 $memoryCount 条。'
-          '每次学到跨会话有用的结论（用户偏好、环境事实、踩坑教训）就立刻 memory_write，'
-          '别指望下次还记得；发现记忆过时就删掉重写。',
-      '- 知识库：kb_search / kb_read / kb_write / kb_delete / kb_list。'
+      '- 记忆：memory_write / memory_update / memory_search / memory_delete。当前 $memoryCount 条。'
+          '每次学到跨会话有用的结论（用户偏好、环境事实、踩坑教训）先 memory_search 查重，'
+          '已有就 memory_update 原地更新，没有才 memory_write；发现记忆过时就删掉重写。',
+      '- 知识库：kb_search / kb_read / kb_write / kb_update / kb_delete / kb_list。'
           '知识库**不会自动注入上下文**，只有主动调 kb_search 命中后再 kb_read 才看到；'
-          '解决过有复用价值的方案/踩坑/模板，除 memory_write 外也要主动 kb_write 存成条目。',
-      '- 技能：skill_list / skill_read / skill_install / skill_run / skill_create / skill_delete / skill_toggle。当前 $skillCount 个。'
+          '写知识前先查重，已有条目用 kb_update 原地更新，不要重复 kb_write 建同名条目。',
+      '- 技能：skill_list / skill_read / skill_install / skill_run / skill_create / skill_update / skill_delete / skill_toggle。当前 $skillCount 个。'
           '用户要给市面上的技能仓库（含 SKILL.md 和 scripts 代码）时，直接用 skill_install 完整导入，'
           '不要 web_fetch 抓个 README 再魔改成简化版；带脚本的技能用 skill_run 在终端/青龙跑。'
           '用户说某技能不好用 → skill_read 看现状 → skill_create 传同一个 id 覆盖。'
           '重复踩同一个坑三次以上，主动提议把正确做法写成技能。',
-      '- MCP：mcp_list / mcp_add / mcp_remove / mcp_toggle / mcp_refresh。当前 $mcpServerCount 个服务器。'
-          '需要青龙以外的能力（联网搜索、控设备、第三方 API）时，先 mcp_list 看有没有，'
-          '没有就问用户要端点地址，然后 mcp_add 接入并验证。',
+      '- MCP：mcp_list / mcp_add / mcp_update / mcp_remove / mcp_toggle / mcp_refresh。当前 $mcpServerCount 个服务器。'
+          '需要青龙以外的能力（联网搜索、控设备、第三方 API）时，先 mcp_list 看有没有；'
+          '要改配置用 mcp_update 原地更新，不要重复加同一个服务器。',
       '- web_fetch：抓网页/仓库正文。装技能、接 MCP、查第三方文档都靠它，别凭记忆编 API。',
       '这些工具改的是你自己的能力，改完在**下一轮对话**生效（当前这一轮的工具表已经定死了）。'
           '所以装完技能/接完 MCP 要告诉用户"下一条消息起可用"，别在同一轮里假装已经能用了。',
