@@ -940,7 +940,8 @@ class QlToolRegistry {
           description: '直接调用当前青龙面板 API（自动带已登录的授权 token，不需要 AI 拼鉴权）。'
               '适用于 App 还没封装的青龙接口。path 以 / 开头，例如 GET /crons、POST /envs、'
               'PUT /subscriptions/1/run、DELETE /crons。会自动附加 Authorization 头，'
-              '并返回面板 JSON 原文。',
+              '并返回面板 JSON 原文。注意 GET /scripts 列表接口不接受 path 查询参数，'
+              '要按目录筛选应拉全量后再本地过滤；读取单个文件用 GET /scripts/detail?path=目录&file=文件名。',
           parameters: _obj([
             'method',
             'path'
@@ -2227,26 +2228,42 @@ else:
           final body = rawBody?.isNotEmpty == true
               ? rawBody
               : (bodyMap is Map ? jsonEncode(bodyMap) : null);
-          final response = await DioClient.dio.request<dynamic>(
-            url,
-            queryParameters: query,
-            data: body,
-            options: Options(
-              method: method,
-              headers: {'Authorization': '$tokenType $token'},
-              contentType: body == null ? null : Headers.jsonContentType,
-              responseType: ResponseType.json,
-            ),
-          );
-          final data = response.data;
-          final text = data is String
-              ? data
-              : data == null
-                  ? '{}'
-                  : jsonEncode(data);
-          return text.length > 20000
-              ? '${text.substring(0, 20000)}\n…（响应太长已截断）'
-              : text;
+          try {
+            final response = await DioClient.dio.request<dynamic>(
+              url,
+              queryParameters: query,
+              data: body,
+              options: Options(
+                method: method,
+                headers: {'Authorization': '$tokenType $token'},
+                contentType: body == null ? null : Headers.jsonContentType,
+                responseType: ResponseType.json,
+              ),
+            );
+            final data = response.data;
+            final text = data is String
+                ? data
+                : data == null
+                    ? '{}'
+                    : jsonEncode(data);
+            return text.length > 20000
+                ? '${text.substring(0, 20000)}\n…（响应太长已截断）'
+                : text;
+          } on DioException catch (e) {
+            final responseData = e.response?.data;
+            final detail = responseData is String
+                ? responseData
+                : responseData is Map
+                    ? jsonEncode(responseData)
+                    : e.message;
+            return jsonEncode({
+              'error': '面板接口返回错误',
+              'method': method,
+              'url': e.requestOptions.uri.toString(),
+              'status': e.response?.statusCode,
+              'detail': detail,
+            });
+          }
         }
 
       default:
