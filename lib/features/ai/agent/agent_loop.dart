@@ -698,11 +698,11 @@ class AgentLoop {
     return heads.any(name.startsWith);
   }
 
-  /// 调了这么多次工具还没有任务清单，才提醒模型拆一次。
+  /// 调了这么多次工具还没有任务清单，就提醒模型拆一次。
   ///
-  /// 取 8：简单任务连续查几个只读接口是很正常的，不要第 4 次就逼它上清单。
-  /// 只有明显在多步里打转、用户又看不到进度时才提醒。
-  static const _planNudgeToolCalls = 8;
+  /// 取 5：普通一句话任务不会走到 5 次工具；走到 5 次基本可以确定是多步活，
+  /// 该让用户看到进度了。
+  static const _planNudgeToolCalls = 5;
 
   /// 同一个只读工具连着调这么多次还没收敛，就提醒它收窄条件。
   ///
@@ -2695,8 +2695,7 @@ class AgentLoop {
             !planNudged &&
             plan.isEmpty &&
             records.length >= _planNudgeToolCalls &&
-            turnsUsed >= 2 &&
-            maxTurns - turnsUsed > 6) {
+            turnsUsed >= 2) {
           planNudged = true;
           messages.add(
             LlmMessage(
