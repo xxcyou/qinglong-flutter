@@ -88,7 +88,7 @@ class WebSearchTools {
             if (raw is! List || raw.isEmpty) return 'items 是空的。';
             final maxPerQuery =
                 ((args['max_per_query'] as num?)?.toInt() ?? 3).clamp(1, 6);
-            final sections = <String>[];
+            final items = <Map<String, dynamic>>[];
             var index = 0;
             for (final item in raw) {
               if (item is! Map) continue;
@@ -99,32 +99,46 @@ class WebSearchTools {
                       : '条目 $index';
               final query = item['query']?.toString().trim() ?? '';
               final url = item['url']?.toString().trim() ?? '';
-              final parts = <String>['## $title'];
-              try {
-                if (query.isNotEmpty) {
-                  final results = await _searchBing(query, maxPerQuery);
-                  if (results.isEmpty) {
-                    parts.add('没有搜到「$query」相关结果。');
-                  } else {
-                    parts.add('搜索：$query');
-                    for (var i = 0; i < results.length; i++) {
-                      parts.add('${i + 1}. ${results[i]['title']}\n'
-                          '   ${results[i]['url']}\n'
-                          '   ${results[i]['snippet']}');
-                    }
-                  }
-                } else if (url.isNotEmpty) {
-                  final (finalUrl, body) =
-                      await WebFetch.fetch(url, maxChars: 20000);
-                  parts.add('来源：$finalUrl\n$body');
-                } else {
-                  parts.add('（这一项没有 query 或 url，跳过）');
-                }
-              } catch (e) {
-                parts.add('收集失败：$e');
-              }
-              sections.add(parts.join('\n'));
+              items.add({
+                'title': title,
+                'query': query,
+                'url': url,
+              });
             }
+            // 并行收集：互不依赖的查询同时发出去，比一条条串快很多。
+            final sections = await Future.wait([
+              for (final item in items)
+                () async {
+                  final title = item['title']! as String;
+                  final query = item['query']! as String;
+                  final url = item['url']! as String;
+                  final parts = <String>['## $title'];
+                  try {
+                    if (query.isNotEmpty) {
+                      final results = await _searchBing(query, maxPerQuery);
+                      if (results.isEmpty) {
+                        parts.add('没有搜到「$query」相关结果。');
+                      } else {
+                        parts.add('搜索：$query');
+                        for (var i = 0; i < results.length; i++) {
+                          parts.add('${i + 1}. ${results[i]['title']}\n'
+                              '   ${results[i]['url']}\n'
+                              '   ${results[i]['snippet']}');
+                        }
+                      }
+                    } else if (url.isNotEmpty) {
+                      final (finalUrl, body) =
+                          await WebFetch.fetch(url, maxChars: 20000);
+                      parts.add('来源：$finalUrl\n$body');
+                    } else {
+                      parts.add('（这一项没有 query 或 url，跳过）');
+                    }
+                  } catch (e) {
+                    parts.add('收集失败：$e');
+                  }
+                  return parts.join('\n');
+                }(),
+            ]);
             return sections.join('\n\n');
           },
         ),
@@ -132,23 +146,50 @@ class WebSearchTools {
 
   static Future<List<Map<String, String>>> _searchBing(
       String query, int max) async {
-    final dio = Dio(
-      BaseOptions(
-        connectTimeout: const Duration(seconds: 15),
-        receiveTimeout: const Duration(seconds: 30),
-        followRedirects: true,
-        responseType: ResponseType.plain,
-        headers: {
-          'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                  '(KHTML, like Gecko) Chrome/125.0 Safari/537.36',
-          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        },
-        validateStatus: (code) => code != null && code < 400,
-      ),
-    );
-    final url =
-        'https://www.bing.com/search?q=${Uri.encodeQueryComponent(query)}';
+    // 多引擎兜底：一个站点握手失败/被反爬，自动换下一个，而不是整单报错。
+    final errors = <String>[];
+    final engines = <String, Future<List<Map<String, String>>> Function()>{
+      'bing': () =>
+          _searchEngineBing('https://www.bing.com/search', query, max),
+      'cn_bing': () =>
+          _searchEngineBing('https://cn.bing.com/search', query, max),
+      'duckduckgo': () => _searchEngineDuckDuckGo(query, max),
+      'baidu': () => _searchEngineBaidu(query, max),
+    };
+    for (final entry in engines.entries) {
+      try {
+        final results = await entry.value();
+        if (results.isNotEmpty) return results;
+      } catch (e) {
+        errors.add('${entry.key}: $e');
+      }
+    }
+    throw StateError(errors.isEmpty ? '所有搜索引擎都失败' : errors.join('；'));
+  }
+
+  static Dio _searchDio() => Dio(
+        BaseOptions(
+          connectTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 30),
+          followRedirects: true,
+          responseType: ResponseType.plain,
+          headers: {
+            'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                    '(KHTML, like Gecko) Chrome/125.0 Safari/537.36',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept':
+                'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+          validateStatus: (code) => code != null && code < 400,
+        ),
+      );
+
+  static Future<List<Map<String, String>>> _searchEngineBing(
+      String base, String query, int max) async {
+    final dio = _searchDio();
+    final url = '$base?q=${Uri.encodeQueryComponent(query)}'
+        '&setlang=zh-CN&cc=CN';
     final response = await dio.get<String>(url);
     final html = response.data ?? '';
     final out = <Map<String, String>>[];
@@ -176,11 +217,76 @@ class WebSearchTools {
       ).firstMatch(body);
       final snippet = p == null ? '' : _strip(p.group(1)!);
       if (title.isEmpty && url2.isEmpty) continue;
-      out.add({
-        'title': title,
-        'url': url2,
-        'snippet': snippet,
-      });
+      out.add({'title': title, 'url': url2, 'snippet': snippet});
+    }
+    return out;
+  }
+
+  static Future<List<Map<String, String>>> _searchEngineDuckDuckGo(
+      String query, int max) async {
+    final dio = _searchDio();
+    final url =
+        'https://html.duckduckgo.com/html/?q=${Uri.encodeQueryComponent(query)}';
+    final response = await dio.get<String>(url);
+    final html = response.data ?? '';
+    final out = <Map<String, String>>[];
+    final links = RegExp(
+      r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+      dotAll: true,
+      caseSensitive: false,
+    ).allMatches(html);
+    final snippets = RegExp(
+      r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+      dotAll: true,
+      caseSensitive: false,
+    ).allMatches(html).toList();
+    for (var i = 0; i < links.length && out.length < max; i++) {
+      final m = links.elementAt(i);
+      var url2 = m.group(1)!.trim();
+      // DuckDuckGo 结果链接带跳转前缀，取真实地址参数。
+      final uddg = RegExp(r'uddg=([^&]+)').firstMatch(url2);
+      if (uddg != null) {
+        try {
+          url2 = Uri.decodeComponent(uddg.group(1)!);
+        } catch (_) {}
+      } else if (url2.startsWith('//')) {
+        url2 = 'https:$url2';
+      }
+      final title = _strip(m.group(2)!);
+      final snippet = i < snippets.length ? _strip(snippets[i].group(1)!) : '';
+      if (title.isEmpty && url2.isEmpty) continue;
+      out.add({'title': title, 'url': url2, 'snippet': snippet});
+    }
+    return out;
+  }
+
+  static Future<List<Map<String, String>>> _searchEngineBaidu(
+      String query, int max) async {
+    final dio = _searchDio();
+    final url = 'https://www.baidu.com/s?wd=${Uri.encodeQueryComponent(query)}';
+    final response = await dio.get<String>(url);
+    final html = response.data ?? '';
+    final out = <Map<String, String>>[];
+    // 百度结果块：h3 > a，摘要紧跟在后面的 div。
+    final titles = RegExp(
+      r'<h3[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+      dotAll: true,
+      caseSensitive: false,
+    ).allMatches(html);
+    final snippets = RegExp(
+      r'<span class="content-right_8Zs40">(.*?)</span>',
+      dotAll: true,
+      caseSensitive: false,
+    ).allMatches(html).toList();
+    for (var i = 0; i < titles.length && out.length < max; i++) {
+      final m = titles.elementAt(i);
+      var url2 = m.group(1)!.trim();
+      if (url2.startsWith('//')) url2 = 'https:$url2';
+      if (url2.startsWith('/')) url2 = 'https://www.baidu.com$url2';
+      final title = _strip(m.group(2)!);
+      final snippet = i < snippets.length ? _strip(snippets[i].group(1)!) : '';
+      if (title.isEmpty && url2.isEmpty) continue;
+      out.add({'title': title, 'url': url2, 'snippet': snippet});
     }
     return out;
   }

@@ -108,11 +108,19 @@ class AgentSubagentResult {
     required this.id,
     required this.label,
     required this.summary,
+    this.planIndex,
+    this.planSubindex,
   });
 
   final String id;
   final String label;
   final String summary;
+
+  /// 这个子代理对应任务清单里的顶层步骤(1 起)；为空表示不自动更新清单。
+  final int? planIndex;
+
+  /// 对应顶层步骤下的二级子任务(1 起)；为空表示更新顶层步骤本身。
+  final int? planSubindex;
 }
 
 /// 子代理结果汇入主代理运行的消息槽。
@@ -1267,6 +1275,39 @@ class AgentLoop {
             group: r.label,
           ),
         );
+        // 派工时带了任务清单位置：完成一个子代理，就把对应的清单子任务/步骤标为完成。
+        if (r.planIndex != null && plan.isNotEmpty) {
+          final index = r.planIndex!;
+          final sub = r.planSubindex;
+          AgentTaskPlan? updated;
+          if (sub != null) {
+            updated = plan.updateSubtask(
+              index: index,
+              subindex: sub,
+              status: SubtaskStatus.done,
+              note: '子代理已完成',
+            );
+          } else if (index >= 1 && index <= plan.items.length) {
+            final items = List<AgentSubtask>.from(plan.items);
+            items[index - 1] = items[index - 1].copyWith(
+              status: SubtaskStatus.done,
+              note: '子代理已完成',
+            );
+            updated = plan.copyWith(items: items);
+          }
+          if (updated != null && updated != plan) {
+            plan = updated;
+            onPlan?.call(plan);
+            emit(
+              AgentEvent(
+                kind: AgentEventKind.taskPlan,
+                message: plan.promptLines(),
+                toolName: 'task_plan',
+                turn: turnsUsed,
+              ),
+            );
+          }
+        }
       }
       return results;
     }
@@ -2817,9 +2858,10 @@ class AgentLoop {
               role: 'user',
               content: '提醒：如果你手上是多个互不依赖的独立小活'
                   '（多个脚本各查一遍、多份日志各分析、多个接口各验证），'
-                  '不要全部串行自己扛，用 parallel_agents 并行派出去；'
-                  '如果是单个过程很重、结论很短的探索任务，用 task_worker 派出去，'
-                  '你继续做别的。派出去的活不需要等结果自动会回来。',
+                  '可以考虑用 parallel_agents 并行派出去；'
+                  '如果是单个过程很重、结论很短的探索任务，可以考虑 task_worker。'
+                  '但子代理会额外耗 token，动手前先用 ask_user 问一句用户愿不愿意；'
+                  '用户同意后再派，不要擅自消耗。',
             ),
           );
           emit(

@@ -84,7 +84,8 @@ class AgentTeamTools {
       ExternalTool(
         name: 'task_worker',
         description: '把一个**独立的子任务**后台交给一个子代理去做，**不阻塞主代理**。'
-            '这是你主动派活用的，不用等用户点名。'
+            '子代理会额外消耗 token，所以**派之前先 ask_user 征求用户是否愿意**'
+            '（用户已经说过可以用子代理时例外）。'
             '适合：需要好几步工具调用、但结论只有几句话的活'
             '（体检一个脚本、查清一个接口、把一个目录整理干净）。'
             '返回任务 id，主代理可以继续做别的事；'
@@ -105,6 +106,16 @@ class AgentTeamTools {
             'description': '完整的任务说明：目标、涉及的文件/接口、做到什么程度算完成。'
                 '要自包含，子代理只能看到这段文字',
           },
+          'plan_index': {
+            'type': 'integer',
+            'description': '可选。任务清单里的顶层步骤序号（1 起）。'
+                '这个子代理对应清单里哪一步/哪个子任务，完成时自动把对应待办标为完成',
+          },
+          'plan_subindex': {
+            'type': 'integer',
+            'description': '可选。plan_index 对应的顶层步骤下的二级子任务序号（1 起）。'
+                '不填则标记 plan_index 这个顶层步骤为完成',
+          },
         }),
         isWrite: true,
         origin: '任务代理',
@@ -112,7 +123,14 @@ class AgentTeamTools {
           final task = args['task']?.toString().trim() ?? '';
           if (task.isEmpty) return 'task 是空的，没有可派发的子任务。';
           final title = args['title']?.toString().trim() ?? '';
-          final id = coordinator.start(title.isEmpty ? '' : title, task);
+          final planIndex = (args['plan_index'] as num?)?.toInt();
+          final planSubindex = (args['plan_subindex'] as num?)?.toInt();
+          final id = coordinator.start(
+            title.isEmpty ? '' : title,
+            task,
+            planIndex: planIndex,
+            planSubindex: planSubindex,
+          );
           return '已后台启动子代理${id.isEmpty ? '' : '「$id"'}\n主代理可以继续做自己的事；'
               '需要它结果时调用 subagent_wait(id)，不调也会在完成后自动并入上下文。';
         },
@@ -120,7 +138,8 @@ class AgentTeamTools {
       ExternalTool(
         name: 'parallel_agents',
         description: '把多个**互不相干**的子任务后台同时派给多个子代理，**不阻塞主代理**。'
-            '这是你主动派活用的，不用等用户点名。'
+            '子代理会额外消耗 token，所以**派之前先 ask_user 征求用户是否愿意**'
+            '（用户已经说过可以用子代理时例外）。'
             '适合：十个脚本各查一遍、三个网站各抓一份、多份日志各自分析——'
             '这类彼此没有先后依赖的活。\n'
             '硬约束（不遵守就会拿到互相冲突的结果）：\n'
@@ -143,6 +162,14 @@ class AgentTeamTools {
               'properties': {
                 'title': {'type': 'string'},
                 'task': {'type': 'string'},
+                'plan_index': {
+                  'type': 'integer',
+                  'description': '可选。这个子任务对应的顶层步骤序号（1 起）',
+                },
+                'plan_subindex': {
+                  'type': 'integer',
+                  'description': '可选。对应的二级子任务序号（1 起）；不填则更新顶层步骤',
+                },
               },
               'required': ['task'],
             },
@@ -159,15 +186,32 @@ class AgentTeamTools {
           if (raw is! List || raw.isEmpty) {
             return 'tasks 是空的，没有任何子任务可派。';
           }
-          final items = <({String title, String task})>[];
+          final items = <({
+            String title,
+            String task,
+            int? planIndex,
+            int? planSubindex,
+          })>[];
           for (final item in raw) {
             if (item is Map) {
               final task = item['task']?.toString().trim() ?? '';
               if (task.isEmpty) continue;
-              items.add((title: item['title']?.toString() ?? '', task: task));
+              items.add((
+                title: item['title']?.toString() ?? '',
+                task: task,
+                planIndex: (item['plan_index'] as num?)?.toInt(),
+                planSubindex: (item['plan_subindex'] as num?)?.toInt(),
+              ));
             } else {
               final task = item.toString().trim();
-              if (task.isNotEmpty) items.add((title: '', task: task));
+              if (task.isNotEmpty) {
+                items.add((
+                  title: '',
+                  task: task,
+                  planIndex: null,
+                  planSubindex: null
+                ));
+              }
             }
           }
           if (items.isEmpty) return 'tasks 里没有有效的 task 字段。';
@@ -249,11 +293,15 @@ class _Subtask {
     required this.id,
     required this.label,
     required this.task,
+    this.planIndex,
+    this.planSubindex,
   });
 
   final String id;
   final String label;
   final String task;
+  final int? planIndex;
+  final int? planSubindex;
   final Completer<void> completer = Completer<void>();
   String summary = '';
   bool done = false;
@@ -289,12 +337,23 @@ class _SubagentCoordinator {
   int _active = 0;
   int _seq = 0;
 
-  String start(String title, String task) {
+  String start(
+    String title,
+    String task, {
+    int? planIndex,
+    int? planSubindex,
+  }) {
     final label =
         title.trim().isEmpty ? '子任务${_tasks.length + 1}' : title.trim();
     final id =
         'sub_${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}_${_seq++}';
-    final t = _Subtask(id: id, label: label, task: task);
+    final t = _Subtask(
+      id: id,
+      label: label,
+      task: task,
+      planIndex: planIndex,
+      planSubindex: planSubindex,
+    );
     _tasks[id] = t;
     sink?.addPending();
     _pending.add(t);
@@ -302,10 +361,24 @@ class _SubagentCoordinator {
     return id;
   }
 
-  List<String> startMany(List<({String title, String task})> items) {
+  List<String> startMany(
+    List<
+            ({
+              String title,
+              String task,
+              int? planIndex,
+              int? planSubindex,
+            })>
+        items,
+  ) {
     final ids = <String>[];
     for (final item in items) {
-      ids.add(start(item.title, item.task));
+      ids.add(start(
+        item.title,
+        item.task,
+        planIndex: item.planIndex,
+        planSubindex: item.planSubindex,
+      ));
     }
     return ids;
   }
@@ -377,6 +450,8 @@ class _SubagentCoordinator {
             id: t.id,
             label: label,
             summary: t.summary,
+            planIndex: t.planIndex,
+            planSubindex: t.planSubindex,
           ),
         );
       }
