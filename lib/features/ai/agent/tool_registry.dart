@@ -1,6 +1,11 @@
 import 'dart:convert';
 
+import 'package:dio/dio.dart';
+
+import '../../../core/network/dio_client.dart';
+import '../../../core/storage/secure_storage.dart';
 import '../../panels/models/panel_info.dart';
+import '../../panels/providers/panel_token_manager.dart';
 import '../../configs/api/config_api.dart';
 import '../../crons/api/cron_api.dart';
 import '../../crons/models/cron_task.dart';
@@ -290,6 +295,26 @@ class QlToolRegistry {
           isWrite: true,
           impact: '中断拉取，可能留下半个仓库',
           reversible: true,
+        ),
+        ToolDefinition(
+          name: 'sub_wait',
+          description: '轮询等待一条或多条订阅结束拉取（run 之后用）。'
+              '在 sub_run 返回"已开始运行"后调用，自动反复查询订阅状态直到全部'
+              '退出忙碌（空闲/禁用），不用用户手动刷新页面盯状态。',
+          parameters: _obj([
+            'ids'
+          ], {
+            'ids': {'type': 'array', 'items': _intProp},
+            'timeout_seconds': {
+              'type': 'integer',
+              'description': '最长等多少秒，默认 120，最大 600',
+            },
+            'interval_seconds': {
+              'type': 'integer',
+              'description': '每次查询间隔多少秒，默认 2',
+            },
+          }),
+          isWrite: false,
         ),
         ToolDefinition(
           name: 'sub_enable',
@@ -903,6 +928,46 @@ class QlToolRegistry {
           impact: '在本地 Debian 解压归档，会创建/覆盖目标目录里的文件',
           reversible: false,
         ),
+        ToolDefinition(
+          name: 'panel_auth_info',
+          description: '返回当前选中面板的 API 根地址、登录类型和已登录的授权 token（Authorization 值）。'
+              '仅供 AI 调用青龙接口时使用，不要在回复里回显 token。',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'panel_api',
+          description: '直接调用当前青龙面板 API（自动带已登录的授权 token，不需要 AI 拼鉴权）。'
+              '适用于 App 还没封装的青龙接口。path 以 / 开头，例如 GET /crons、POST /envs、'
+              'PUT /subscriptions/1/run、DELETE /crons。会自动附加 Authorization 头，'
+              '并返回面板 JSON 原文。',
+          parameters: _obj([
+            'method',
+            'path'
+          ], {
+            'method': {
+              'type': 'string',
+              'enum': ['GET', 'POST', 'PUT', 'DELETE'],
+              'description': 'HTTP 方法',
+            },
+            'path': _stringProp,
+            'query': {
+              'type': 'object',
+              'description': '可选查询参数，例如 {"searchValue": "jd"}',
+            },
+            'body': {
+              'type': 'object',
+              'description': '可选 JSON 请求体，示例 {"name": "x"}',
+            },
+            'raw_body': {
+              'type': 'string',
+              'description': '可选原始请求体字符串；填了它就不看 body',
+            },
+          }),
+          isWrite: true,
+          impact: '直接调用青龙面板 API，可能读取或修改面板数据',
+          reversible: false,
+        ),
       ];
 
   /// 这些工具只碰本机 Debian，不需要选中青龙面板。
@@ -1190,6 +1255,36 @@ class QlToolRegistry {
         await SubscriptionApi.stop(
             apiBaseUrl: base, ids: _intList(args['ids']));
         return '已发送停止指令';
+
+      case 'sub_wait':
+        {
+          final ids = _intList(args['ids']);
+          if (ids.isEmpty) return '请提供至少一个订阅 id。';
+          final timeoutSec =
+              ((args['timeout_seconds'] as num?)?.toInt() ?? 120).clamp(5, 600);
+          final intervalSec =
+              ((args['interval_seconds'] as num?)?.toInt() ?? 2).clamp(1, 30);
+          final deadline = DateTime.now().add(Duration(seconds: timeoutSec));
+          var last = '';
+          while (DateTime.now().isBefore(deadline)) {
+            final statuses = <String>[];
+            var allIdle = true;
+            for (final id in ids) {
+              final sub =
+                  await SubscriptionApi.detail(apiBaseUrl: base, id: id);
+              final busy = sub.status.isBusy;
+              statuses.add('$id=${sub.status.label}');
+              if (busy) allIdle = false;
+            }
+            last = '订阅状态：${statuses.join('，')}';
+            if (allIdle) {
+              return '$last\n等待完成，订阅已空闲。';
+            }
+            await Future<void>.delayed(Duration(seconds: intervalSec));
+          }
+          return '$last\n等待超时（$timeoutSec秒），订阅可能仍在拉取；'
+              '可继续 sub_wait 或 sub_log 看进度。';
+        }
 
       case 'sub_enable':
         await SubscriptionApi.setEnabled(
@@ -2080,6 +2175,79 @@ else:
           'dest': dest,
           'stdout': aResult.stdout,
         });
+
+      case 'panel_auth_info':
+        {
+          final currentPanel = panel;
+          if (currentPanel == null) {
+            return jsonEncode({'error': '未选择面板'});
+          }
+          final token = await PanelTokenManager.token(currentPanel);
+          final tokenType =
+              await SecureStorage.readTokenType(currentPanel.id) ?? 'Bearer';
+          return jsonEncode({
+            'panel': currentPanel.name,
+            'api_base_url': base,
+            'login_type': currentPanel.loginType.label,
+            'token_type': tokenType,
+            'token': token ?? '',
+            'warning': 'token 只在工具链路内使用，不要在回复里回显。',
+          });
+        }
+
+      case 'panel_api':
+        {
+          final method = args['method']?.toString().trim().toUpperCase() ?? '';
+          final path = args['path']?.toString().trim() ?? '';
+          if (!{'GET', 'POST', 'PUT', 'DELETE'}.contains(method) ||
+              path.isEmpty) {
+            return jsonEncode({
+              'error': 'method 必须是 GET/POST/PUT/DELETE，path 不能为空',
+            });
+          }
+          final currentPanel = panel;
+          if (currentPanel == null) {
+            return jsonEncode({'error': '未选择面板'});
+          }
+          final token = await PanelTokenManager.token(currentPanel);
+          if (token == null || token.isEmpty) {
+            return jsonEncode({'error': '当前面板没有可用授权 token'});
+          }
+          final tokenType =
+              await SecureStorage.readTokenType(currentPanel.id) ?? 'Bearer';
+          final url = '$base${path.startsWith('/') ? path : '/$path'}';
+          final rawQuery = args['query'];
+          final query = rawQuery is Map
+              ? {
+                  for (final e in rawQuery.entries) '${e.key}': '${e.value}',
+                }
+              : null;
+          final rawBody = args['raw_body']?.toString();
+          final bodyMap = args['body'];
+          final body = rawBody?.isNotEmpty == true
+              ? rawBody
+              : (bodyMap is Map ? jsonEncode(bodyMap) : null);
+          final response = await DioClient.dio.request<dynamic>(
+            url,
+            queryParameters: query,
+            data: body,
+            options: Options(
+              method: method,
+              headers: {'Authorization': '$tokenType $token'},
+              contentType: body == null ? null : Headers.jsonContentType,
+              responseType: ResponseType.json,
+            ),
+          );
+          final data = response.data;
+          final text = data is String
+              ? data
+              : data == null
+                  ? '{}'
+                  : jsonEncode(data);
+          return text.length > 20000
+              ? '${text.substring(0, 20000)}\n…（响应太长已截断）'
+              : text;
+        }
 
       default:
         throw ArgumentError('未实现工具：$toolName');
