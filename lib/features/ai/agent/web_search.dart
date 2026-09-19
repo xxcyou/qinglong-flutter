@@ -117,13 +117,21 @@ class WebSearchTools {
                     if (query.isNotEmpty) {
                       final results = await _searchBing(query, maxPerQuery);
                       if (results.isEmpty) {
-                        parts.add('没有搜到「$query」相关结果。');
+                        parts.add('没有找到与「$query」强相关的结果，'
+                            '建议换更具体的关键词再查。');
                       } else {
                         parts.add('搜索：$query');
                         for (var i = 0; i < results.length; i++) {
                           parts.add('${i + 1}. ${results[i]['title']}\n'
                               '   ${results[i]['url']}\n'
                               '   ${results[i]['snippet']}');
+                        }
+                        // 光靠摘要还是容易“词不达意”：自动抓第一条最相关
+                        // 结果的正文片段喂给模型，让信息收集有真东西可读。
+                        final detail =
+                            await _fetchFirstResultDetail(results, 6000);
+                        if (detail.isNotEmpty) {
+                          parts.add('—— 最相关页面正文摘录 ——\n$detail');
                         }
                       }
                     } else if (url.isNotEmpty) {
@@ -146,7 +154,49 @@ class WebSearchTools {
 
   static Future<List<Map<String, String>>> _searchBing(
       String query, int max) async {
-    // 多引擎兜底：一个站点握手失败/被反爬，自动换下一个，而不是整单报错。
+    // 先拿原始查询词，把四个引擎的结果全部收回来合并，再用相关性打分挑，
+    // 而不是“第一个引擎只要非空就直接交差”——那正是“搜 A 给 B”的一个来源。
+    final all = <String, Map<String, String>>{};
+    try {
+      for (final r in await _collectFromEngines(query, 10)) {
+        all[r['url'] ?? ''] = r;
+      }
+    } catch (_) {
+      // 单个引擎/握手失败不阻塞，继续评分。
+    }
+
+    var scored = _scoreResults(all.values.toList(), query);
+
+    // 原始词相关结果不够时，换几个更明确的问法补一轮。
+    // 只补到够用就停，避免为了凑数把不相关结果塞回来。
+    if (scored.where((e) => e.score > 0).length < max) {
+      for (final suffix in _querySuffixes(query)) {
+        // 已经有够多的相关结果就不必多搜了。
+        if (scored.where((e) => e.score > 0).length >= max) break;
+        try {
+          final more = await _collectFromEngines('$query $suffix', 6);
+          for (final r in more) {
+            all[r['url'] ?? ''] = r;
+          }
+          scored = _scoreResults(all.values.toList(), query);
+        } catch (_) {
+          // 补搜失败不影响已收集的结果。
+        }
+      }
+    }
+
+    final relevant = scored.where((e) => e.score > 0).toList();
+    if (relevant.isEmpty) {
+      // 一个都不相关就空手回去，让调用方明确说“没找到强相关结果”，
+      // 不要硬塞一批驴唇不对马嘴的链接。
+      return const [];
+    }
+    return relevant.take(max).map((e) => e.result).toList();
+  }
+
+  /// 四个搜索引擎并发收集，按 URL 去重合并；单点失败不影响其他引擎。
+  static Future<List<Map<String, String>>> _collectFromEngines(
+      String query, int max) async {
     final errors = <String>[];
     final engines = <String, Future<List<Map<String, String>>> Function()>{
       'bing': () =>
@@ -156,15 +206,111 @@ class WebSearchTools {
       'duckduckgo': () => _searchEngineDuckDuckGo(query, max),
       'baidu': () => _searchEngineBaidu(query, max),
     };
-    for (final entry in engines.entries) {
-      try {
-        final results = await entry.value();
-        if (results.isNotEmpty) return results;
-      } catch (e) {
-        errors.add('${entry.key}: $e');
+    final lists = await Future.wait([
+      for (final entry in engines.entries)
+        () async {
+          try {
+            return await entry.value();
+          } catch (e) {
+            errors.add('${entry.key}: $e');
+            return <Map<String, String>>[];
+          }
+        }(),
+    ]);
+    final seen = <String>{};
+    final out = <Map<String, String>>[];
+    for (final list in lists) {
+      for (final r in list) {
+        final key = r['url'] ?? '';
+        if (key.isEmpty || !seen.add(key)) continue;
+        out.add(r);
       }
     }
-    throw StateError(errors.isEmpty ? '所有搜索引擎都失败' : errors.join('；'));
+    return out;
+  }
+
+  /// 抓取最相关一条结果的页面正文片段，失败就返回空串。
+  static Future<String> _fetchFirstResultDetail(
+    List<Map<String, String>> results,
+    int maxChars,
+  ) async {
+    for (final r in results) {
+      final url = r['url'] ?? '';
+      if (url.isEmpty) continue;
+      try {
+        final (_, body) = await WebFetch.fetch(url, maxChars: maxChars);
+        if (body.trim().length >= 60) return body.trim();
+      } catch (_) {
+        // 单个页面抓不到不影响整体收集结果。
+      }
+    }
+    return '';
+  }
+
+  /// 根据查询词生成补搜问法。网上找资料，加“教程/文档/官网/是什么”
+  /// 通常能显著提高命中度；但不要一律硬加，按查询意图挑。
+  static List<String> _querySuffixes(String query) {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return const [];
+    final how = RegExp(r'怎么|如何|怎样|教程|安装|配置|使用|下载|部署');
+    final what = RegExp(r'是什么|什么意思|定义|介绍|背景|历史|区别|对比');
+    final needOfficial = RegExp(r'官网|官方|最新|价格|下载|地址');
+    final suffixes = <String>[];
+    if (how.hasMatch(q)) {
+      suffixes.addAll(['教程', '步骤', '文档']);
+    } else if (what.hasMatch(q)) {
+      suffixes.addAll(['详细介绍', '是什么']);
+    } else if (needOfficial.hasMatch(q)) {
+      suffixes.addAll(['官网', '官方文档']);
+    } else {
+      suffixes.addAll(['资料', '教程']);
+    }
+    return suffixes.toSet().toList();
+  }
+
+  /// 对合并结果做轻量相关性评分：命中查询原句/关键词的才留下。
+  static List<({int score, Map<String, String> result})> _scoreResults(
+    List<Map<String, String>> results,
+    String query,
+  ) {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return [];
+    final tokens = q
+        .split(RegExp(r'[\s,，。.;；:：!！?？、/\\|()\[\]{}]+'))
+        .where((t) => t.length >= 2)
+        .toList();
+
+    int score(Map<String, String> r) {
+      final title = (r['title'] ?? '').toLowerCase();
+      final snippet = (r['snippet'] ?? '').toLowerCase();
+      final url = (r['url'] ?? '').toLowerCase();
+      final text = '$title $snippet $url';
+      var s = 0;
+      if (text.contains(q)) s += 6;
+      if (title.contains(q)) s += 4;
+      for (final token in tokens) {
+        // 中文分词难，这里用整词 + 双字二元组兜底。
+        if (text.contains(token)) s += token.length >= 4 ? 3 : 2;
+        if (title.contains(token)) s += 2;
+        for (var i = 0; i < token.length - 1; i++) {
+          final bigram = token.substring(i, i + 2);
+          if (text.contains(bigram)) s += 1;
+        }
+      }
+      // 空摘要通常不可信，扣一点分。
+      if (snippet.isEmpty) s -= 2;
+      return s;
+    }
+
+    final scored = [
+      for (final r in results) (score: score(r), result: r),
+    ];
+    scored.sort((a, b) {
+      final c = b.score.compareTo(a.score);
+      if (c != 0) return c;
+      return (a.result['title'] ?? '').compareTo(b.result['title'] ?? '');
+    });
+    return scored;
   }
 
   static Dio _searchDio() => Dio(
