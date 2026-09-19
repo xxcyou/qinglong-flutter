@@ -9,6 +9,7 @@ class QueuedMessage {
     required this.id,
     required this.text,
     this.images = const [],
+    this.displayText = '',
     this.sessionId = '',
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
@@ -16,6 +17,9 @@ class QueuedMessage {
   final String id;
   final String text;
   final List<AiImageAttachment> images;
+
+  /// 队列条上显示的文字；空 = 显示 [text]（text 可能带模式库注入块）。
+  final String displayText;
 
   /// 这条消息属于哪个会话；空表示旧数据/全局。并发跑时每个会话各自排各的队。
   final String sessionId;
@@ -25,11 +29,13 @@ class QueuedMessage {
     String text, {
     String sessionId = '',
     List<AiImageAttachment> images = const [],
+    String displayText = '',
   }) =>
       QueuedMessage(
         id: DateTime.now().microsecondsSinceEpoch.toRadixString(36),
         text: text,
         images: images,
+        displayText: displayText,
         sessionId: sessionId,
       );
 
@@ -49,6 +55,7 @@ class QueuedMessage {
   Map<String, dynamic> toJson() => {
         'id': id,
         'text': text,
+        if (displayText.isNotEmpty) 'displayText': displayText,
         if (images.isNotEmpty)
           'images': [for (final img in images) img.toJson()],
         'sessionId': sessionId,
@@ -59,6 +66,7 @@ class QueuedMessage {
         id: json['id']?.toString() ??
             DateTime.now().microsecondsSinceEpoch.toRadixString(36),
         text: json['text']?.toString() ?? '',
+        displayText: json['displayText']?.toString() ?? '',
         images: [
           for (final img in (json['images'] as List? ?? const []))
             if (img is Map<String, dynamic>) AiImageAttachment.fromJson(img),

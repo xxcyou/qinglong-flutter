@@ -1139,6 +1139,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                         child: AgentProcessCard(
                                           events: state.liveAgentEvents,
                                           running: state.isLoading,
+                                          modeLabels: state.liveModeLabels,
                                           initiallyExpanded: state.isLoading ||
                                               state.liveAgentEvents.any(
                                                 (e) =>
@@ -1789,7 +1790,9 @@ class _MessageBubble extends StatelessWidget {
                     ),
                   if (isUser)
                     SelectableText(
-                      message.content,
+                      message.displayContent.isNotEmpty
+                          ? message.displayContent
+                          : message.content,
                       style: TextStyle(
                         height: 1.4,
                         color: scheme.onPrimaryContainer,
@@ -1875,7 +1878,11 @@ class _MessageBubble extends StatelessWidget {
                           InkWell(
                             onTap: () {
                               Clipboard.setData(
-                                ClipboardData(text: message.content),
+                                ClipboardData(
+                                  text: message.displayContent.isNotEmpty
+                                      ? message.displayContent
+                                      : message.content,
+                                ),
                               );
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
@@ -1922,6 +1929,7 @@ class _MessageBubble extends StatelessWidget {
               events: message.agentEvents,
               turns: message.turns,
               totalTokens: message.totalTokens,
+              modeLabels: message.modeLabels,
             ),
         ],
       );
@@ -1938,6 +1946,7 @@ class _MessageBubble extends StatelessWidget {
             events: message.agentEvents,
             turns: message.turns,
             totalTokens: message.totalTokens,
+            modeLabels: message.modeLabels,
           ),
         if (message.taskPlan.isNotEmpty)
           TaskPlanCard(

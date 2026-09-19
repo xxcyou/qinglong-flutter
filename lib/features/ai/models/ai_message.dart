@@ -67,7 +67,9 @@ class AiChatMessage {
   const AiChatMessage({
     required this.role,
     this.content = '',
+    this.displayContent = '',
     this.images = const [],
+    this.modeLabels = const [],
     this.toolCalls = const [],
     this.createdAt,
     this.agentEvents = const [],
@@ -83,8 +85,17 @@ class AiChatMessage {
   });
 
   final String role;
+
+  /// 发给模型/历史里保留的完整内容（可能含模式库注入块）。
   final String content;
+
+  /// 用户气泡里显示的内容；为空时直接用 [content]。
+  /// 模式库注入块只进模型上下文，不展示给用户看。
+  final String displayContent;
   final List<AiImageAttachment> images;
+
+  /// 这条回复挂载的模式库标签名，用于过程卡“执行过程”旁展示。
+  final List<String> modeLabels;
   final List<AiToolCall> toolCalls;
   final DateTime? createdAt;
 
@@ -126,12 +137,16 @@ class AiChatMessage {
 
   AiChatMessage copyWith({
     String? sendError,
+    String? displayContent,
+    List<String>? modeLabels,
     List<AgentEvent>? agentEvents,
     List<AiImageAttachment>? images,
   }) =>
       AiChatMessage(
         role: role,
         content: content,
+        displayContent: displayContent ?? this.displayContent,
+        modeLabels: modeLabels ?? this.modeLabels,
         images: images ?? this.images,
         toolCalls: toolCalls,
         createdAt: createdAt,
@@ -153,6 +168,8 @@ class AiChatMessage {
   Map<String, dynamic> toJson() => {
         'role': role,
         'content': content,
+        if (displayContent.isNotEmpty) 'displayContent': displayContent,
+        if (modeLabels.isNotEmpty) 'modeLabels': modeLabels,
         if (images.isNotEmpty)
           'images': [for (final img in images) img.toJson()],
         'toolCalls': [
@@ -177,6 +194,10 @@ class AiChatMessage {
     return AiChatMessage(
       role: json['role']?.toString() ?? '',
       content: json['content']?.toString() ?? '',
+      displayContent: json['displayContent']?.toString() ?? '',
+      modeLabels: [
+        for (final t in (json['modeLabels'] as List? ?? const [])) t.toString(),
+      ],
       sendError: json['sendError']?.toString() ?? '',
       images: [
         for (final img in (json['images'] as List? ?? const []))

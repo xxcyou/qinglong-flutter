@@ -80,11 +80,19 @@ class AgentInboxMessage {
     required this.id,
     required this.text,
     this.images = const [],
+    this.displayText = '',
+    this.modeLabels = const [],
   });
 
   final String id;
   final String text;
   final List<AiImageAttachment> images;
+
+  /// 用户气泡显示文字；空 = 显示 [text]（text 可能带模式库注入块）。
+  final String displayText;
+
+  /// 本条消息挂载的模式标签名（给正在跑的过程卡显示）。
+  final List<String> modeLabels;
 }
 
 /// 运行期消息插槽：外部（ChatNotifier）往里面放消息，AgentLoop 在合适时机取走。

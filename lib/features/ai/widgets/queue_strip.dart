@@ -110,7 +110,10 @@ class QueueStrip extends StatelessWidget {
                           ),
                           Expanded(
                             child: Text(
-                              item.text.replaceAll('\n', ' '),
+                              (item.displayText.isNotEmpty
+                                      ? item.displayText
+                                      : item.text)
+                                  .replaceAll('\n', ' '),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(fontSize: compact ? 12 : 13),

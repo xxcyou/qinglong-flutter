@@ -84,6 +84,7 @@ class ChatState {
     this.livePlan = const AgentTaskPlan(),
     this.pendingImages = const [],
     this.pendingModeIds = const [],
+    this.liveModeLabels = const [],
     this.toolRecords = const [],
     this.pendingPlanBySession = const {},
     this.pendingQuestionBySession = const {},
@@ -168,6 +169,9 @@ class ChatState {
 
   /// 本次待发送时挂载的模式库标签 id（输入框打 `/` 选择）。
   final List<String> pendingModeIds;
+
+  /// 当前这一轮正在执行时，过程卡“执行过程”旁要显示的模式标签名。
+  final List<String> liveModeLabels;
   final List<ToolCallRecord> toolRecords;
 
   /// 每个会话各自的待确认操作（app_approve 等）。
@@ -325,6 +329,7 @@ class ChatState {
     AgentTaskPlan? livePlan,
     List<AiImageAttachment>? pendingImages,
     List<String>? pendingModeIds,
+    List<String>? liveModeLabels,
     List<ToolCallRecord>? toolRecords,
     List<AiPlanAction>? pendingPlan,
     AgentQuestion? pendingQuestion,
@@ -386,6 +391,7 @@ class ChatState {
       livePlan: livePlan ?? this.livePlan,
       pendingImages: pendingImages ?? this.pendingImages,
       pendingModeIds: pendingModeIds ?? this.pendingModeIds,
+      liveModeLabels: liveModeLabels ?? this.liveModeLabels,
       toolRecords: toolRecords ?? this.toolRecords,
       pendingPlanBySession: pendingPlanBySession ??
           _withCurrentPlan(
@@ -1458,11 +1464,26 @@ class ChatNotifier extends Notifier<ChatState> {
     return notifier.promptBlock(state.pendingModeIds);
   }
 
+  /// 当前挂载模式的名字列表，给过程卡“执行过程”旁展示用。
+  List<String> _composeModeLabels() {
+    final notifier = ref.read(modeProvider.notifier);
+    return [
+      for (final id in state.pendingModeIds)
+        if (notifier.byId(id)?.enabled ?? false) notifier.byId(id)!.name,
+    ];
+  }
+
   Future<void> send(String text) async {
     final value = text.trim();
     final modeText = _composeModePrompt();
     // 模式内容也是本次发送的一部分：只挂模式、不打字也可以发。
     final finalText = modeText.isEmpty ? value : '$modeText\n\n${value.trim()}';
+    // 用户气泡/队列条只显示原话，不要把模式注入块亮出来。
+    // 只挂模式没打字时给个占位，避免把模式内容亮出来。
+    final displayText =
+        modeText.isEmpty ? '' : (value.isEmpty ? '（仅挂载模式，未输入文字）' : value);
+    final modeLabels =
+        modeText.isEmpty ? const <String>[] : _composeModeLabels();
     final sid = state.currentSessionId;
     final images = state.pendingImages;
     // 只带附件/模式、没有文字也可以发：AI 会直接看附件/模式指令来干活。
@@ -1475,6 +1496,7 @@ class ChatNotifier extends Notifier<ChatState> {
         finalText,
         sessionId: sid,
         images: images,
+        displayText: displayText,
       );
       state = state.copyWith(
         queue: [...state.queue, queued],
@@ -1484,6 +1506,8 @@ class ChatNotifier extends Notifier<ChatState> {
           id: queued.id,
           text: finalText,
           images: images,
+          displayText: displayText,
+          modeLabels: modeLabels,
         ),
       );
       clearPendingImages();
@@ -1498,6 +1522,8 @@ class ChatNotifier extends Notifier<ChatState> {
       finalText,
       sessionId: sid,
       images: images,
+      displayText: displayText,
+      modeLabels: modeLabels,
       resumeEvents: _resumeEventsFromCancelled(sid),
       resumeRoundId: _roundIdFromCancelled(sid),
     );
@@ -1517,7 +1543,12 @@ class ChatNotifier extends Notifier<ChatState> {
     state = state.copyWith(
       queue: [
         ...state.queue,
-        QueuedMessage.create(finalText, sessionId: state.currentSessionId),
+        QueuedMessage.create(
+          finalText,
+          sessionId: state.currentSessionId,
+          displayText:
+              modeText.isEmpty ? '' : (value.isEmpty ? '（仅挂载模式，未输入文字）' : value),
+        ),
       ],
     );
   }
@@ -1536,6 +1567,8 @@ class ChatNotifier extends Notifier<ChatState> {
           finalText,
           sessionId: state.currentSessionId,
           images: images,
+          displayText:
+              modeText.isEmpty ? '' : (value.isEmpty ? '（仅挂载模式，未输入文字）' : value),
         ),
       ],
     );
@@ -1680,6 +1713,7 @@ class ChatNotifier extends Notifier<ChatState> {
     if (_runs[run.sessionId] != run) return;
     state = state.copyWith(
       queue: state.queue.where((q) => q.id != msg.id).toList(),
+      liveModeLabels: msg.modeLabels,
     );
     final session = _sessionById(run.sessionId);
     if (session == null) return;
@@ -1692,7 +1726,9 @@ class ChatNotifier extends Notifier<ChatState> {
           AiChatMessage(
             role: 'user',
             content: msg.text,
+            displayContent: msg.displayText,
             images: msg.images,
+            modeLabels: msg.modeLabels,
             createdAt: DateTime.now(),
           ),
         ],
@@ -1776,6 +1812,8 @@ class ChatNotifier extends Notifier<ChatState> {
     List<AgentEvent>? resumeEvents,
     String? resumeRoundId,
     List<AiImageAttachment> images = const [],
+    String displayText = '',
+    List<String> modeLabels = const [],
   }) async {
     final session =
         sessionId == null ? state.currentSession : _sessionById(sessionId);
@@ -1833,6 +1871,7 @@ class ChatNotifier extends Notifier<ChatState> {
         liveAgentEvents: resumeEvents?.isNotEmpty == true
             ? List<AgentEvent>.from(resumeEvents!)
             : const [],
+        liveModeLabels: modeLabels,
         clearLiveText: true,
         clearError: true,
         runningSessionIds: {..._runs.keys},
@@ -1851,6 +1890,7 @@ class ChatNotifier extends Notifier<ChatState> {
       final userMessage = AiChatMessage(
           role: 'user',
           content: value,
+          displayContent: displayText,
           images: images,
           createdAt: DateTime.now());
       final updated = AiSession(
@@ -1930,6 +1970,7 @@ class ChatNotifier extends Notifier<ChatState> {
         taskPlan: result.taskPlan,
         canvases: result.canvases,
         roundId: run.roundId,
+        modeLabels: modeLabels,
       );
       _replaceSession(
         AiSession(
@@ -2454,7 +2495,9 @@ class ChatNotifier extends Notifier<ChatState> {
       // 撤回带附件的消息时，把附件原样恢复到待发送区；多张图一次全回来。
       pendingImages: [...state.pendingImages, ...target.images],
     );
-    return target.content;
+    return target.displayContent.isNotEmpty
+        ? target.displayContent
+        : target.content;
   }
 
   /// 重发某条用户消息：撤回到它之前，然后重新发一次。

@@ -30,6 +30,7 @@ class AgentProcessCard extends StatefulWidget {
     this.liveSubagentTool = const {},
     this.liveSubagentReasoningChars = const {},
     this.liveSubagentContentChars = const {},
+    this.modeLabels = const [],
   });
 
   final void Function(AiCanvas canvas)? onOpenCanvas;
@@ -46,6 +47,9 @@ class AgentProcessCard extends StatefulWidget {
   final Map<String, String> liveSubagentTool;
   final Map<String, int> liveSubagentReasoningChars;
   final Map<String, int> liveSubagentContentChars;
+
+  /// 这一轮挂载的模式标签名，放在标题“执行过程”旁边，横向滚动防溢出。
+  final List<String> modeLabels;
 
   @override
   State<AgentProcessCard> createState() => _AgentProcessCardState();
@@ -187,13 +191,61 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          widget.running ? '正在执行' : '执行过程',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.2,
-                          ),
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                widget.running ? '正在执行' : '执行过程',
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ),
+                            if (widget.modeLabels.isNotEmpty) ...[
+                              const SizedBox(width: 6),
+                              Flexible(
+                                child: SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  reverse: true,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      for (final label in widget.modeLabels)
+                                        Container(
+                                          margin: const EdgeInsets.only(
+                                            left: 3,
+                                          ),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 6,
+                                            vertical: 1,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: scheme.primary
+                                                .withValues(alpha: 0.10),
+                                            borderRadius:
+                                                BorderRadius.circular(6),
+                                            border: Border.all(
+                                              color: scheme.primary
+                                                  .withValues(alpha: 0.25),
+                                            ),
+                                          ),
+                                          child: Text(
+                                            '#$label',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w600,
+                                              color: scheme.primary,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                         const SizedBox(height: 2),
                         Text(
