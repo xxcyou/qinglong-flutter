@@ -37,6 +37,7 @@ import '../services/round_archive_service.dart';
 import '../agent/tool_registry.dart';
 import '../mcp/mcp_provider.dart';
 import '../memory/memory_provider.dart';
+import '../modes/mode_provider.dart';
 import '../skills/skill_models.dart';
 import '../skills/skill_provider.dart';
 import '../models/ai_message.dart';
@@ -82,6 +83,7 @@ class ChatState {
     this.liveSubagentContentChars = const {},
     this.livePlan = const AgentTaskPlan(),
     this.pendingImages = const [],
+    this.pendingModeIds = const [],
     this.toolRecords = const [],
     this.pendingPlanBySession = const {},
     this.pendingQuestionBySession = const {},
@@ -163,6 +165,9 @@ class ChatState {
 
   /// 待发送的图片附件（选了图但还没点发送）。
   final List<AiImageAttachment> pendingImages;
+
+  /// 本次待发送时挂载的模式库标签 id（输入框打 `/` 选择）。
+  final List<String> pendingModeIds;
   final List<ToolCallRecord> toolRecords;
 
   /// 每个会话各自的待确认操作（app_approve 等）。
@@ -319,6 +324,7 @@ class ChatState {
     bool clearLiveText = false,
     AgentTaskPlan? livePlan,
     List<AiImageAttachment>? pendingImages,
+    List<String>? pendingModeIds,
     List<ToolCallRecord>? toolRecords,
     List<AiPlanAction>? pendingPlan,
     AgentQuestion? pendingQuestion,
@@ -379,6 +385,7 @@ class ChatState {
           : liveSubagentContentChars ?? this.liveSubagentContentChars,
       livePlan: livePlan ?? this.livePlan,
       pendingImages: pendingImages ?? this.pendingImages,
+      pendingModeIds: pendingModeIds ?? this.pendingModeIds,
       toolRecords: toolRecords ?? this.toolRecords,
       pendingPlanBySession: pendingPlanBySession ??
           _withCurrentPlan(
@@ -1424,20 +1431,48 @@ class ChatNotifier extends Notifier<ChatState> {
     state = state.copyWith(pendingImages: const []);
   }
 
+  // ------------------------------------------------------------ 模式库挂载
+
+  /// 在输入框上方挂一个模式标签；发送时该模式内容会注入本次提示词。
+  void addPendingMode(String id) {
+    if (id.isEmpty || state.pendingModeIds.contains(id)) return;
+    state = state.copyWith(pendingModeIds: [...state.pendingModeIds, id]);
+  }
+
+  void removePendingMode(String id) {
+    state = state.copyWith(
+      pendingModeIds: state.pendingModeIds.where((m) => m != id).toList(),
+    );
+  }
+
+  void clearPendingModes() {
+    if (state.pendingModeIds.isEmpty) return;
+    state = state.copyWith(pendingModeIds: const []);
+  }
+
   /// 发送。当前会话正在跑的时候不再丢弃输入，而是进该会话的排队区；
   /// 别的会话在跑完全不影响本会话立刻开跑。
+  /// 把当前挂载的模式库标签拼成提示词块。
+  String _composeModePrompt() {
+    final notifier = ref.read(modeProvider.notifier);
+    return notifier.promptBlock(state.pendingModeIds);
+  }
+
   Future<void> send(String text) async {
     final value = text.trim();
+    final modeText = _composeModePrompt();
+    // 模式内容也是本次发送的一部分：只挂模式、不打字也可以发。
+    final finalText = modeText.isEmpty ? value : '$modeText\n\n${value.trim()}';
     final sid = state.currentSessionId;
     final images = state.pendingImages;
-    // 只带附件、没有文字也可以发：AI 会直接看附件/调工具识别。
-    if (value.isEmpty && images.isEmpty) return;
+    // 只带附件/模式、没有文字也可以发：AI 会直接看附件/模式指令来干活。
+    if (finalText.isEmpty && images.isEmpty) return;
     if (_runs.containsKey(sid)) {
       // AI 还在跑：不再像以前那样只压进队尾等整轮跑完；把这条同时挂到
       // 当前运行的 inbox，AgentLoop 在下一轮之间的安全点就把它插进去。
       final run = _runs[sid]!;
       final queued = QueuedMessage.create(
-        value,
+        finalText,
         sessionId: sid,
         images: images,
       );
@@ -1447,18 +1482,20 @@ class ChatNotifier extends Notifier<ChatState> {
       run.inbox.add(
         AgentInboxMessage(
           id: queued.id,
-          text: value,
+          text: finalText,
           images: images,
         ),
       );
       clearPendingImages();
+      clearPendingModes();
       return;
     }
-    // 附件已经交给 _sendNow 了，这里立刻清空待发条，不要等整轮跑完才消失。
+    // 附件/模式已经交给 _sendNow 了，这里立刻清空待发条，不要等整轮跑完才消失。
     clearPendingImages();
+    clearPendingModes();
     // 上一次是被打断的：把中断前已执行的工具链直接带过去续轮，而不是开全新一轮。
     await _sendNow(
-      value,
+      finalText,
       sessionId: sid,
       images: images,
       resumeEvents: _resumeEventsFromCancelled(sid),
@@ -1473,11 +1510,14 @@ class ChatNotifier extends Notifier<ChatState> {
   /// 加入排队。跑完当前任务会按顺序自动发出。
   void enqueue(String text) {
     final value = text.trim();
-    if (value.isEmpty) return;
+    final modeText = _composeModePrompt();
+    final finalText = modeText.isEmpty ? value : '$modeText\n\n${value.trim()}';
+    if (finalText.isEmpty) return;
+    clearPendingModes();
     state = state.copyWith(
       queue: [
         ...state.queue,
-        QueuedMessage.create(value, sessionId: state.currentSessionId),
+        QueuedMessage.create(finalText, sessionId: state.currentSessionId),
       ],
     );
   }
@@ -1485,12 +1525,15 @@ class ChatNotifier extends Notifier<ChatState> {
   /// 带图片的排队消息。
   void enqueueWithImages(String text, List<AiImageAttachment> images) {
     final value = text.trim();
-    if (value.isEmpty && images.isEmpty) return;
+    final modeText = _composeModePrompt();
+    final finalText = modeText.isEmpty ? value : '$modeText\n\n${value.trim()}';
+    if (finalText.isEmpty && images.isEmpty) return;
+    clearPendingModes();
     state = state.copyWith(
       queue: [
         ...state.queue,
         QueuedMessage.create(
-          value,
+          finalText,
           sessionId: state.currentSessionId,
           images: images,
         ),
@@ -4534,6 +4577,7 @@ class ChatNotifier extends Notifier<ChatState> {
         mcp: ref.read(mcpProvider.notifier),
         mcpState: ref.read(mcpProvider),
         skillList: ref.read(skillProvider).skills,
+        mode: ref.read(modeProvider.notifier),
       ),
       // 会话内工具结果缓存：上下文只留摘要 + key，模型要全文时按 key 取，
       // 不用把同一个文件/命令再跑一遍，也不会把几千字结果塞进历史撑爆 token。

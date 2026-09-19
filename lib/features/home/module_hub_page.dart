@@ -6,7 +6,9 @@ import '../../shared/glass_scaffold.dart';
 import '../ai/knowledge/knowledge_provider.dart';
 import '../ai/mcp/mcp_provider.dart';
 import '../ai/memory/memory_provider.dart';
+import '../ai/modes/mode_provider.dart';
 import '../ai/pages/knowledge_page.dart';
+import '../ai/pages/mode_page.dart';
 import '../ai/pages/mcp_server_page.dart';
 import '../ai/pages/memory_page.dart';
 import '../ai/pages/skill_list_page.dart';
@@ -37,6 +39,7 @@ class ModuleHubPage extends ConsumerWidget {
     final mcp = ref.watch(mcpProvider);
     final memory = ref.watch(memoryProvider);
     final knowledge = ref.watch(knowledgeProvider);
+    final modes = ref.watch(modeProvider);
 
     const panelModules = <_Module>[
       _Module(
@@ -113,6 +116,13 @@ class ModuleHubPage extends ConsumerWidget {
         const Color(0xFFD1725B),
         badge: knowledge.docs.isEmpty ? null : '${knowledge.docs.length} 篇',
       ),
+      _Module(
+        '模式库',
+        '自定义 / 标签快速进入编辑模式',
+        Icons.tune_outlined,
+        const Color(0xFF6A8B5E),
+        badge: modes.items.isEmpty ? null : '${modes.items.length} 个',
+      ),
     ];
 
     return GlassScaffold(
@@ -179,6 +189,7 @@ class ModuleHubPage extends ConsumerWidget {
       'MCP 扩展' => (BuildContext _) => const McpServerPage(),
       'AI 记忆' => (BuildContext _) => const MemoryPage(),
       '知识库' => (BuildContext _) => const KnowledgePage(),
+      '模式库' => (BuildContext _) => const ModePage(),
       _ => null,
     };
     if (builder == null) return;

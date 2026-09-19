@@ -26,6 +26,8 @@ import '../../../shared/local_file_picker.dart';
 import '../floating/ai_dock_provider.dart';
 import '../plugins/output_plugin.dart';
 import '../mcp/mcp_provider.dart';
+import '../modes/mode_models.dart';
+import '../modes/mode_provider.dart';
 import '../skills/skill_provider.dart';
 import '../widgets/agent_process_card.dart';
 import '../widgets/ai_canvas_sheet.dart';
@@ -66,6 +68,9 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   /// AI 页左侧半屏文件面板。
   bool _filePanelOpen = false;
 
+  /// 输入框打 `/` 后正在选模式的关键字；空 = 不显示模式选择条。
+  String _modePickerKeyword = '';
+
   static const _filePanelFractionKey = 'ai_file_panel_fraction_v1';
 
   /// 面板宽度占屏幕比例，默认 2/3；可拖动右侧小白条在 0.4~0.95 间调整。
@@ -77,6 +82,25 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
 
   void _openFilePanel() => setState(() => _filePanelOpen = true);
   void _closeFilePanel() => setState(() => _filePanelOpen = false);
+
+  void _onInputChanged(String text) {
+    final trimmed = text.trimLeft();
+    // 只在输入框以 `/` 开头且还没打空格时弹模式选择条。
+    if (trimmed.startsWith('/') && !trimmed.contains(RegExp(r'\s'))) {
+      final key = trimmed.substring(1).trim();
+      if (_modePickerKeyword != key) {
+        setState(() => _modePickerKeyword = key);
+      }
+    } else if (_modePickerKeyword.isNotEmpty) {
+      setState(() => _modePickerKeyword = '');
+    }
+  }
+
+  void _selectMode(AiMode mode) {
+    ref.read(chatProvider.notifier).addPendingMode(mode.id);
+    _controller.clear();
+    setState(() => _modePickerKeyword = '');
+  }
 
   Future<void> _loadFilePanelFraction() async {
     try {
@@ -262,6 +286,83 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
       SnackBar(
         content: Text('已附上 $label'),
         duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  /// 已经挂载的模式标签 chips，点 x 取消。
+  Widget _buildPendingModeChips(ChatState state) {
+    final scheme = Theme.of(context).colorScheme;
+    final modes = ref.watch(modeProvider);
+    final modeById = {for (final m in modes.items) m.id: m};
+    final picked = [
+      for (final id in state.pendingModeIds)
+        if (modeById[id] != null) modeById[id]!,
+    ];
+    if (picked.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final m in picked)
+              InputChip(
+                visualDensity: VisualDensity.compact,
+                avatar: Icon(Icons.tune, size: 14, color: scheme.primary),
+                label:
+                    Text('#${m.name}', style: const TextStyle(fontSize: 11.5)),
+                onDeleted: () =>
+                    ref.read(chatProvider.notifier).removePendingMode(m.id),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 输入框打 `/` 后弹出的模式选择条：点标签直接挂载并清空输入框。
+  Widget _buildModePicker() {
+    final scheme = Theme.of(context).colorScheme;
+    final notifier = ref.read(modeProvider.notifier);
+    final modes = notifier.search(_modePickerKeyword);
+    if (modes.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(14, 0, 14, 4),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            _modePickerKeyword.isEmpty
+                ? '没有模式，去「管理 → 模式库」新建一个'
+                : '没有匹配「$_modePickerKeyword」的模式',
+            style: TextStyle(
+              fontSize: 11.5,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final m in modes)
+              ActionChip(
+                visualDensity: VisualDensity.compact,
+                avatar: Icon(Icons.tune, size: 14, color: scheme.primary),
+                label:
+                    Text('#${m.name}', style: const TextStyle(fontSize: 11.5)),
+                onPressed: () => _selectMode(m),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -1203,6 +1304,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                     images: state.pendingImages,
                     onRemove: notifier.removePendingImage,
                   ),
+                  // 模式库标签条：发送时这些模式内容会注入本次提示词。
+                  if (state.pendingModeIds.isNotEmpty)
+                    _buildPendingModeChips(state),
+                  // 输入框打 / 后弹出的模式选择条。
+                  if (_modePickerKeyword.isNotEmpty) _buildModePicker(),
                   // 附件条。用的是悬浮窗那份 chips：两边共享同一个会话，
                   // 附件当然也得是同一份，否则在这里加的附件发出去不带上。
                   if (chips.isNotEmpty)
@@ -1246,6 +1352,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                     child: AiComposer(
                       state: state,
                       controller: _controller,
+                      onChanged: _onInputChanged,
                       onSend: _send,
                       onStop: notifier.stopAgent,
                       onModelTap: () =>

@@ -5,6 +5,7 @@ import '../mcp/mcp_models.dart';
 import '../mcp/mcp_provider.dart';
 import '../memory/memory_models.dart';
 import '../memory/memory_provider.dart';
+import '../modes/mode_provider.dart';
 import '../skills/skill_provider.dart';
 import '../skills/skill_models.dart';
 import 'external_tool.dart';
@@ -24,9 +25,11 @@ class MetaTools {
     required McpNotifier mcp,
     required McpState mcpState,
     required List<AiSkill> skillList,
+    ModeNotifier? mode,
   }) {
     return [
       ..._memoryTools(memory),
+      if (mode != null) ..._modeTools(mode),
       ..._skillTools(skills, skillList),
       ..._mcpTools(mcp, mcpState),
       ..._knowledgeTools(),
@@ -363,6 +366,144 @@ class MetaTools {
               '- ${d.title}｜${d.tags.isEmpty ? '（无标签）' : d.tags.join('/')}｜${d.snippet}',
             '需要全文用 kb_read，路径见 kb_search / kb_list。',
           ].join('\n');
+        },
+      ),
+    ];
+  }
+
+  // ---------------------------------------------------------------- 模式库
+
+  static List<ExternalTool> _modeTools(ModeNotifier mode) {
+    return [
+      ExternalTool(
+        name: 'mode_list',
+        description: '列出模式库里的所有“编辑/回答模式”。'
+            '模式是用户定义的一组规则：名字（标签）+ 具体步骤内容。'
+            'AI 在动手前如果发现用户要的做事方式很固定，可以主动问用户要不要把这种'
+            '方式存成模式，之后用户输入框打 `/标签` 就能一键挂载。',
+        parameters: const {'type': 'object', 'properties': {}, 'required': []},
+        origin: '模式库',
+        invoke: (_) async {
+          final items = mode.list(onlyEnabled: false);
+          if (items.isEmpty) return '模式库还是空的。';
+          return items
+              .map((m) => '- ${m.name}${m.enabled ? '' : '（已停用）'}'
+                  '：${m.content.replaceAll(RegExp(r'\s+'), ' ')}')
+              .join('\n');
+        },
+      ),
+      ExternalTool(
+        name: 'mode_read',
+        description: '读取一个模式的完整内容。根据名字或 id 查；'
+            '查到后如果要建议用户使用，直接告诉用户“在输入框打 /模式名 挂载”。',
+        parameters: {
+          'type': 'object',
+          'properties': {
+            'name': {
+              'type': 'string',
+              'description': '模式标签名，例如 规划模式',
+            },
+            'id': {'type': 'string', 'description': '模式 id（可选）'},
+          },
+        },
+        origin: '模式库',
+        invoke: (args) async {
+          final name = args['name']?.toString().trim() ?? '';
+          final id = args['id']?.toString().trim() ?? '';
+          final items = mode.list(onlyEnabled: false);
+          final matched = items.where((m) =>
+              (id.isNotEmpty && m.id == id) ||
+              (name.isNotEmpty && m.name == name));
+          if (matched.isEmpty) {
+            return '没有找到模式${name.isNotEmpty ? '「$name」' : ''}。';
+          }
+          final m = matched.first;
+          return '模式：${m.name}（id=${m.id}）\n'
+              '${m.enabled ? '启用' : '已停用'}\n'
+              '内容：\n${m.content}';
+        },
+      ),
+      ExternalTool(
+        name: 'mode_create',
+        description: '新建一个模式。只有用户明确要求、或用户同意把某种固定做法存成模式时才创建；'
+            '创建后告诉用户用输入框 `/标签名` 就能挂载。',
+        parameters: {
+          'type': 'object',
+          'properties': {
+            'name': {
+              'type': 'string',
+              'description': '模式标签名，唯一可读，例如 规划模式',
+            },
+            'content': {
+              'type': 'string',
+              'description': '模式的具体指令/步骤：AI 挂载这个模式后必须照做的内容',
+            },
+          },
+          'required': ['name', 'content'],
+        },
+        origin: '模式库',
+        isWrite: true,
+        invoke: (args) async {
+          final name = args['name']?.toString().trim() ?? '';
+          final content = args['content']?.toString().trim() ?? '';
+          if (name.isEmpty || content.isEmpty) {
+            return '模式和内容都不能为空。';
+          }
+          final saved = await mode.create(name: name, content: content);
+          return '已创建模式「${saved.name}」（id=${saved.id}）。'
+              '用户输入 `/${saved.name}` 即可挂载。';
+        },
+      ),
+      ExternalTool(
+        name: 'mode_update',
+        description: '更新一个已有模式的名称或内容。改模式前先 mode_list / mode_read 找到原 id，'
+            '用这个工具原地更新，不要重复新建。',
+        parameters: {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '模式 id'},
+            'name': {'type': 'string', 'description': '新标签名（可选）'},
+            'content': {'type': 'string', 'description': '新内容（可选）'},
+            'enabled': {
+              'type': 'boolean',
+              'description': '启用/停用；停用后不会出现在 `/` 列表里',
+            },
+          },
+          'required': ['id'],
+        },
+        origin: '模式库',
+        isWrite: true,
+        invoke: (args) async {
+          final id = args['id']?.toString().trim() ?? '';
+          if (id.isEmpty) return '缺少模式 id。';
+          final ok = await mode.update(
+            id,
+            name: args['name']?.toString(),
+            content: args['content']?.toString(),
+            enabled: args['enabled'] as bool?,
+          );
+          return ok ? '模式 $id 已更新。' : '找不到模式 $id。';
+        },
+      ),
+      ExternalTool(
+        name: 'mode_delete',
+        description: '删除一个模式。只有用户明确要求删除时才执行。',
+        parameters: {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '模式 id'},
+            'name': {'type': 'string', 'description': '模式名（可选，用名字删除）'},
+          },
+          'required': ['id'],
+        },
+        origin: '模式库',
+        isWrite: true,
+        danger: true,
+        invoke: (args) async {
+          final id = args['id']?.toString().trim() ?? '';
+          if (id.isEmpty) return '缺少模式 id。';
+          final ok = await mode.remove(id);
+          return ok ? '已删除模式 $id。' : '找不到模式 $id。';
         },
       ),
     ];
