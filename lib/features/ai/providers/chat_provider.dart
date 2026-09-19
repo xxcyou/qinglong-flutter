@@ -1511,12 +1511,10 @@ class ChatNotifier extends Notifier<ChatState> {
         ),
       );
       clearPendingImages();
-      clearPendingModes();
       return;
     }
     // 附件/模式已经交给 _sendNow 了，这里立刻清空待发条，不要等整轮跑完才消失。
     clearPendingImages();
-    clearPendingModes();
     // 上一次是被打断的：把中断前已执行的工具链直接带过去续轮，而不是开全新一轮。
     await _sendNow(
       finalText,
@@ -1539,7 +1537,6 @@ class ChatNotifier extends Notifier<ChatState> {
     final modeText = _composeModePrompt();
     final finalText = modeText.isEmpty ? value : '$modeText\n\n${value.trim()}';
     if (finalText.isEmpty) return;
-    clearPendingModes();
     state = state.copyWith(
       queue: [
         ...state.queue,
@@ -1559,7 +1556,6 @@ class ChatNotifier extends Notifier<ChatState> {
     final modeText = _composeModePrompt();
     final finalText = modeText.isEmpty ? value : '$modeText\n\n${value.trim()}';
     if (finalText.isEmpty && images.isEmpty) return;
-    clearPendingModes();
     state = state.copyWith(
       queue: [
         ...state.queue,
