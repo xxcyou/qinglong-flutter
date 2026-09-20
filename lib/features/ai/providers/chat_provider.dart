@@ -3375,6 +3375,11 @@ class ChatNotifier extends Notifier<ChatState> {
     final effectiveMainModel =
         state.selectedModel.isNotEmpty ? state.selectedModel : config.model;
     final mainCaps = mainProvider.capabilitiesFor(effectiveMainModel);
+    Logger.d(
+      'ai',
+      '_runAgent model=$effectiveMainModel supportsImage=${mainCaps.supportsImage} '
+          'selected=${state.selectedModel.isNotEmpty ? state.selectedModel : '(empty)'}',
+    );
     OutputPluginService.instance.beginRun();
     await _ensureOutputPlugin(activeProviderId);
     final registry = QlToolRegistry(
@@ -3386,6 +3391,11 @@ class ChatNotifier extends Notifier<ChatState> {
       resumeEvents: run?.resumeEvents,
       // 主模型支持图片时直接把图发过去；不支持时用文字标注 + image_recognize 工具。
       includeImages: mainCaps.supportsImage,
+    );
+    Logger.d(
+      'ai',
+      '_history imageMessages=${history.where((m) => m.images.isNotEmpty).length} '
+          'includeImages=${mainCaps.supportsImage}',
     );
     final token = run?.cancelToken ?? AgentCancelToken();
     run?.cancelToken = token;
@@ -4051,7 +4061,8 @@ class ChatNotifier extends Notifier<ChatState> {
             '用法：先 browser_open 打开目标页，再调用本工具；'
             '即使悬浮浏览器当前隐藏，也会直接截取它当前渲染的画面，不会强制把浏览器弹出来。'
             '它只负责生成截图文件，不会直接显示到聊天。'
-            '要把截图显示给用户并让 AI 看图，请随后调用 show_image 传返回的 path/scope；'
+            '支持图片的主模型会自动收到这张截图直接看图；'
+            '要把截图显示在聊天里给用户看，请随后调用 show_image 传返回的 path/scope；'
             '不支持图片的主模型再用 image_recognize 识别。',
         parameters: const {
           'type': 'object',
@@ -4088,13 +4099,17 @@ class ChatNotifier extends Notifier<ChatState> {
             return '已截取内置浏览器画面。\n'
                 'path: ${img.path}\nscope: app'
                 '${label == null ? '' : '\n用途：$label'}\n'
-                '需要显示到聊天：调用 show_image 传上面的 path/scope。'
-                '需要识别：调用 image_recognize 传同样的 path/scope。';
+                '支持图片的主模型已自动收到这张截图；'
+                '要显示到聊天：调用 show_image 传上面的 path/scope。'
+                '不支持图片：调用 image_recognize 传同样的 path/scope。';
           } catch (e) {
             _lastToolScreenshot = null;
             return '浏览器截图失败：$e';
           }
         },
+        attachments: (args) async => [
+          if (_lastToolScreenshot != null) _lastToolScreenshot!,
+        ],
       ),
       ExternalTool(
         name: 'show_image',
