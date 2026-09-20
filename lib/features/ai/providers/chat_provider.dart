@@ -3368,7 +3368,12 @@ class ChatNotifier extends Notifier<ChatState> {
     final config = await ref.read(llmConfigProvider.future);
     final activeProviderId = ref.read(llmRegistryProvider).active.id;
     final mainProvider = ref.read(llmRegistryProvider).active;
-    final mainCaps = mainProvider.capabilitiesFor(config.model);
+    // 能力判断必须用“界面上真正选中的主模型”，不能用提供商默认模型。
+    // 否则用户在主模型选了支持图片的模型，下面却仍按不支持图来发指令，
+    // 导致 AI 跑去调图片识别模型。
+    final effectiveMainModel =
+        state.selectedModel.isNotEmpty ? state.selectedModel : config.model;
+    final mainCaps = mainProvider.capabilitiesFor(effectiveMainModel);
     OutputPluginService.instance.beginRun();
     await _ensureOutputPlugin(activeProviderId);
     final registry = QlToolRegistry(
