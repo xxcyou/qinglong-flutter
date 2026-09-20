@@ -63,6 +63,15 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   int? _followUpIndex;
   final _followUpController = TextEditingController();
 
+  /// 修改模式：长按“修改”后进入，不立刻撤回，等用户发送修改或取消。
+  bool _editMode = false;
+
+  /// 被修改的用户消息下标。
+  int? _editIndex;
+
+  /// 进入修改前的输入框内容，取消修改时恢复原样。
+  String _preEditInput = '';
+
   /// 是否跟着最新内容走。
   ///
   /// 默认跟随：回复一边流一边往下滚，用户不用一直手动拉到底。
@@ -223,6 +232,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   }
 
   void _send() {
+    // 修改模式下发送 = 应用修改并重新生成；不能再当作普通新消息发。
+    if (_editMode) {
+      _applyEditAndSend();
+      return;
+    }
     final dock = ref.read(aiDockProvider.notifier);
     // 附件（本地文件、页面自动带上来的日志）要拼进提问里，
     // 和悬浮窗走同一个 composePrompt，两边行为一致。
@@ -267,6 +281,140 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     _closeFollowUp();
     _pinned = true;
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  void _startEdit(int index, AiChatMessage message) {
+    final text = message.displayContent.isNotEmpty
+        ? message.displayContent
+        : message.content;
+    _preEditInput = _controller.text;
+    _editIndex = index;
+    _editMode = true;
+    _controller.text = text;
+    _controller.selection = TextSelection.collapsed(offset: text.length);
+    setState(() {});
+    _pinned = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToIndex(index));
+  }
+
+  void _cancelEdit() {
+    if (!_editMode) return;
+    _editMode = false;
+    _editIndex = null;
+    _controller.text = _preEditInput;
+    _controller.selection =
+        TextSelection.collapsed(offset: _preEditInput.length);
+    _preEditInput = '';
+    setState(() {});
+  }
+
+  /// 修改模式下点发送/应用：撤回到被修改消息之前，再把改好的内容作为新消息发出。
+  Future<void> _applyEditAndSend() async {
+    final idx = _editIndex;
+    if (!_editMode || idx == null) {
+      _send();
+      return;
+    }
+    final newText = _controller.text;
+    final notifier = ref.read(chatProvider.notifier);
+    notifier.rollbackTo(idx);
+    _editMode = false;
+    _editIndex = null;
+    _preEditInput = '';
+    if (newText.trim().isEmpty &&
+        ref.read(chatProvider).pendingImages.isEmpty) {
+      setState(() {});
+      return;
+    }
+    await notifier.send(newText);
+    _controller.clear();
+    setState(() {});
+    _pinned = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  /// 打开大屏输入编辑器（普通输入和修改模式都能用）。
+  void _openExpandedEditor() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(sheetContext).viewInsets.bottom,
+        ),
+        child: SafeArea(
+          child: Container(
+            height: MediaQuery.sizeOf(sheetContext).height * 0.72,
+            margin: const EdgeInsets.fromLTRB(8, 40, 8, 8),
+            decoration: BoxDecoration(
+              color: Theme.of(sheetContext).colorScheme.surface,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+                  child: Row(
+                    children: [
+                      Text(
+                        _editMode ? '修改消息 · 大屏编辑' : '大屏输入',
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w700),
+                      ),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: () => Navigator.of(sheetContext).pop(),
+                        child: const Text('取消'),
+                      ),
+                      FilledButton(
+                        onPressed: () => Navigator.of(sheetContext).pop(),
+                        child: const Text('完成'),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    child: TextField(
+                      controller: _controller,
+                      maxLines: null,
+                      expands: true,
+                      textAlignVertical: TextAlignVertical.top,
+                      autofocus: true,
+                      decoration: InputDecoration(
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        hintText: '在这里编辑…',
+                      ),
+                    ),
+                  ),
+                ),
+                if (_editMode)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        FilledButton.icon(
+                          onPressed: () {
+                            Navigator.of(sheetContext).pop();
+                            _send();
+                          },
+                          icon: const Icon(Icons.send_rounded, size: 16),
+                          label: const Text('应用修改并发送'),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   void _scrollToIndex(int index) {
@@ -315,17 +463,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
         ListTile(
           leading: const Icon(Icons.edit_rounded),
           title: const Text('修改'),
-          subtitle: const Text('撤回后把原文放进输入框，改完再发送'),
+          subtitle: const Text('进入修改模式，下面内容会冻结变淡'),
           onTap: () {
             Navigator.of(context).pop();
-            final original = notifier.rollbackTo(index);
-            if (original.trim().isNotEmpty) {
-              _controller.text = original;
-              _controller.selection =
-                  TextSelection.collapsed(offset: original.length);
-            }
-            _pinned = true;
-            _followTail();
+            _startEdit(index, message);
           },
         ),
         ListTile(
@@ -1255,8 +1396,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                             builder: (_) => const McpServerPage()),
                       );
                     case 'new':
+                      if (_editMode) _cancelEdit();
                       notifier.createSession();
                     case 'clear':
+                      if (_editMode) _cancelEdit();
                       notifier.clear();
                   }
                 },
@@ -1355,43 +1498,54 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                 itemBuilder: (context, index) {
                                   if (index < state.messages.length) {
                                     final message = state.messages[index];
+                                    final frozenBelow = _editMode &&
+                                        _editIndex != null &&
+                                        index > _editIndex!;
+                                    final bubbleChild = GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onLongPress: state.isLoading
+                                          ? null
+                                          : () => _showMessageActions(
+                                              index, message),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          _MessageBubble(
+                                            message: message,
+                                            anchorIndex: index,
+                                            onResend: state.isLoading
+                                                ? null
+                                                : () =>
+                                                    notifier.resendAt(index),
+                                            onRollback: state.isLoading
+                                                ? null
+                                                : () => _rollbackTo(index),
+                                            onSuggestionTap: (text) {
+                                              _controller.text = text;
+                                              _send();
+                                            },
+                                          ),
+                                          if (_followUpIndex == index)
+                                            _FollowUpComposer(
+                                              controller: _followUpController,
+                                              message: message,
+                                              onClose: _closeFollowUp,
+                                              onSend: _sendFollowUp,
+                                            ),
+                                        ],
+                                      ),
+                                    );
                                     return RepaintBoundary(
                                       key: _bubbleKeyAt(index),
-                                      child: GestureDetector(
-                                        behavior: HitTestBehavior.opaque,
-                                        onLongPress: state.isLoading
-                                            ? null
-                                            : () => _showMessageActions(
-                                                index, message),
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            _MessageBubble(
-                                              message: message,
-                                              anchorIndex: index,
-                                              onResend: state.isLoading
-                                                  ? null
-                                                  : () =>
-                                                      notifier.resendAt(index),
-                                              onRollback: state.isLoading
-                                                  ? null
-                                                  : () => _rollbackTo(index),
-                                              onSuggestionTap: (text) {
-                                                _controller.text = text;
-                                                _send();
-                                              },
-                                            ),
-                                            if (_followUpIndex == index)
-                                              _FollowUpComposer(
-                                                controller: _followUpController,
-                                                message: message,
-                                                onClose: _closeFollowUp,
-                                                onSend: _sendFollowUp,
+                                      child: frozenBelow
+                                          ? IgnorePointer(
+                                              child: Opacity(
+                                                opacity: 0.38,
+                                                child: bubbleChild,
                                               ),
-                                          ],
-                                        ),
-                                      ),
+                                            )
+                                          : bubbleChild,
                                     );
                                   }
                                   var slot = index - state.messages.length;
@@ -1400,12 +1554,25 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                       // 下面紧跟过程卡（它只有 bottom margin），
                                       // 所以这里必须自己留下边距，否则两张卡贴在一起。
                                       return RepaintBoundary(
-                                        child: TaskPlanCard(
-                                          plan: state.livePlan,
-                                          margin: const EdgeInsets.only(
-                                            bottom: 8,
-                                          ),
-                                        ),
+                                        child: _editMode
+                                            ? IgnorePointer(
+                                                child: Opacity(
+                                                  opacity: 0.38,
+                                                  child: TaskPlanCard(
+                                                    plan: state.livePlan,
+                                                    margin:
+                                                        const EdgeInsets.only(
+                                                      bottom: 8,
+                                                    ),
+                                                  ),
+                                                ),
+                                              )
+                                            : TaskPlanCard(
+                                                plan: state.livePlan,
+                                                margin: const EdgeInsets.only(
+                                                  bottom: 8,
+                                                ),
+                                              ),
                                       );
                                     }
                                     slot -= 1;
@@ -1413,47 +1580,103 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                   if (hasLive) {
                                     if (slot == 0) {
                                       return RepaintBoundary(
-                                        child: AgentProcessCard(
-                                          events: state.liveAgentEvents,
-                                          running: state.isLoading,
-                                          modeLabels: state.liveModeLabels,
-                                          initiallyExpanded: state.isLoading ||
-                                              state.liveAgentEvents.any(
-                                                (e) =>
-                                                    e.kind ==
-                                                        AgentEventKind
-                                                            .toolImage &&
-                                                    e.imageDataUri != null,
+                                        child: _editMode
+                                            ? IgnorePointer(
+                                                child: Opacity(
+                                                  opacity: 0.38,
+                                                  child: AgentProcessCard(
+                                                    events:
+                                                        state.liveAgentEvents,
+                                                    running: state.isLoading,
+                                                    modeLabels:
+                                                        state.liveModeLabels,
+                                                    initiallyExpanded: state
+                                                            .isLoading ||
+                                                        state.liveAgentEvents
+                                                            .any(
+                                                          (e) =>
+                                                              e.kind ==
+                                                                  AgentEventKind
+                                                                      .toolImage &&
+                                                              e.imageDataUri !=
+                                                                  null,
+                                                        ),
+                                                    totalTokens:
+                                                        state.lastTokens,
+                                                    liveSubagentReasoning: state
+                                                        .liveSubagentReasoning,
+                                                    liveSubagentContent: state
+                                                        .liveSubagentContent,
+                                                    liveSubagentTool:
+                                                        state.liveSubagentTool,
+                                                    liveSubagentReasoningChars:
+                                                        state
+                                                            .liveSubagentReasoningChars,
+                                                    liveSubagentContentChars: state
+                                                        .liveSubagentContentChars,
+                                                  ),
+                                                ),
+                                              )
+                                            : AgentProcessCard(
+                                                events: state.liveAgentEvents,
+                                                running: state.isLoading,
+                                                modeLabels:
+                                                    state.liveModeLabels,
+                                                initiallyExpanded: state
+                                                        .isLoading ||
+                                                    state.liveAgentEvents.any(
+                                                      (e) =>
+                                                          e.kind ==
+                                                              AgentEventKind
+                                                                  .toolImage &&
+                                                          e.imageDataUri !=
+                                                              null,
+                                                    ),
+                                                totalTokens: state.lastTokens,
+                                                liveSubagentReasoning:
+                                                    state.liveSubagentReasoning,
+                                                liveSubagentContent:
+                                                    state.liveSubagentContent,
+                                                liveSubagentTool:
+                                                    state.liveSubagentTool,
+                                                liveSubagentReasoningChars: state
+                                                    .liveSubagentReasoningChars,
+                                                liveSubagentContentChars: state
+                                                    .liveSubagentContentChars,
                                               ),
-                                          totalTokens: state.lastTokens,
-                                          liveSubagentReasoning:
-                                              state.liveSubagentReasoning,
-                                          liveSubagentContent:
-                                              state.liveSubagentContent,
-                                          liveSubagentTool:
-                                              state.liveSubagentTool,
-                                          liveSubagentReasoningChars:
-                                              state.liveSubagentReasoningChars,
-                                          liveSubagentContentChars:
-                                              state.liveSubagentContentChars,
-                                        ),
                                       );
                                     }
                                     slot -= 1;
                                   }
                                   if (hasStream && slot == 0) {
+                                    final streamCard = AgentStreamCard(
+                                      reasoning: state.liveReasoning,
+                                      content: state.liveContent,
+                                      reasoningChars: state.liveReasoningChars,
+                                      contentChars: state.liveContentChars,
+                                      tool: state.liveTool,
+                                    );
                                     return RepaintBoundary(
-                                      child: AgentStreamCard(
-                                        reasoning: state.liveReasoning,
-                                        content: state.liveContent,
-                                        reasoningChars:
-                                            state.liveReasoningChars,
-                                        contentChars: state.liveContentChars,
-                                        tool: state.liveTool,
-                                      ),
+                                      child: _editMode
+                                          ? IgnorePointer(
+                                              child: Opacity(
+                                                opacity: 0.38,
+                                                child: streamCard,
+                                              ),
+                                            )
+                                          : streamCard,
                                     );
                                   }
-                                  return _buildTail(context, state);
+                                  return RepaintBoundary(
+                                    child: _editMode
+                                        ? IgnorePointer(
+                                            child: Opacity(
+                                              opacity: 0.38,
+                                              child: _buildTail(context, state),
+                                            ),
+                                          )
+                                        : _buildTail(context, state),
+                                  );
                                 },
                               );
                             },
@@ -1627,21 +1850,32 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                     padding: EdgeInsets.only(
                       bottom: MediaQuery.paddingOf(context).bottom * 0.25,
                     ),
-                    child: AiComposer(
-                      state: state,
-                      controller: _controller,
-                      onChanged: _onInputChanged,
-                      onSend: _send,
-                      onStop: notifier.stopAgent,
-                      onModelTap: () =>
-                          AiControlSheets.showModelPicker(context),
-                      onStrengthTap: () =>
-                          AiControlSheets.showStrength(context),
-                      onContextTap: () =>
-                          AiControlSheets.showContext(context, ref),
-                      onApprovalTap: () =>
-                          AiControlSheets.showApproval(context),
-                      onAttach: _pickFile,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_editMode)
+                          _EditModeStatusBar(
+                            onCancel: _cancelEdit,
+                            onApply: _send,
+                          ),
+                        AiComposer(
+                          state: state,
+                          controller: _controller,
+                          onChanged: _onInputChanged,
+                          onSend: _send,
+                          onStop: notifier.stopAgent,
+                          onModelTap: () =>
+                              AiControlSheets.showModelPicker(context),
+                          onStrengthTap: () =>
+                              AiControlSheets.showStrength(context),
+                          onContextTap: () =>
+                              AiControlSheets.showContext(context, ref),
+                          onApprovalTap: () =>
+                              AiControlSheets.showApproval(context),
+                          onAttach: _pickFile,
+                          onExpand: _openExpandedEditor,
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -1948,6 +2182,65 @@ class _WelcomeView extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// 修改模式顶在输入框上方的状态条：提示下面内容已冻结，可取消或应用。
+class _EditModeStatusBar extends StatelessWidget {
+  const _EditModeStatusBar({
+    required this.onCancel,
+    required this.onApply,
+  });
+
+  final VoidCallback onCancel;
+  final VoidCallback onApply;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final tint = scheme.tertiaryContainer;
+    final fg = scheme.onTertiaryContainer;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: tint.withValues(alpha: 0.9),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: scheme.tertiary.withValues(alpha: 0.6)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.lock_clock_rounded, size: 16, color: fg),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '修改中 · 下面内容已冻结变淡，发送修改后才会重新生成',
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: fg,
+              ),
+            ),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              foregroundColor: fg,
+            ),
+            onPressed: onCancel,
+            child: const Text('取消修改'),
+          ),
+          FilledButton.tonal(
+            style: FilledButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+            ),
+            onPressed: onApply,
+            child: const Text('应用修改'),
+          ),
+        ],
+      ),
     );
   }
 }

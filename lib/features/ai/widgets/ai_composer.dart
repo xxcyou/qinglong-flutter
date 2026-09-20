@@ -24,6 +24,7 @@ class AiComposer extends StatelessWidget {
     this.onChanged,
     this.onPaste,
     this.onAttach,
+    this.onExpand,
     this.compact = false,
     this.showControls = true,
     this.margin = const EdgeInsets.fromLTRB(10, 0, 10, 8),
@@ -46,6 +47,9 @@ class AiComposer extends StatelessWidget {
 
   /// 加附件（挑一个本地文件带进提问）。null = 不显示这颗按钮。
   final Future<void> Function()? onAttach;
+
+  /// 打开大屏输入编辑器。null = 不显示展开按钮。
+  final VoidCallback? onExpand;
 
   /// 是否显示模型/策略/强度/上下文那一行。
   /// 悬浮窗里空间宝贵，用户只要"输入 + 发送 + 粘贴"，所以那里关掉。
@@ -141,6 +145,17 @@ class AiComposer extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 4),
+                if (onExpand != null)
+                  IconButton(
+                    tooltip: '展开输入框',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onExpand,
+                    icon: Icon(
+                      Icons.open_in_full_rounded,
+                      size: compact ? 18 : 20,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
                 // 跑的时候「发送」变成「排队」，另给一颗停止键；
                 // 以前只有停止键，等于跑起来就不能再输入了。
                 if (running)
