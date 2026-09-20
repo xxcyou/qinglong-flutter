@@ -2034,19 +2034,10 @@ class ChatNotifier extends Notifier<ChatState> {
       final messages = [...current.messages];
       final lastUser = messages.lastIndexWhere((m) => m.isUser);
       if (lastUser >= 0) {
-        var sendError = _friendlyError(e);
-        final hasImageInHistory =
-            current.messages.any((m) => m.images.isNotEmpty);
-        if (hasImageInHistory) {
-          final registry = ref.read(llmRegistryProvider);
-          final visionModel = registry.visionModel.trim();
-          final visionProvider = registry.byId(registry.visionProviderId);
-          if (visionModel.isNotEmpty && !sendError.contains(visionModel)) {
-            final providerLabel =
-                visionProvider?.label ?? registry.visionProviderId;
-            sendError = '图片识别模型「$providerLabel · $visionModel」调用失败：$sendError';
-          }
-        }
+        // 不要因为“这条消息带图片”就把主模型的错误硬说成图片识别模型错误。
+        // 支持图片的主模型 503/超时就是主模型的问题；image_recognize 的失败
+        // 在工具内部已经转成文字返回，不会走到这里。
+        final sendError = _friendlyError(e);
         messages[lastUser] = messages[lastUser].copyWith(
           sendError: sendError,
           // 失败前已经跑过的工具照样留着：多轮任务中途断线时，
