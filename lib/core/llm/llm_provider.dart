@@ -152,8 +152,43 @@ class LlmProviderConfig {
   bool get isConfigured => baseUrl.trim().isNotEmpty;
 
   /// 某个模型的能力开关；没单独配过就按默认值。
-  ModelCapabilities capabilitiesFor(String model) =>
-      modelCapabilities[model] ?? const ModelCapabilities();
+  ///
+  /// 模型名明显是视觉模型（vision / vl / gpt-4o 等）且用户没手动关过时，
+  /// 自动把 supportsImage 设为 true，避免“模型名明明带 vision，却还去走
+  /// 图片识别模型”的坑。
+  ModelCapabilities capabilitiesFor(String model) {
+    final stored = modelCapabilities[model];
+    if (stored != null) return stored;
+    if (_looksVisionModel(model)) {
+      return const ModelCapabilities(supportsImage: true);
+    }
+    return const ModelCapabilities();
+  }
+
+  /// 根据模型名猜是否支持图片。用户手动配置过时以配置为准，这里只做兜底。
+  static bool _looksVisionModel(String model) {
+    final m = model.toLowerCase().trim();
+    if (m.isEmpty) return false;
+    if (m.contains('vision') ||
+        m.contains('visual') ||
+        m.contains('multimodal') ||
+        m.contains('omni') ||
+        m.contains('llava') ||
+        m.contains('moondream') ||
+        m.contains('internvl') ||
+        m.contains('minicpm-v') ||
+        m.contains('phi-3-vision') ||
+        m.contains('yi-vision')) {
+      return true;
+    }
+    // 常见命名的视觉模型：gpt-4o / gpt-4.1 / gemini / claude-3 / qwen-vl / glm-4v。
+    if (RegExp(
+      r'(gpt-4o|gpt-4\.1|gemini|claude-3|qwen.*vl|qwen2[.-]*vl|glm-4v|glm-4\.?1v|step-1v|hunyuan.*vision|doubao.*vision)',
+    ).hasMatch(m)) {
+      return true;
+    }
+    return false;
+  }
 
   /// 缓存 + 手填，去重后排序：界面上就按这个列。
   List<String> get allModels {
