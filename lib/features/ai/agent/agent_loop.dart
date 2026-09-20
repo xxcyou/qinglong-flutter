@@ -889,6 +889,37 @@ class AgentLoop {
     },
   );
 
+  /// 任务清单删除：删除整步或某个二级子任务。
+  static const _taskDeleteSpec = LlmFunctionSpec(
+    name: 'task_delete',
+    description: '删除任务清单里的某一步（传 index）或某个二级子任务（传 index+subindex）。'
+        '用于清单里出现不再需要/误加的步骤，删掉后自动重编序号。'
+        '不要用 task_plan 整份重写来间接删步。',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'index': {'type': 'integer', 'description': '顶层第几步（从 1 开始）'},
+        'subindex': {
+          'type': 'integer',
+          'description': '可选。该步骤下第几个二级子任务（从 1 开始）；不传=删除整个顶层步骤',
+        },
+      },
+      'required': ['index'],
+    },
+  );
+
+  /// 任务清单清空：把这轮清单全部清掉。
+  static const _taskClearSpec = LlmFunctionSpec(
+    name: 'task_clear',
+    description: '清空当前任务清单（包括目标与所有步骤）。'
+        '适合用户明确说“不要任务清单了/重来一份”时使用；'
+        '如果只是想删其中一步，用 task_delete。',
+    parameters: {
+      'type': 'object',
+      'properties': {},
+    },
+  );
+
   /// 给现有步骤挂二级子任务。
   static const _taskAddSubtaskSpec = LlmFunctionSpec(
     name: 'task_add_subtask',
@@ -1202,6 +1233,8 @@ class AgentLoop {
       if (enableTaskPlan) _taskPlanSpec.name,
       if (enableTaskPlan) _taskStepSpec.name,
       if (enableTaskPlan) _taskAppendSpec.name,
+      if (enableTaskPlan) _taskDeleteSpec.name,
+      if (enableTaskPlan) _taskClearSpec.name,
       if (enableTaskPlan) _taskAddSubtaskSpec.name,
       if (enableTaskPlan) _taskSubstepSpec.name,
       _canvasSpec.name,
@@ -1403,6 +1436,8 @@ class AgentLoop {
                     if (enableTaskPlan) _taskPlanSpec,
                     if (enableTaskPlan) _taskStepSpec,
                     if (enableTaskPlan) _taskAppendSpec,
+                    if (enableTaskPlan) _taskDeleteSpec,
+                    if (enableTaskPlan) _taskClearSpec,
                     if (enableTaskPlan) _taskAddSubtaskSpec,
                     if (enableTaskPlan) _taskSubstepSpec,
                     _canvasSpec,
@@ -2015,6 +2050,100 @@ class AgentLoop {
             );
             continue;
           }
+          if (call.name == _taskDeleteSpec.name) {
+            if (plan.isEmpty) {
+              toolMessages.add(
+                _toolReply(call, '还没有任务清单，先调用 task_plan 建立。'),
+              );
+              continue;
+            }
+            final rawIndex = call.arguments['index'];
+            final index = rawIndex is num
+                ? rawIndex.toInt()
+                : int.tryParse(rawIndex?.toString() ?? '') ?? 0;
+            if (index < 1 || index > plan.items.length) {
+              toolMessages.add(
+                _toolReply(
+                  call,
+                  'index 越界：清单只有 ${plan.items.length} 个顶层步骤。',
+                ),
+              );
+              continue;
+            }
+            final rawSub = call.arguments['subindex'];
+            final subindex = rawSub is num
+                ? rawSub.toInt()
+                : int.tryParse(rawSub?.toString() ?? '');
+            if (subindex == null) {
+              final items = List<AgentSubtask>.from(plan.items)
+                ..removeAt(index - 1);
+              final removed = plan.items[index - 1].title;
+              plan = plan.copyWith(items: _renumberPlanItems(items));
+              toolMessages.add(
+                _toolReply(
+                  call,
+                  plan.isEmpty
+                      ? '已删除第 $index 步「$removed」，任务清单已清空。'
+                      : '已删除第 $index 步「$removed」'
+                          '（原 ${plan.items.length + 1} 步 → 现 ${plan.items.length} 步）。',
+                ),
+              );
+            } else {
+              if (subindex < 1 ||
+                  subindex > plan.items[index - 1].subtasks.length) {
+                toolMessages.add(
+                  _toolReply(
+                    call,
+                    'subindex 越界：第 $index 步只有 '
+                    '${plan.items[index - 1].subtasks.length} 个二级子任务。',
+                  ),
+                );
+                continue;
+              }
+              final items = List<AgentSubtask>.from(plan.items);
+              final parent = items[index - 1];
+              final children = List<AgentSubtask>.from(parent.subtasks)
+                ..removeAt(subindex - 1);
+              items[index - 1] =
+                  parent.copyWith(subtasks: _renumberPlanItems(children));
+              plan = plan.copyWith(items: _renumberPlanItems(items));
+              toolMessages.add(
+                _toolReply(
+                  call,
+                  '已删除第 $index 步的第 $subindex 个二级子任务'
+                  '「${parent.subtasks[subindex - 1].title}」。',
+                ),
+              );
+            }
+            onPlan?.call(plan);
+            emit(
+              AgentEvent(
+                kind: AgentEventKind.taskPlan,
+                message: plan.promptLines(),
+                toolName: call.name,
+                args: call.arguments,
+                turn: turnsUsed,
+              ),
+            );
+            continue;
+          }
+          if (call.name == _taskClearSpec.name) {
+            plan = const AgentTaskPlan();
+            toolMessages.add(
+              _toolReply(call, '已清空任务清单。以后需要再拆任务时重新 task_plan 即可。'),
+            );
+            onPlan?.call(plan);
+            emit(
+              AgentEvent(
+                kind: AgentEventKind.taskPlan,
+                message: plan.promptLines(),
+                toolName: call.name,
+                args: call.arguments,
+                turn: turnsUsed,
+              ),
+            );
+            continue;
+          }
           if (call.name == _taskAddSubtaskSpec.name) {
             if (plan.isEmpty) {
               toolMessages.add(
@@ -2325,6 +2454,8 @@ class AgentLoop {
               call.name == _taskPlanSpec.name ||
               call.name == _taskStepSpec.name ||
               call.name == _taskAppendSpec.name ||
+              call.name == _taskDeleteSpec.name ||
+              call.name == _taskClearSpec.name ||
               call.name == _taskAddSubtaskSpec.name ||
               call.name == _taskSubstepSpec.name ||
               call.name == _canvasSpec.name) {
