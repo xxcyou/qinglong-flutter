@@ -20,6 +20,7 @@ import '../models/ai_message.dart';
 import '../models/ai_plan.dart';
 import '../providers/chat_provider.dart';
 import '../providers/audit_provider.dart';
+import '../knowledge/knowledge_provider.dart';
 import '../../../shared/file_kinds.dart';
 import '../../../shared/glass_scaffold.dart';
 import '../../../shared/local_file_picker.dart';
@@ -57,6 +58,10 @@ class AiChatPage extends ConsumerStatefulWidget {
 class _AiChatPageState extends ConsumerState<AiChatPage> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
+
+  /// 当前正在“追问”的消息下标；null=没有打开的追问输入框。
+  int? _followUpIndex;
+  final _followUpController = TextEditingController();
 
   /// 是否跟着最新内容走。
   ///
@@ -141,6 +146,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
+    _followUpController.addListener(_onFollowUpChanged);
     _loadFilePanelFraction();
     Future.microtask(() async {
       await ref.read(chatProvider.notifier).loadSessions();
@@ -154,6 +160,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   @override
   void dispose() {
     _controller.dispose();
+    _followUpController.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     super.dispose();
@@ -230,6 +237,250 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     _pinned = true;
     ref.read(chatProvider.notifier).send(prompt);
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  void _onFollowUpChanged() {
+    if (_followUpIndex != null) {
+      // 输入时会自动把追问框滚到可见位置。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _followUpIndex != null) _scrollToIndex(_followUpIndex!);
+      });
+    }
+    setState(() {});
+  }
+
+  void _openFollowUp(int index) {
+    _followUpController.clear();
+    setState(() => _followUpIndex = index);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToIndex(index));
+  }
+
+  void _closeFollowUp() {
+    _followUpController.clear();
+    setState(() => _followUpIndex = null);
+  }
+
+  void _sendFollowUp() {
+    final text = _followUpController.text.trim();
+    if (text.isEmpty) return;
+    ref.read(chatProvider.notifier).send(text);
+    _closeFollowUp();
+    _pinned = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  void _scrollToIndex(int index) {
+    if (!mounted || !_scrollController.hasClients) return;
+    final list = _scrollController.position;
+    // 粗略估算：每条消息高度不一，这里直接把目标滚到可视区中央偏上。
+    final rough = index * 96.0;
+    final target = (rough - list.viewportDimension * 0.35).clamp(
+      0.0,
+      list.maxScrollExtent,
+    );
+    _scrollController.animateTo(
+      target,
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+    );
+  }
+
+  /// 长按消息弹出的底部操作面板。
+  void _showMessageActions(int index, AiChatMessage message) {
+    final notifier = ref.read(chatProvider.notifier);
+    final text = message.displayContent.isNotEmpty
+        ? message.displayContent
+        : message.content;
+    final List<Widget> actions = [];
+    void copy() {
+      Clipboard.setData(ClipboardData(text: text));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('已复制'),
+          duration: Duration(milliseconds: 900),
+        ),
+      );
+    }
+
+    if (message.isUser) {
+      actions.addAll([
+        ListTile(
+          leading: const Icon(Icons.copy_rounded),
+          title: const Text('复制'),
+          onTap: () {
+            Navigator.of(context).pop();
+            copy();
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.edit_rounded),
+          title: const Text('修改'),
+          subtitle: const Text('撤回后把原文放进输入框，改完再发送'),
+          onTap: () {
+            Navigator.of(context).pop();
+            final original = notifier.rollbackTo(index);
+            if (original.trim().isNotEmpty) {
+              _controller.text = original;
+              _controller.selection =
+                  TextSelection.collapsed(offset: original.length);
+            }
+            _pinned = true;
+            _followTail();
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.reply_rounded),
+          title: const Text('追问'),
+          subtitle: const Text('在消息下方打开小输入框'),
+          onTap: () {
+            Navigator.of(context).pop();
+            _openFollowUp(index);
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.add_comment_rounded),
+          title: const Text('创建新会话'),
+          subtitle: const Text('把这句话作为新对话的第一条'),
+          onTap: () {
+            Navigator.of(context).pop();
+            notifier.createSession();
+            if (text.trim().isNotEmpty) notifier.send(text);
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.undo_rounded),
+          title: const Text('撤回'),
+          subtitle: const Text('删除这条消息及其之后的内容'),
+          onTap: () {
+            Navigator.of(context).pop();
+            _rollbackTo(index);
+          },
+        ),
+      ]);
+    } else {
+      actions.addAll([
+        ListTile(
+          leading: const Icon(Icons.copy_rounded),
+          title: const Text('复制'),
+          onTap: () {
+            Navigator.of(context).pop();
+            copy();
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.reply_rounded),
+          title: const Text('追问'),
+          subtitle: const Text('在消息下方打开小输入框'),
+          onTap: () {
+            Navigator.of(context).pop();
+            _openFollowUp(index);
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.description_rounded),
+          title: const Text('保存为文档到本地'),
+          onTap: () async {
+            Navigator.of(context).pop();
+            await _saveMessageAsDocument(message, text);
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.menu_book_rounded),
+          title: const Text('保存到知识库'),
+          onTap: () async {
+            Navigator.of(context).pop();
+            await _saveMessageToKnowledge(message, text);
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.refresh_rounded),
+          title: const Text('重新生成'),
+          onTap: () {
+            Navigator.of(context).pop();
+            notifier.resendAt(index);
+          },
+        ),
+      ]);
+    }
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => SafeArea(
+        child: ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          child: Material(
+            color: Theme.of(sheetContext).colorScheme.surface,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                  child: Text(
+                    message.isUser ? '我的消息操作' : 'AI 回复操作',
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: actions,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _saveMessageAsDocument(
+      AiChatMessage message, String text) async {
+    if (text.trim().isEmpty) {
+      _toast('这条消息没有可保存的文字');
+      return;
+    }
+    try {
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final title = 'AI回复_$stamp';
+      final path = '/workspace/.ai/$title.md';
+      final body = '# $title\n\n$text\n';
+      final bridge = ProotBridge();
+      await bridge.makeDirectory('/workspace/.ai');
+      await bridge.writeFile(path: path, content: body);
+      if (!mounted) return;
+      _toast('已保存到本地：$path');
+    } catch (e) {
+      _toast('保存文档失败：$e');
+    }
+  }
+
+  Future<void> _saveMessageToKnowledge(
+      AiChatMessage message, String text) async {
+    if (text.trim().isEmpty) {
+      _toast('这条消息没有可保存的文字');
+      return;
+    }
+    final firstLine = text.trim().split('\n').first.trim();
+    final title = firstLine.length > 30
+        ? firstLine.substring(0, 30)
+        : (firstLine.isEmpty ? 'AI回复' : firstLine);
+    final doc = await ref
+        .read(knowledgeProvider.notifier)
+        .save(title: title, content: text.trim(), tags: const ['AI回复']);
+    if (!mounted) return;
+    _toast(doc != null ? '已保存到知识库：${doc.name}' : '保存到知识库失败');
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 1)),
+    );
   }
 
   /// 挑一个本地文件当附件。图片走独立图片通道，需要提供商配好图片识别模型。
@@ -1103,21 +1354,43 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                 itemCount: state.messages.length + extraCount,
                                 itemBuilder: (context, index) {
                                   if (index < state.messages.length) {
+                                    final message = state.messages[index];
                                     return RepaintBoundary(
                                       key: _bubbleKeyAt(index),
-                                      child: _MessageBubble(
-                                        message: state.messages[index],
-                                        anchorIndex: index,
-                                        onResend: state.isLoading
+                                      child: GestureDetector(
+                                        behavior: HitTestBehavior.opaque,
+                                        onLongPress: state.isLoading
                                             ? null
-                                            : () => notifier.resendAt(index),
-                                        onRollback: state.isLoading
-                                            ? null
-                                            : () => _rollbackTo(index),
-                                        onSuggestionTap: (text) {
-                                          _controller.text = text;
-                                          _send();
-                                        },
+                                            : () => _showMessageActions(
+                                                index, message),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            _MessageBubble(
+                                              message: message,
+                                              anchorIndex: index,
+                                              onResend: state.isLoading
+                                                  ? null
+                                                  : () =>
+                                                      notifier.resendAt(index),
+                                              onRollback: state.isLoading
+                                                  ? null
+                                                  : () => _rollbackTo(index),
+                                              onSuggestionTap: (text) {
+                                                _controller.text = text;
+                                                _send();
+                                              },
+                                            ),
+                                            if (_followUpIndex == index)
+                                              _FollowUpComposer(
+                                                controller: _followUpController,
+                                                message: message,
+                                                onClose: _closeFollowUp,
+                                                onSend: _sendFollowUp,
+                                              ),
+                                          ],
+                                        ),
                                       ),
                                     );
                                   }
@@ -1679,6 +1952,104 @@ class _WelcomeView extends StatelessWidget {
   }
 }
 
+/// 长按“追问”后出现在消息下方的小输入框：带 X 关闭，可发送；
+/// 如果这条消息有“下一步建议”，也显示在输入框下面供填充。
+class _FollowUpComposer extends StatelessWidget {
+  const _FollowUpComposer({
+    required this.controller,
+    required this.message,
+    required this.onClose,
+    required this.onSend,
+  });
+
+  final TextEditingController controller;
+  final AiChatMessage message;
+  final VoidCallback onClose;
+  final VoidCallback onSend;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 8),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHigh.withValues(alpha: 0.85),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: scheme.outlineVariant),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.reply_rounded, size: 16, color: scheme.primary),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: TextField(
+                    controller: controller,
+                    autofocus: true,
+                    minLines: 1,
+                    maxLines: 3,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => onSend(),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      hintText: '追问…',
+                      border: InputBorder.none,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '关闭追问',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.close_rounded, size: 18),
+                  onPressed: onClose,
+                ),
+                IconButton(
+                  tooltip: '发送追问',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.send_rounded, size: 18),
+                  onPressed: onSend,
+                ),
+              ],
+            ),
+            if (message.suggestions.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                '下一步建议',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: [
+                  for (final s in message.suggestions)
+                    ActionChip(
+                      visualDensity: VisualDensity.compact,
+                      label: Text(s),
+                      onPressed: () {
+                        controller.text = s;
+                        controller.selection =
+                            TextSelection.collapsed(offset: s.length);
+                      },
+                    ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// 整轮完成后 AI 给出的“下一步”快捷建议，点一下就把这句话发出去。
 class _SuggestionChips extends StatelessWidget {
   const _SuggestionChips({
@@ -1863,31 +2234,6 @@ class _MessageBubble extends StatelessWidget {
                           ? '_（无文字回复）_'
                           : message.content,
                     ),
-                  if (isUser && (onResend != null || onRollback != null))
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (onResend != null)
-                            _BubbleAction(
-                              icon: Icons.refresh,
-                              label: '重发',
-                              color: scheme.onPrimaryContainer,
-                              onTap: () => _confirmResend(context),
-                            ),
-                          if (onRollback != null) ...[
-                            const SizedBox(width: 10),
-                            _BubbleAction(
-                              icon: Icons.undo,
-                              label: '撤回到这里',
-                              color: scheme.onPrimaryContainer,
-                              onTap: () => _confirmRollback(context),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
                   if (!isUser && footer.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
@@ -1910,50 +2256,6 @@ class _MessageBubble extends StatelessWidget {
                                     ? scheme.error
                                     : scheme.onSurfaceVariant,
                               ),
-                            ),
-                          ),
-                          if (onResend != null) ...[
-                            InkWell(
-                              onTap: () => _confirmResend(context),
-                              child: Icon(
-                                Icons.refresh,
-                                size: 15,
-                                color: scheme.onSurfaceVariant,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                          ],
-                          if (onRollback != null) ...[
-                            InkWell(
-                              onTap: () => _confirmRollback(context),
-                              child: Icon(
-                                Icons.undo,
-                                size: 15,
-                                color: scheme.onSurfaceVariant,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                          ],
-                          InkWell(
-                            onTap: () {
-                              Clipboard.setData(
-                                ClipboardData(
-                                  text: message.displayContent.isNotEmpty
-                                      ? message.displayContent
-                                      : message.content,
-                                ),
-                              );
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('已复制回复'),
-                                  duration: Duration(seconds: 1),
-                                ),
-                              );
-                            },
-                            child: Icon(
-                              Icons.copy_rounded,
-                              size: 14,
-                              color: scheme.onSurfaceVariant,
                             ),
                           ),
                         ],
@@ -2046,78 +2348,6 @@ class _MessageBubble extends StatelessWidget {
           ),
       ],
     );
-  }
-
-  /// 重发前确认：它会把这条之后的对话全部删掉重来，属于不可撤销的显示层操作。
-  Future<void> _confirmResend(BuildContext context) async {
-    final ok = await showModalBottomSheet<bool>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
-              child: Text(
-                '重新发送这条？',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
-              ),
-            ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: Text(
-                '会先撤回这条之后的所有对话，再按原内容重新问一次。'
-                '面板上已经执行过的改动不会跟着回滚。',
-                style: TextStyle(fontSize: 12.5),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.refresh),
-              title: const Text('确认重发'),
-              onTap: () => Navigator.of(context).pop(true),
-            ),
-            ListTile(
-              leading: const Icon(Icons.close),
-              title: const Text('取消'),
-              onTap: () => Navigator.of(context).pop(false),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (ok == true) onResend?.call();
-  }
-
-  Future<void> _confirmRollback(BuildContext context) async {
-    final ok = await showModalBottomSheet<bool>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 12),
-              child: Text(
-                '撤回到这条之前？这条及之后的对话会被删除，'
-                '面板上已执行的改动不会回滚。',
-                style: TextStyle(fontSize: 13),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.undo),
-              title: const Text('确认撤回'),
-              onTap: () => Navigator.of(context).pop(true),
-            ),
-            ListTile(
-              leading: const Icon(Icons.close),
-              title: const Text('取消'),
-              onTap: () => Navigator.of(context).pop(false),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (ok == true) onRollback?.call();
   }
 
   bool _failed() =>
@@ -2447,45 +2677,6 @@ class _MessageImageState extends State<_MessageImage> {
         bytes,
         fit: BoxFit.cover,
         errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined),
-      ),
-    );
-  }
-}
-
-class _BubbleAction extends StatelessWidget {
-  const _BubbleAction({
-    required this.icon,
-    required this.label,
-    required this.color,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final Color color;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 14, color: color.withValues(alpha: 0.75)),
-            const SizedBox(width: 3),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 11.5,
-                color: color.withValues(alpha: 0.75),
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
