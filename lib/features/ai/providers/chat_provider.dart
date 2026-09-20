@@ -3384,6 +3384,7 @@ class ChatNotifier extends Notifier<ChatState> {
     await _ensureOutputPlugin(activeProviderId);
     final registry = QlToolRegistry(
       panelGetter: () => ref.read(currentPanelProvider),
+      approvalMode: state.approvalMode,
     );
     final history = _historyWithAutoCompress(
       userInput: userInput,
@@ -3546,6 +3547,7 @@ class ChatNotifier extends Notifier<ChatState> {
             config: workerConfig,
             registry: QlToolRegistry(
               panelGetter: () => ref.read(currentPanelProvider),
+              approvalMode: state.approvalMode,
             ),
             confirmedActionKeys: confirmedKeys,
             externalTools: baseTools,

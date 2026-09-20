@@ -70,10 +70,16 @@ class ConfirmRequiredException implements Exception {
 }
 
 class QlToolRegistry {
-  QlToolRegistry({required PanelInfo? Function() panelGetter})
-      : _panelGetter = panelGetter;
+  QlToolRegistry({
+    required PanelInfo? Function() panelGetter,
+    this.approvalMode = AiApprovalMode.cautious,
+  }) : _panelGetter = panelGetter;
 
   final PanelInfo? Function() _panelGetter;
+
+  /// 当前会话的写操作确认策略。沙箱在“全部放行”时完全放行，
+  /// 其它模式下仍保留系统关键路径保护。
+  final AiApprovalMode approvalMode;
 
   static const _stringProp = {
     'type': 'string',
@@ -1784,7 +1790,8 @@ class QlToolRegistry {
       case 'shell_exec':
         const sandbox = CommandSandbox();
         final command = args['command'] as String;
-        sandbox.validate(command);
+        sandbox.validate(command,
+            fullAllow: approvalMode == AiApprovalMode.full);
         final cmdTimeout = (args['timeoutSeconds'] as num?)?.toInt() ?? 60;
         // 终端是单例资源：多个代理同时 exec 会互相拆台（dpkg 锁、cwd、同名文件）。
         // 这里排队而不是拒绝——任务照样能做完，只是慢一点。
@@ -2437,7 +2444,7 @@ else:
       path = '/workspace/$path';
     }
     const sandbox = CommandSandbox();
-    sandbox.validate(code);
+    sandbox.validate(code, fullAllow: approvalMode == AiApprovalMode.full);
     final bridge = ProotBridge();
     final scriptArgs = _stringList(args['args']);
     final stdin = args['stdin']?.toString() ?? '';

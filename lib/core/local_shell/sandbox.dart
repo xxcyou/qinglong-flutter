@@ -44,7 +44,12 @@ class CommandSandbox {
     '/var',
   ];
 
-  void validate(String command) {
+  /// [fullAllow] 为 true 时完全放行：确认策略选“全部放行”后，
+  /// AI 可以自由删除/覆盖/执行命令，不再受命令沙箱限制。
+  ///
+  /// 默认（严格/仅危险/未传）仍保留黑名单与受保护路径防线。
+  void validate(String command, {bool fullAllow = false}) {
+    if (fullAllow) return;
     final normalized = command.trim().toLowerCase();
     for (final pattern in blockedPatterns) {
       if (normalized.contains(pattern.toLowerCase())) {
