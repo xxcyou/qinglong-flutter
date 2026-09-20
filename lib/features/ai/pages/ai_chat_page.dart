@@ -463,7 +463,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
         ListTile(
           leading: const Icon(Icons.edit_rounded),
           title: const Text('修改'),
-          subtitle: const Text('进入修改模式，下面内容会冻结变淡'),
+          subtitle: const Text('把这条消息放进输入框，发送后生效'),
           onTap: () {
             Navigator.of(context).pop();
             _startEdit(index, message);
@@ -1854,10 +1854,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (_editMode)
-                          _EditModeStatusBar(
-                            onCancel: _cancelEdit,
-                            onApply: _send,
-                          ),
+                          _EditModeStatusBar(onCancel: _cancelEdit),
                         AiComposer(
                           state: state,
                           controller: _controller,
@@ -2186,15 +2183,11 @@ class _WelcomeView extends StatelessWidget {
   }
 }
 
-/// 修改模式顶在输入框上方的状态条：提示下面内容已冻结，可取消或应用。
+/// 修改模式顶在输入框上方的状态条：只提示“修改中”，右侧 X 取消修改。
 class _EditModeStatusBar extends StatelessWidget {
-  const _EditModeStatusBar({
-    required this.onCancel,
-    required this.onApply,
-  });
+  const _EditModeStatusBar({required this.onCancel});
 
   final VoidCallback onCancel;
-  final VoidCallback onApply;
 
   @override
   Widget build(BuildContext context) {
@@ -2204,7 +2197,7 @@ class _EditModeStatusBar extends StatelessWidget {
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.only(left: 12, right: 2, top: 2, bottom: 2),
       decoration: BoxDecoration(
         color: tint.withValues(alpha: 0.9),
         borderRadius: BorderRadius.circular(14),
@@ -2212,32 +2205,23 @@ class _EditModeStatusBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.lock_clock_rounded, size: 16, color: fg),
+          Icon(Icons.edit_rounded, size: 16, color: fg),
           const SizedBox(width: 6),
           Expanded(
             child: Text(
-              '修改中 · 下面内容已冻结变淡，发送修改后才会重新生成',
+              '当前正在修改中',
               style: TextStyle(
-                fontSize: 11.5,
+                fontSize: 12,
                 fontWeight: FontWeight.w600,
                 color: fg,
               ),
             ),
           ),
-          TextButton(
-            style: TextButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              foregroundColor: fg,
-            ),
+          IconButton(
+            tooltip: '取消修改',
+            visualDensity: VisualDensity.compact,
+            icon: Icon(Icons.close_rounded, size: 18, color: fg),
             onPressed: onCancel,
-            child: const Text('取消修改'),
-          ),
-          FilledButton.tonal(
-            style: FilledButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-            ),
-            onPressed: onApply,
-            child: const Text('应用修改'),
           ),
         ],
       ),
