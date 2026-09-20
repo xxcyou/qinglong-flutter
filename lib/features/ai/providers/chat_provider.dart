@@ -1156,6 +1156,12 @@ class ChatNotifier extends Notifier<ChatState> {
     final mcpState = ref.read(mcpProvider);
     final mcpTools = mcpState.tools;
     final collapsed = McpGateway.shouldCollapse(mcpTools.length);
+    final activeProvider = ref.read(llmRegistryProvider).active;
+    final effectiveMainModel = state.selectedModel.isNotEmpty
+        ? state.selectedModel
+        : activeProvider.defaultModel;
+    final mainSupportsImage =
+        activeProvider.capabilitiesFor(effectiveMainModel).supportsImage;
 
     final lines = <String>[qinglongSystemPrompt];
 
@@ -1222,13 +1228,17 @@ class ChatNotifier extends Notifier<ChatState> {
         'API Key 会安全保存不会明文回显。',
       )
       ..add(
-        '- 图片：用户发来图片时不会直接把图像发给你，而是带着“用户发来图片：路径”标注；'
-        '你需要调用 image_recognize 工具（传 path/scope，可带 question/focus）来识别图片内容，'
-        '然后把识别结果作为回答依据。'
-        '需要截图时用 browser_screenshot（内置浏览器）或 shell/adb 命令生成图片；'
-        '得到文件路径就传 path/scope，得到 base64 编码图片就直接传 base64。'
-        '要显示到聊天给用户看，调用 show_image 传 path 或 base64；'
-        '支持图片的主模型会直接看到图片，不支持时用 image_recognize 传同样的 path/base64 识别。',
+        mainSupportsImage
+            ? '- 图片：当前主模型支持图片，用户发来的图片会以「真实图像内容」直接发给你，'
+                '你可以直接看图，不需要调用 image_recognize。'
+                '工具截图/图片也会在后续消息里直接注入为图像。'
+                '要显示给用户看仍可调用 show_image，但不要再绕 image_recognize。'
+            : '- 图片：用户发来图片时不会直接把图像发给你，而是带着“用户发来图片：路径”标注；'
+                '你需要调用 image_recognize 工具（传 path/scope，可带 question/focus）来识别图片内容，'
+                '然后把识别结果作为回答依据。'
+                '需要截图时用 browser_screenshot（内置浏览器）或 shell/adb 命令生成图片；'
+                '得到文件路径就传 path/scope，得到 base64 编码图片就直接传 base64。'
+                '要显示到聊天给用户看，调用 show_image 传 path 或 base64。',
       );
     // 用户开着哪个代码编辑器：直接决定 editor_* 该往哪写，必须实时。
     final editorState = EditorTools.promptState();
