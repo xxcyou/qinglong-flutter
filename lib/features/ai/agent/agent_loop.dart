@@ -196,6 +196,7 @@ class AgentResult {
     this.taskPlan = const AgentTaskPlan(),
     this.canvases = const [],
     this.roundId = '',
+    this.suggestions = const [],
   });
 
   final String content;
@@ -229,6 +230,9 @@ class AgentResult {
 
   /// 本地完整轮归档 ID；同一轮中断/继续都复用同一个。
   final String roundId;
+
+  /// 本轮生成的“下一步”快捷建议，UI 显示在回复下方供用户点击。
+  final List<String> suggestions;
 }
 
 /// 模型主动提问：一句问题 + 可选的候选答案。
@@ -920,6 +924,26 @@ class AgentLoop {
     },
   );
 
+  /// 完整轮后的“下一步”快捷建议：只给选项，决定权在用户。
+  static const _suggestNextSpec = LlmFunctionSpec(
+    name: 'suggest_next',
+    description: '在一整轮任务完成/需要用户决策时，给用户提供 2-4 条“下一步”快捷建议。'
+        '每条必须是一句用户可以**直接点击发送**的完整指令（动词开头，说清做什么），'
+        '不要用“你可以考虑…”“是否要…”这种半句。'
+        '这只是建议，最终做不做、做哪个由用户决定，你不要擅自继续执行。',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'suggestions': {
+          'type': 'array',
+          'description': '2-4 条下一步指令，例如 ["查看刚才生成的报告", "去面板把所有失败任务重跑一遍"]',
+          'items': {'type': 'string'},
+        },
+      },
+      'required': ['suggestions'],
+    },
+  );
+
   /// 给现有步骤挂二级子任务。
   static const _taskAddSubtaskSpec = LlmFunctionSpec(
     name: 'task_add_subtask',
@@ -1220,6 +1244,8 @@ class AgentLoop {
     var brokenRetries = 0;
     // "正文里假装调用过工具"的打回次数（见 fakeToolClaim）。
     var fakeClaimRetries = 0;
+    // 本轮生成的“下一步”快捷建议（suggest_next 工具写入，UI 渲染成可点 chips）。
+    var suggestions = <String>[];
     // "收尾里夹着没问出去的问题"的打回次数（见 blockingQuestion）。
     var finishQuestionRetries = 0;
     // "正文只是抄了系统簿记"的打回次数（见 echoedBookkeeping）。
@@ -1236,6 +1262,7 @@ class AgentLoop {
       if (enableTaskPlan) _taskDeleteSpec.name,
       if (enableTaskPlan) _taskClearSpec.name,
       if (enableTaskPlan) _taskAddSubtaskSpec.name,
+      _suggestNextSpec.name,
       if (enableTaskPlan) _taskSubstepSpec.name,
       _canvasSpec.name,
     };
@@ -1439,6 +1466,7 @@ class AgentLoop {
                     if (enableTaskPlan) _taskDeleteSpec,
                     if (enableTaskPlan) _taskClearSpec,
                     if (enableTaskPlan) _taskAddSubtaskSpec,
+                    _suggestNextSpec,
                     if (enableTaskPlan) _taskSubstepSpec,
                     _canvasSpec,
                   ]
@@ -1930,6 +1958,7 @@ class AgentLoop {
             lastCacheHitTokens: lastCacheHitTokens,
             taskPlan: plan,
             canvases: canvases,
+            suggestions: suggestions,
           );
         }
 
@@ -2139,6 +2168,38 @@ class AgentLoop {
                 message: plan.promptLines(),
                 toolName: call.name,
                 args: call.arguments,
+                turn: turnsUsed,
+              ),
+            );
+            continue;
+          }
+          if (call.name == _suggestNextSpec.name) {
+            final raw = call.arguments['suggestions'];
+            final list = <String>[
+              if (raw is List)
+                for (final item in raw)
+                  if (item is String && item.trim().isNotEmpty) item.trim(),
+            ].take(4).toList();
+            if (list.isEmpty) {
+              toolMessages.add(
+                _toolReply(call, 'suggestions 是空的，没有生成快捷建议。'),
+              );
+              continue;
+            }
+            suggestions = list;
+            toolMessages.add(
+              _toolReply(
+                call,
+                '已生成 ${list.length} 条“下一步”快捷建议，显示在回复下方，最终由用户选择。',
+              ),
+            );
+            emit(
+              AgentEvent(
+                kind: AgentEventKind.toolEnd,
+                message: '已生成下一步快捷建议',
+                toolName: call.name,
+                args: call.arguments,
+                result: suggestions.join('\n'),
                 turn: turnsUsed,
               ),
             );
@@ -2457,6 +2518,7 @@ class AgentLoop {
               call.name == _taskDeleteSpec.name ||
               call.name == _taskClearSpec.name ||
               call.name == _taskAddSubtaskSpec.name ||
+              call.name == _suggestNextSpec.name ||
               call.name == _taskSubstepSpec.name ||
               call.name == _canvasSpec.name) {
             continue;
@@ -2794,6 +2856,7 @@ class AgentLoop {
               lastCacheHitTokens: lastCacheHitTokens,
               taskPlan: plan,
               canvases: canvases,
+              suggestions: suggestions,
             );
           }
           // 提问和"等用户确认写操作"撞一起：确认优先（它挡着一个真实写操作）。
@@ -3048,6 +3111,7 @@ class AgentLoop {
         lastCacheHitTokens: lastCacheHitTokens,
         taskPlan: plan,
         canvases: canvases,
+        suggestions: suggestions,
       );
     }
 
@@ -3084,6 +3148,7 @@ class AgentLoop {
       lastCacheHitTokens: lastCacheHitTokens,
       taskPlan: plan,
       canvases: canvases,
+      suggestions: suggestions,
     );
   }
 

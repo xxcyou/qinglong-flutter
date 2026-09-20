@@ -1114,6 +1114,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                         onRollback: state.isLoading
                                             ? null
                                             : () => _rollbackTo(index),
+                                        onSuggestionTap: (text) {
+                                          _controller.text = text;
+                                          _send();
+                                        },
                                       ),
                                     );
                                   }
@@ -1675,11 +1679,63 @@ class _WelcomeView extends StatelessWidget {
   }
 }
 
+/// 整轮完成后 AI 给出的“下一步”快捷建议，点一下就把这句话发出去。
+class _SuggestionChips extends StatelessWidget {
+  const _SuggestionChips({
+    required this.suggestions,
+    required this.onTap,
+  });
+
+  final List<String> suggestions;
+  final ValueChanged<String> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 2, bottom: 4),
+            child: Text(
+              '下一步建议 · 最终由你决定',
+              style: TextStyle(
+                fontSize: 11.5,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              for (final s in suggestions)
+                ActionChip(
+                  avatar: Icon(
+                    Icons.arrow_forward_rounded,
+                    size: 15,
+                    color: scheme.primary,
+                  ),
+                  label: Text(s),
+                  onPressed: () => onTap(s),
+                  visualDensity: VisualDensity.compact,
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.message,
     this.onResend,
     this.onRollback,
+    this.onSuggestionTap,
     this.anchorIndex,
   });
 
@@ -1691,6 +1747,9 @@ class _MessageBubble extends StatelessWidget {
 
   /// 只撤回，不重发。
   final VoidCallback? onRollback;
+
+  /// 点击“下一步快捷建议”后，把建议文本发送出去。
+  final ValueChanged<String>? onSuggestionTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1937,7 +1996,21 @@ class _MessageBubble extends StatelessWidget {
     final hasExtras = message.agentEvents.isNotEmpty ||
         message.taskPlan.isNotEmpty ||
         message.canvases.isNotEmpty;
-    if (!hasExtras) return interactive;
+    if (!hasExtras) {
+      if (message.suggestions.isEmpty || onSuggestionTap == null) {
+        return interactive;
+      }
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          interactive,
+          _SuggestionChips(
+            suggestions: message.suggestions,
+            onTap: onSuggestionTap!,
+          ),
+        ],
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1956,6 +2029,11 @@ class _MessageBubble extends StatelessWidget {
             margin: const EdgeInsets.only(bottom: 8),
           ),
         interactive,
+        if (message.suggestions.isNotEmpty && onSuggestionTap != null)
+          _SuggestionChips(
+            suggestions: message.suggestions,
+            onTap: onSuggestionTap!,
+          ),
         // 弹窗关了内容不会丢：这些卡片一直在，点一下重新打开。
         //
         // margin 必须显式给：默认的 top:8 是"卡在气泡上方"时的间距，

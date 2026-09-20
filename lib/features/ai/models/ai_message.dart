@@ -82,6 +82,7 @@ class AiChatMessage {
     this.canvases = const [],
     this.roundId = '',
     this.sendError = '',
+    this.suggestions = const [],
   });
 
   final String role;
@@ -125,6 +126,9 @@ class AiChatMessage {
   /// 本地完整轮归档 ID；中断/继续同一轮时复用。
   final String roundId;
 
+  /// 整轮完成后 AI 给用户看的“下一步快捷建议”，用户可以点击直接发送。
+  final List<String> suggestions;
+
   /// 这条消息**没发出去**：模型调用本身失败了（网络、鉴权、限流、网关报错）。
   ///
   /// 只会出现在 user 消息上，内容是给用户看的错误原因。
@@ -141,6 +145,7 @@ class AiChatMessage {
     List<String>? modeLabels,
     List<AgentEvent>? agentEvents,
     List<AiImageAttachment>? images,
+    List<String>? suggestions,
   }) =>
       AiChatMessage(
         role: role,
@@ -160,6 +165,7 @@ class AiChatMessage {
         canvases: canvases,
         roundId: roundId,
         sendError: sendError ?? this.sendError,
+        suggestions: suggestions ?? this.suggestions,
       );
 
   bool get isUser => role == 'user';
@@ -188,6 +194,7 @@ class AiChatMessage {
           'canvases': [for (final c in canvases) c.toJson()],
         if (roundId.isNotEmpty) 'roundId': roundId,
         if (sendError.isNotEmpty) 'sendError': sendError,
+        if (suggestions.isNotEmpty) 'suggestions': suggestions,
       };
 
   factory AiChatMessage.fromJson(Map<String, dynamic> json) {
@@ -233,6 +240,10 @@ class AiChatMessage {
       promptTokens: (json['promptTokens'] as num?)?.toInt() ?? 0,
       cachedTokens: (json['cachedTokens'] as num?)?.toInt() ?? 0,
       roundId: json['roundId']?.toString() ?? '',
+      suggestions: [
+        for (final t in (json['suggestions'] as List? ?? const []))
+          t.toString(),
+      ],
     );
   }
 }

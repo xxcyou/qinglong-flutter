@@ -1977,6 +1977,7 @@ class ChatNotifier extends Notifier<ChatState> {
         canvases: result.canvases,
         roundId: run.roundId,
         modeLabels: modeLabels,
+        suggestions: result.suggestions,
       );
       _replaceSession(
         AiSession(
@@ -2354,6 +2355,7 @@ class ChatNotifier extends Notifier<ChatState> {
               taskPlan: result.taskPlan,
               canvases: result.canvases,
               roundId: run.roundId,
+              suggestions: result.suggestions,
             ),
           ],
           createdAt: current.createdAt,
