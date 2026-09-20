@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show ImageFilter;
@@ -59,9 +60,15 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
 
-  /// 当前正在“追问”的消息下标；null=没有打开的追问输入框。
+  /// 当前正在“引用追问”的消息下标；null=没有引用。
   int? _followUpIndex;
-  final _followUpController = TextEditingController();
+
+  /// 被引用消息的文字内容，发送时拼进问题里作为引用。
+  String? _followUpText;
+
+  /// 正在闪烁提示的追问目标下标。
+  int? _followUpFlashIndex;
+  Timer? _followUpFlashTimer;
 
   /// 修改模式：长按“修改”后进入，不立刻撤回，等用户发送修改或取消。
   bool _editMode = false;
@@ -155,7 +162,6 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
-    _followUpController.addListener(_onFollowUpChanged);
     _loadFilePanelFraction();
     Future.microtask(() async {
       await ref.read(chatProvider.notifier).loadSessions();
@@ -168,8 +174,8 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
 
   @override
   void dispose() {
+    _followUpFlashTimer?.cancel();
     _controller.dispose();
-    _followUpController.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     super.dispose();
@@ -240,50 +246,69 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     final dock = ref.read(aiDockProvider.notifier);
     // 附件（本地文件、页面自动带上来的日志）要拼进提问里，
     // 和悬浮窗走同一个 composePrompt，两边行为一致。
-    final prompt = dock.composePrompt(_controller.text);
+    final quoted = _followUpText ?? '';
+    final raw = quoted.trim().isNotEmpty && _controller.text.trim().isNotEmpty
+        ? '引用追问：$quoted\n\n${_controller.text}'
+        : _controller.text;
+    final prompt = dock.composePrompt(raw);
     // 只带图片/附件、没有文字也可以直接发。
     if (prompt.trim().isEmpty && ref.read(chatProvider).pendingImages.isEmpty) {
       return;
     }
     _controller.clear();
     dock.consumeChips();
+    if (_followUpIndex != null) _closeFollowUp();
     // 自己发的消息一定要看到，所以先强制恢复跟随。
     _pinned = true;
     ref.read(chatProvider.notifier).send(prompt);
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
 
-  void _onFollowUpChanged() {
-    if (_followUpIndex != null) {
-      // 输入时会自动把追问框滚到可见位置。
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _followUpIndex != null) _scrollToIndex(_followUpIndex!);
-      });
-    }
+  void _openFollowUp(int index, AiChatMessage message) {
+    if (_editMode) _cancelEdit();
+    final text = message.displayContent.isNotEmpty
+        ? message.displayContent
+        : message.content;
+    _followUpIndex = index;
+    _followUpText = text;
     setState(() {});
-  }
-
-  void _openFollowUp(int index) {
-    _followUpController.clear();
-    setState(() => _followUpIndex = index);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToIndex(index));
+    _pinned = false;
+    _flashFollowUpTarget(index);
   }
 
   void _closeFollowUp() {
-    _followUpController.clear();
-    setState(() => _followUpIndex = null);
+    _followUpFlashTimer?.cancel();
+    setState(() {
+      _followUpIndex = null;
+      _followUpText = null;
+      _followUpFlashIndex = null;
+    });
   }
 
-  void _sendFollowUp() {
-    final text = _followUpController.text.trim();
-    if (text.isEmpty) return;
-    ref.read(chatProvider.notifier).send(text);
-    _closeFollowUp();
-    _pinned = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  void _jumpToFollowUpTarget() {
+    final index = _followUpIndex;
+    if (index == null) return;
+    _pinned = false;
+    _flashFollowUpTarget(index);
+  }
+
+  void _sendQuoteSuggestion(String text) {
+    _controller.text = text;
+    _controller.selection = TextSelection.collapsed(offset: text.length);
+    _send();
+  }
+
+  void _flashFollowUpTarget(int index) {
+    _followUpFlashTimer?.cancel();
+    setState(() => _followUpFlashIndex = index);
+    _scrollToIndex(index);
+    _followUpFlashTimer = Timer(const Duration(milliseconds: 1600), () {
+      if (mounted) setState(() => _followUpFlashIndex = null);
+    });
   }
 
   void _startEdit(int index, AiChatMessage message) {
+    if (_followUpIndex != null) _closeFollowUp();
     final text = message.displayContent.isNotEmpty
         ? message.displayContent
         : message.content;
@@ -472,10 +497,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
         ListTile(
           leading: const Icon(Icons.reply_rounded),
           title: const Text('追问'),
-          subtitle: const Text('在消息下方打开小输入框'),
+          subtitle: const Text('以引用方式追问，在输入框发送'),
           onTap: () {
             Navigator.of(context).pop();
-            _openFollowUp(index);
+            _openFollowUp(index, message);
           },
         ),
         ListTile(
@@ -511,10 +536,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
         ListTile(
           leading: const Icon(Icons.reply_rounded),
           title: const Text('追问'),
-          subtitle: const Text('在消息下方打开小输入框'),
+          subtitle: const Text('以引用方式追问，在输入框发送'),
           onTap: () {
             Navigator.of(context).pop();
-            _openFollowUp(index);
+            _openFollowUp(index, message);
           },
         ),
         ListTile(
@@ -1501,6 +1526,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                     final frozenBelow = _editMode &&
                                         _editIndex != null &&
                                         index > _editIndex!;
+                                    final isQuoteTarget =
+                                        _followUpIndex == index;
+                                    final isQuoteFlash =
+                                        _followUpFlashIndex == index;
                                     final bubbleChild = GestureDetector(
                                       behavior: HitTestBehavior.opaque,
                                       onLongPress: state.isLoading
@@ -1526,15 +1555,33 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                               _send();
                                             },
                                           ),
-                                          if (_followUpIndex == index)
-                                            _FollowUpComposer(
-                                              controller: _followUpController,
-                                              message: message,
-                                              onClose: _closeFollowUp,
-                                              onSend: _sendFollowUp,
-                                            ),
                                         ],
                                       ),
+                                    );
+                                    final highlightedChild = AnimatedContainer(
+                                      duration:
+                                          const Duration(milliseconds: 320),
+                                      curve: Curves.easeOut,
+                                      decoration: BoxDecoration(
+                                        color: isQuoteFlash
+                                            ? scheme.primary
+                                                .withValues(alpha: 0.28)
+                                            : isQuoteTarget
+                                                ? scheme.primary
+                                                    .withValues(alpha: 0.12)
+                                                : Colors.transparent,
+                                        borderRadius: BorderRadius.circular(18),
+                                        border: Border.all(
+                                          color: isQuoteFlash
+                                              ? scheme.primary
+                                              : isQuoteTarget
+                                                  ? scheme.primary
+                                                      .withValues(alpha: 0.55)
+                                                  : Colors.transparent,
+                                          width: isQuoteFlash ? 2 : 1.2,
+                                        ),
+                                      ),
+                                      child: bubbleChild,
                                     );
                                     return RepaintBoundary(
                                       key: _bubbleKeyAt(index),
@@ -1542,10 +1589,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                           ? IgnorePointer(
                                               child: Opacity(
                                                 opacity: 0.38,
-                                                child: bubbleChild,
+                                                child: highlightedChild,
                                               ),
                                             )
-                                          : bubbleChild,
+                                          : highlightedChild,
                                     );
                                   }
                                   var slot = index - state.messages.length;
@@ -1853,6 +1900,16 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        if (_followUpIndex != null && !_editMode)
+                          _QuoteFollowUpBar(
+                            text: _followUpText ?? '',
+                            suggestions: _followUpIndex! < state.messages.length
+                                ? state.messages[_followUpIndex!].suggestions
+                                : const [],
+                            onJump: _jumpToFollowUpTarget,
+                            onClose: _closeFollowUp,
+                            onSuggestionSend: _sendQuoteSuggestion,
+                          ),
                         if (_editMode)
                           _EditModeStatusBar(onCancel: _cancelEdit),
                         AiComposer(
@@ -2229,99 +2286,97 @@ class _EditModeStatusBar extends StatelessWidget {
   }
 }
 
-/// 长按“追问”后出现在消息下方的小输入框：带 X 关闭，可发送；
-/// 如果这条消息有“下一步建议”，也显示在输入框下面供填充。
-class _FollowUpComposer extends StatelessWidget {
-  const _FollowUpComposer({
-    required this.controller,
-    required this.message,
+/// 引用追问条：显示在主输入框上方，点击左侧图标可跳到被追问消息并闪烁提示。
+class _QuoteFollowUpBar extends StatelessWidget {
+  const _QuoteFollowUpBar({
+    required this.text,
+    required this.suggestions,
+    required this.onJump,
     required this.onClose,
-    required this.onSend,
+    required this.onSuggestionSend,
   });
 
-  final TextEditingController controller;
-  final AiChatMessage message;
+  final String text;
+  final List<String> suggestions;
+  final VoidCallback onJump;
   final VoidCallback onClose;
-  final VoidCallback onSend;
+  final ValueChanged<String> onSuggestionSend;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(top: 4, bottom: 8),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-        decoration: BoxDecoration(
-          color: scheme.surfaceContainerHigh.withValues(alpha: 0.85),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: scheme.outlineVariant),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.reply_rounded, size: 16, color: scheme.primary),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: TextField(
-                    controller: controller,
-                    autofocus: true,
-                    minLines: 1,
-                    maxLines: 3,
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (_) => onSend(),
-                    decoration: InputDecoration(
-                      isDense: true,
-                      hintText: '追问…',
-                      border: InputBorder.none,
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+      padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: scheme.primary.withValues(alpha: 0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              IconButton(
+                tooltip: '跳到追问消息',
+                visualDensity: VisualDensity.compact,
+                icon: Icon(Icons.near_me_rounded,
+                    size: 16, color: scheme.primary),
+                onPressed: onJump,
+              ),
+              const SizedBox(width: 2),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '引用追问',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w700,
+                        color: scheme.primary,
+                      ),
                     ),
-                  ),
-                ),
-                IconButton(
-                  tooltip: '关闭追问',
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.close_rounded, size: 18),
-                  onPressed: onClose,
-                ),
-                IconButton(
-                  tooltip: '发送追问',
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.send_rounded, size: 18),
-                  onPressed: onSend,
-                ),
-              ],
-            ),
-            if (message.suggestions.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(
-                '下一步建议',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: scheme.onSurfaceVariant,
+                    const SizedBox(height: 1),
+                    Text(
+                      text,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 4),
-              Wrap(
+              IconButton(
+                tooltip: '取消追问',
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.close_rounded, size: 17),
+                onPressed: onClose,
+              ),
+            ],
+          ),
+          if (suggestions.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 2, 0, 0),
+              child: Wrap(
                 spacing: 6,
                 runSpacing: 4,
                 children: [
-                  for (final s in message.suggestions)
+                  for (final s in suggestions)
                     ActionChip(
                       visualDensity: VisualDensity.compact,
                       label: Text(s),
-                      onPressed: () {
-                        controller.text = s;
-                        controller.selection =
-                            TextSelection.collapsed(offset: s.length);
-                      },
+                      onPressed: () => onSuggestionSend(s),
                     ),
                 ],
               ),
-            ],
-          ],
-        ),
+            ),
+        ],
       ),
     );
   }
