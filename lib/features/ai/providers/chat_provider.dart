@@ -4950,19 +4950,19 @@ class ChatNotifier extends Notifier<ChatState> {
     // 需要 DSL 也能调用的内部工具（如 ui_canvas）在最后统一注入。
     tools.addAll(extraTools);
 
-    // 多工具并行：把互不依赖的只读查询/收集一次性并发执行。
+    // 多工具并行：把互不依赖的调用（含 shell_exec 这类可读可写的终端命令）一次性并发执行。
     tools.add(
       ExternalTool(
         name: 'parallel_tools',
-        description: '把多个**互不依赖的只读工具调用**一次性并行执行，统一返回结果。'
+        description: '把多个**互不依赖的工具调用**一次性并行执行，统一返回结果。'
             '适合收集、探查、统计、获取、查询多份独立信息（同时看多个脚本、'
             '多个任务/日志/订阅/环境变量、多个接口状态等），'
+            '也适合一批只读或可读可写的终端命令（如 ssh/exec 同时检查多台/多目录）；'
             '避免一步一步串行太慢。\n'
             '硬约束：\n'
-            '1) 只能放只读工具（查询/列表/读取/搜索/识别等），不能放写工具；'
-            '写操作有顺序和副作用，必须按原工具逐个来；\n'
-            '2) 调用之间不能有依赖（B 需要 A 的结果就不能放进同一批）；\n'
-            '3) 不要对同一资源做多个可能相互影响的调用。\n'
+            '1) 调用之间不能有依赖（B 需要 A 的结果就不能放进同一批）；\n'
+            '2) 不要对同一资源/同一个文件/同一个目标做可能相互覆盖或冲突的调用；\n'
+            '3) 含写操作/危险命令时仍要遵守本会话确认策略，整体会按一次写操作确认。\n'
             '并行度上限 $parallelLimit，默认就用这个数；只是“最高”，'
             '具体放几个由 AI 按任务需要决定。',
         parameters: {
@@ -4970,8 +4970,8 @@ class ChatNotifier extends Notifier<ChatState> {
           'properties': {
             'tools': {
               'type': 'array',
-              'description': '要并行执行的只读工具清单，每项 {name, arguments, label}。'
-                  'label 可填一句这步在查什么，方便汇总时区分',
+              'description': '要并行执行的工具清单，每项 {name, arguments, label}。'
+                  'label 可填一句这步在干什么，方便汇总时区分',
               'items': {
                 'type': 'object',
                 'properties': {
@@ -4996,7 +4996,10 @@ class ChatNotifier extends Notifier<ChatState> {
           'required': ['tools'],
         },
         origin: '并行工具',
-        isWrite: false,
+        // 里面可能包含 shell_exec / 写接口等，整体当写操作确认，
+        // 避免并行批绕过外层确认策略。
+        isWrite: true,
+        danger: true,
         invoke: (args) async {
           final raw = args['tools'];
           if (raw is! List || raw.isEmpty) {
@@ -5024,9 +5027,8 @@ class ChatNotifier extends Notifier<ChatState> {
             return 'parallel_tools 里没有有效的工具调用。';
           }
 
-          // 先整体校验：找不到 / 写工具都直接拒绝，避免跑一半才发现不能并行。
+          // 先确认工具都存在，避免跑一半才发现名字写错。
           final notFound = <String>[];
-          final writes = <String>[];
           for (final item in items) {
             final ext = tools
                 .where((t) => t.name == item.name && t.name != 'parallel_tools')
@@ -5034,19 +5036,11 @@ class ChatNotifier extends Notifier<ChatState> {
             final def = registry?.find(item.name);
             if (ext == null && def == null) {
               notFound.add(item.name);
-              continue;
-            }
-            if ((ext?.isWrite ?? false) || (def?.isWrite ?? false)) {
-              writes.add(item.name);
             }
           }
           if (notFound.isNotEmpty) {
             return 'parallel_tools 找不到这些工具：${notFound.join('、')}。'
-                '只支持当前工具表里已有的只读工具。';
-          }
-          if (writes.isNotEmpty) {
-            return 'parallel_tools 只支持只读工具，以下工具是写操作，'
-                '不能放进并行批：${writes.join('、')}。写操作请按顺序单独调用。';
+                '请检查工具名是否在当前工具表里。';
           }
 
           final ceiling = parallelLimit < 1 ? 1 : parallelLimit;
