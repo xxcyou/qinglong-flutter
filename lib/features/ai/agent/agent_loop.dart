@@ -13,6 +13,7 @@ import '../models/canvas_result_bus.dart';
 import '../models/approval_mode.dart';
 import '../models/ai_plan.dart';
 import '../models/tool_call_record.dart';
+import '../plugins/output_plugin.dart';
 import 'external_tool.dart';
 import 'tool_markup_recovery.dart';
 import 'tool_registry.dart';
@@ -1503,19 +1504,25 @@ class AgentLoop {
           final transformed = responsePlugin(response);
           if (transformed != null) response = transformed;
         }
-        // 最后一道防线：不管 JS 插件有没有生效，只要正文里还残留
-        // <｜tool｜ calls> 这种标签，就在这里捞回 toolCalls / 删干净。
+        // 内置兜底只在“没有插件声明 processResponse”时才做。
+        // 一旦有输出插件真正负责 processResponse，就完全信任插件，
+        // 不再用 ToolMarkupRecovery 二次改写，避免插件被系统兜底掩盖成“没生效”。
+        final pluginHasResponseHook =
+            OutputPluginService.instance.hasResponseHook;
         final beforeFallback = response;
-        response = ToolMarkupRecovery.apply(response);
+        if (!pluginHasResponseHook) {
+          response = ToolMarkupRecovery.apply(response);
+        }
         final fallbackChanged = response.content != beforeFallback.content ||
             response.reasoningContent != beforeFallback.reasoningContent ||
             response.toolCalls.length != beforeFallback.toolCalls.length ||
             response.brokenToolMarkup != beforeFallback.brokenToolMarkup;
-        if (fallbackChanged) {
+        if (pluginHasResponseHook || fallbackChanged) {
           Logger.d(
             'output_plugin',
-            'builtin fallback modified turn: '
-                'pluginRan=${responsePlugin != null}, '
+            'response hook phase: pluginRan=${responsePlugin != null} '
+                'hasProcessResponse=$pluginHasResponseHook '
+                'fallbackApplied=${!pluginHasResponseHook && fallbackChanged} '
                 'content ${beforeFallback.content.length}->${response.content.length}, '
                 'tools ${beforeFallback.toolCalls.length}->${response.toolCalls.length}, '
                 'broken=${beforeFallback.brokenToolMarkup}->${response.brokenToolMarkup}',
