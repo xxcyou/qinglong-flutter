@@ -1276,9 +1276,12 @@ class AgentLoop {
 
     // 流式增量转发。turn 由这里补上：LlmClient 不知道自己是第几轮。
     var streamTurn = 0;
-    void pipe(LlmDelta d) {
+    void pipe(LlmDelta raw) {
       final cb = onDelta;
       if (cb == null) return;
+      var d = raw;
+      final transformed = OutputPluginService.instance.transformDelta(d);
+      if (transformed != null) d = transformed;
       cb(
         AgentDelta(
           reasoning: d.reasoning,
@@ -1497,6 +1500,11 @@ class AgentLoop {
         } finally {
           cancelToken?.httpToken = null;
         }
+        // 终稿两钩子：思考完整后、正文完整后各处理一次。
+        // 泄漏标签在这里/processResponse 里处理，不在实时 delta 里处理。
+        final finalChannels =
+            OutputPluginService.instance.transformFinalChannels(response);
+        if (finalChannels != null) response = finalChannels;
         // 响应后 hook：插件可以同时改正文、思考、工具调用，甚至把
         // “溢出成正文的 <｜tool｜ calls> 标记”重新捞成结构化 toolCalls。
         final responsePlugin = responseTransformer;

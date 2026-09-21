@@ -71,6 +71,10 @@ class _LoadedOutputPlugin {
     required this.runtime,
     required this.source,
     required this.hasProcessResponse,
+    required this.hasThinkingDelta,
+    required this.hasThinkingFinal,
+    required this.hasContentDelta,
+    required this.hasContentFinal,
   });
 
   final OutputPluginInfo info;
@@ -79,6 +83,12 @@ class _LoadedOutputPlugin {
 
   /// 插件是否声明了 processResponse（哪怕执行失败也算“这一层归插件管”）。
   final bool hasProcessResponse;
+
+  /// 四个流式/终稿钩子：实时思考、完整思考、实时正文、完整正文。
+  final bool hasThinkingDelta;
+  final bool hasThinkingFinal;
+  final bool hasContentDelta;
+  final bool hasContentFinal;
 }
 
 /// 输出整理插件服务（支持多个插件按顺序链式执行）。
@@ -93,6 +103,10 @@ class _LoadedOutputPlugin {
 ///
 /// 支持 hook：
 /// - `beforeSend(messages)`：提交前改写 messages
+/// - `processThinking(chunk)`：实时思考增量（SSE），只改实时展示，不建议在此处理完整标签
+/// - `processThinkingFinal(text)`：完整思考落定后改写
+/// - `processContent(chunk)`：实时正文增量（SSE），只改实时展示，不建议在此处理完整标签
+/// - `processContentFinal(text)`：完整正文落定后改写（适合清泄漏标签）
 /// - `processResponse({content, reasoning, toolCalls})`：响应后同时改正文/思考/工具调用
 /// - `process(text)` / `transform(text)`：文本清理，作为 processResponse 的兜底
 class OutputPluginService {
@@ -122,6 +136,13 @@ class OutputPluginService {
   /// 有的话，内置 ToolMarkupRecovery 不再兜底，让插件真正负责捞回/清理；
   /// 这样插件坏了会直接暴露，而不是被内置兜底掩盖成“看起来生效了”。
   bool get hasResponseHook => _plugins.any((p) => p.hasProcessResponse);
+
+  /// 当前已加载插件里有没有人声明流式/终稿四钩子之一。
+  bool get hasStreamingHooks => _plugins.any((p) =>
+      p.hasThinkingDelta ||
+      p.hasThinkingFinal ||
+      p.hasContentDelta ||
+      p.hasContentFinal);
 
   /// 最近一次的 hook 调用记录（点击聊天里的插件状态钮时展示）。
   List<OutputPluginRunRecord> get runRecords => List.unmodifiable(_runRecords);
@@ -202,6 +223,10 @@ class OutputPluginService {
             '  if (typeof transform === "function") globalThis.transform = transform;\n'
             '  if (typeof processResponse === "function") globalThis.processResponse = processResponse;\n'
             '  if (typeof beforeSend === "function") globalThis.beforeSend = beforeSend;\n'
+            '  if (typeof processThinking === "function") globalThis.processThinking = processThinking;\n'
+            '  if (typeof processThinkingFinal === "function") globalThis.processThinkingFinal = processThinkingFinal;\n'
+            '  if (typeof processContent === "function") globalThis.processContent = processContent;\n'
+            '  if (typeof processContentFinal === "function") globalThis.processContentFinal = processContentFinal;\n'
             '})();';
         final result = runtime.evaluate(wrapped);
         if (result.isError) {
@@ -211,6 +236,14 @@ class OutputPluginService {
         final probe = runtime.evaluate('typeof processResponse === "function"');
         final hasProcessResponse =
             !probe.isError && probe.stringResult == 'true';
+        final thinkingProbe =
+            runtime.evaluate('typeof processThinking === "function"');
+        final thinkingFinalProbe =
+            runtime.evaluate('typeof processThinkingFinal === "function"');
+        final contentProbe =
+            runtime.evaluate('typeof processContent === "function"');
+        final contentFinalProbe =
+            runtime.evaluate('typeof processContentFinal === "function"');
         _plugins.add(
           _LoadedOutputPlugin(
             info: OutputPluginInfo(
@@ -221,12 +254,24 @@ class OutputPluginService {
             runtime: runtime,
             source: parsed.source,
             hasProcessResponse: hasProcessResponse,
+            hasThinkingDelta:
+                !thinkingProbe.isError && thinkingProbe.stringResult == 'true',
+            hasThinkingFinal: !thinkingFinalProbe.isError &&
+                thinkingFinalProbe.stringResult == 'true',
+            hasContentDelta:
+                !contentProbe.isError && contentProbe.stringResult == 'true',
+            hasContentFinal: !contentFinalProbe.isError &&
+                contentFinalProbe.stringResult == 'true',
           ),
         );
         Logger.d(
             'output_plugin',
             'loaded ${parsed.name.isEmpty ? trimmed : parsed.name} '
-                'hasProcessResponse=$hasProcessResponse');
+                'hasProcessResponse=$hasProcessResponse '
+                'thinkingDelta=${!thinkingProbe.isError && thinkingProbe.stringResult == 'true'} '
+                'thinkingFinal=${!thinkingFinalProbe.isError && thinkingFinalProbe.stringResult == 'true'} '
+                'contentDelta=${!contentProbe.isError && contentProbe.stringResult == 'true'} '
+                'contentFinal=${!contentFinalProbe.isError && contentFinalProbe.stringResult == 'true'}');
       } catch (e) {
         errors.add('$trimmed：$e');
       }
@@ -358,6 +403,117 @@ class OutputPluginService {
             {'id': t.id, 'name': t.name, 'arguments': t.arguments},
         ],
       });
+
+  /// 流式四钩子：实时思考/正文增量。
+  ///
+  /// 注意这里不做“完整标签”处理——实时分片还没拼完整，处理只会误伤。
+  LlmDelta? transformDelta(LlmDelta delta) {
+    if (_plugins.isEmpty) return null;
+    var current = delta;
+    var changed = false;
+    for (final p in _plugins) {
+      if (p.hasThinkingDelta && current.reasoning.isNotEmpty) {
+        final out =
+            _invokeTextHook(p, 'processThinking', current.reasoning, false);
+        if (out != null) {
+          current = LlmDelta(
+            content: current.content,
+            reasoning: out,
+            toolName: current.toolName,
+            reset: current.reset,
+          );
+          changed = true;
+        }
+      }
+      if (p.hasContentDelta && current.content.isNotEmpty) {
+        final out =
+            _invokeTextHook(p, 'processContent', current.content, false);
+        if (out != null) {
+          current = LlmDelta(
+            content: out,
+            reasoning: current.reasoning,
+            toolName: current.toolName,
+            reset: current.reset,
+          );
+          changed = true;
+        }
+      }
+    }
+    return changed ? current : null;
+  }
+
+  /// 终稿两钩子：思考完整后、正文完整后各处理一次。
+  ///
+  /// 泄漏标签的清理必须在这里或 processResponse 做，不能放到实时分片里。
+  LlmResponse? transformFinalChannels(LlmResponse response) {
+    if (_plugins.isEmpty) return null;
+    var content = response.content;
+    var reasoning = response.reasoningContent;
+    var changed = false;
+    for (final p in _plugins) {
+      if (p.hasThinkingFinal) {
+        final out = _invokeTextHook(p, 'processThinkingFinal', reasoning, true);
+        if (out != null) {
+          reasoning = out;
+          changed = true;
+        }
+      }
+      if (p.hasContentFinal) {
+        final out = _invokeTextHook(p, 'processContentFinal', content, true);
+        if (out != null) {
+          content = out;
+          changed = true;
+        }
+      }
+    }
+    return changed
+        ? response.copyWith(content: content, reasoningContent: reasoning)
+        : null;
+  }
+
+  String? _invokeTextHook(
+    _LoadedOutputPlugin p,
+    String fn,
+    String text,
+    bool record,
+  ) {
+    final literal = jsonEncode(text);
+    final js = '${p.source}\n'
+        'try {'
+        '  const __f = (typeof $fn !== "undefined" && typeof $fn === "function")'
+        '    ? $fn : null;'
+        '  if (!__f) return null;'
+        '  const __r = __f($literal);'
+        '  JSON.stringify((__r === undefined || __r === null) ? null : String(__r));'
+        '} catch (e) { JSON.stringify(null); }';
+    try {
+      final result = p.runtime.evaluate(js);
+      if (result.isError) return null;
+      final decoded = jsonDecode(result.stringResult);
+      if (decoded is String) {
+        if (record) {
+          _record(
+            p.info,
+            fn,
+            'ran',
+            decoded == text ? '运行完成，未改写' : '已改写',
+            original: text,
+            result: decoded,
+          );
+        } else if (decoded != text) {
+          Logger.d('output_plugin',
+              '$fn ${p.info.name}: ${text.length}->${decoded.length}');
+        }
+        return decoded == text ? null : decoded;
+      }
+      return null;
+    } catch (_) {
+      if (record) {
+        _record(p.info, fn, 'error', '执行异常', original: text);
+      }
+      return null;
+    }
+  }
 
   String? _cleanOn(_LoadedOutputPlugin p, String text) {
     final literal = jsonEncode(text);
@@ -552,10 +708,12 @@ class OutputPluginService {
     final recognized = head.contains('@qinglong-plugin') ||
         head.contains('@ql-plugin') ||
         head.toLowerCase().contains('qinglong plugin');
+    const hooks = 'processResponse|beforeSend|process|transform|'
+        'processThinking|processThinkingFinal|processContent|processContentFinal';
     final hasFunction = RegExp(
-      r'(function\s+(processResponse|beforeSend|process|transform)\b)'
-      r'|((?:const|let|var)\s+(processResponse|beforeSend|process|transform)\s*=)'
-      r'|((processResponse|beforeSend|process|transform)\s*[:=]\s*(?:async\s*)?(?:function|\())',
+      '(function\\s+($hooks)\\b)'
+      '|((?:const|let|var)\\s+($hooks)\\s*=)'
+      r'|(($hooks)\s*[:=]\s*(?:async\s*)?(?:function|\())',
     ).hasMatch(source);
     if (!recognized || !hasFunction) {
       return ParsedOutputPlugin(
