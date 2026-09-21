@@ -2518,6 +2518,36 @@ class AgentLoop {
           }
         }
 
+        // 用户明确要求“测试 parallel_tools / 测试并行工具”时，强制第一发必须是
+        // parallel_tools：防止模型又绕回一个个单独调面板工具。
+        final userWantsParallelTest = history.any((m) =>
+            m.role == 'user' &&
+            (m.content.contains('测试parallel_tools') ||
+                m.content.contains('测试 parallel_tools') ||
+                m.content.contains('测试并行工具') ||
+                m.content.contains('测试 并行工具') ||
+                m.content.contains('测试并行')));
+        if (userWantsParallelTest &&
+            turnsUsed == 1 &&
+            response.toolCalls.isNotEmpty &&
+            !response.toolCalls.any((c) => c.name == 'parallel_tools')) {
+          final first = response.toolCalls.first;
+          final nudge = '用户明确要求“测试 parallel_tools”：请把要并行执行的工具统一放进 '
+              'parallel_tools 的 tools 数组里一次调用，不要单独串行调用 '
+              '${first.name}。本轮 ${first.name} 不执行，请重新调用 parallel_tools。';
+          toolMessages.add(_toolReply(first, nudge));
+          emit(
+            AgentEvent(
+              kind: AgentEventKind.thinking,
+              message:
+                  '用户要求测试 parallel_tools，已拦截本轮 ${first.name}，要求改用 parallel_tools',
+              result: nudge,
+              turn: turnsUsed,
+            ),
+          );
+          continue;
+        }
+
         final batchToolImages = <AiImageAttachment>[];
         for (final call in response.toolCalls) {
           checkCancelled();
