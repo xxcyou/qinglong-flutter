@@ -2531,21 +2531,87 @@ class AgentLoop {
             turnsUsed == 1 &&
             response.toolCalls.isNotEmpty &&
             !response.toolCalls.any((c) => c.name == 'parallel_tools')) {
-          final first = response.toolCalls.first;
-          final nudge = '用户明确要求“测试 parallel_tools”：请把要并行执行的工具统一放进 '
-              'parallel_tools 的 tools 数组里一次调用，不要单独串行调用 '
-              '${first.name}。本轮 ${first.name} 不执行，请重新调用 parallel_tools。';
-          toolMessages.add(_toolReply(first, nudge));
+          // 模型绕不过来的终极兜底：用户明确要测试 parallel_tools 时，
+          // 直接把这一轮改造成一个真正的 parallel_tools 调用，
+          // 不再等模型自己“想通”。
+          final internalNames = <String>{
+            _askUserSpec.name,
+            _taskCompleteSpec.name,
+            _suggestNextSpec.name,
+            _canvasSpec.name,
+            if (enableTaskPlan) _taskPlanSpec.name,
+            if (enableTaskPlan) _taskStepSpec.name,
+            if (enableTaskPlan) _taskAppendSpec.name,
+            if (enableTaskPlan) _taskDeleteSpec.name,
+            if (enableTaskPlan) _taskClearSpec.name,
+            if (enableTaskPlan) _taskAddSubtaskSpec.name,
+            if (enableTaskPlan) _taskSubstepSpec.name,
+          };
+          final proposed = response.toolCalls
+              .where((c) =>
+                  !internalNames.contains(c.name) && c.name != 'parallel_tools')
+              .toList();
+          // 测试批至少覆盖几个常见只读接口，保证真的并发起来；
+          // 模型本轮想调的普通工具也会并进去，去重后统一交给 parallel_tools。
+          final testBatch = <Map<String, dynamic>>[
+            {
+              'name': 'system_info',
+              'arguments': const <String, dynamic>{},
+              'label': '面板信息',
+            },
+            {
+              'name': 'script_list',
+              'arguments': const <String, dynamic>{},
+              'label': '脚本列表',
+            },
+            {
+              'name': 'cron_list',
+              'arguments': const {'searchValue': ''},
+              'label': '任务列表',
+            },
+            {
+              'name': 'env_list',
+              'arguments': const {'searchValue': ''},
+              'label': '环境变量',
+            },
+            {
+              'name': 'sub_list',
+              'arguments': const {'searchValue': ''},
+              'label': '订阅列表',
+            },
+          ];
+          final itemsByName = <String, Map<String, dynamic>>{};
+          for (final t in [
+            ...testBatch,
+            for (final c in proposed)
+              {
+                'name': c.name,
+                'arguments': c.arguments,
+                'label': c.name,
+              },
+          ]) {
+            itemsByName.putIfAbsent(t['name'] as String, () => t);
+          }
+          response = response.copyWith(
+            toolCalls: [
+              LlmToolCall(
+                id: 'auto_parallel_test',
+                name: 'parallel_tools',
+                arguments: {
+                  'tools': itemsByName.values.toList(),
+                },
+              ),
+            ],
+          );
           emit(
             AgentEvent(
               kind: AgentEventKind.thinking,
-              message:
-                  '用户要求测试 parallel_tools，已拦截本轮 ${first.name}，要求改用 parallel_tools',
-              result: nudge,
+              message: '用户要求测试 parallel_tools，已自动将本轮调用包装成 parallel_tools '
+                  '（${itemsByName.length} 个工具）一次并行执行',
+              result: '自动包装：${itemsByName.keys.join('、')}',
               turn: turnsUsed,
             ),
           );
-          continue;
         }
 
         final batchToolImages = <AiImageAttachment>[];
