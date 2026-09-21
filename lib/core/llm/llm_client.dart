@@ -444,6 +444,46 @@ class LlmClient {
   ///
   /// 常见形态：`thinking\n...`、`thinking 思考内容...`、`Thought: ...`、
   /// `思考\n...`。只剥开头，不影响正文里的同类词。
+  /// AI 调试日志：请求体转字符串，避免把整包几 MB 的图片 base64 全塞进内存日志。
+  static String _debugDumpBody(Object? body) {
+    try {
+      final text = jsonEncode(body);
+      if (text.length <= 40000) return text;
+      return '${text.substring(0, 40000)}\n...[已截断，原长 ${text.length}]';
+    } catch (_) {
+      return '$body';
+    }
+  }
+
+  /// AI 调试日志：流式响应把“读到的工具调用”原样拼出来，方便排查上游解析。
+  static String _debugDumpResponse({
+    required String content,
+    required String reasoning,
+    required List<LlmToolCall> toolCalls,
+    required String finishReason,
+  }) {
+    final buffer = StringBuffer('finishReason=$finishReason\n');
+    if (reasoning.isNotEmpty) {
+      buffer.writeln('\n--- 思考 ---\n$reasoning');
+    }
+    if (content.isNotEmpty) {
+      buffer.writeln('\n--- 正文 ---\n$content');
+    }
+    if (toolCalls.isNotEmpty) {
+      buffer.writeln('\n--- 工具调用 ---');
+      for (var i = 0; i < toolCalls.length; i++) {
+        final c = toolCalls[i];
+        buffer.writeln(
+            '[$i] name=${c.name} id=${c.id} args=${_debugDumpBody(c.arguments)}');
+      }
+    } else {
+      buffer.writeln('\n--- 工具调用 --- (空)');
+    }
+    final text = buffer.toString();
+    if (text.length <= 40000) return text;
+    return '${text.substring(0, 40000)}\n...[已截断，原长 ${text.length}]';
+  }
+
   static String sanitizeReasoning(String raw) {
     var text = raw.trimLeft();
     final label = RegExp(
@@ -666,6 +706,22 @@ class LlmClient {
     CancelToken? cancelToken,
   }) async {
     final Response<ResponseBody> response;
+    final requestBody = _requestBody(
+      config: config,
+      messages: messages,
+      tools: tools,
+      stream: true,
+      includeUsage: includeUsage,
+    );
+    if (ApiDebugLog.enabled) {
+      ApiDebugLog.instance.add(
+        kind: ApiDebugKind.request,
+        method: 'POST',
+        uri: endpoint,
+        message: 'AI 请求（流式）${config.model}',
+        detail: _debugDumpBody(requestBody),
+      );
+    }
     try {
       response = await DioClient.dio.post<ResponseBody>(
         endpoint,
@@ -686,13 +742,7 @@ class LlmClient {
           // 交给 Dio 直接抛异常，手上就只剩一个 ResponseBody，读不出错误详情。
           validateStatus: (_) => true,
         ),
-        data: _requestBody(
-          config: config,
-          messages: messages,
-          tools: tools,
-          stream: true,
-          includeUsage: includeUsage,
-        ),
+        data: requestBody,
       );
     } on DioException catch (e) {
       throw _mapLlmError(e);
@@ -757,7 +807,7 @@ class LlmClient {
         );
       }
     }
-    return _finalize(
+    final result = _finalize(
       endpoint: endpoint,
       content: assembler.content,
       reasoningContent: assembler.reasoning,
@@ -765,6 +815,22 @@ class LlmClient {
       finishReason: assembler.finishReason,
       usage: assembler.usage,
     );
+    if (ApiDebugLog.enabled) {
+      ApiDebugLog.instance.add(
+        kind: ApiDebugKind.response,
+        method: 'POST',
+        uri: endpoint,
+        statusCode: status,
+        message: 'AI 响应（流式）${config.model}',
+        detail: _debugDumpResponse(
+          content: result.content,
+          reasoning: result.reasoningContent,
+          toolCalls: result.toolCalls,
+          finishReason: result.finishReason,
+        ),
+      );
+    }
+    return result;
   }
 
   /// 非流式一轮。流式不被支持、或调用方不需要增量时走这里。
@@ -775,6 +841,20 @@ class LlmClient {
     List<LlmFunctionSpec>? tools,
     CancelToken? cancelToken,
   }) async {
+    final requestBody = _requestBody(
+      config: config,
+      messages: messages,
+      tools: tools,
+    );
+    if (ApiDebugLog.enabled) {
+      ApiDebugLog.instance.add(
+        kind: ApiDebugKind.request,
+        method: 'POST',
+        uri: endpoint,
+        message: 'AI 请求 ${config.model}',
+        detail: _debugDumpBody(requestBody),
+      );
+    }
     try {
       final response = await DioClient.dio.post<dynamic>(
         endpoint,
@@ -790,8 +870,18 @@ class LlmClient {
           sendTimeout: const Duration(seconds: 30),
           receiveTimeout: Duration(seconds: config.receiveTimeoutSeconds),
         ),
-        data: _requestBody(config: config, messages: messages, tools: tools),
+        data: requestBody,
       );
+      if (ApiDebugLog.enabled) {
+        ApiDebugLog.instance.add(
+          kind: ApiDebugKind.response,
+          method: 'POST',
+          uri: endpoint,
+          statusCode: response.statusCode,
+          message: 'AI 响应 ${config.model}',
+          detail: _debugDumpBody(response.data),
+        );
+      }
       return _fromJsonBody(response.data, endpoint);
     } on DioException catch (e) {
       throw _mapLlmError(e);

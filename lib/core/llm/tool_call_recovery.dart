@@ -68,14 +68,8 @@ class LlmToolCallRecovery {
     multiLine: true,
   );
 
-  // DeepSeek 系实际吐过 `<tool>{...}</tool>` 这种更短的标签，也必须捞。
-  static final _shortTool = RegExp(
-    r'<tool>\s*(\{[\s\S]*?\})\s*</tool>',
-    multiLine: true,
-  );
-
   static final _markupHint = RegExp(
-    r'<\|tool_calls?_begin\|>|<\|tool_sep\|>|<\|tool_call_end\|>|<tool_call>|<tool>',
+    r'<\|tool_calls?_begin\|>|<\|tool_sep\|>|<\|tool_call_end\|>|<tool_call>',
   );
 
   /// 扫描一段正文。没捞到东西时返回原文，[RecoveredToolCalls.calls] 为空。
@@ -91,9 +85,6 @@ class LlmToolCallRecovery {
 
     final hermes = _scanHermes(content, normalized);
     if (hermes.calls.isNotEmpty) return hermes;
-
-    final short = _scanShortTool(content, normalized);
-    if (short.calls.isNotEmpty) return short;
 
     final bare = _scanBareJson(content);
     if (bare.calls.isNotEmpty) return bare;
@@ -164,42 +155,6 @@ class LlmToolCallRecovery {
 
   static RecoveredToolCalls _scanHermes(String original, String normalized) {
     final matches = _hermes.allMatches(normalized).toList();
-    if (matches.isEmpty) {
-      return RecoveredToolCalls(content: original, calls: const []);
-    }
-    final calls = <LlmToolCall>[];
-    final kept = StringBuffer();
-    var cursor = 0;
-    for (final m in matches) {
-      final payload = original.substring(m.start, m.end);
-      final jsonStart = payload.indexOf('{');
-      final jsonEnd = payload.lastIndexOf('}');
-      if (jsonStart < 0 || jsonEnd <= jsonStart) continue;
-      final call = _callFromJson(payload.substring(jsonStart, jsonEnd + 1));
-      if (call == null) continue;
-      if (m.start > cursor) kept.write(original.substring(cursor, m.start));
-      cursor = m.end;
-      calls.add(
-        LlmToolCall(
-          id: 'recovered_${calls.length + 1}',
-          name: call.name,
-          arguments: call.arguments,
-        ),
-      );
-    }
-    if (calls.isEmpty) {
-      return RecoveredToolCalls(content: original, calls: const []);
-    }
-    if (cursor < original.length) kept.write(original.substring(cursor));
-    return RecoveredToolCalls(
-      content: _cleanup(kept.toString()),
-      calls: calls,
-      sawMarkup: true,
-    );
-  }
-
-  static RecoveredToolCalls _scanShortTool(String original, String normalized) {
-    final matches = _shortTool.allMatches(normalized).toList();
     if (matches.isEmpty) {
       return RecoveredToolCalls(content: original, calls: const []);
     }
