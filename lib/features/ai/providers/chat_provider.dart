@@ -3531,6 +3531,12 @@ class ChatNotifier extends Notifier<ChatState> {
         sessionId: run?.sessionId,
         parallelLimit: ref.read(llmRegistryProvider).subAgent.parallel,
       );
+      // 排障日志：确认并行工具是否真的进入了可调用工具表。
+      Logger.d(
+        'agent_tools',
+        'baseTools=${baseTools.length} hasParallel=${baseTools.any((t) => t.name == 'parallel_tools')} '
+            'first=${baseTools.take(5).map((t) => t.name).join(',')}',
+      );
       // 后台子代理完成结果自动并回主代理上下文的槽。
       final subagentSink = AgentSubagentSink();
       // 主模型始终是主线。支持图片的主模型直接看多模态图片；

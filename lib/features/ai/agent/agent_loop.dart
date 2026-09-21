@@ -1441,6 +1441,11 @@ class AgentLoop {
         }
         try {
           final parallelSpec = _findExternal('parallel_tools');
+          Logger.d(
+            'agent_tools',
+            'schema parallel=${parallelSpec?.name ?? 'NULL'} '
+                'external=${externalTools.length} registry=${registry.definitions.length}',
+          );
           response = await LlmClient.complete(
             config: config,
             messages: messages,
