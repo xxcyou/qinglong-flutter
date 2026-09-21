@@ -1440,6 +1440,7 @@ class AgentLoop {
           if (transformed != null) messages = transformed;
         }
         try {
+          final parallelSpec = _findExternal('parallel_tools');
           response = await LlmClient.complete(
             config: config,
             messages: messages,
@@ -1447,6 +1448,14 @@ class AgentLoop {
             onDelta: onDelta == null ? null : pipe,
             tools: enableTools
                 ? [
+                    // 并行工具特意排在最前：工具数量多时，放末尾很容易被
+                    // 模型/厂商截断，导致它知道但始终“调不出来”。
+                    if (parallelSpec != null)
+                      LlmFunctionSpec(
+                        name: parallelSpec.name,
+                        description: parallelSpec.description,
+                        parameters: parallelSpec.parameters,
+                      ),
                     for (final t in registry.definitions)
                       LlmFunctionSpec(
                         name: t.name,
@@ -1454,11 +1463,12 @@ class AgentLoop {
                         parameters: t.parameters,
                       ),
                     for (final t in externalTools)
-                      LlmFunctionSpec(
-                        name: t.name,
-                        description: t.description,
-                        parameters: t.parameters,
-                      ),
+                      if (t.name != 'parallel_tools')
+                        LlmFunctionSpec(
+                          name: t.name,
+                          description: t.description,
+                          parameters: t.parameters,
+                        ),
                     _askUserSpec,
                     _taskCompleteSpec,
                     if (enableTaskPlan) _taskPlanSpec,
