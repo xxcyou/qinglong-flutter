@@ -14,6 +14,8 @@ import '../../home/home_navigation_provider.dart';
 import '../models/agent_event.dart';
 import '../models/ai_message.dart';
 import '../models/approval_mode.dart';
+import '../modes/mode_models.dart';
+import '../modes/mode_provider.dart';
 import '../widgets/ai_composer.dart';
 import '../widgets/ai_control_sheets.dart';
 import '../widgets/agent_stream_card.dart';
@@ -365,6 +367,9 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
   final _quick = TextEditingController();
   final _quickFocus = FocusNode();
 
+  /// 快问输入框打 `/` 后正在选模式的关键字；空 = 不显示模式选择条。
+  String _quickModePickerKeyword = '';
+
   /// 当前这轮快问的唯一标识，用来把流式正文归到同一个悬浮窗。
   String _liveQuickRunId = '';
 
@@ -388,6 +393,104 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     _quick.dispose();
     _quickFocus.dispose();
     super.dispose();
+  }
+
+  void _onQuickInputChanged(String text) {
+    ref.read(aiDockProvider.notifier).setQuickDraft(text);
+    final trimmed = text.trimLeft();
+    if (trimmed.startsWith('/') && !trimmed.contains(RegExp(r'\s'))) {
+      final key = trimmed.substring(1).trim();
+      if (_quickModePickerKeyword != key) {
+        setState(() => _quickModePickerKeyword = key);
+      }
+    } else if (_quickModePickerKeyword.isNotEmpty) {
+      setState(() => _quickModePickerKeyword = '');
+    }
+  }
+
+  void _selectQuickMode(AiMode mode) {
+    ref.read(chatProvider.notifier).addPendingMode(mode.id);
+    _quick.clear();
+    setState(() => _quickModePickerKeyword = '');
+  }
+
+  /// 快问条上方的一行模式行：已挂载标签（可删）和 `/` 搜到的可挂标签。
+  Widget _quickModeRow(ChatState chat) {
+    final scheme = Theme.of(context).colorScheme;
+    final modes = ref.watch(modeProvider);
+    final modeById = {for (final m in modes.items) m.id: m};
+    final pending = [
+      for (final id in chat.pendingModeIds)
+        if (modeById[id] != null) modeById[id]!,
+    ];
+    final search = _quickModePickerKeyword.isNotEmpty
+        ? ref.read(modeProvider.notifier).search(_quickModePickerKeyword)
+        : const <AiMode>[];
+    const rowHeight = 34.0;
+    if (pending.isEmpty && search.isEmpty) {
+      if (_quickModePickerKeyword.isEmpty) return const SizedBox.shrink();
+      return GlassPanel(
+        radius: 16,
+        blur: 14,
+        shadowY: 4,
+        sheen: false,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        margin: const EdgeInsets.only(bottom: 4),
+        child: SizedBox(
+          height: rowHeight,
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              '没有匹配「$_quickModePickerKeyword」的模式',
+              style: TextStyle(
+                fontSize: 11.5,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return GlassPanel(
+      radius: 16,
+      blur: 14,
+      shadowY: 4,
+      sheen: false,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      margin: const EdgeInsets.only(bottom: 4),
+      child: SizedBox(
+        height: rowHeight,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          children: [
+            for (final m in pending)
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: InputChip(
+                  visualDensity: VisualDensity.compact,
+                  avatar: Icon(Icons.tune, size: 14, color: scheme.primary),
+                  label: Text('#${m.name}',
+                      style: const TextStyle(fontSize: 11.5)),
+                  onDeleted: () =>
+                      ref.read(chatProvider.notifier).removePendingMode(m.id),
+                ),
+              ),
+            for (final m in search)
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: ActionChip(
+                  visualDensity: VisualDensity.compact,
+                  avatar: Icon(Icons.tune, size: 14, color: scheme.primary),
+                  label: Text('#${m.name}',
+                      style: const TextStyle(fontSize: 11.5)),
+                  onPressed: () => _selectQuickMode(m),
+                ),
+              ),
+            if (pending.isEmpty && search.isEmpty) const SizedBox.shrink(),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -1043,8 +1146,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
                   color: scheme.onSurfaceVariant.withValues(alpha: 0.75),
                 ),
               ),
-              onChanged: (v) =>
-                  ref.read(aiDockProvider.notifier).setQuickDraft(v),
+              onChanged: _onQuickInputChanged,
               onSubmitted: (_) => _sendQuick(),
             ),
           ),
@@ -1056,7 +1158,11 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
 
     final panelTop = top + (bubble - height) / 2;
     // 展开后附件行是上面一阶玻璃，和输入框之间留 4px 气口。
-    final extraTop = expanded ? rowHeight + 4 : 0;
+    // 有模式标签/模式选择时也抬一层，避免盖住下面的输入。
+    final showQuickModes =
+        _quickModePickerKeyword.isNotEmpty || chat.pendingModeIds.isNotEmpty;
+    final extraTop =
+        (expanded ? rowHeight + 4 : 0) + (showQuickModes ? rowHeight + 4 : 0);
     final stripTop = panelTop - extraTop;
     return Positioned(
       key: const ValueKey('quickStrip'),
@@ -1068,6 +1174,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (showQuickModes) _quickModeRow(chat),
           if (expanded) attachRow(),
           inputPanel,
         ],
@@ -1144,6 +1251,9 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     }
 
     _quick.clear();
+    if (_quickModePickerKeyword.isNotEmpty) {
+      setState(() => _quickModePickerKeyword = '');
+    }
     dockNotifier
       ..setQuickDraft('')
       ..clearQuickFiles()
@@ -1580,6 +1690,106 @@ class _WindowState extends ConsumerState<_Window> {
   /// 不该跟着窗口几何一起落盘。
   bool _sessions = false;
 
+  /// 输入框打 `/` 后正在选模式的关键字；空 = 不显示模式选择条。
+  String _modePickerKeyword = '';
+
+  void _onInputChanged(String text) {
+    ref.read(aiDockProvider.notifier).setDraft(text);
+    final trimmed = text.trimLeft();
+    // 只在输入框以 `/` 开头且还没打空格时弹模式选择条。
+    if (trimmed.startsWith('/') && !trimmed.contains(RegExp(r'\s'))) {
+      final key = trimmed.substring(1).trim();
+      if (_modePickerKeyword != key) {
+        setState(() => _modePickerKeyword = key);
+      }
+    } else if (_modePickerKeyword.isNotEmpty) {
+      setState(() => _modePickerKeyword = '');
+    }
+  }
+
+  void _selectMode(AiMode mode) {
+    ref.read(chatProvider.notifier).addPendingMode(mode.id);
+    widget.input.clear();
+    setState(() => _modePickerKeyword = '');
+  }
+
+  /// 已经挂载的模式标签 chips，点 x 取消。
+  Widget _buildPendingModeChips(ChatState chat) {
+    final scheme = Theme.of(context).colorScheme;
+    final modes = ref.watch(modeProvider);
+    final modeById = {for (final m in modes.items) m.id: m};
+    final picked = [
+      for (final id in chat.pendingModeIds)
+        if (modeById[id] != null) modeById[id]!,
+    ];
+    if (picked.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final m in picked)
+              InputChip(
+                visualDensity: VisualDensity.compact,
+                avatar: Icon(Icons.tune, size: 14, color: scheme.primary),
+                label:
+                    Text('#${m.name}', style: const TextStyle(fontSize: 11.5)),
+                onDeleted: () =>
+                    ref.read(chatProvider.notifier).removePendingMode(m.id),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 输入框打 `/` 后弹出的模式选择条：点标签直接挂载并清空输入框。
+  Widget _buildModePicker() {
+    final scheme = Theme.of(context).colorScheme;
+    final notifier = ref.read(modeProvider.notifier);
+    final modes = notifier.search(_modePickerKeyword);
+    if (modes.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            _modePickerKeyword.isEmpty
+                ? '没有模式，去「管理 → 模式库」新建一个'
+                : '没有匹配「$_modePickerKeyword」的模式',
+            style: TextStyle(
+              fontSize: 11.5,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final m in modes)
+              ActionChip(
+                visualDensity: VisualDensity.compact,
+                avatar: Icon(Icons.tune, size: 14, color: scheme.primary),
+                label:
+                    Text('#${m.name}', style: const TextStyle(fontSize: 11.5)),
+                onPressed: () => _selectMode(m),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     assert(
@@ -1588,7 +1798,13 @@ class _WindowState extends ConsumerState<_Window> {
     );
     final input = widget.input;
     final scroll = widget.scroll;
-    final onSend = widget.onSend;
+    void onSend() {
+      if (_modePickerKeyword.isNotEmpty) {
+        setState(() => _modePickerKeyword = '');
+      }
+      widget.onSend();
+    }
+
     final field = widget.field;
     final scheme = Theme.of(context).colorScheme;
     final dock = ref.watch(aiDockProvider);
@@ -1797,6 +2013,12 @@ class _WindowState extends ConsumerState<_Window> {
                     onRemove: chatNotifier.removePendingImage,
                     margin: const EdgeInsets.fromLTRB(12, 0, 12, 4),
                   ),
+                // 模式库标签条：发送时这些模式内容会注入本次提示词。
+                if (!_sessions && chat.pendingModeIds.isNotEmpty)
+                  _buildPendingModeChips(chat),
+                // 输入框打 / 后弹出的模式选择条。
+                if (!_sessions && _modePickerKeyword.isNotEmpty)
+                  _buildModePicker(),
                 if (!_sessions && dock.chips.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
@@ -1848,7 +2070,7 @@ class _WindowState extends ConsumerState<_Window> {
                     margin: const EdgeInsets.fromLTRB(8, 2, 8, 8),
                     onSend: onSend,
                     onStop: chatNotifier.stopAgent,
-                    onChanged: dockNotifier.setDraft,
+                    onChanged: _onInputChanged,
                     onAttach: () => _pickFile(context, ref),
                     onPaste: () async {
                       final ok = await dockNotifier.pushClipboard();
