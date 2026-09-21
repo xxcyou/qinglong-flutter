@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -73,6 +75,7 @@ class QlToolRegistry {
   QlToolRegistry({
     required PanelInfo? Function() panelGetter,
     this.approvalMode = AiApprovalMode.cautious,
+    this.defaultParallel = 3,
   }) : _panelGetter = panelGetter;
 
   final PanelInfo? Function() _panelGetter;
@@ -80,6 +83,9 @@ class QlToolRegistry {
   /// 当前会话的写操作确认策略。沙箱在“全部放行”时完全放行，
   /// 其它模式下仍保留系统关键路径保护。
   final AiApprovalMode approvalMode;
+
+  /// parallel_tools 的并发上限，外部由“子代理并行数量”设置注入。
+  final int defaultParallel;
 
   static const _stringProp = {
     'type': 'string',
@@ -101,6 +107,53 @@ class QlToolRegistry {
   }
 
   List<ToolDefinition> get definitions => [
+        ToolDefinition(
+          name: 'parallel_tools',
+          description: '把多个**互不依赖的工具调用**一次性并行执行，统一返回结果。'
+              '适合收集、探查、统计、获取、查询多份独立信息（同时看多个脚本、'
+              '多个任务/日志/订阅/环境变量、多个接口状态等），'
+              '也适合一批只读或可读可写的终端命令（如 ssh/exec 同时检查多台/多目录）；'
+              '避免一步一步串行太慢。\n'
+              '硬约束：\n'
+              '1) 调用之间不能有依赖（B 需要 A 的结果就不能放进同一批）；\n'
+              '2) 不要对同一资源/同一个文件/同一个目标做可能相互覆盖或冲突的调用；\n'
+              '3) 含写操作/危险命令时仍要遵守本会话确认策略，整体会按一次写操作确认。\n'
+              '并行度上限 $defaultParallel，默认就用这个数；只是“最高”，'
+              '具体放几个由 AI 按任务需要决定。',
+          parameters: _obj([
+            'tools'
+          ], {
+            'tools': {
+              'type': 'array',
+              'description': '要并行执行的工具清单，每项 {name, arguments, label}。'
+                  'label 可填一句这步在干什么，方便汇总时区分',
+              'items': {
+                'type': 'object',
+                'properties': {
+                  'name': {'type': 'string', 'description': '工具名'},
+                  'arguments': {
+                    'type': 'object',
+                    'description': '该工具参数',
+                  },
+                  'label': {
+                    'type': 'string',
+                    'description': '可选，这步的说明，如“查脚本A”',
+                  },
+                },
+                'required': ['name'],
+              },
+            },
+            'max_parallel': {
+              'type': 'integer',
+              'description':
+                  '可选的并发上限，范围 1-$defaultParallel，默认 $defaultParallel',
+            },
+          }),
+          isWrite: true,
+          impact: '并行执行一批工具，可能包含写/危险命令，按一次写操作确认',
+          reversible: false,
+          danger: true,
+        ),
         ToolDefinition(
           name: 'cron_list',
           description: '列出定时任务，可搜索',
@@ -1103,6 +1156,81 @@ class QlToolRegistry {
     final base = panel?.apiBaseUrl ?? '';
 
     switch (toolName) {
+      case 'parallel_tools':
+        final raw = args['tools'];
+        if (raw is! List || raw.isEmpty) {
+          return 'parallel_tools 的 tools 是空的，没有可并行执行的任务。';
+        }
+        final items = <({
+          String name,
+          Map<String, dynamic> arguments,
+          String label,
+        })>[];
+        for (final item in raw) {
+          if (item is! Map) continue;
+          final name = item['name']?.toString().trim() ?? '';
+          if (name.isEmpty || name == 'parallel_tools') continue;
+          final arguments = item['arguments'] is Map
+              ? Map<String, dynamic>.from(item['arguments'] as Map)
+              : <String, dynamic>{};
+          items.add((
+            name: name,
+            arguments: arguments,
+            label: item['label']?.toString().trim() ?? '',
+          ));
+        }
+        if (items.isEmpty) {
+          return 'parallel_tools 里没有有效的工具调用，且不允许嵌套调用 parallel_tools。';
+        }
+        final notFound =
+            items.where((i) => find(i.name) == null).map((i) => i.name).toSet();
+        if (notFound.isNotEmpty) {
+          return 'parallel_tools 找不到这些工具：${notFound.join('、')}。'
+              '请检查工具名是否在当前工具表里。';
+        }
+        final ceiling = defaultParallel < 1 ? 1 : defaultParallel;
+        final maxParallel = (args['max_parallel'] as num?)?.toInt();
+        final workers =
+            (maxParallel == null || maxParallel < 1 || maxParallel > ceiling)
+                ? ceiling
+                : maxParallel;
+        final results = List<String?>.filled(items.length, null);
+        final errors = List<String?>.filled(items.length, null);
+        var next = 0;
+        Future<void> worker() async {
+          while (true) {
+            final i = next++;
+            if (i >= items.length) return;
+            try {
+              results[i] = await execute(
+                toolName: items[i].name,
+                args: items[i].arguments,
+                confirm: true,
+              );
+            } catch (e) {
+              errors[i] = '$e';
+            }
+          }
+        }
+        final activeWorkers = workers > items.length ? items.length : workers;
+        await Future.wait([
+          for (var i = 0; i < activeWorkers; i++) worker(),
+        ]);
+        final lines = <String>[
+          '并行执行 ${items.length} 个工具（并发 $activeWorkers，上限 $ceiling）：',
+        ];
+        for (var i = 0; i < items.length; i++) {
+          final item = items[i];
+          final title =
+              item.label.isEmpty ? item.name : '${item.label}（${item.name}）';
+          if (errors[i] != null) {
+            lines.add('❌ [$title] 失败：${errors[i]}');
+          } else {
+            lines.add('### [$title]\n${results[i] ?? ''}');
+          }
+        }
+        return lines.join('\n\n');
+
       case 'cron_list':
         final result = await CronApi.list(
           apiBaseUrl: base,

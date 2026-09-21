@@ -3387,6 +3387,7 @@ class ChatNotifier extends Notifier<ChatState> {
     final registry = QlToolRegistry(
       panelGetter: () => ref.read(currentPanelProvider),
       approvalMode: state.approvalMode,
+      defaultParallel: ref.read(llmRegistryProvider).subAgent.parallel,
     );
     final history = _historyWithAutoCompress(
       userInput: userInput,
@@ -3529,12 +3530,11 @@ class ChatNotifier extends Notifier<ChatState> {
         registry: registry,
         extraTools: [canvasTool],
         sessionId: run?.sessionId,
-        parallelLimit: ref.read(llmRegistryProvider).subAgent.parallel,
       );
-      // 排障日志：确认并行工具是否真的进入了可调用工具表。
+      // 排障日志：确认并行工具是否真的进入了可调用工具表（本体在 registry）。
       Logger.d(
         'agent_tools',
-        'baseTools=${baseTools.length} hasParallel=${baseTools.any((t) => t.name == 'parallel_tools')} '
+        'baseTools=${baseTools.length} hasParallelInRegistry=${registry.find('parallel_tools') != null} '
             'first=${baseTools.take(5).map((t) => t.name).join(',')}',
       );
       // 后台子代理完成结果自动并回主代理上下文的槽。
@@ -3557,6 +3557,7 @@ class ChatNotifier extends Notifier<ChatState> {
             registry: QlToolRegistry(
               panelGetter: () => ref.read(currentPanelProvider),
               approvalMode: state.approvalMode,
+              defaultParallel: plan.parallel,
             ),
             confirmedActionKeys: confirmedKeys,
             externalTools: baseTools,
@@ -3918,7 +3919,6 @@ class ChatNotifier extends Notifier<ChatState> {
     QlToolRegistry? registry,
     List<ExternalTool> extraTools = const [],
     String? sessionId,
-    int parallelLimit = 3,
   }) {
     final tools = <ExternalTool>[
       if (includeImageTool)
@@ -4725,160 +4725,6 @@ class ChatNotifier extends Notifier<ChatState> {
         },
       ),
     ];
-
-    // 多工具并行：把互不依赖的调用（含 shell_exec 这类可读可写的终端命令）一次性并发执行。
-    tools.add(
-      ExternalTool(
-        name: 'parallel_tools',
-        description: '把多个**互不依赖的工具调用**一次性并行执行，统一返回结果。'
-            '适合收集、探查、统计、获取、查询多份独立信息（同时看多个脚本、'
-            '多个任务/日志/订阅/环境变量、多个接口状态等），'
-            '也适合一批只读或可读可写的终端命令（如 ssh/exec 同时检查多台/多目录）；'
-            '避免一步一步串行太慢。\n'
-            '硬约束：\n'
-            '1) 调用之间不能有依赖（B 需要 A 的结果就不能放进同一批）；\n'
-            '2) 不要对同一资源/同一个文件/同一个目标做可能相互覆盖或冲突的调用；\n'
-            '3) 含写操作/危险命令时仍要遵守本会话确认策略，整体会按一次写操作确认。\n'
-            '并行度上限 $parallelLimit，默认就用这个数；只是“最高”，'
-            '具体放几个由 AI 按任务需要决定。',
-        parameters: {
-          'type': 'object',
-          'properties': {
-            'tools': {
-              'type': 'array',
-              'description': '要并行执行的工具清单，每项 {name, arguments, label}。'
-                  'label 可填一句这步在干什么，方便汇总时区分',
-              'items': {
-                'type': 'object',
-                'properties': {
-                  'name': {'type': 'string', 'description': '工具名'},
-                  'arguments': {
-                    'type': 'object',
-                    'description': '该工具参数',
-                  },
-                  'label': {
-                    'type': 'string',
-                    'description': '可选，这步的说明，如“查脚本A”',
-                  },
-                },
-                'required': ['name'],
-              },
-            },
-            'max_parallel': {
-              'type': 'integer',
-              'description': '可选的并发上限，范围 1-$parallelLimit，默认 $parallelLimit',
-            },
-          },
-          'required': ['tools'],
-        },
-        origin: '并行工具',
-        // 里面可能包含 shell_exec / 写接口等，整体当写操作确认，
-        // 避免并行批绕过外层确认策略。
-        isWrite: true,
-        danger: true,
-        invoke: (args) async {
-          final raw = args['tools'];
-          if (raw is! List || raw.isEmpty) {
-            return 'parallel_tools 的 tools 是空的，没有可并行执行的任务。';
-          }
-          final items = <({
-            String name,
-            Map<String, dynamic> arguments,
-            String label,
-          })>[];
-          for (final item in raw) {
-            if (item is! Map) continue;
-            final name = item['name']?.toString().trim() ?? '';
-            if (name.isEmpty) continue;
-            final arguments = item['arguments'] is Map
-                ? Map<String, dynamic>.from(item['arguments'] as Map)
-                : <String, dynamic>{};
-            items.add((
-              name: name,
-              arguments: arguments,
-              label: item['label']?.toString().trim() ?? '',
-            ));
-          }
-          if (items.isEmpty) {
-            return 'parallel_tools 里没有有效的工具调用。';
-          }
-
-          // 先确认工具都存在，避免跑一半才发现名字写错。
-          final notFound = <String>[];
-          for (final item in items) {
-            final ext = tools
-                .where((t) => t.name == item.name && t.name != 'parallel_tools')
-                .firstOrNull;
-            final def = registry?.find(item.name);
-            if (ext == null && def == null) {
-              notFound.add(item.name);
-            }
-          }
-          if (notFound.isNotEmpty) {
-            return 'parallel_tools 找不到这些工具：${notFound.join('、')}。'
-                '请检查工具名是否在当前工具表里。';
-          }
-
-          final ceiling = parallelLimit < 1 ? 1 : parallelLimit;
-          final maxParallel = (args['max_parallel'] as num?)?.toInt();
-          final workers =
-              (maxParallel == null || maxParallel < 1 || maxParallel > ceiling)
-                  ? ceiling
-                  : maxParallel;
-
-          final results = List<String?>.filled(items.length, null);
-          final errors = List<String?>.filled(items.length, null);
-          var next = 0;
-          Future<void> worker() async {
-            while (true) {
-              final i = next++;
-              if (i >= items.length) return;
-              final item = items[i];
-              try {
-                final ext = tools
-                    .where((t) =>
-                        t.name == item.name && t.name != 'parallel_tools')
-                    .firstOrNull;
-                if (ext != null) {
-                  results[i] = await ext.invoke(item.arguments);
-                } else if (registry != null) {
-                  results[i] = await registry.execute(
-                    toolName: item.name,
-                    args: item.arguments,
-                    confirm: true,
-                  );
-                } else {
-                  errors[i] = '缺少工具执行器';
-                }
-              } catch (e) {
-                errors[i] = '$e';
-              }
-            }
-          }
-
-          final activeWorkers = workers > items.length ? items.length : workers;
-          await Future.wait([
-            for (var i = 0; i < activeWorkers; i++) worker(),
-          ]);
-
-          final lines = <String>[
-            '并行执行 ${items.length} 个工具（并发 $activeWorkers，'
-                '上限 $ceiling）：',
-          ];
-          for (var i = 0; i < items.length; i++) {
-            final item = items[i];
-            final title =
-                item.label.isEmpty ? item.name : '${item.label}（${item.name}）';
-            if (errors[i] != null) {
-              lines.add('❌ [$title] 失败：${errors[i]}');
-            } else {
-              lines.add('### [$title]\n${results[i] ?? ''}');
-            }
-          }
-          return lines.join('\n\n');
-        },
-      ),
-    );
 
     // 轻量网络搜索/信息收集：直连 HTTP，不占共享浏览器。
     tools.addAll(WebSearchTools.build());
