@@ -394,7 +394,6 @@ class AgentLoop {
       'browser_fetch',
       'browser_script',
       'browser_wait',
-      'parallel_tools',
       'dependency_',
       'panel_update',
       'editor_run',
@@ -1440,11 +1439,9 @@ class AgentLoop {
           if (transformed != null) messages = transformed;
         }
         try {
-          final hasParallel = registry.find('parallel_tools') != null;
           Logger.d(
             'agent_tools',
-            'schema parallelInRegistry=$hasParallel '
-                'external=${externalTools.length} registry=${registry.definitions.length}',
+            'schema external=${externalTools.length} registry=${registry.definitions.length}',
           );
           response = await LlmClient.complete(
             config: config,
@@ -2515,302 +2512,312 @@ class AgentLoop {
         }
 
         final batchToolImages = <AiImageAttachment>[];
-        for (final call in response.toolCalls) {
-          checkCancelled();
-          // 这些都在上面处理过了，不进普通工具流程。
-          if (call.name == _askUserSpec.name ||
-              call.name == _taskPlanSpec.name ||
-              call.name == _taskStepSpec.name ||
-              call.name == _taskAppendSpec.name ||
-              call.name == _taskDeleteSpec.name ||
-              call.name == _taskClearSpec.name ||
-              call.name == _taskAddSubtaskSpec.name ||
-              call.name == _suggestNextSpec.name ||
-              call.name == _taskSubstepSpec.name ||
-              call.name == _canvasSpec.name) {
-            continue;
-          }
-          final def = registry.find(call.name);
-          final ext = def == null ? _findExternal(call.name) : null;
-          final isWrite = def?.isWrite ?? ext?.isWrite ?? false;
-          final isDanger = def?.danger ?? ext?.danger ?? false;
-          final key = cacheKeyOf(call.name, call.arguments);
-          final startedAt = DateTime.now();
-
-          if (def == null && ext == null) {
-            const msg = '未知工具，请从工具列表里选择';
-            toolMessages.add(_toolReply(call, msg));
-            records.add(
-              ToolCallRecord(
-                toolName: call.name,
-                args: call.arguments,
-                status: 'error',
-                result: msg,
-                durationMs: 0,
-                createdAt: startedAt,
-              ),
-            );
-            emit(
-              AgentEvent(
-                kind: AgentEventKind.toolEnd,
-                message: '未知工具：${call.name}',
-                toolName: call.name,
-                args: call.arguments,
-                result: msg,
-                ok: false,
-                turn: turnsUsed,
-              ),
-            );
-            continue;
-          }
-
-          // 只读结果复用：写操作会清空缓存，所以不会读到过期数据。
-          //
-          // 但"我们没写过"不等于"外面没变"：面板自己在跑 cron，日志、任务状态、
-          // 磁盘占用每秒都在变。这类工具一律不复用，否则用户问"现在跑完了吗"
-          // 永远拿到几分钟前那份，看着就像工具坏了。
-          final cachedAt = readCacheAt[key];
-          final stale = cachedAt != null &&
-              DateTime.now().difference(cachedAt) > _readCacheTtl;
-          final cached = (isWrite || _isVolatileTool(call.name) || stale)
-              ? null
-              : readCache[key];
-          if (cached != null) {
-            toolMessages.add(_toolReply(call, '（与之前完全相同的查询，直接复用结果）\n$cached'));
-            records.add(
-              ToolCallRecord(
-                toolName: call.name,
-                args: call.arguments,
-                status: 'cached',
-                result: cached,
-                durationMs: 0,
-                createdAt: startedAt,
-              ),
-            );
-            emit(
-              AgentEvent(
-                kind: AgentEventKind.toolEnd,
-                message: '复用已有结果：${call.name}',
-                toolName: call.name,
-                args: call.arguments,
-                result: cached,
-                ok: true,
-                turn: turnsUsed,
-              ),
-            );
-            continue;
-          }
-
-          final failures = errorCache[key] ?? 0;
-          if (failures >= 3) {
-            const msg = '同样的调用（参数一字不差）已经失败三次，别再原样重试了。'
-                '换个参数、换条路，或者先把失败的原因修掉'
-                '（修完就能再试这条，写操作会解锁它）。';
-            toolMessages.add(_toolReply(call, msg));
-            records.add(
-              ToolCallRecord(
-                toolName: call.name,
-                args: call.arguments,
-                status: 'blocked',
-                result: msg,
-                durationMs: 0,
-                createdAt: startedAt,
-              ),
-            );
-            emit(
-              AgentEvent(
-                kind: AgentEventKind.toolEnd,
-                message: '重复失败已拦截：${call.name}',
-                toolName: call.name,
-                args: call.arguments,
-                result: msg,
-                ok: false,
-                turn: turnsUsed,
-              ),
-            );
-            continue;
-          }
-
-          emit(
-            AgentEvent(
-              kind: AgentEventKind.toolStart,
-              message: isWrite ? '需要确认：${call.name}' : '调用工具：${call.name}',
-              toolName: call.name,
-              args: call.arguments,
-              turn: turnsUsed,
-            ),
-          );
-
-          final needsConfirm = _needsConfirm(isWrite, isDanger) &&
-              !confirmedActionKeys.contains(key);
-          if (needsConfirm) {
-            pending.add(
-              AiPlanAction(
-                type: call.name,
-                target: _describeTarget(call.arguments),
-                impact: (def?.impact.isNotEmpty ?? false)
-                    ? def!.impact
-                    : ext != null
-                        ? '扩展工具（${ext.origin.isEmpty ? '外部' : ext.origin}）：${call.name}'
-                        : '写操作：${call.name}',
-                reversible: def?.reversible ?? !isDanger,
-                data: call.arguments,
-              ),
-            );
-            toolMessages.add(
-              _toolReply(
-                call,
-                '已挂起等待用户确认。请在回复里说明这次要做什么、影响是什么，然后停下等确认。',
-              ),
-            );
-            records.add(
-              ToolCallRecord(
-                toolName: call.name,
-                args: call.arguments,
-                status: 'pending_confirm',
-                result: '等待用户确认',
-                durationMs: 0,
-                createdAt: startedAt,
-              ),
-            );
-            emit(
-              AgentEvent(
-                kind: AgentEventKind.planPending,
-                message: '写操作等待确认：${call.name}',
-                toolName: call.name,
-                args: call.arguments,
-                turn: turnsUsed,
-              ),
-            );
-            continue;
-          }
-
-          final deadline = _timeoutFor(call.name);
-          try {
-            // 看门狗：工具自己不返回时，这里到点就抛 TimeoutException。
-            // 注意它只是**放弃等待**，底层那个请求可能还在跑（Dart 没法强杀
-            // 一个 Future）——所以超时后一律按"结果未知"处理，让模型去核实，
-            // 而不是当成"没做"。
-            final raw = await (ext != null
-                    ? ext.invoke(call.arguments)
-                    : registry.execute(
-                        toolName: call.name,
-                        args: call.arguments,
-                        confirm: isWrite,
-                      ))
-                .timeout(deadline);
-            final result = _truncate(raw);
-            try {
-              final attachFn = ext?.attachments;
-              if (attachFn != null) {
-                final imgs = await attachFn(call.arguments).timeout(deadline);
-                batchToolImages.addAll(imgs);
+        await Future.wait([
+          for (final call in response.toolCalls)
+            () async {
+              checkCancelled();
+              // 这些都在上面处理过了，不进普通工具流程。
+              if (call.name == _askUserSpec.name ||
+                  call.name == _taskPlanSpec.name ||
+                  call.name == _taskStepSpec.name ||
+                  call.name == _taskAppendSpec.name ||
+                  call.name == _taskDeleteSpec.name ||
+                  call.name == _taskClearSpec.name ||
+                  call.name == _taskAddSubtaskSpec.name ||
+                  call.name == _suggestNextSpec.name ||
+                  call.name == _taskSubstepSpec.name ||
+                  call.name == _canvasSpec.name) {
+                return;
               }
-            } catch (_) {
-              // 附件失败不能把工具本体判失败：文字结果已经拿到了，
-              // 只是聊天里少一张图而已。
-            }
-            final elapsed = DateTime.now().difference(startedAt).inMilliseconds;
-            if (isWrite) {
-              mutated = true;
-            } else if (!_isVolatileTool(call.name)) {
-              readCache[key] = result;
-              readCacheAt[key] = DateTime.now();
-            }
-            errorCache.remove(key);
-            toolMessages.add(_toolReply(call, result));
-            records.add(
-              ToolCallRecord(
-                toolName: call.name,
-                args: call.arguments,
-                status: 'ok',
-                // UI/历史记录保留完整原始输出；只有喂给模型的上下文用截断版。
-                result: raw,
-                durationMs: elapsed,
-                createdAt: startedAt,
-              ),
-            );
-            emit(
-              AgentEvent(
-                kind: AgentEventKind.toolEnd,
-                message: '工具完成：${call.name}',
-                toolName: call.name,
-                args: call.arguments,
-                result: result,
-                // 原始返回单独留一份给界面：模型看截断版省 token，
-                // 人排障要看的往往正是被截掉的那一段。
-                fullResult: raw,
-                durationMs: elapsed,
-                ok: true,
-                turn: turnsUsed,
-                isWrite: isWrite,
-              ),
-            );
-          } on TimeoutException {
-            errorCache[key] = failures + 1;
-            final secs = deadline.inSeconds;
-            final msg = '执行超时：等了 $secs 秒还没返回，已经放弃等待。'
-                '${isWrite ? '注意这是写操作，它可能已经生效了一半——先查一下当前状态再决定要不要重做。' : ''}'
-                '别原样重试同一条（大概率还是卡住）：缩小范围（少读几行、加过滤条件）、'
-                '换个工具，或者直接告诉用户这一步卡在哪。';
-            toolMessages.add(_toolReply(call, msg));
-            records.add(
-              ToolCallRecord(
-                toolName: call.name,
-                args: call.arguments,
-                status: 'timeout',
-                result: msg,
-                durationMs: DateTime.now().difference(startedAt).inMilliseconds,
-                createdAt: startedAt,
-              ),
-            );
-            emit(
-              AgentEvent(
-                kind: AgentEventKind.toolEnd,
-                message: '工具超时（$secs 秒）：${call.name}',
-                toolName: call.name,
-                args: call.arguments,
-                result: msg,
-                durationMs: DateTime.now().difference(startedAt).inMilliseconds,
-                ok: false,
-                turn: turnsUsed,
-                isWrite: isWrite,
-              ),
-            );
-          } catch (e) {
-            errorCache[key] = failures + 1;
-            final message = _errorText(e);
-            toolMessages.add(
-              _toolReply(call, '执行失败：$message\n请分析原因并换一种方式，不要原样重试。'),
-            );
-            records.add(
-              ToolCallRecord(
-                toolName: call.name,
-                args: call.arguments,
-                status: 'error',
-                result: message,
-                durationMs: DateTime.now().difference(startedAt).inMilliseconds,
-                createdAt: startedAt,
-              ),
-            );
-            emit(
-              AgentEvent(
-                kind: AgentEventKind.toolEnd,
-                message: '工具失败：${call.name}',
-                toolName: call.name,
-                args: call.arguments,
-                result: message,
-                // 失败时把异常原文也留着：ApiException 的 message 常常被
-                // 精简过，原始 toString 里才有状态码和响应体。
-                fullResult: '$e',
-                durationMs: DateTime.now().difference(startedAt).inMilliseconds,
-                ok: false,
-                turn: turnsUsed,
-                isWrite: isWrite,
-              ),
-            );
-          }
-        }
+              final def = registry.find(call.name);
+              final ext = def == null ? _findExternal(call.name) : null;
+              final isWrite = def?.isWrite ?? ext?.isWrite ?? false;
+              final isDanger = def?.danger ?? ext?.danger ?? false;
+              final key = cacheKeyOf(call.name, call.arguments);
+              final startedAt = DateTime.now();
+
+              if (def == null && ext == null) {
+                const msg = '未知工具，请从工具列表里选择';
+                toolMessages.add(_toolReply(call, msg));
+                records.add(
+                  ToolCallRecord(
+                    toolName: call.name,
+                    args: call.arguments,
+                    status: 'error',
+                    result: msg,
+                    durationMs: 0,
+                    createdAt: startedAt,
+                  ),
+                );
+                emit(
+                  AgentEvent(
+                    kind: AgentEventKind.toolEnd,
+                    message: '未知工具：${call.name}',
+                    toolName: call.name,
+                    args: call.arguments,
+                    result: msg,
+                    ok: false,
+                    turn: turnsUsed,
+                  ),
+                );
+                return;
+              }
+
+              // 只读结果复用：写操作会清空缓存，所以不会读到过期数据。
+              //
+              // 但"我们没写过"不等于"外面没变"：面板自己在跑 cron，日志、任务状态、
+              // 磁盘占用每秒都在变。这类工具一律不复用，否则用户问"现在跑完了吗"
+              // 永远拿到几分钟前那份，看着就像工具坏了。
+              final cachedAt = readCacheAt[key];
+              final stale = cachedAt != null &&
+                  DateTime.now().difference(cachedAt) > _readCacheTtl;
+              final cached = (isWrite || _isVolatileTool(call.name) || stale)
+                  ? null
+                  : readCache[key];
+              if (cached != null) {
+                toolMessages
+                    .add(_toolReply(call, '（与之前完全相同的查询，直接复用结果）\n$cached'));
+                records.add(
+                  ToolCallRecord(
+                    toolName: call.name,
+                    args: call.arguments,
+                    status: 'cached',
+                    result: cached,
+                    durationMs: 0,
+                    createdAt: startedAt,
+                  ),
+                );
+                emit(
+                  AgentEvent(
+                    kind: AgentEventKind.toolEnd,
+                    message: '复用已有结果：${call.name}',
+                    toolName: call.name,
+                    args: call.arguments,
+                    result: cached,
+                    ok: true,
+                    turn: turnsUsed,
+                  ),
+                );
+                return;
+              }
+
+              final failures = errorCache[key] ?? 0;
+              if (failures >= 3) {
+                const msg = '同样的调用（参数一字不差）已经失败三次，别再原样重试了。'
+                    '换个参数、换条路，或者先把失败的原因修掉'
+                    '（修完就能再试这条，写操作会解锁它）。';
+                toolMessages.add(_toolReply(call, msg));
+                records.add(
+                  ToolCallRecord(
+                    toolName: call.name,
+                    args: call.arguments,
+                    status: 'blocked',
+                    result: msg,
+                    durationMs: 0,
+                    createdAt: startedAt,
+                  ),
+                );
+                emit(
+                  AgentEvent(
+                    kind: AgentEventKind.toolEnd,
+                    message: '重复失败已拦截：${call.name}',
+                    toolName: call.name,
+                    args: call.arguments,
+                    result: msg,
+                    ok: false,
+                    turn: turnsUsed,
+                  ),
+                );
+                return;
+              }
+
+              emit(
+                AgentEvent(
+                  kind: AgentEventKind.toolStart,
+                  message: isWrite ? '需要确认：${call.name}' : '调用工具：${call.name}',
+                  toolName: call.name,
+                  args: call.arguments,
+                  turn: turnsUsed,
+                ),
+              );
+
+              final needsConfirm = _needsConfirm(isWrite, isDanger) &&
+                  !confirmedActionKeys.contains(key);
+              if (needsConfirm) {
+                pending.add(
+                  AiPlanAction(
+                    type: call.name,
+                    target: _describeTarget(call.arguments),
+                    impact: (def?.impact.isNotEmpty ?? false)
+                        ? def!.impact
+                        : ext != null
+                            ? '扩展工具（${ext.origin.isEmpty ? '外部' : ext.origin}）：${call.name}'
+                            : '写操作：${call.name}',
+                    reversible: def?.reversible ?? !isDanger,
+                    data: call.arguments,
+                  ),
+                );
+                toolMessages.add(
+                  _toolReply(
+                    call,
+                    '已挂起等待用户确认。请在回复里说明这次要做什么、影响是什么，然后停下等确认。',
+                  ),
+                );
+                records.add(
+                  ToolCallRecord(
+                    toolName: call.name,
+                    args: call.arguments,
+                    status: 'pending_confirm',
+                    result: '等待用户确认',
+                    durationMs: 0,
+                    createdAt: startedAt,
+                  ),
+                );
+                emit(
+                  AgentEvent(
+                    kind: AgentEventKind.planPending,
+                    message: '写操作等待确认：${call.name}',
+                    toolName: call.name,
+                    args: call.arguments,
+                    turn: turnsUsed,
+                  ),
+                );
+                return;
+              }
+
+              final deadline = _timeoutFor(call.name);
+              try {
+                // 看门狗：工具自己不返回时，这里到点就抛 TimeoutException。
+                // 注意它只是**放弃等待**，底层那个请求可能还在跑（Dart 没法强杀
+                // 一个 Future）——所以超时后一律按"结果未知"处理，让模型去核实，
+                // 而不是当成"没做"。
+                final raw = await (ext != null
+                        ? ext.invoke(call.arguments)
+                        : registry.execute(
+                            toolName: call.name,
+                            args: call.arguments,
+                            confirm: isWrite,
+                          ))
+                    .timeout(deadline);
+                final result = _truncate(raw);
+                try {
+                  final attachFn = ext?.attachments;
+                  if (attachFn != null) {
+                    final imgs =
+                        await attachFn(call.arguments).timeout(deadline);
+                    batchToolImages.addAll(imgs);
+                  }
+                } catch (_) {
+                  // 附件失败不能把工具本体判失败：文字结果已经拿到了，
+                  // 只是聊天里少一张图而已。
+                }
+                final elapsed =
+                    DateTime.now().difference(startedAt).inMilliseconds;
+                if (isWrite) {
+                  mutated = true;
+                } else if (!_isVolatileTool(call.name)) {
+                  readCache[key] = result;
+                  readCacheAt[key] = DateTime.now();
+                }
+                errorCache.remove(key);
+                toolMessages.add(_toolReply(call, result));
+                records.add(
+                  ToolCallRecord(
+                    toolName: call.name,
+                    args: call.arguments,
+                    status: 'ok',
+                    // UI/历史记录保留完整原始输出；只有喂给模型的上下文用截断版。
+                    result: raw,
+                    durationMs: elapsed,
+                    createdAt: startedAt,
+                  ),
+                );
+                emit(
+                  AgentEvent(
+                    kind: AgentEventKind.toolEnd,
+                    message: '工具完成：${call.name}',
+                    toolName: call.name,
+                    args: call.arguments,
+                    result: result,
+                    // 原始返回单独留一份给界面：模型看截断版省 token，
+                    // 人排障要看的往往正是被截掉的那一段。
+                    fullResult: raw,
+                    durationMs: elapsed,
+                    ok: true,
+                    turn: turnsUsed,
+                    isWrite: isWrite,
+                  ),
+                );
+              } on TimeoutException {
+                errorCache[key] = failures + 1;
+                final secs = deadline.inSeconds;
+                final msg = '执行超时：等了 $secs 秒还没返回，已经放弃等待。'
+                    '${isWrite ? '注意这是写操作，它可能已经生效了一半——先查一下当前状态再决定要不要重做。' : ''}'
+                    '别原样重试同一条（大概率还是卡住）：缩小范围（少读几行、加过滤条件）、'
+                    '换个工具，或者直接告诉用户这一步卡在哪。';
+                toolMessages.add(_toolReply(call, msg));
+                records.add(
+                  ToolCallRecord(
+                    toolName: call.name,
+                    args: call.arguments,
+                    status: 'timeout',
+                    result: msg,
+                    durationMs:
+                        DateTime.now().difference(startedAt).inMilliseconds,
+                    createdAt: startedAt,
+                  ),
+                );
+                emit(
+                  AgentEvent(
+                    kind: AgentEventKind.toolEnd,
+                    message: '工具超时（$secs 秒）：${call.name}',
+                    toolName: call.name,
+                    args: call.arguments,
+                    result: msg,
+                    durationMs:
+                        DateTime.now().difference(startedAt).inMilliseconds,
+                    ok: false,
+                    turn: turnsUsed,
+                    isWrite: isWrite,
+                  ),
+                );
+              } catch (e) {
+                errorCache[key] = failures + 1;
+                final message = _errorText(e);
+                toolMessages.add(
+                  _toolReply(call, '执行失败：$message\n请分析原因并换一种方式，不要原样重试。'),
+                );
+                records.add(
+                  ToolCallRecord(
+                    toolName: call.name,
+                    args: call.arguments,
+                    status: 'error',
+                    result: message,
+                    durationMs:
+                        DateTime.now().difference(startedAt).inMilliseconds,
+                    createdAt: startedAt,
+                  ),
+                );
+                emit(
+                  AgentEvent(
+                    kind: AgentEventKind.toolEnd,
+                    message: '工具失败：${call.name}',
+                    toolName: call.name,
+                    args: call.arguments,
+                    result: message,
+                    // 失败时把异常原文也留着：ApiException 的 message 常常被
+                    // 精简过，原始 toString 里才有状态码和响应体。
+                    fullResult: '$e',
+                    durationMs:
+                        DateTime.now().difference(startedAt).inMilliseconds,
+                    ok: false,
+                    turn: turnsUsed,
+                    isWrite: isWrite,
+                  ),
+                );
+              }
+            }(),
+        ]);
 
         // 任何写操作之后，之前的只读快照都可能过期，全部作废。
         if (mutated) {

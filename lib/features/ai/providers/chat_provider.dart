@@ -3387,7 +3387,6 @@ class ChatNotifier extends Notifier<ChatState> {
     final registry = QlToolRegistry(
       panelGetter: () => ref.read(currentPanelProvider),
       approvalMode: state.approvalMode,
-      defaultParallel: ref.read(llmRegistryProvider).subAgent.parallel,
     );
     final history = _historyWithAutoCompress(
       userInput: userInput,
@@ -3531,11 +3530,10 @@ class ChatNotifier extends Notifier<ChatState> {
         extraTools: [canvasTool],
         sessionId: run?.sessionId,
       );
-      // 排障日志：确认并行工具是否真的进入了可调用工具表（本体在 registry）。
+      // 排障日志：确认外部工具列表规模，便于核对请求日志。
       Logger.d(
         'agent_tools',
-        'baseTools=${baseTools.length} hasParallelInRegistry=${registry.find('parallel_tools') != null} '
-            'first=${baseTools.take(5).map((t) => t.name).join(',')}',
+        'baseTools=${baseTools.length} first=${baseTools.take(5).map((t) => t.name).join(',')}',
       );
       // 后台子代理完成结果自动并回主代理上下文的槽。
       final subagentSink = AgentSubagentSink();
@@ -3557,7 +3555,6 @@ class ChatNotifier extends Notifier<ChatState> {
             registry: QlToolRegistry(
               panelGetter: () => ref.read(currentPanelProvider),
               approvalMode: state.approvalMode,
-              defaultParallel: plan.parallel,
             ),
             confirmedActionKeys: confirmedKeys,
             externalTools: baseTools,
