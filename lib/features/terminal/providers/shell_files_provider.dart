@@ -195,6 +195,11 @@ class ShellFilesState {
 class ShellFilesNotifier extends Notifier<ShellFilesState> {
   final _bridge = ProotBridge();
   final Map<String, SftpClient> _sftpClients = {};
+  final Map<FileScope, String> _pathsByScope = {
+    FileScope.shell: '/workspace',
+    FileScope.app: '',
+    FileScope.ssh: '/',
+  };
 
   @override
   ShellFilesState build() {
@@ -244,6 +249,7 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
       } else {
         listing = await _sshListing(target);
       }
+      _pathsByScope[state.scope] = listing.path;
       state = state.copyWith(
         path: listing.path,
         roots: listing.roots.isEmpty ? state.roots : listing.roots,
@@ -261,11 +267,12 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
   Future<void> switchScope(FileScope scope) async {
     if (scope == state.scope) return;
     var sshId = state.sshSessionId;
-    var path = scope == FileScope.shell
-        ? '/workspace'
-        : scope == FileScope.app
-            ? ''
-            : '/';
+    var path = _pathsByScope[scope] ??
+        (scope == FileScope.shell
+            ? '/workspace'
+            : scope == FileScope.app
+                ? ''
+                : '/');
     if (scope == FileScope.ssh) {
       if (sshId == null || SshSessionManager.instance.clientOf(sshId) == null) {
         final connected = [

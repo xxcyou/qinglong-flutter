@@ -12,7 +12,6 @@ import '../providers/ssh_session_provider.dart';
 import '../providers/terminal_session_provider.dart';
 import '../terminal_palettes.dart';
 import '../widgets/package_install_sheet.dart';
-import '../widgets/ssh_connect_dialog.dart';
 import '../widgets/ssh_manager_sheet.dart';
 import '../widgets/ssh_terminal_view.dart';
 import '../widgets/terminal_key_bar.dart';
@@ -135,17 +134,6 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
   /// 把原始序列写进 pty。快捷键条与装包面板都走这里。
   void _send(String data) => unawaited(_bridge.writeTerminal(data));
 
-  Future<void> _newSsh() async {
-    final draft = await SshConnectDialog.show(context);
-    if (draft == null || !mounted) return;
-    final session = await ref.read(sshSessionsProvider.notifier).connect(draft);
-    if (session.status != 'connected' && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('SSH 连接失败：${session.status}')),
-      );
-    }
-  }
-
   void _toggleKeyboard() {
     if (_focusNode.hasFocus) {
       _focusNode.unfocus();
@@ -171,12 +159,7 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
       bodyTopPadding: 0,
       actions: [
         IconButton(
-          tooltip: '新建 SSH 终端',
-          onPressed: _newSsh,
-          icon: const Icon(Icons.add_box_outlined),
-        ),
-        IconButton(
-          tooltip: 'SSH 会话管理',
+          tooltip: 'SSH 会话管理（新建/连接/删除都在这里）',
           onPressed: () => SshManagerSheet.show(context),
           icon: const Icon(Icons.dns_outlined),
         ),
