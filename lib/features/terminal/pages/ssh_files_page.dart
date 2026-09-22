@@ -1,8 +1,10 @@
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../providers/ssh_session_provider.dart';
 
@@ -147,6 +149,39 @@ class _SshFilesPageState extends ConsumerState<SshFilesPage> {
     }
   }
 
+  Future<void> _upload() async {
+    final result = await FilePicker.pickFiles();
+    if (result == null || result.files.isEmpty) return;
+    final file = result.files.single;
+    final path = file.path;
+    if (path == null) return;
+    final client = SshSessionManager.instance.clientOf(_sessionId!);
+    if (client == null) return;
+    try {
+      await client.sftpUpload(path: path, toPath: _path == '.' ? '.' : _path);
+      await _load();
+      _showError('上传完成：${file.name}');
+    } catch (e) {
+      _showError('上传失败：$e');
+    }
+  }
+
+  Future<void> _download(_SftpEntry entry) async {
+    final client = SshSessionManager.instance.clientOf(_sessionId!);
+    if (client == null) return;
+    try {
+      final dir = await getDownloadsDirectory();
+      final toPath = dir == null
+          ? '/sdcard/Download/${entry.name}'
+          : '${dir.path}/${entry.name}';
+      final base = _path == '.' ? '' : '$_path/';
+      await client.sftpDownload(path: '$base${entry.name}', toPath: toPath);
+      _showError('已下载到 $toPath');
+    } catch (e) {
+      _showError('下载失败：$e');
+    }
+  }
+
   Future<void> _rename(_SftpEntry entry) async {
     final name = await _prompt('重命名', '新名称', initial: entry.name);
     if (name == null || name.trim().isEmpty) return;
@@ -263,6 +298,11 @@ class _SshFilesPageState extends ConsumerState<SshFilesPage> {
                 icon: const Icon(Icons.create_new_folder_outlined),
               ),
               IconButton(
+                tooltip: '上传文件',
+                onPressed: connected.isEmpty ? null : _upload,
+                icon: const Icon(Icons.upload_file),
+              ),
+              IconButton(
                 tooltip: '上一级',
                 onPressed: _path == '.' ? null : _goUp,
                 icon: const Icon(Icons.arrow_upward),
@@ -314,10 +354,15 @@ class _SshFilesPageState extends ConsumerState<SshFilesPage> {
                                     },
                               trailing: PopupMenuButton<String>(
                                 onSelected: (v) {
+                                  if (v == 'download') _download(e);
                                   if (v == 'rename') _rename(e);
                                   if (v == 'delete') _delete(e);
                                 },
                                 itemBuilder: (_) => const [
+                                  PopupMenuItem(
+                                    value: 'download',
+                                    child: Text('下载'),
+                                  ),
                                   PopupMenuItem(
                                     value: 'rename',
                                     child: Text('重命名'),
