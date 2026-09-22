@@ -1946,16 +1946,15 @@ class QlToolRegistry {
           final client =
               SshSessionManager.instance.clientOf(args['id'].toString());
           if (client == null) return jsonEncode({'error': 'SSH 未连接'});
-          final raw = await client.sftpLs(args['path']?.toString() ?? '.');
+          final sftp = await client.sftp();
+          final items = await sftp.listdir(args['path']?.toString() ?? '.');
           return jsonEncode([
-            for (final item in (raw ?? const []))
-              if (item is Map)
-                {
-                  'name': item['filename'] ?? item['name'] ?? '',
-                  'longname': item['longname'] ?? '',
-                  'isDirectory': item['isDirectory'] == true ||
-                      (item['longname'] ?? '').toString().startsWith('d'),
-                }
+            for (final item in items)
+              {
+                'name': item.filename,
+                'longname': item.longname,
+                'isDirectory': item.attr.isDirectory,
+              }
           ]);
         } catch (e) {
           return jsonEncode({'error': e.toString()});

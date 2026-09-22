@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -55,6 +57,7 @@ class _SshFilesPageState extends ConsumerState<SshFilesPage> {
   String? _sessionId;
   String _path = '.';
   List<_SftpEntry> _entries = [];
+  final Map<String, SftpClient> _sftpClients = {};
   bool _loading = false;
   String? _error;
 
@@ -79,38 +82,37 @@ class _SshFilesPageState extends ConsumerState<SshFilesPage> {
     }
   }
 
+  Future<SftpClient> _sftpFor(String id) async {
+    final existing = _sftpClients[id];
+    if (existing != null) return existing;
+    final client = SshSessionManager.instance.clientOf(id);
+    if (client == null) throw StateError('SSH 未连接');
+    final sftp = await client.sftp();
+    _sftpClients[id] = sftp;
+    return sftp;
+  }
+
   Future<void> _load() async {
     final id = _sessionId;
     if (id == null) return;
-    final client = SshSessionManager.instance.clientOf(id);
-    if (client == null) return;
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
     try {
-      final raw = await client.sftpLs(_path);
-      final list = raw ?? const [];
+      final sftp = await _sftpFor(id);
+      final items = await sftp.listdir(_path);
       final entries = <_SftpEntry>[];
-      for (final item in list) {
-        if (item is! Map) continue;
-        final name = (item['filename'] ?? item['name'] ?? '').toString();
-        final longname = (item['longname'] ?? '').toString();
+      for (final item in items) {
+        final name = item.filename;
         if (name.isEmpty || name == '.' || name == '..') continue;
-        final isDir = item['isDirectory'] == true ||
-            longname.startsWith('d') ||
-            (item['attrs'] is Map &&
-                (item['attrs'] as Map)['isDirectory'] == true);
         entries.add(_SftpEntry(
           name: name,
-          isDirectory: isDir,
-          longname: longname.isEmpty ? name : longname,
+          isDirectory: item.attr.isDirectory,
+          longname: item.longname.isEmpty ? name : item.longname,
         ));
       }
       if (mounted) {
         setState(() {
           _entries = entries;
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
@@ -126,6 +128,7 @@ class _SshFilesPageState extends ConsumerState<SshFilesPage> {
   Future<void> _open(String name) async {
     final sep = _path.endsWith('/') || _path == '.' ? '' : '/';
     _path = _path == '.' ? name : '$_path$sep$name';
+    setState(() => _loading = true);
     await _load();
   }
 
@@ -133,16 +136,44 @@ class _SshFilesPageState extends ConsumerState<SshFilesPage> {
     if (_path == '.' || _path.isEmpty) return;
     final idx = _path.lastIndexOf('/');
     _path = idx <= 0 ? '.' : _path.substring(0, idx);
+    setState(() => _loading = true);
     _load();
   }
 
   Future<void> _mkdir() async {
     final name = await _prompt('新建文件夹', '文件夹名');
     if (name == null || name.trim().isEmpty) return;
-    final client = SshSessionManager.instance.clientOf(_sessionId!);
-    if (client == null) return;
     try {
-      await client.sftpMkdir(_path == '.' ? name : '$_path/$name');
+      final sftp = await _sftpFor(_sessionId!);
+      await sftp.mkdir(_path == '.' ? name : '$_path/$name');
+      await _load();
+    } catch (e) {
+      _showError('$e');
+    }
+  }
+
+  Future<void> _rename(_SftpEntry entry) async {
+    final name = await _prompt('重命名', '新名称', initial: entry.name);
+    if (name == null || name.trim().isEmpty) return;
+    final base = _path == '.' ? '' : '$_path/';
+    try {
+      final sftp = await _sftpFor(_sessionId!);
+      await sftp.rename('$base${entry.name}', '$base${name.trim()}');
+      await _load();
+    } catch (e) {
+      _showError('$e');
+    }
+  }
+
+  Future<void> _delete(_SftpEntry entry) async {
+    try {
+      final sftp = await _sftpFor(_sessionId!);
+      final base = _path == '.' ? '' : '$_path/';
+      if (entry.isDirectory) {
+        await sftp.rmdir('$base${entry.name}');
+      } else {
+        await sftp.remove('$base${entry.name}');
+      }
       await _load();
     } catch (e) {
       _showError('$e');
@@ -153,12 +184,21 @@ class _SshFilesPageState extends ConsumerState<SshFilesPage> {
     final result = await FilePicker.pickFiles();
     if (result == null || result.files.isEmpty) return;
     final file = result.files.single;
-    final path = file.path;
-    if (path == null) return;
-    final client = SshSessionManager.instance.clientOf(_sessionId!);
-    if (client == null) return;
+    final localPath = file.path;
+    if (localPath == null) return;
     try {
-      await client.sftpUpload(path: path, toPath: _path == '.' ? '.' : _path);
+      final sftp = await _sftpFor(_sessionId!);
+      final remote = _path == '.'
+          ? file.name
+          : _path.endsWith('/')
+              ? '$_path${file.name}'
+              : '$_path/${file.name}';
+      final remoteFile = await sftp.open(
+        remote,
+        mode: SftpFileOpenMode.write | SftpFileOpenMode.truncate,
+      );
+      await remoteFile.write(File(localPath).openRead().cast()).done;
+      await remoteFile.close();
       await _load();
       _showError('上传完成：${file.name}');
     } catch (e) {
@@ -167,51 +207,20 @@ class _SshFilesPageState extends ConsumerState<SshFilesPage> {
   }
 
   Future<void> _download(_SftpEntry entry) async {
-    final client = SshSessionManager.instance.clientOf(_sessionId!);
-    if (client == null) return;
     try {
+      final sftp = await _sftpFor(_sessionId!);
+      final base = _path == '.' ? '' : '$_path/';
+      final remoteFile = await sftp.open('$base${entry.name}');
       final dir = await getDownloadsDirectory();
       final toPath = dir == null
           ? '/sdcard/Download/${entry.name}'
           : '${dir.path}/${entry.name}';
-      final base = _path == '.' ? '' : '$_path/';
-      await client.sftpDownload(path: '$base${entry.name}', toPath: toPath);
+      final sink = File(toPath).openWrite();
+      await remoteFile.downloadTo(sink, closeDestination: true);
+      await remoteFile.close();
       _showError('已下载到 $toPath');
     } catch (e) {
       _showError('下载失败：$e');
-    }
-  }
-
-  Future<void> _rename(_SftpEntry entry) async {
-    final name = await _prompt('重命名', '新名称', initial: entry.name);
-    if (name == null || name.trim().isEmpty) return;
-    final client = SshSessionManager.instance.clientOf(_sessionId!);
-    if (client == null) return;
-    final base = _path == '.' ? '' : '$_path/';
-    try {
-      await client.sftpRename(
-        oldPath: '$base${entry.name}',
-        newPath: '$base${name.trim()}',
-      );
-      await _load();
-    } catch (e) {
-      _showError('$e');
-    }
-  }
-
-  Future<void> _delete(_SftpEntry entry) async {
-    final client = SshSessionManager.instance.clientOf(_sessionId!);
-    if (client == null) return;
-    final base = _path == '.' ? '' : '$_path/';
-    try {
-      if (entry.isDirectory) {
-        await client.sftpRmdir('$base${entry.name}');
-      } else {
-        await client.sftpRm('$base${entry.name}');
-      }
-      await _load();
-    } catch (e) {
-      _showError('$e');
     }
   }
 
@@ -255,7 +264,7 @@ class _SshFilesPageState extends ConsumerState<SshFilesPage> {
     final sshState = ref.watch(sshSessionsProvider);
     final connected = [
       for (final s in sshState.sessions)
-        if (s.status == 'connected') s
+        if (s.isConnected) s
     ];
     final scheme = Theme.of(context).colorScheme;
 

@@ -1,9 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:ssh2/ssh2.dart';
 
 import '../../../core/storage/secure_storage.dart';
 
@@ -65,7 +64,8 @@ class SshSessionDraft {
   final String? keyPassphrase;
 }
 
-/// SSH 会话注册表：负责保存/加载/连接/断开/删除，并持有 SSHClient。
+/// SSH 会话注册表：负责保存/加载/连接/断开/删除。
+/// 使用纯 Dart 的 dartssh2，原生支持 OpenSSH ed25519 / RSA / EC 私钥。
 class SshSessionManager {
   SshSessionManager._();
 
@@ -146,7 +146,6 @@ class SshSessionManager {
   Future<String> save(SshSessionDraft draft, {String? id}) async {
     await loadSaved();
     final targetId = id ?? _newId();
-    final existed = _sessions[targetId];
     _sessions[targetId] = SshSession(
       id: targetId,
       name: draft.name,
@@ -154,7 +153,7 @@ class SshSessionManager {
       port: draft.port,
       username: draft.username,
       authType: draft.authType,
-      status: existed?.status ?? 'disconnected',
+      status: _sessions[targetId]?.status ?? 'disconnected',
     );
     _drafts[targetId] = draft;
     await _persist();
@@ -189,57 +188,52 @@ class SshSessionManager {
     );
     _notify();
 
-    final dynamic passwordOrKey = draft.authType == SshAuthType.password
-        ? draft.password ?? ''
-        : {
-            if (draft.privateKey != null && draft.privateKey!.isNotEmpty)
-              'privateKey': draft.privateKey,
-            if (draft.keyPassphrase != null && draft.keyPassphrase!.isNotEmpty)
-              'passphrase': draft.keyPassphrase,
-          };
-
-    final client = SSHClient(
-      host: draft.host,
-      port: draft.port,
-      username: draft.username,
-      passwordOrKey: passwordOrKey,
-    );
-
+    SSHClient? client;
     try {
-      final result = await client.connect();
-      if (result != null && result != 'connected') {
-        _sessions[targetId] = SshSession(
-            id: targetId,
-            name: draft.name,
-            host: draft.host,
-            port: draft.port,
-            username: draft.username,
-            authType: draft.authType,
-            status: 'error: $result');
-        client.disconnect();
-        _notify();
-        return _sessions[targetId]!;
+      final socket = await SSHSocket.connect(draft.host, draft.port);
+      if (draft.authType == SshAuthType.password) {
+        client = SSHClient(
+          socket,
+          username: draft.username,
+          onPasswordRequest: () => draft.password ?? '',
+          authTimeout: const Duration(seconds: 15),
+        );
+      } else {
+        final key = SSHKeyPair.fromPem(
+          draft.privateKey ?? '',
+          draft.keyPassphrase,
+        );
+        client = SSHClient(
+          socket,
+          username: draft.username,
+          identities: key,
+          authTimeout: const Duration(seconds: 15),
+        );
       }
+      await client.authenticated;
       _clients[targetId] = client;
       _sessions[targetId] = SshSession(
-          id: targetId,
-          name: draft.name,
-          host: draft.host,
-          port: draft.port,
-          username: draft.username,
-          authType: draft.authType,
-          status: 'connected');
+        id: targetId,
+        name: draft.name,
+        host: draft.host,
+        port: draft.port,
+        username: draft.username,
+        authType: draft.authType,
+        status: 'connected',
+      );
       _notify();
       return _sessions[targetId]!;
     } catch (e) {
+      client?.close();
       _sessions[targetId] = SshSession(
-          id: targetId,
-          name: draft.name,
-          host: draft.host,
-          port: draft.port,
-          username: draft.username,
-          authType: draft.authType,
-          status: 'error: $e');
+        id: targetId,
+        name: draft.name,
+        host: draft.host,
+        port: draft.port,
+        username: draft.username,
+        authType: draft.authType,
+        status: 'error: $e',
+      );
       _notify();
       return _sessions[targetId]!;
     }
@@ -250,9 +244,9 @@ class SshSessionManager {
     final client = _clients.remove(id);
     if (client != null) {
       try {
-        await client.disconnectSFTP();
+        client.close();
+        await client.done.timeout(const Duration(seconds: 3));
       } catch (_) {}
-      client.disconnect();
     }
     final s = _sessions[id];
     if (s != null) {
@@ -295,8 +289,10 @@ class SshSessionManager {
   Future<String> execute(String id, String command) async {
     final client = _clients[id];
     if (client == null) throw StateError('SSH 未连接：$id');
-    final out = await client.execute(command);
-    return out ?? '';
+    final session = await client.execute(command);
+    final out = await utf8.decoder.bind(session.stdout).join();
+    await session.done;
+    return out;
   }
 }
 

@@ -1,6 +1,10 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:ssh2/ssh2.dart';
 import 'package:xterm/xterm.dart';
 
 import '../../../shared/mono_text.dart';
@@ -23,6 +27,9 @@ class _SshTerminalViewState extends ConsumerState<SshTerminalView> {
   final Terminal _terminal = Terminal(maxLines: 2000);
   final TerminalController _controller = TerminalController();
   final FocusNode _focusNode = FocusNode();
+  SSHSession? _session;
+  StreamSubscription<Uint8List>? _stdoutSub;
+  StreamSubscription<Uint8List>? _stderrSub;
   String? _error;
 
   SSHClient? get _client =>
@@ -32,8 +39,13 @@ class _SshTerminalViewState extends ConsumerState<SshTerminalView> {
   void initState() {
     super.initState();
     _terminal.onOutput = (data) {
-      final client = _client;
-      if (client != null) client.writeToShell(data);
+      final session = _session;
+      if (session != null) {
+        session.write(Uint8List.fromList(utf8.encode(data)));
+      }
+    };
+    _terminal.onResize = (w, h, pw, ph) {
+      _session?.resizeTerminal(w, h, pw, ph);
     };
     _startShell();
   }
@@ -45,18 +57,22 @@ class _SshTerminalViewState extends ConsumerState<SshTerminalView> {
       return;
     }
     try {
-      final result = await client.startShell(
-        ptyType: 'xterm',
-        callback: (res) {
-          if (!mounted) return;
-          if (res is String) {
-            _terminal.write(res);
-          }
-        },
+      final session = await client.shell(
+        pty: const SSHPtyConfig(type: 'xterm'),
       );
-      if (result != null && result != 'connected' && mounted) {
-        setState(() => _error = result);
-      }
+      _session = session;
+      _stdoutSub = session.stdout.listen((data) {
+        if (mounted) _terminal.write(utf8.decode(data, allowMalformed: true));
+      });
+      _stderrSub = session.stderr.listen((data) {
+        if (mounted) _terminal.write(utf8.decode(data, allowMalformed: true));
+      });
+      session.done.then((_) {
+        if (mounted && _session == session) {
+          _session = null;
+        }
+      });
+      if (mounted) setState(() => _error = null);
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     }
@@ -64,12 +80,9 @@ class _SshTerminalViewState extends ConsumerState<SshTerminalView> {
 
   @override
   void dispose() {
-    final client = _client;
-    if (client != null) {
-      try {
-        client.closeShell();
-      } catch (_) {}
-    }
+    _stdoutSub?.cancel();
+    _stderrSub?.cancel();
+    _session?.close();
     _focusNode.dispose();
     super.dispose();
   }
