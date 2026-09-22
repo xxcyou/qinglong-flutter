@@ -2555,21 +2555,60 @@ class _MessageBubble extends StatelessWidget {
                       )
                     : null,
                 borderRadius: br,
-                border: borderColor != null
-                    ? Border.all(
-                        color: borderColor,
-                        width: borderWidth,
-                      )
-                    : isUser
-                        ? null
-                        : Border.all(
-                            color: scheme.outlineVariant.withValues(alpha: 0.5),
-                          ),
+                border: selectable
+                    ? Border.all(color: scheme.primary, width: 1.5)
+                    : borderColor != null
+                        ? Border.all(
+                            color: borderColor,
+                            width: borderWidth,
+                          )
+                        : isUser
+                            ? null
+                            : Border.all(
+                                color: scheme.outlineVariant
+                                    .withValues(alpha: 0.5),
+                              ),
                 boxShadow: glow.isEmpty ? null : glow,
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  if (selectable)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: scheme.primary.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color: scheme.primary.withValues(alpha: 0.55),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.text_fields_rounded,
+                              size: 12,
+                              color: scheme.primary,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              '可选取文字，点其它位置关闭',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: scheme.primary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   if (message.images.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 6),
