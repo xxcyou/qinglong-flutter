@@ -556,52 +556,61 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
                           ),
                         ),
                       )
-                    : ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(12, 6, 12, 24),
-                        itemCount: sorted.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 6),
-                        itemBuilder: (context, i) {
-                          final entry = sorted[i];
-                          final kind = FileKinds.of(
-                            entry.name,
-                            isDirectory: entry.isDirectory,
-                          );
-                          final extensionAllowed = widget.mode ==
-                                  LocalFilePickerMode.anyFile &&
-                              (widget.extensionFilter == null ||
-                                  entry.name
-                                      .toLowerCase()
-                                      .endsWith('.${widget.extensionFilter!}'));
-                          final usable = entry.isDirectory ||
-                              extensionAllowed ||
-                              kind.isTextLike ||
-                              kind.category == FileCategory.image;
-                          return _Tile(
-                            entry: entry,
-                            kind: kind,
-                            usable: usable,
-                            hostPathResolver: _hostPath,
-                            onTap: () {
-                              if (entry.isDirectory) {
-                                _load(entry.path);
-                              } else if (widget.mode ==
-                                  LocalFilePickerMode.anyFile) {
-                                if (widget.extensionFilter != null &&
-                                    !entry.name.toLowerCase().endsWith(
-                                        '.${widget.extensionFilter!}')) {
-                                  _rejectNotAllowed();
-                                } else {
-                                  _choose(entry, kind);
-                                }
-                              } else if (kind.isTextLike ||
-                                  kind.category == FileCategory.image) {
-                                _choose(entry, kind);
-                              } else {
-                                _rejectBinary(kind);
-                              }
-                            },
-                          );
+                    : GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onHorizontalDragEnd: (details) {
+                          if ((details.primaryVelocity ?? 0) > 250 &&
+                              !_roots.contains(_path)) {
+                            _load(_parent);
+                          }
                         },
+                        child: ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(12, 6, 12, 24),
+                          itemCount: sorted.length,
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(height: 6),
+                          itemBuilder: (context, i) {
+                            final entry = sorted[i];
+                            final kind = FileKinds.of(
+                              entry.name,
+                              isDirectory: entry.isDirectory,
+                            );
+                            final extensionAllowed =
+                                widget.mode == LocalFilePickerMode.anyFile &&
+                                    (widget.extensionFilter == null ||
+                                        entry.name.toLowerCase().endsWith(
+                                            '.${widget.extensionFilter!}'));
+                            final usable = entry.isDirectory ||
+                                extensionAllowed ||
+                                kind.isTextLike ||
+                                kind.category == FileCategory.image;
+                            return _Tile(
+                              entry: entry,
+                              kind: kind,
+                              usable: usable,
+                              hostPathResolver: _hostPath,
+                              onTap: () {
+                                if (entry.isDirectory) {
+                                  _load(entry.path);
+                                } else if (widget.mode ==
+                                    LocalFilePickerMode.anyFile) {
+                                  if (widget.extensionFilter != null &&
+                                      !entry.name.toLowerCase().endsWith(
+                                          '.${widget.extensionFilter!}')) {
+                                    _rejectNotAllowed();
+                                  } else {
+                                    _choose(entry, kind);
+                                  }
+                                } else if (kind.isTextLike ||
+                                    kind.category == FileCategory.image) {
+                                  _choose(entry, kind);
+                                } else {
+                                  _rejectBinary(kind);
+                                }
+                              },
+                            );
+                          },
+                        ),
                       ),
           ),
         ],
