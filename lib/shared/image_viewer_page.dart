@@ -71,7 +71,7 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   @override
   void initState() {
     super.initState();
-    _pageIndex = widget.initialIndex.clamp(0, widget.paths.length - 1);
+    _pageIndex = widget.initialIndex.clamp(0, widget.total - 1);
     _pageController = PageController(initialPage: _pageIndex);
     _resolveSize();
   }
