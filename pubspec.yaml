@@ -63,3 +63,6 @@ flutter:
           weight: 700
         - asset: assets/fonts/JetBrainsMono-Italic.ttf
           style: italic
+dependency_overrides:
+  ssh2:
+    path: third_party/ssh2
