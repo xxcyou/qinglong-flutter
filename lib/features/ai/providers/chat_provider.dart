@@ -452,6 +452,11 @@ class _SessionRun {
   final List<AgentEvent> events = [];
   final StringBuffer liveReasoning = StringBuffer();
   final StringBuffer liveContent = StringBuffer();
+
+  /// 中断重发时保留的“已经流出来但还没写成正式消息”的片段，
+  /// 交给新 run 的历史，避免 AI 重头再想一遍。
+  String partialReasoning = '';
+  String partialContent = '';
   String liveTool = '';
   Timer? liveTimer;
   AgentTaskPlan livePlan = const AgentTaskPlan();
@@ -721,6 +726,8 @@ class ChatNotifier extends Notifier<ChatState> {
     String? sessionId,
     List<AgentEvent>? resumeEvents,
     bool includeImages = false,
+    String partialReasoning = '',
+    String partialContent = '',
   }) {
     final sessionMessages = sessionId == null
         ? state.messages
@@ -778,6 +785,33 @@ class ChatNotifier extends Notifier<ChatState> {
         ],
       ),
     ];
+    // 中断重发时：把已经流出来但还没写进正式消息的思考/正文片段塞回历史，
+    // 放在新用户消息前面。否则模型看不到自己刚说到一半的内容，只能重头再想。
+    if ((partialReasoning.isNotEmpty || partialContent.isNotEmpty) &&
+        history.isNotEmpty) {
+      final buffer = StringBuffer();
+      if (partialReasoning.isNotEmpty) {
+        buffer
+          ..writeln('（这是上次运行被中断前已经流出的思考片段，供你衔接，不要从头重想。）')
+          ..writeln(partialReasoning.trim());
+      }
+      if (partialContent.isNotEmpty) {
+        if (buffer.isNotEmpty) buffer.writeln();
+        buffer
+          ..writeln('（这是上次运行被中断前已经流出的正文片段，接着它往下说，不要再重写一遍。）')
+          ..writeln(partialContent.trim());
+      }
+      final partialMsg = LlmMessage(
+        role: 'assistant',
+        content: buffer.toString(),
+      );
+      final last = history.last;
+      history = [
+        ...history.take(history.length - 1),
+        partialMsg,
+        last,
+      ];
+    }
     // 继续被中断的运行：把中断前**已经真实执行过的工具链和结果**注入历史。
     // 以前这里只把原始用户输入再发一遍，模型看不到执行到一半的过程，
     // 于是它以为这条消息从未发生，要么从头重来、要么只知道上一个完整任务的
@@ -1355,12 +1389,16 @@ class ChatNotifier extends Notifier<ChatState> {
     String? sessionId,
     List<AgentEvent>? resumeEvents,
     bool includeImages = false,
+    String partialReasoning = '',
+    String partialContent = '',
   }) {
     final history = _history(
       userInput: userInput,
       sessionId: sessionId,
       resumeEvents: resumeEvents,
       includeImages: includeImages,
+      partialReasoning: partialReasoning,
+      partialContent: partialContent,
     );
     final limit = state.contextLimit;
     if (limit <= 0 || history.length < 2) return history;
@@ -1658,9 +1696,13 @@ class ChatNotifier extends Notifier<ChatState> {
       return;
     }
 
-    // 思考/安全等待：不拆当前 run，插到 inbox 最前面；正在飞的那次 LLM 请求
-    // 用 interrupt() 掐掉，让 AgentLoop 下一轮先消费这条。
-    if (!_isRunOutputting(run)) {
+    final partialReasoning = run.liveReasoning.toString().trim();
+    final partialContent = run.liveContent.toString().trim();
+    final hasPartial = partialReasoning.isNotEmpty || partialContent.isNotEmpty;
+
+    // 思考/安全等待且没有已经流出的内容：不拆当前 run，插到 inbox 最前面；
+    // 正在飞的那次 LLM 请求用 interrupt() 掐掉，让 AgentLoop 下一轮先消费这条。
+    if (!_isRunOutputting(run) && !hasPartial) {
       run.inbox.removeById(id);
       run.inbox.insertFirst(
         AgentInboxMessage(
@@ -1673,7 +1715,8 @@ class ChatNotifier extends Notifier<ChatState> {
       return;
     }
 
-    // 输出/工具阶段：强制停止，再带 resumeEvents 续轮。
+    // 已经流出正文/思考/进入工具阶段：强制停止，再带 resumeEvents 和
+    // 已流出片段续轮，避免 AI 重头再想一遍。
     final resumeEvents = run.events;
     run.inbox.removeById(id);
     run.generation++;
@@ -1696,6 +1739,8 @@ class ChatNotifier extends Notifier<ChatState> {
       sessionId: sid,
       images: item.images,
       resumeEvents: resumeEvents,
+      partialReasoning: partialReasoning,
+      partialContent: partialContent,
     );
     _pumpQueue(sid);
   }
@@ -1820,6 +1865,8 @@ class ChatNotifier extends Notifier<ChatState> {
     List<AiImageAttachment> images = const [],
     String displayText = '',
     List<String> modeLabels = const [],
+    String partialReasoning = '',
+    String partialContent = '',
   }) async {
     final session =
         sessionId == null ? state.currentSession : _sessionById(sessionId);
@@ -1831,7 +1878,9 @@ class ChatNotifier extends Notifier<ChatState> {
     final run = _SessionRun(sessionId: session.id)
       ..resumeEvents = resumeEvents ?? const []
       ..isResume = resumeEvents != null
-      ..roundId = resumeFrom ?? RoundArchiveService.newRoundId();
+      ..roundId = resumeFrom ?? RoundArchiveService.newRoundId()
+      ..partialReasoning = partialReasoning
+      ..partialContent = partialContent;
     // 续跑时把中断前的事件直接放进新 run 的事件流：流程卡片从旧事件接着长，
     // 不会一继续就“清空重来”只看到后面新跑的。
     if (resumeEvents != null && resumeEvents.isNotEmpty) {
@@ -3394,6 +3443,8 @@ class ChatNotifier extends Notifier<ChatState> {
       resumeEvents: run?.resumeEvents,
       // 主模型支持图片时直接把图发过去；不支持时用文字标注 + image_recognize 工具。
       includeImages: mainCaps.supportsImage,
+      partialReasoning: run?.partialReasoning ?? '',
+      partialContent: run?.partialContent ?? '',
     );
     Logger.d(
       'ai',
