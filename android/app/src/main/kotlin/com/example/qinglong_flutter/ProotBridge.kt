@@ -3,6 +3,8 @@ package com.example.qinglong_flutter
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -16,6 +18,7 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.json.JSONObject
 import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
 import java.io.BufferedOutputStream
 import java.io.BufferedReader
 import java.io.File
@@ -104,6 +107,7 @@ class ProotBridge(private val context: Context) {
                 "importFiles" -> handleImportFiles(call, result)
                 "hostPath" -> handleHostPath(call, result)
                 "openExternal" -> handleOpenExternal(call, result)
+                "decodeImage" -> handleDecodeImage(call, result)
                 "spawnTerminal" -> handleSpawnTerminal(result)
                 "writeTerminal" -> handleWriteTerminal(call, result)
                 "resizeTerminal" -> handleResizeTerminal(call, result)
@@ -1064,6 +1068,36 @@ class ProotBridge(private val context: Context) {
     /// /workspace/a.png 这种 guest 路径 Android 的 Intent 和 Image.file 都不认。
     ///
     /// [scope] = "app" 时路径本来就是宿主路径，只做越界校验。
+    /// 把任意格式的图片字节交给 Android 解码，缩到 maxDimension 以内再以 PNG 回传。
+    /// Flutter 引擎只认 JPEG/PNG/GIF/WebP/BMP，HEIC/HEIF/TIFF 这类会渲染失败，
+    /// 统一经 BitmapFactory 转码后，文件管理器的缩略图和查看器就能正常显示。
+    private fun handleDecodeImage(call: MethodCall, result: MethodChannel.Result) {
+        val bytes = call.argument<ByteArray>("bytes")
+        if (bytes == null || bytes.isEmpty()) {
+            result.error("decodeImage", "empty bytes", null)
+            return
+        }
+        val maxDimension = call.argument<Int>("maxDimension") ?: 1024
+        try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            var sample = 1
+            val longest = maxOf(bounds.outWidth, bounds.outHeight)
+            if (longest > 0) {
+                while (longest / sample > maxDimension) sample *= 2
+            }
+            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                ?: throw IllegalStateException("BitmapFactory 无法解码该图片")
+            val out = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            bitmap.recycle()
+            result.success(out.toByteArray())
+        } catch (e: Throwable) {
+            result.error("decodeImage", e.message ?: "decode failed", null)
+        }
+    }
+
     private fun handleHostPath(call: MethodCall, result: MethodChannel.Result) {
         executor.execute {
             try {

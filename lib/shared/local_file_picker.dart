@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:io';
 import 'dart:ui' show ImageFilter;
 
@@ -375,6 +376,17 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
     );
   }
 
+  Future<Uint8List?> _imageBytes(String path) async {
+    try {
+      final host = await _hostPath(path);
+      if (host == null || host.isEmpty) return null;
+      final raw = await File(host).readAsBytes();
+      return await _bridge.decodeImage(raw, maxDimension: 200);
+    } catch (_) {
+      return null;
+    }
+  }
+
   void _rejectBinary(FileKind kind) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -588,7 +600,7 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
                               entry: entry,
                               kind: kind,
                               usable: usable,
-                              hostPathResolver: _hostPath,
+                              imageBytesResolver: _imageBytes,
                               onTap: () {
                                 if (entry.isDirectory) {
                                   _load(entry.path);
@@ -629,21 +641,21 @@ class _PickerImageThumbnail extends StatelessWidget {
   });
 
   final String path;
-  final Future<String?> Function(String path) resolver;
+  final Future<Uint8List?> Function(String path) resolver;
   final FileKind kind;
   static const _size = 40.0;
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String?>(
+    return FutureBuilder<Uint8List?>(
       future: resolver(path),
       builder: (context, snap) {
-        final host = snap.data;
-        if (host != null && host.isNotEmpty) {
+        final bytes = snap.data;
+        if (bytes != null && bytes.isNotEmpty) {
           return ClipRRect(
             borderRadius: BorderRadius.circular(8),
-            child: Image.file(
-              File(host),
+            child: Image.memory(
+              bytes,
               width: _size,
               height: _size,
               fit: BoxFit.cover,
@@ -674,14 +686,14 @@ class _Tile extends StatelessWidget {
     required this.kind,
     required this.usable,
     required this.onTap,
-    this.hostPathResolver,
+    this.imageBytesResolver,
   });
 
   final ShellFileEntry entry;
   final FileKind kind;
   final bool usable;
   final VoidCallback onTap;
-  final Future<String?> Function(String path)? hostPathResolver;
+  final Future<Uint8List?> Function(String path)? imageBytesResolver;
 
   @override
   Widget build(BuildContext context) {
@@ -702,10 +714,10 @@ class _Tile extends StatelessWidget {
             child: Row(
               children: [
                 if (kind.category == FileCategory.image &&
-                    hostPathResolver != null)
+                    imageBytesResolver != null)
                   _PickerImageThumbnail(
                     path: entry.path,
-                    resolver: hostPathResolver!,
+                    resolver: imageBytesResolver!,
                     kind: kind,
                   )
                 else

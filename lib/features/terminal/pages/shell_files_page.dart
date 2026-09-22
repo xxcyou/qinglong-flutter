@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -464,7 +463,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                 widget.dragToAttachEnabled ? () {} : () => _showActions(entry),
             onAction: (action) => _handleAction(action, entry),
             onMore: () => _showActions(entry),
-            hostPathResolver: (path) => _notifier.hostPath(path),
+            bytesResolver: (path) => _notifier.readImageBytes(path),
           );
           if (!widget.dragToAttachEnabled) return tile;
           return _DraggableFileTile(
@@ -506,7 +505,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
             },
             onLongPress:
                 widget.dragToAttachEnabled ? () {} : () => _showActions(entry),
-            hostPathResolver: (path) => _notifier.hostPath(path),
+            bytesResolver: (path) => _notifier.readImageBytes(path),
           );
           if (!widget.dragToAttachEnabled) return tile;
           return _DraggableFileTile(
@@ -605,24 +604,38 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
             !e.isDirectory &&
             FileKinds.of(e.name).category == FileCategory.image)
         .toList();
-    final hosts = <String>[];
+    final bytesList = <Uint8List>[];
+    final names = <String>[];
     for (final e in images) {
-      final h = await _notifier.hostPath(e.path);
-      if (h != null && h.isNotEmpty) hosts.add(h);
+      final b = await _notifier.readImageBytes(e.path, thumbnail: false);
+      if (b != null && b.isNotEmpty) {
+        bytesList.add(b);
+        names.add(e.name);
+      }
     }
-    if (hosts.isEmpty || !mounted) return;
+    if (bytesList.isEmpty || !mounted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('这张图片无法解码打开')),
+        );
+      }
+      return;
+    }
     final index = images.indexWhere((e) => e.path == entry.path);
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ImageViewerPage(
-          hostPaths: hosts,
+          imageBytes: bytesList,
+          imageNames: names,
           initialIndex: index < 0 ? 0 : index,
           title: entry.name,
           subtitle: FileKinds.sizeText(entry.size),
-          onOpenExternal: () => _notifier.openExternal(
-            entry.path,
-            mime: FileKinds.mimeOf(entry.name),
-          ),
+          onOpenExternal: state.scope == FileScope.ssh
+              ? null
+              : () => _notifier.openExternal(
+                    entry.path,
+                    mime: FileKinds.mimeOf(entry.name),
+                  ),
         ),
       ),
     );
@@ -1163,7 +1176,7 @@ class _PathBarState extends State<_PathBar> {
   }
 }
 
-/// 图片缩略图：加载 host 路径后显示小图，加载中/失败退回类型图标。
+/// 图片缩略图：先读原生解码后的 PNG 字节，再显示小图；失败退回类型图标。
 class _ImageThumbnail extends StatelessWidget {
   const _ImageThumbnail({
     required this.path,
@@ -1174,22 +1187,22 @@ class _ImageThumbnail extends StatelessWidget {
   });
 
   final String path;
-  final Future<String?> Function(String path) resolver;
+  final Future<Uint8List?> Function(String path) resolver;
   final Color color;
   final IconData icon;
   final double size;
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String?>(
+    return FutureBuilder<Uint8List?>(
       future: resolver(path),
       builder: (context, snap) {
-        final host = snap.data;
-        if (host != null && host.isNotEmpty) {
+        final bytes = snap.data;
+        if (bytes != null && bytes.isNotEmpty) {
           return ClipRRect(
             borderRadius: BorderRadius.circular(10),
-            child: Image.file(
-              File(host),
+            child: Image.memory(
+              bytes,
               width: size,
               height: size,
               fit: BoxFit.cover,
@@ -1278,7 +1291,7 @@ class _FileGridTile extends StatelessWidget {
     required this.selecting,
     required this.onTap,
     required this.onLongPress,
-    required this.hostPathResolver,
+    required this.bytesResolver,
   });
 
   final ShellFileEntry entry;
@@ -1286,7 +1299,7 @@ class _FileGridTile extends StatelessWidget {
   final bool selecting;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
-  final Future<String?> Function(String path) hostPathResolver;
+  final Future<Uint8List?> Function(String path) bytesResolver;
 
   @override
   Widget build(BuildContext context) {
@@ -1312,7 +1325,7 @@ class _FileGridTile extends StatelessWidget {
             child: kind.category == FileCategory.image
                 ? _ImageThumbnail(
                     path: entry.path,
-                    resolver: hostPathResolver,
+                    resolver: bytesResolver,
                     color: kind.color,
                     icon: kind.icon,
                     size: 52,
@@ -1357,7 +1370,7 @@ class _FileTile extends StatelessWidget {
     required this.onLongPress,
     required this.onAction,
     this.onMore,
-    this.hostPathResolver,
+    this.bytesResolver,
     this.compact = false,
   });
 
@@ -1373,7 +1386,7 @@ class _FileTile extends StatelessWidget {
 
   /// 列表右侧“更多”按钮；不传时复用 [onLongPress]（拖拽模式下长按被占用）。
   final VoidCallback? onMore;
-  final Future<String?> Function(String path)? hostPathResolver;
+  final Future<Uint8List?> Function(String path)? bytesResolver;
   final bool compact;
 
   @override
@@ -1399,10 +1412,10 @@ class _FileTile extends StatelessWidget {
               ),
             ),
           // 图片文件显示缩略图，其它文件用类型图标。
-          if (kind.category == FileCategory.image && hostPathResolver != null)
+          if (kind.category == FileCategory.image && bytesResolver != null)
             _ImageThumbnail(
               path: entry.path,
-              resolver: hostPathResolver!,
+              resolver: bytesResolver!,
               color: kind.color,
               icon: kind.icon,
             )

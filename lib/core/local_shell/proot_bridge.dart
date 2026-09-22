@@ -404,6 +404,22 @@ class ProotBridge {
     return result == true;
   }
 
+  /// 用 Android BitmapFactory 解码图片字节，统一转成 PNG。
+  ///
+  /// Flutter 自带的解码器对 HEIC/HEIF/TIFF 等格式支持很差，这里走原生
+  /// 解码后回传 PNG 字节，缩略图和图片查看器都能正常显示。
+  Future<Uint8List> decodeImage(
+    Uint8List bytes, {
+    int maxDimension = 1024,
+  }) async {
+    final result = await _channel.invokeMethod<Uint8List>('decodeImage', {
+      'bytes': bytes,
+      'maxDimension': maxDimension,
+    });
+    if (result == null) throw StateError('图片解码失败');
+    return result;
+  }
+
   Future<bool> deletePath(String path, {String scope = 'shell'}) async {
     final result = await _channel.invokeMethod<dynamic>('deletePath', {
       'path': path,

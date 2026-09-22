@@ -195,6 +195,7 @@ class ShellFilesState {
 class ShellFilesNotifier extends Notifier<ShellFilesState> {
   final _bridge = ProotBridge();
   final Map<String, SftpClient> _sftpClients = {};
+  final Map<String, Uint8List> _imageCache = {};
   final Map<FileScope, String> _pathsByScope = {
     FileScope.shell: '/workspace',
     FileScope.app: '',
@@ -824,6 +825,48 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
                 scope: _scope,
               ),
       );
+
+  /// 读取图片原始字节（本地走宿主文件，SSH 走 SFTP）。
+  Future<Uint8List?> readImageRawBytes(String path) async {
+    try {
+      if (state.scope == FileScope.ssh) {
+        final sftp = await _sftpFor(state.sshSessionId!);
+        final f = await sftp.open(path);
+        try {
+          return await f.readBytes();
+        } finally {
+          await f.close();
+        }
+      }
+      final host = await hostPath(path);
+      if (host == null || host.isEmpty) return null;
+      return await File(host).readAsBytes();
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// 经过 Android 原生解码后的 PNG 字节，用来显示缩略图和图片查看器。
+  /// [thumbnail] 为 true 时用较小尺寸并走缓存；查看器用更清晰的大图。
+  Future<Uint8List?> readImageBytes(String path,
+      {bool thumbnail = true}) async {
+    final key = '${thumbnail ? 'thumb' : 'view'}:$path';
+    final cached = _imageCache[key];
+    if (cached != null) return cached;
+    final raw = await readImageRawBytes(path);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = await _bridge.decodeImage(
+        raw,
+        maxDimension: thumbnail ? 320 : 2048,
+      );
+      if (_imageCache.length > 400) _imageCache.clear();
+      _imageCache[key] = decoded;
+      return decoded;
+    } catch (e) {
+      return null;
+    }
+  }
 
   Future<ShellFileStat?> stat(String path) async {
     try {

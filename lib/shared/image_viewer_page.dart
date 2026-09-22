@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -16,17 +17,28 @@ class ImageViewerPage extends StatefulWidget {
     super.key,
     this.hostPath,
     this.hostPaths = const [],
+    this.imageBytes = const [],
+    this.imageNames = const [],
     this.initialIndex = 0,
     required this.title,
     this.subtitle,
     this.onOpenExternal,
-  }) : assert(hostPath != null || hostPaths.isNotEmpty, '至少需要一个图片路径');
+  }) : assert(
+          hostPath != null || hostPaths.isNotEmpty || imageBytes.isNotEmpty,
+          '至少需要一个图片路径/图片字节',
+        );
 
   /// 兼容单图：宿主真实路径。
   final String? hostPath;
 
-  /// 多图列表：文件管理器把当前目录所有图片传进来，支持左右滑切换。
+  /// 多图列表：本地文件管理器把当前目录所有图片传进来，支持左右滑切换。
   final List<String> hostPaths;
+
+  /// SSH / 原生解码后的图片字节（PNG），用于远端图片和 HEIC 等格式。
+  final List<Uint8List> imageBytes;
+
+  /// 配合 [imageBytes] 的显示名列表。
+  final List<String> imageNames;
 
   /// 打开时落在第几张。
   final int initialIndex;
@@ -38,6 +50,10 @@ class ImageViewerPage extends StatefulWidget {
   final VoidCallback? onOpenExternal;
 
   List<String> get paths => hostPaths.isNotEmpty ? hostPaths : [hostPath!];
+
+  bool get usingBytes => imageBytes.isNotEmpty;
+
+  int get total => usingBytes ? imageBytes.length : paths.length;
 
   @override
   State<ImageViewerPage> createState() => _ImageViewerPageState();
@@ -69,6 +85,12 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   String get _currentHost => widget.paths[_pageIndex];
 
   String get _currentName {
+    if (widget.usingBytes) {
+      return widget.imageNames.isNotEmpty &&
+              _pageIndex < widget.imageNames.length
+          ? widget.imageNames[_pageIndex]
+          : widget.title;
+    }
     final p = _currentHost.replaceAll('\\', '/');
     return p.substring(p.lastIndexOf('/') + 1);
   }
@@ -80,14 +102,13 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
       _error = null;
     });
     try {
-      final file = File(_currentHost);
-      if (!file.existsSync()) {
-        if (mounted) setState(() => _error = '文件不存在');
-        return;
-      }
-      final stream = Image.file(file).image.resolve(
-            const ImageConfiguration(),
-          );
+      final stream = widget.usingBytes
+          ? Image.memory(widget.imageBytes[_pageIndex]).image.resolve(
+                const ImageConfiguration(),
+              )
+          : Image.file(File(_currentHost)).image.resolve(
+                const ImageConfiguration(),
+              );
       final completer = stream;
       late ImageStreamListener listener;
       listener = ImageStreamListener(
@@ -114,7 +135,7 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   @override
   Widget build(BuildContext context) {
     final size = _width != null && _height != null ? '$_width×$_height' : null;
-    final total = widget.paths.length;
+    final total = widget.total;
     final subtitleParts = [
       if (total > 1) '${_pageIndex + 1}/$total',
       if (size != null) size,
@@ -164,7 +185,9 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
                     },
                     itemBuilder: (context, index) => _ZoomableImage(
                       key: index == _pageIndex ? _pageKey : null,
-                      hostPath: widget.paths[index],
+                      hostPath: widget.usingBytes ? null : widget.paths[index],
+                      imageBytes:
+                          widget.usingBytes ? widget.imageBytes[index] : null,
                     ),
                   ),
           ),
@@ -178,9 +201,10 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
 
 /// 可缩放/双击放大的单张图片。
 class _ZoomableImage extends StatefulWidget {
-  const _ZoomableImage({super.key, required this.hostPath});
+  const _ZoomableImage({super.key, this.hostPath, this.imageBytes});
 
-  final String hostPath;
+  final String? hostPath;
+  final Uint8List? imageBytes;
 
   @override
   State<_ZoomableImage> createState() => _ZoomableImageState();
@@ -221,16 +245,27 @@ class _ZoomableImageState extends State<_ZoomableImage> {
         minScale: 0.5,
         maxScale: 8,
         child: Center(
-          child: Image.file(
-            File(widget.hostPath),
-            fit: BoxFit.contain,
-            errorBuilder: (_, error, __) => Center(
-              child: Text(
-                '解码失败：$error',
-                style: const TextStyle(color: Colors.white70),
-              ),
-            ),
-          ),
+          child: widget.imageBytes != null
+              ? Image.memory(
+                  widget.imageBytes!,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, error, __) => Center(
+                    child: Text(
+                      '解码失败：$error',
+                      style: const TextStyle(color: Colors.white70),
+                    ),
+                  ),
+                )
+              : Image.file(
+                  File(widget.hostPath!),
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, error, __) => Center(
+                    child: Text(
+                      '解码失败：$error',
+                      style: const TextStyle(color: Colors.white70),
+                    ),
+                  ),
+                ),
         ),
       ),
     );
