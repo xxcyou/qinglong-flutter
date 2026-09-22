@@ -132,6 +132,20 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
     }
   }
 
+  Future<void> _openFullscreen() async {
+    final bytes = widget.usingBytes ? widget.imageBytes[_pageIndex] : null;
+    final host = widget.usingBytes ? null : _currentHost;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => FullScreenImageViewerPage(
+          imageBytes: bytes,
+          hostPath: host,
+          title: _currentName,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final size = _width != null && _height != null ? '$_width×$_height' : null;
@@ -147,9 +161,9 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
       bodyTopPadding: 0,
       actions: [
         IconButton(
-          tooltip: '还原缩放',
-          onPressed: () => _pageKey.currentState?.reset(),
-          icon: const Icon(Icons.zoom_out_map),
+          tooltip: '全屏查看',
+          onPressed: _openFullscreen,
+          icon: const Icon(Icons.fullscreen),
         ),
         if (widget.onOpenExternal != null)
           IconButton(
@@ -266,6 +280,91 @@ class _ZoomableImageState extends State<_ZoomableImage> {
                     ),
                   ),
                 ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 点击查看器右上角“全屏”后进入的沉浸式图片页。
+class FullScreenImageViewerPage extends StatelessWidget {
+  const FullScreenImageViewerPage({
+    super.key,
+    required this.title,
+    this.imageBytes,
+    this.hostPath,
+  });
+
+  final String title;
+  final Uint8List? imageBytes;
+  final String? hostPath;
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget image;
+    if (imageBytes != null) {
+      image = Image.memory(
+        imageBytes!,
+        fit: BoxFit.contain,
+        errorBuilder: (_, error, __) => Text(
+          '解码失败：$error',
+          style: const TextStyle(color: Colors.white70),
+        ),
+      );
+    } else {
+      image = Image.file(
+        File(hostPath!),
+        fit: BoxFit.contain,
+        errorBuilder: (_, error, __) => Text(
+          '解码失败：$error',
+          style: const TextStyle(color: Colors.white70),
+        ),
+      );
+    }
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 8,
+                child: Center(child: image),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton(
+                tooltip: '退出全屏',
+                onPressed: () => Navigator.pop(context),
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.black54,
+                  foregroundColor: Colors.white,
+                ),
+                icon: const Icon(Icons.fullscreen_exit),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              left: 8,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

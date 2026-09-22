@@ -276,11 +276,8 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
                 : '/');
     if (scope == FileScope.ssh) {
       if (sshId == null || SshSessionManager.instance.clientOf(sshId) == null) {
-        final connected = [
-          for (final s in SshSessionManager.instance.sessions)
-            if (s.isConnected) s.id
-        ];
-        if (connected.isEmpty) {
+        final saved = SshSessionManager.instance.sessions;
+        if (saved.isEmpty) {
           state = state.copyWith(
             scope: scope,
             sshSessionId: null,
@@ -289,11 +286,11 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
             selected: const {},
             clearError: false,
             clearClipboard: true,
-            error: '请先在终端页连接 SSH，再打开 SSH 文件管理',
+            error: '还没有 SSH 会话，请先在 SSH 会话管理里新建',
           );
           return;
         }
-        sshId = connected.first;
+        sshId = saved.first.id;
       }
     }
     state = state.copyWith(
@@ -310,7 +307,7 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
     await open(path);
   }
 
-  /// 切换当前 SSH 会话。
+  /// 切换当前 SSH 会话。未连接时自动用保存的账号连接。
   Future<void> setSshSession(String? id) async {
     if (id == null || state.scope != FileScope.ssh) return;
     state = state.copyWith(
@@ -321,16 +318,48 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
       selected: const {},
       clearError: true,
       clearClipboard: true,
+      loading: true,
       path: '/',
     );
-    await open('/');
+    try {
+      final ok = await _ensureSshConnected(id);
+      if (!ok) return;
+      await open('/');
+    } catch (e) {
+      state = state.copyWith(
+        error: _message(e),
+        loading: false,
+      );
+    }
+  }
+
+  /// 保证 SSH 已连接；未连接时自动拉活。
+  Future<bool> _ensureSshConnected(String id) async {
+    if (SshSessionManager.instance.clientOf(id) != null) return true;
+    final draft = SshSessionManager.instance.draftOf(id);
+    if (draft == null) throw StateError('SSH 会话不存在');
+    final session = await SshSessionManager.instance.connect(draft, id: id);
+    if (!session.isConnected) {
+      state = state.copyWith(error: session.status);
+      return false;
+    }
+    return true;
   }
 
   Future<SftpClient> _sftpFor(String id) async {
     final existing = _sftpClients[id];
     if (existing != null) return existing;
-    final client = SshSessionManager.instance.clientOf(id);
-    if (client == null) throw StateError('SSH 未连接：$id');
+
+    var client = SshSessionManager.instance.clientOf(id);
+    if (client == null) {
+      final draft = SshSessionManager.instance.draftOf(id);
+      if (draft == null) throw StateError('SSH 会话不存在');
+      final session = await SshSessionManager.instance.connect(draft, id: id);
+      if (!session.isConnected) throw StateError(session.status);
+      client = SshSessionManager.instance.clientOf(id);
+      if (client == null) throw StateError('SSH 连接失败');
+    }
+
     final sftp = await client.sftp();
     _sftpClients[id] = sftp;
     return sftp;

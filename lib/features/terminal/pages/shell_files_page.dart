@@ -1555,20 +1555,17 @@ class _SshSessionPicker extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final sshState = ref.watch(sshSessionsProvider);
-    final connected = [
-      for (final s in sshState.sessions)
-        if (s.isConnected) s
-    ];
     return DropdownButton<String?>(
       value: state.sshSessionId,
       isExpanded: true,
-      hint: const Text('选择已连接的 SSH 终端'),
+      hint: const Text('选择 SSH 会话（未连接会自动连接）'),
       items: [
-        for (final s in connected)
+        for (final s in sshState.sessions)
           DropdownMenuItem(
             value: s.id,
             child: Text(
-              '${s.name} (${s.username}@${s.host})',
+              '${s.name} (${s.username}@${s.host}) · '
+              '${s.isConnected ? '已连接' : '未连接·自动连接'}',
               overflow: TextOverflow.ellipsis,
             ),
           ),
