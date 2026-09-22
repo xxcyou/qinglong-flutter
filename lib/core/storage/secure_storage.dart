@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// 凭据安全存储。QL_TOKEN / LLM API Key 只允许放这里，不打日志。
@@ -13,6 +15,7 @@ class SecureStorage {
   static String _passwordKey(String panelId) => 'ql_password_$panelId';
   static String _tokenExpiryKey(String panelId) => 'ql_token_exp_$panelId';
   static String _secretKey(String panelId) => 'ql_client_secret_$panelId';
+
   /// LLM API Key 的键。
   ///
   /// 空 providerId 指向老的全局键——多提供商之前只有一份配置，
@@ -86,6 +89,30 @@ class SecureStorage {
 
   static Future<void> saveBrowserScripts(String json) =>
       _storage.write(key: 'browser_intercept_scripts', value: json);
+
+  /// SSH 凭据：只存秘密部分（密码/私钥/口令），非秘密配置走 SharedPreferences。
+  static Future<void> saveSshSecret(
+    String id,
+    Map<String, String> secret,
+  ) async {
+    await _storage.write(key: 'ssh_secret_$id', value: jsonEncode(secret));
+  }
+
+  static Future<Map<String, String>?> readSshSecret(String id) async {
+    final raw = await _storage.read(key: 'ssh_secret_$id');
+    if (raw == null) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        return decoded.map((k, v) => MapEntry(k, v?.toString() ?? ''));
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  static Future<void> deleteSshSecret(String id) async {
+    await _storage.delete(key: 'ssh_secret_$id');
+  }
 
   static Future<void> saveLlmApiKey(
     String key, {

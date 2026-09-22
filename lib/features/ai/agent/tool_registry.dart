@@ -754,10 +754,18 @@ class QlToolRegistry {
         ),
         ToolDefinition(
           name: 'ssh_disconnect',
-          description: '断开并删除一个已连接的 SSH 终端会话',
+          description: '断开一个 SSH 终端会话，但保留已保存的连接，之后可以重新连接',
           parameters: _obj(['id'], {'id': _stringProp}),
           isWrite: true,
-          impact: '关闭 SSH 连接，终端标签页会消失',
+          impact: '关闭 SSH 连接，终端标签页会消失，已保存会话保留',
+          reversible: true,
+        ),
+        ToolDefinition(
+          name: 'ssh_remove',
+          description: '彻底删除一个已保存/已连接的 SSH 会话及其凭据',
+          parameters: _obj(['id'], {'id': _stringProp}),
+          isWrite: true,
+          impact: '删除 SSH 连接配置和凭据，不可恢复',
           reversible: false,
           danger: true,
         ),
@@ -1912,6 +1920,14 @@ class QlToolRegistry {
       case 'ssh_disconnect':
         try {
           await SshSessionManager.instance.disconnect(args['id'].toString());
+          return jsonEncode({'ok': true});
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'ssh_remove':
+        try {
+          await SshSessionManager.instance.remove(args['id'].toString());
           return jsonEncode({'ok': true});
         } catch (e) {
           return jsonEncode({'error': e.toString()});

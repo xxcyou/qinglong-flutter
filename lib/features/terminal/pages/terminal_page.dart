@@ -13,6 +13,7 @@ import '../providers/terminal_session_provider.dart';
 import '../terminal_palettes.dart';
 import '../widgets/package_install_sheet.dart';
 import '../widgets/ssh_connect_dialog.dart';
+import '../widgets/ssh_manager_sheet.dart';
 import '../widgets/ssh_terminal_view.dart';
 import '../widgets/terminal_key_bar.dart';
 import '../widgets/terminal_selection_bar.dart';
@@ -159,7 +160,11 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
     final notifier = ref.read(terminalSessionProvider.notifier);
     final settings = ref.watch(settingsProvider);
     final palette = TerminalPalette.byId(settings.terminalPalette);
-    final sshSessions = ref.watch(sshSessionsProvider).sessions;
+    final sshSessions = ref
+        .watch(sshSessionsProvider)
+        .sessions
+        .where((s) => s.isConnected)
+        .toList();
     return GlassScaffold(
       title: 'Debian 终端',
       subtitle: state.running ? '会话进行中' : null,
@@ -169,6 +174,11 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
           tooltip: '新建 SSH 终端',
           onPressed: _newSsh,
           icon: const Icon(Icons.add_box_outlined),
+        ),
+        IconButton(
+          tooltip: 'SSH 会话管理',
+          onPressed: () => SshManagerSheet.show(context),
+          icon: const Icon(Icons.dns_outlined),
         ),
         IconButton(
           tooltip: '文件管理',
