@@ -17,7 +17,8 @@ import '../../../shared/glass_scaffold.dart';
 import '../../../shared/image_viewer_page.dart';
 import '../../../shared/text_input_dialog.dart';
 import '../providers/shell_files_provider.dart';
-import 'ssh_files_page.dart';
+import '../providers/ssh_session_provider.dart';
+// import 'ssh_files_page.dart';
 import '../widgets/file_action_sheet.dart';
 import '../../../shared/mono_text.dart';
 
@@ -130,11 +131,6 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
           }
         },
         icon: Icon(_searchVisible ? Icons.search_off : Icons.search),
-      ),
-      IconButton(
-        tooltip: 'SSH 文件管理 (SFTP)',
-        onPressed: () => SshFilesPage.showSheet(context),
-        icon: const Icon(Icons.cloud_outlined),
       ),
       PopupMenuButton<String>(
         tooltip: '视图',
@@ -313,11 +309,20 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                 icon: Icon(Icons.phone_android, size: 17),
                 label: Text('APP 文件'),
               ),
+              ButtonSegment(
+                value: FileScope.ssh,
+                icon: Icon(Icons.dns_outlined, size: 17),
+                label: Text('SSH 文件'),
+              ),
             ],
             selected: {state.scope},
             showSelectedIcon: false,
             onSelectionChanged: (v) => _notifier.switchScope(v.first),
           ),
+          if (state.scope == FileScope.ssh) ...[
+            const SizedBox(height: 8),
+            _SshSessionPicker(state: state),
+          ],
           if (_searchVisible) ...[
             const SizedBox(height: 8),
             GlassPanel(
@@ -1525,6 +1530,37 @@ class _FileTile extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SshSessionPicker extends ConsumerWidget {
+  const _SshSessionPicker({required this.state});
+
+  final ShellFilesState state;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sshState = ref.watch(sshSessionsProvider);
+    final connected = [
+      for (final s in sshState.sessions)
+        if (s.isConnected) s
+    ];
+    return DropdownButton<String?>(
+      value: state.sshSessionId,
+      isExpanded: true,
+      hint: const Text('选择已连接的 SSH 终端'),
+      items: [
+        for (final s in connected)
+          DropdownMenuItem(
+            value: s.id,
+            child: Text(
+              '${s.name} (${s.username}@${s.host})',
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+      ],
+      onChanged: (v) => ref.read(shellFilesProvider.notifier).setSshSession(v),
     );
   }
 }

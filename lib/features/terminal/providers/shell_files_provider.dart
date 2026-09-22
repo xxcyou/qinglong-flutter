@@ -1,9 +1,14 @@
 import 'dart:convert';
+import 'dart:typed_data';
+import 'dart:io';
 
+import 'package:dartssh2/dartssh2.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/local_shell/proot_bridge.dart';
+import 'ssh_session_provider.dart';
 
 /// 文件管理的两套根：终端（PRoot guest 挂载点）与 APP 自身沙箱目录。
 enum FileScope {
@@ -11,7 +16,10 @@ enum FileScope {
   shell('终端文件'),
 
   /// APP 沙箱：filesDir / cacheDir / 外部 files 目录。
-  app('APP 文件');
+  app('APP 文件'),
+
+  /// 已连接 SSH 会话的远程目录（SFTP）。
+  ssh('SSH 文件');
 
   const FileScope(this.label);
 
@@ -43,6 +51,7 @@ enum FileViewMode {
 class ShellFilesState {
   const ShellFilesState({
     this.scope = FileScope.shell,
+    this.sshSessionId,
     this.path = '/workspace',
     this.roots = const [
       '/workspace',
@@ -68,6 +77,9 @@ class ShellFilesState {
   });
 
   final FileScope scope;
+
+  /// 当前 SSH 会话 id（scope == ssh 时有效）。
+  final String? sshSessionId;
   final String path;
   final List<String> roots;
   final List<String> rootLabels;
@@ -133,6 +145,8 @@ class ShellFilesState {
 
   ShellFilesState copyWith({
     FileScope? scope,
+    String? sshSessionId,
+    bool clearSshSession = false,
     String? path,
     List<String>? roots,
     List<String>? rootLabels,
@@ -155,6 +169,7 @@ class ShellFilesState {
   }) {
     return ShellFilesState(
       scope: scope ?? this.scope,
+      sshSessionId: clearSshSession ? null : sshSessionId ?? this.sshSessionId,
       path: path ?? this.path,
       roots: roots ?? this.roots,
       rootLabels: rootLabels ?? this.rootLabels,
@@ -179,6 +194,7 @@ class ShellFilesState {
 
 class ShellFilesNotifier extends Notifier<ShellFilesState> {
   final _bridge = ProotBridge();
+  final Map<String, SftpClient> _sftpClients = {};
 
   @override
   ShellFilesState build() {
@@ -219,9 +235,15 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
       selected: const {},
     );
     try {
-      final listing = state.scope == FileScope.shell
-          ? await _bridge.listFiles(path: target)
-          : await _bridge.listAppFiles(path: target.isEmpty ? null : target);
+      final ShellDirectoryListing listing;
+      if (state.scope == FileScope.shell) {
+        listing = await _bridge.listFiles(path: target);
+      } else if (state.scope == FileScope.app) {
+        listing =
+            await _bridge.listAppFiles(path: target.isEmpty ? null : target);
+      } else {
+        listing = await _sshListing(target);
+      }
       state = state.copyWith(
         path: listing.path,
         roots: listing.roots.isEmpty ? state.roots : listing.roots,
@@ -235,19 +257,121 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
     }
   }
 
-  /// 切换根（终端 ↔ APP）。两套路径体系完全不同，切换时让原生给默认根。
+  /// 切换根（终端 ↔ APP ↔ SSH）。切换时让原生给默认根。
   Future<void> switchScope(FileScope scope) async {
     if (scope == state.scope) return;
+    var sshId = state.sshSessionId;
+    var path = scope == FileScope.shell
+        ? '/workspace'
+        : scope == FileScope.app
+            ? ''
+            : '/';
+    if (scope == FileScope.ssh) {
+      if (sshId == null || SshSessionManager.instance.clientOf(sshId) == null) {
+        final connected = [
+          for (final s in SshSessionManager.instance.sessions)
+            if (s.isConnected) s.id
+        ];
+        if (connected.isEmpty) {
+          state = state.copyWith(
+            scope: scope,
+            sshSessionId: null,
+            clearSshSession: true,
+            entries: const [],
+            selected: const {},
+            clearError: false,
+            clearClipboard: true,
+            error: '请先在终端页连接 SSH，再打开 SSH 文件管理',
+          );
+          return;
+        }
+        sshId = connected.first;
+      }
+    }
     state = state.copyWith(
       scope: scope,
+      sshSessionId: sshId,
       entries: const [],
       keyword: '',
       clearSearch: true,
       selected: const {},
       clearError: true,
-      path: scope == FileScope.shell ? '/workspace' : '',
+      clearClipboard: true,
+      path: path,
     );
-    await open(scope == FileScope.shell ? '/workspace' : '');
+    await open(path);
+  }
+
+  /// 切换当前 SSH 会话。
+  Future<void> setSshSession(String? id) async {
+    if (id == null || state.scope != FileScope.ssh) return;
+    state = state.copyWith(
+      sshSessionId: id,
+      entries: const [],
+      keyword: '',
+      clearSearch: true,
+      selected: const {},
+      clearError: true,
+      clearClipboard: true,
+      path: '/',
+    );
+    await open('/');
+  }
+
+  Future<SftpClient> _sftpFor(String id) async {
+    final existing = _sftpClients[id];
+    if (existing != null) return existing;
+    final client = SshSessionManager.instance.clientOf(id);
+    if (client == null) throw StateError('SSH 未连接：$id');
+    final sftp = await client.sftp();
+    _sftpClients[id] = sftp;
+    return sftp;
+  }
+
+  String _sshJoin(String dir, String name) {
+    final clean = name.trim();
+    if (dir == '/') return '/$clean';
+    if (dir.endsWith('/')) return '$dir$clean';
+    return '$dir/$clean';
+  }
+
+  Future<ShellDirectoryListing> _sshListing(String path) async {
+    final id = state.sshSessionId;
+    if (id == null) throw StateError('没有选择 SSH 会话');
+    final sftp = await _sftpFor(id);
+    final items = await sftp.listdir(path);
+    final entries = <ShellFileEntry>[];
+    for (final item in items) {
+      final name = item.filename;
+      if (name.isEmpty || name == '.' || name == '..') continue;
+      entries.add(ShellFileEntry(
+        name: name,
+        path: _sshJoin(path, name),
+        isDirectory: item.attr.isDirectory,
+        size: item.attr.size ?? 0,
+        modified: DateTime.fromMillisecondsSinceEpoch(
+          (item.attr.modifyTime ?? 0) * 1000,
+        ),
+        readable: true,
+        writable: true,
+        executable: item.attr.mode?.value != null &&
+            (item.attr.mode!.value & 0x49) != 0,
+        hidden: name.startsWith('.'),
+      ));
+    }
+    return ShellDirectoryListing(
+      path: path,
+      roots: const ['/'],
+      entries: entries,
+      rootLabels: const ['SSH 根目录'],
+    );
+  }
+
+  /// SSH 下两个路径是否来自同一会话（剪贴板跨会话粘贴不安全）。
+  bool _sshClipboardSafe(String source) {
+    if (state.scope != FileScope.ssh) return false;
+    final id = state.sshSessionId;
+    return id != null && (source.startsWith('/') || source.startsWith('~/'));
   }
 
   Future<void> refresh() => open(state.path);
@@ -305,11 +429,55 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
     }
     state = state.copyWith(searching: true, clearError: true);
     try {
-      final hits = await _searchPython(text, matchContent: matchContent);
+      final hits = state.scope == FileScope.ssh
+          ? await _sshSearch(text)
+          : await _searchPython(text, matchContent: matchContent);
       state = state.copyWith(searchResults: hits, searching: false);
     } catch (e) {
       state = state.copyWith(searching: false, error: _message(e));
     }
+  }
+
+  /// SSH 远程目录递归搜索：只搜文件名（SFTP 不提供内容搜索）。
+  Future<List<ShellFileEntry>> _sshSearch(String pattern,
+      {int limit = 200}) async {
+    final id = state.sshSessionId;
+    if (id == null) throw StateError('没有选择 SSH 会话');
+    final sftp = await _sftpFor(id);
+    final rx = RegExp(pattern);
+    final hits = <ShellFileEntry>[];
+    Future<void> walk(String dir, int depth) async {
+      if (depth > 12 || hits.length >= limit) return;
+      final items = await sftp.listdir(dir);
+      for (final item in items) {
+        if (hits.length >= limit) return;
+        final name = item.filename;
+        if (name.isEmpty || name == '.' || name == '..') continue;
+        final path = _sshJoin(dir, name);
+        if (rx.hasMatch(name)) {
+          hits.add(ShellFileEntry(
+            name: name,
+            path: path,
+            isDirectory: item.attr.isDirectory,
+            size: item.attr.size ?? 0,
+            modified: DateTime.fromMillisecondsSinceEpoch(
+              (item.attr.modifyTime ?? 0) * 1000,
+            ),
+            readable: true,
+            writable: true,
+            hidden: name.startsWith('.'),
+          ));
+        }
+        if (item.attr.isDirectory && depth < 12) {
+          try {
+            await walk(path, depth + 1);
+          } catch (_) {}
+        }
+      }
+    }
+
+    await walk(state.path, 0);
+    return hits;
   }
 
   /// 用 PRoot 里的 Python 做正则递归搜索。
@@ -452,10 +620,20 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
 
   /// 当前作用域给原生侧的标记。两套目录树在磁盘上是嵌套的
   /// （guest 的 /workspace 就在 filesDir 下），路径字符串分不出来，必须带上。
-  String get _scope => state.scope == FileScope.app ? 'app' : 'shell';
+  String get _scope => switch (state.scope) {
+        FileScope.shell => 'shell',
+        FileScope.app => 'app',
+        FileScope.ssh => 'ssh',
+      };
 
   Future<String?> readFile(String path) async {
     try {
+      if (state.scope == FileScope.ssh) {
+        final sftp = await _sftpFor(state.sshSessionId!);
+        final f = await sftp.open(path);
+        final bytes = await f.readBytes();
+        return utf8.decode(bytes, allowMalformed: true);
+      }
       return await _bridge.readFile(path: path, scope: _scope);
     } catch (e) {
       state = state.copyWith(error: _message(e));
@@ -465,6 +643,7 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
 
   /// 取宿主真实路径（内置图片查看器要用）。
   Future<String?> hostPath(String path) async {
+    if (state.scope == FileScope.ssh) return null;
     try {
       return await _bridge.hostPath(path: path, scope: _scope);
     } catch (e) {
@@ -493,23 +672,53 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
   }
 
   Future<bool> saveFile(String path, String content) => _guard(
-        () => _bridge.writeFile(path: path, content: content, scope: _scope),
+        () => state.scope == FileScope.ssh
+            ? _sshWrite(path, content)
+            : _bridge.writeFile(path: path, content: content, scope: _scope),
       );
 
   Future<bool> createDirectory(String name) => _guard(
-        () => _bridge.makeDirectory(_join(state.path, name), scope: _scope),
+        () => state.scope == FileScope.ssh
+            ? _sftpFor(state.sshSessionId!)
+                .then((sftp) => sftp.mkdir(_sshJoin(state.path, name)))
+            : _bridge.makeDirectory(_join(state.path, name), scope: _scope),
       );
 
   Future<bool> createFile(String name) => _guard(
-        () => _bridge.writeFile(
-          path: _join(state.path, name),
-          content: '',
-          scope: _scope,
-        ),
+        () => state.scope == FileScope.ssh
+            ? _sshWrite(_sshJoin(state.path, name), '')
+            : _bridge.writeFile(
+                path: _join(state.path, name),
+                content: '',
+                scope: _scope,
+              ),
       );
 
-  Future<bool> delete(String path) =>
-      _guard(() => _bridge.deletePath(path, scope: _scope));
+  Future<bool> delete(String path) => _guard(
+        () => state.scope == FileScope.ssh
+            ? _sshDelete(path)
+            : _bridge.deletePath(path, scope: _scope),
+      );
+
+  Future<void> _sshWrite(String path, String content) async {
+    final sftp = await _sftpFor(state.sshSessionId!);
+    final f = await sftp.open(
+      path,
+      mode: SftpFileOpenMode.write | SftpFileOpenMode.truncate,
+    );
+    await f.writeBytes(Uint8List.fromList(utf8.encode(content)));
+    await f.close();
+  }
+
+  Future<void> _sshDelete(String path) async {
+    final sftp = await _sftpFor(state.sshSessionId!);
+    final info = await sftp.stat(path);
+    if (info.isDirectory) {
+      await sftp.rmdir(path);
+    } else {
+      await sftp.remove(path);
+    }
+  }
 
   /// 从别的 APP 导入文件到当前目录（系统文件选择器）。
   ///
@@ -517,6 +726,50 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
   /// 这些区别 `_guard` 的"成功/失败"二元语义表达不了。
   Future<ShellImportResult?> importFiles() async {
     try {
+      if (state.scope == FileScope.ssh) {
+        final picked = await FilePicker.pickFiles(allowMultiple: true);
+        if (picked == null) {
+          return const ShellImportResult(
+            canceled: true,
+            files: [],
+            failed: [],
+          );
+        }
+        final sftp = await _sftpFor(state.sshSessionId!);
+        final files = <ShellFileEntry>[];
+        final failed = <({String name, String error})>[];
+        for (final f in picked.files) {
+          final local = f.path;
+          if (local == null) continue;
+          final remote = _sshJoin(state.path, f.name);
+          try {
+            final dst = await sftp.open(
+              remote,
+              mode: SftpFileOpenMode.write | SftpFileOpenMode.truncate,
+            );
+            await dst.write(File(local).openRead().cast()).done;
+            await dst.close();
+            files.add(ShellFileEntry(
+              name: f.name,
+              path: remote,
+              isDirectory: false,
+              size: f.size,
+              modified: DateTime.now(),
+              readable: true,
+              writable: true,
+            ));
+          } catch (e) {
+            failed.add((name: f.name, error: _message(e)));
+          }
+        }
+        await refresh();
+        if (failed.isNotEmpty) {
+          state = state.copyWith(
+            error: '${failed.first.name}：${failed.first.error}',
+          );
+        }
+        return ShellImportResult(canceled: false, files: files, failed: failed);
+      }
       final result = await _bridge.importFiles(path: state.path, scope: _scope);
       // 有文件落地就刷新列表；一个都没成功就别白刷一次。
       if (result.files.isNotEmpty) await refresh();
@@ -539,7 +792,11 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
     String? firstError;
     for (final path in targets) {
       try {
-        await _bridge.deletePath(path, scope: _scope);
+        if (state.scope == FileScope.ssh) {
+          await _sshDelete(path);
+        } else {
+          await _bridge.deletePath(path, scope: _scope);
+        }
         ok++;
       } catch (e) {
         firstError ??= _message(e);
@@ -551,15 +808,42 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
   }
 
   Future<bool> rename(ShellFileEntry entry, String newName) => _guard(
-        () => _bridge.movePath(
-          from: entry.path,
-          to: _join(state.path, newName),
-          scope: _scope,
-        ),
+        () => state.scope == FileScope.ssh
+            ? _sftpFor(state.sshSessionId!).then((sftp) =>
+                sftp.rename(entry.path, _sshJoin(state.path, newName)))
+            : _bridge.movePath(
+                from: entry.path,
+                to: _join(state.path, newName),
+                scope: _scope,
+              ),
       );
 
   Future<ShellFileStat?> stat(String path) async {
     try {
+      if (state.scope == FileScope.ssh) {
+        final sftp = await _sftpFor(state.sshSessionId!);
+        final attrs = await sftp.stat(path);
+        final name = path.split('/').last;
+        final isDir = attrs.isDirectory;
+        return ShellFileStat(
+          entry: ShellFileEntry(
+            name: name.isEmpty ? path : name,
+            path: path,
+            isDirectory: isDir,
+            size: attrs.size ?? 0,
+            modified: DateTime.fromMillisecondsSinceEpoch(
+              (attrs.modifyTime ?? 0) * 1000,
+            ),
+            readable: true,
+            writable: true,
+            hidden: name.startsWith('.'),
+          ),
+          totalBytes: attrs.size ?? 0,
+          fileCount: isDir ? 0 : 1,
+          dirCount: isDir ? 1 : 0,
+          hostPath: path,
+        );
+      }
       return await _bridge.stat(path, scope: _scope);
     } catch (e) {
       state = state.copyWith(error: _message(e));
@@ -612,11 +896,40 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       }
     }
     final cut = state.clipboardIsCut;
-    final ok = await _guard(() => cut
-        ? _bridge.movePath(from: source, to: target, scope: _scope)
-        : _bridge.copyPath(from: source, to: target, scope: _scope));
+    final ok = await _guard(() {
+      if (state.scope == FileScope.ssh) {
+        if (!_sshClipboardSafe(source)) {
+          throw StateError('SSH 剪切板只支持同会话内粘贴');
+        }
+        final remoteDir = dir;
+        final remoteTarget = _sshJoin(remoteDir, name);
+        return cut
+            ? _sftpFor(state.sshSessionId!)
+                .then((sftp) => sftp.rename(source, remoteTarget))
+            : _sshCopy(source, remoteTarget);
+      }
+      return cut
+          ? _bridge.movePath(from: source, to: target, scope: _scope)
+          : _bridge.copyPath(from: source, to: target, scope: _scope);
+    });
     if (ok) state = state.copyWith(clearClipboard: true);
     return ok;
+  }
+
+  Future<void> _sshCopy(String from, String to) async {
+    final sftp = await _sftpFor(state.sshSessionId!);
+    final src = await sftp.open(from);
+    final dst = await sftp.open(
+      to,
+      mode: SftpFileOpenMode.write | SftpFileOpenMode.truncate,
+    );
+    try {
+      final bytes = await src.readBytes();
+      await dst.writeBytes(bytes);
+    } finally {
+      await src.close();
+      await dst.close();
+    }
   }
 
   void clearError() => state = state.copyWith(clearError: true);
