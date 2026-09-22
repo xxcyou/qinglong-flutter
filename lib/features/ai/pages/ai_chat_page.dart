@@ -66,6 +66,9 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   /// 被引用消息的文字内容，发送时拼进问题里作为引用。
   String? _followUpText;
 
+  /// 长按菜单里点了“选取文字”后，这条气泡进入可选取模式；点其它位置关闭。
+  int? _selectableIndex;
+
   /// 正在闪烁提示的追问目标下标。
   int? _followUpFlashIndex;
   Timer? _followUpFlashTimer;
@@ -486,6 +489,15 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
           },
         ),
         ListTile(
+          leading: const Icon(Icons.text_fields_rounded),
+          title: const Text('选取文字'),
+          subtitle: const Text('仅这条气泡可选取，点其它位置关闭'),
+          onTap: () {
+            Navigator.of(context).pop();
+            setState(() => _selectableIndex = index);
+          },
+        ),
+        ListTile(
           leading: const Icon(Icons.edit_rounded),
           title: const Text('修改'),
           subtitle: const Text('把这条消息放进输入框，发送后生效'),
@@ -531,6 +543,15 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
           onTap: () {
             Navigator.of(context).pop();
             copy();
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.text_fields_rounded),
+          title: const Text('选取文字'),
+          subtitle: const Text('仅这条气泡可选取，点其它位置关闭'),
+          onTap: () {
+            Navigator.of(context).pop();
+            setState(() => _selectableIndex = index);
           },
         ),
         ListTile(
@@ -1514,7 +1535,8 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                   (hasLive ? 1 : 0) +
                                   (hasStream ? 1 : 0) +
                                   1;
-                              return ListView.builder(
+                              return TapRegionSurface(
+                                  child: ListView.builder(
                                 key: _listKey,
                                 controller: _scrollController,
                                 padding:
@@ -1543,6 +1565,8 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                           _MessageBubble(
                                             message: message,
                                             anchorIndex: index,
+                                            selectable:
+                                                _selectableIndex == index,
                                             onResend: state.isLoading
                                                 ? null
                                                 : () =>
@@ -1583,7 +1607,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                       ),
                                       child: bubbleChild,
                                     );
-                                    return RepaintBoundary(
+                                    final messageItem = RepaintBoundary(
                                       key: _bubbleKeyAt(index),
                                       child: frozenBelow
                                           ? IgnorePointer(
@@ -1593,6 +1617,21 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                               ),
                                             )
                                           : highlightedChild,
+                                    );
+                                    if (_selectableIndex != index) {
+                                      return messageItem;
+                                    }
+                                    return TapRegion(
+                                      groupId:
+                                          const ValueKey('ai_text_selection'),
+                                      onTapOutside: (_) {
+                                        if (!mounted) return;
+                                        if (_selectableIndex == index) {
+                                          setState(
+                                              () => _selectableIndex = null);
+                                        }
+                                      },
+                                      child: messageItem,
                                     );
                                   }
                                   var slot = index - state.messages.length;
@@ -1725,7 +1764,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                         : _buildTail(context, state),
                                   );
                                 },
-                              );
+                              ));
                             },
                           ),
                   ),
@@ -2440,10 +2479,14 @@ class _MessageBubble extends StatelessWidget {
     this.onRollback,
     this.onSuggestionTap,
     this.anchorIndex,
+    this.selectable = false,
   });
 
   final AiChatMessage message;
   final int? anchorIndex;
+
+  /// 是否开启文本选取。默认关闭，避免长按选取抢占长按菜单。
+  final bool selectable;
 
   /// 重发这条（撤回到它之前再重新问一次）。
   final VoidCallback? onResend;
@@ -2551,20 +2594,32 @@ class _MessageBubble extends StatelessWidget {
                       ),
                     ),
                   if (isUser)
-                    SelectableText(
-                      message.displayContent.isNotEmpty
-                          ? message.displayContent
-                          : message.content,
-                      style: TextStyle(
-                        height: 1.4,
-                        color: scheme.onPrimaryContainer,
-                      ),
-                    )
+                    if (selectable)
+                      SelectableText(
+                        message.displayContent.isNotEmpty
+                            ? message.displayContent
+                            : message.content,
+                        style: TextStyle(
+                          height: 1.4,
+                          color: scheme.onPrimaryContainer,
+                        ),
+                      )
+                    else
+                      Text(
+                        message.displayContent.isNotEmpty
+                            ? message.displayContent
+                            : message.content,
+                        style: TextStyle(
+                          height: 1.4,
+                          color: scheme.onPrimaryContainer,
+                        ),
+                      )
                   else
                     MarkdownMessage(
                       text: message.content.isEmpty
                           ? '_（无文字回复）_'
                           : message.content,
+                      selectable: selectable,
                     ),
                   if (!isUser && footer.isNotEmpty)
                     Padding(

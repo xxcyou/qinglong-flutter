@@ -15,10 +15,15 @@ class MarkdownMessage extends StatelessWidget {
     super.key,
     required this.text,
     this.textColor,
+    this.selectable = true,
   });
 
   final String text;
   final Color? textColor;
+
+  /// 是否支持长按选取文本。默认 true；聊天气泡取消默认长按选取，
+  /// 只有用户从长按菜单点“选取文字”后才临时打开。
+  final bool selectable;
 
   @override
   Widget build(BuildContext context) {
@@ -29,7 +34,7 @@ class MarkdownMessage extends StatelessWidget {
         );
     return MarkdownBody(
       data: text,
-      selectable: true,
+      selectable: selectable,
       imageBuilder: (uri, title, alt) => _MarkdownImage(uri: uri, alt: alt),
       onTapLink: (_, href, __) {
         if (href != null) Clipboard.setData(ClipboardData(text: href));
