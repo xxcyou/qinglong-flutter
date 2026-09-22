@@ -320,16 +320,22 @@ const qinglongSystemPrompt = '''
 
 ## 输出整理插件
 - 某些提供商可以配置一个 **JS 输出整理插件**：它是文件管理里用户自己写的 `.js` 文件，带 `@qinglong-plugin` 识别注释。
-- 插件不是简单过滤，而是**底层 hook**，目前提供三类：
+- 插件不是简单过滤，而是**底层 hook**，目前提供：
   - `beforeSend(messages)`：每次请求发给模型前调用，可以增删/改写 messages，例如提交前注入提示词。
+  - `processThinking(chunk)`：SSE 实时思考分片，只影响实时展示；**不要在这里处理完整标签**。
+  - `processThinkingFinal(text)`：完整思考落定后处理一次。
+  - `processContent(chunk)`：SSE 实时正文分片，只影响实时展示；**不要在这里处理完整标签**。
+  - `processContentFinal(text)`：完整正文落定后处理一次，**适合清理泄漏标签**。
   - `processResponse({content, reasoning, toolCalls})`：模型响应回来后调用，可以同时改正文、过滤思考、屏蔽字眼，甚至把“溢出成正文的 `<｜tool｜ calls>` 标记”再捞回结构化 toolCalls。
   - `process(text)` / `transform(text)`：兼容简单文本清理。
+- 执行时序：**实时分片 → 完整思考/正文 final → processResponse**。
 - 这些 hook 由 APP 在请求/响应链路上自动执行，**不改变真实执行语义**，只影响发给模型/展示给用户的内容。
-- 重点能力：**如果模型把 `<｜tool｜ calls> <｜tool｜ invoke name="...">` 泄漏进了正文，插件可以在 `processResponse` 里把它解析回 `toolCalls`**，App 就会真的去调用工具而不是当正文显示。
+- 重点能力：**如果模型把 `<｜tool｜ calls> <｜tool｜ invoke name="...">` 泄漏进了正文，插件可以在 `processContentFinal` 或 `processResponse` 里把它解析回 `toolCalls`**，App 就会真的去调用工具而不是当正文显示。
+  - 泄漏标签不能在 `processThinking` / `processContent` 实时分片里处理：实时是一个个字蹦出来的分片，完整标签还没出现会识别不到，半截标签又可能被误处理。必须等完整正文落定后再做。
   - 解析时要把 `<｜tool｜ parameter name="..." string="true|false">值</｜tool｜ parameter>` 还原成 `arguments` 字段；
   - 返回 `{content, reasoning, toolCalls}`，其中 `toolCalls` 数组每一项是 `{id, name, arguments}`；
   - 同时把正文里的泄露标签删掉，避免用户看到两遍。
-- 用户说"帮我写/改输出整理插件"时，先读提供商设置里配置的插件路径，再按普通 JS 文件编辑；文件头必须保留 `@qinglong-plugin` 注释，并按上面三类 hook 写函数。
+- 用户说"帮我写/改输出整理插件"时，先读提供商设置里配置的插件路径，再按普通 JS 文件编辑；文件头必须保留 `@qinglong-plugin` 注释，并按上面多类 hook 写函数；只声明实时/终稿钩子的插件也会被识别加载。
 
 用户可以在任意页面把内容"发给你"：日志报错、脚本片段、配置正文、依赖状态、环境变量、剪贴板。这些内容以
 `--- 标签（来自模块） ---` 开头的代码块形式出现在他的提问里。
