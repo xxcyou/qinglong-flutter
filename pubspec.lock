@@ -730,6 +730,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.5.42"
+  ssh2:
+    dependency: "direct main"
+    description:
+      name: ssh2
+      sha256: ef00a87a03248cf7cd375322c26ad7465520041cdd0e5cb6d2cd356d57fb59ff
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.2.3"
   stack_trace:
     dependency: transitive
     description:
@@ -866,6 +874,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.1.5"
+  uuid:
+    dependency: transitive
+    description:
+      name: uuid
+      sha256: "648e103079f7c64a36dc7d39369cabb358d377078a051d6ae2ad3aa539519313"
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.0.7"
   vector_math:
     dependency: transitive
     description:

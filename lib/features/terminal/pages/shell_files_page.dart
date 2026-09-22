@@ -17,6 +17,7 @@ import '../../../shared/glass_scaffold.dart';
 import '../../../shared/image_viewer_page.dart';
 import '../../../shared/text_input_dialog.dart';
 import '../providers/shell_files_provider.dart';
+import 'ssh_files_page.dart';
 import '../widgets/file_action_sheet.dart';
 import '../../../shared/mono_text.dart';
 
@@ -129,6 +130,11 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
           }
         },
         icon: Icon(_searchVisible ? Icons.search_off : Icons.search),
+      ),
+      IconButton(
+        tooltip: 'SSH 文件管理 (SFTP)',
+        onPressed: () => SshFilesPage.showSheet(context),
+        icon: const Icon(Icons.cloud_outlined),
       ),
       PopupMenuButton<String>(
         tooltip: '视图',

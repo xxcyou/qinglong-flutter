@@ -8,9 +8,12 @@ import '../../../core/local_shell/proot_bridge.dart';
 import '../../../shared/confirm_dialog.dart';
 import '../../../shared/glass_scaffold.dart';
 import '../../settings/providers/settings_provider.dart';
+import '../providers/ssh_session_provider.dart';
 import '../providers/terminal_session_provider.dart';
 import '../terminal_palettes.dart';
 import '../widgets/package_install_sheet.dart';
+import '../widgets/ssh_connect_dialog.dart';
+import '../widgets/ssh_terminal_view.dart';
 import '../widgets/terminal_key_bar.dart';
 import '../widgets/terminal_selection_bar.dart';
 import '../widgets/terminal_theme_sheet.dart';
@@ -131,6 +134,17 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
   /// 把原始序列写进 pty。快捷键条与装包面板都走这里。
   void _send(String data) => unawaited(_bridge.writeTerminal(data));
 
+  Future<void> _newSsh() async {
+    final draft = await SshConnectDialog.show(context);
+    if (draft == null || !mounted) return;
+    final session = await ref.read(sshSessionsProvider.notifier).connect(draft);
+    if (session.status != 'connected' && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('SSH 连接失败：${session.status}')),
+      );
+    }
+  }
+
   void _toggleKeyboard() {
     if (_focusNode.hasFocus) {
       _focusNode.unfocus();
@@ -145,11 +159,17 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
     final notifier = ref.read(terminalSessionProvider.notifier);
     final settings = ref.watch(settingsProvider);
     final palette = TerminalPalette.byId(settings.terminalPalette);
+    final sshSessions = ref.watch(sshSessionsProvider).sessions;
     return GlassScaffold(
       title: 'Debian 终端',
       subtitle: state.running ? '会话进行中' : null,
       bodyTopPadding: 0,
       actions: [
+        IconButton(
+          tooltip: '新建 SSH 终端',
+          onPressed: _newSsh,
+          icon: const Icon(Icons.add_box_outlined),
+        ),
         IconButton(
           tooltip: '文件管理',
           onPressed: () => ShellFilesPage.showSheet(context),
@@ -222,33 +242,69 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
             ],
           ),
       ],
-      body: Column(
-        children: [
-          Expanded(child: _buildBody(state, notifier, settings, palette)),
-          // 选择/复制条同理：没会话时没有内容可复制。
-          if (state.running)
-            TerminalSelectionBar(
-              terminal: _terminal,
-              controller: _terminalController,
-              highlight: _highlight,
-              onHighlightChanged: _setHighlight,
+      body: DefaultTabController(
+        length: sshSessions.length + 1,
+        child: Column(
+          children: [
+            Material(
+              color: Colors.transparent,
+              child: TabBar(
+                isScrollable: true,
+                labelColor: Theme.of(context).colorScheme.primary,
+                unselectedLabelColor:
+                    Theme.of(context).colorScheme.onSurfaceVariant,
+                dividerColor: Colors.transparent,
+                indicatorColor: Theme.of(context).colorScheme.primary,
+                tabs: [
+                  const Tab(text: '本地终端'),
+                  for (final s in sshSessions) Tab(text: s.name),
+                ],
+              ),
             ),
-          // 快捷键条只在会话真的跑起来后出现，没会话时按了也没人收。
-          if (state.running)
-            TerminalKeyBar(
-              onSend: _send,
-              onToggleKeyboard: _toggleKeyboard,
-              onInstallPackage: () => PackageInstallSheet.show(context, _send),
-              highlightCommands: settings.terminalCommandHighlight,
-              fontSize: settings.terminalFontSize,
+            Expanded(
+              child: TabBarView(
+                children: [
+                  Column(
+                    children: [
+                      Expanded(
+                        child: _buildBody(state, notifier, settings, palette),
+                      ),
+                      // 选择/复制条同理：没会话时没有内容可复制。
+                      if (state.running)
+                        TerminalSelectionBar(
+                          terminal: _terminal,
+                          controller: _terminalController,
+                          highlight: _highlight,
+                          onHighlightChanged: _setHighlight,
+                        ),
+                      // 快捷键条只在会话真的跑起来后出现，没会话时按了也没人收。
+                      if (state.running)
+                        TerminalKeyBar(
+                          onSend: _send,
+                          onToggleKeyboard: _toggleKeyboard,
+                          onInstallPackage: () =>
+                              PackageInstallSheet.show(context, _send),
+                          highlightCommands: settings.terminalCommandHighlight,
+                          fontSize: settings.terminalFontSize,
+                        ),
+                      // 贴边：只补系统手势条的一小截，剩下的高度还给终端。
+                      if (state.running)
+                        SizedBox(
+                            height: MediaQuery.paddingOf(context).bottom * 0.2)
+                      else
+                        // 没会话时给底部留出上拉把手的空间即可（菜单是浮层，默认收起）。
+                        SizedBox(
+                          height:
+                              12 + MediaQuery.paddingOf(context).bottom * 0.2,
+                        ),
+                    ],
+                  ),
+                  for (final s in sshSessions) SshTerminalView(sessionId: s.id),
+                ],
+              ),
             ),
-          // 贴边：只补系统手势条的一小截，剩下的高度还给终端。
-          if (state.running)
-            SizedBox(height: MediaQuery.paddingOf(context).bottom * 0.2)
-          else
-            // 没会话时给底部留出上拉把手的空间即可（菜单是浮层，默认收起）。
-            SizedBox(height: 12 + MediaQuery.paddingOf(context).bottom * 0.2),
-        ],
+          ],
+        ),
       ),
     );
   }

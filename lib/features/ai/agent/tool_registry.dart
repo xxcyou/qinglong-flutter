@@ -25,6 +25,7 @@ import '../../system/api/system_api.dart';
 import '../../../core/local_shell/proot_bridge.dart';
 import '../../../core/local_shell/sandbox.dart';
 import '../../../core/local_shell/shell_lock.dart';
+import '../../terminal/providers/ssh_session_provider.dart';
 import '../models/approval_mode.dart';
 
 class ToolDefinition {
@@ -715,6 +716,77 @@ class QlToolRegistry {
           name: 'shell_probe',
           description: '探测本地 PRoot Debian 环境是否已安装可用',
           parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'ssh_session_list',
+          description: '列出当前已创建的 SSH 终端会话（含连接状态）',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'ssh_connect',
+          description:
+              '新建并连接一个 SSH 终端。支持密码登录(authType=password)和私钥登录(authType=key)。'
+              '连接成功后可用 ssh_exec 在对应会话上执行远程命令。',
+          parameters: _obj([
+            'name',
+            'host',
+            'port',
+            'username',
+            'authType'
+          ], {
+            'name': _stringProp,
+            'host': _stringProp,
+            'port': _intProp,
+            'username': _stringProp,
+            'authType': {
+              'type': 'string',
+              'enum': ['password', 'key'],
+            },
+            'password': _stringProp,
+            'privateKey': _stringProp,
+            'passphrase': _stringProp,
+          }),
+          isWrite: true,
+          impact: '新增一条 SSH 连接，之后可执行远程命令',
+          reversible: true,
+        ),
+        ToolDefinition(
+          name: 'ssh_disconnect',
+          description: '断开并删除一个已连接的 SSH 终端会话',
+          parameters: _obj(['id'], {'id': _stringProp}),
+          isWrite: true,
+          impact: '关闭 SSH 连接，终端标签页会消失',
+          reversible: false,
+          danger: true,
+        ),
+        ToolDefinition(
+          name: 'ssh_exec',
+          description: '在已连接的 SSH 会话上执行远程命令。id 来自 ssh_session_list。'
+              '命令会走远程 shell，支持管道、重定向、&& 等。',
+          parameters: _obj([
+            'id',
+            'command'
+          ], {
+            'id': _stringProp,
+            'command': _stringProp,
+          }),
+          isWrite: true,
+          impact: '在远程服务器执行命令，可能产生真实副作用',
+          reversible: false,
+          danger: true,
+        ),
+        ToolDefinition(
+          name: 'ssh_sftp_ls',
+          description: '列出已连接 SSH 会话的远程目录（SFTP），用于远程文件管理',
+          parameters: _obj([
+            'id',
+            'path'
+          ], {
+            'id': _stringProp,
+            'path': _stringProp,
+          }),
           isWrite: false,
         ),
         ToolDefinition(
@@ -1787,6 +1859,90 @@ class QlToolRegistry {
           });
         } catch (e) {
           return jsonEncode({'installed': false, 'error': e.toString()});
+        }
+
+      case 'ssh_session_list':
+        return jsonEncode([
+          for (final s in SshSessionManager.instance.sessions)
+            {
+              'id': s.id,
+              'name': s.name,
+              'host': s.host,
+              'port': s.port,
+              'username': s.username,
+              'authType': s.authType.name,
+              'status': s.status,
+            }
+        ]);
+
+      case 'ssh_connect':
+        try {
+          final authType = args['authType'] == 'key'
+              ? SshAuthType.key
+              : SshAuthType.password;
+          final draft = SshSessionDraft(
+            name: args['name']?.toString() ?? args['host']?.toString() ?? 'SSH',
+            host: args['host'].toString(),
+            port: (args['port'] as num?)?.toInt() ?? 22,
+            username: args['username'].toString(),
+            authType: authType,
+            password: authType == SshAuthType.password
+                ? args['password']?.toString()
+                : null,
+            privateKey: authType == SshAuthType.key
+                ? args['privateKey']?.toString()
+                : null,
+            keyPassphrase: authType == SshAuthType.key
+                ? args['passphrase']?.toString()
+                : null,
+          );
+          final session = await SshSessionManager.instance.connect(draft);
+          return jsonEncode({
+            'id': session.id,
+            'name': session.name,
+            'host': session.host,
+            'port': session.port,
+            'username': session.username,
+            'status': session.status,
+          });
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'ssh_disconnect':
+        try {
+          await SshSessionManager.instance.disconnect(args['id'].toString());
+          return jsonEncode({'ok': true});
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'ssh_exec':
+        try {
+          return await SshSessionManager.instance
+              .execute(args['id'].toString(), args['command'].toString());
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'ssh_sftp_ls':
+        try {
+          final client =
+              SshSessionManager.instance.clientOf(args['id'].toString());
+          if (client == null) return jsonEncode({'error': 'SSH 未连接'});
+          final raw = await client.sftpLs(args['path']?.toString() ?? '.');
+          return jsonEncode([
+            for (final item in (raw ?? const []))
+              if (item is Map)
+                {
+                  'name': item['filename'] ?? item['name'] ?? '',
+                  'longname': item['longname'] ?? '',
+                  'isDirectory': item['isDirectory'] == true ||
+                      (item['longname'] ?? '').toString().startsWith('d'),
+                }
+          ]);
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
         }
 
       case 'shell_exec':
