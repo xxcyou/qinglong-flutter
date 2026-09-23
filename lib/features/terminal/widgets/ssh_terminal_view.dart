@@ -12,6 +12,8 @@ import '../../../core/theme/glass.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../providers/ssh_session_provider.dart';
 import '../terminal_palettes.dart';
+import 'terminal_key_bar.dart';
+import 'terminal_selection_bar.dart';
 
 /// 一个已经连接的 SSH 会话终端页。
 class SshTerminalView extends ConsumerStatefulWidget {
@@ -31,6 +33,7 @@ class _SshTerminalViewState extends ConsumerState<SshTerminalView> {
   StreamSubscription<Uint8List>? _stdoutSub;
   StreamSubscription<Uint8List>? _stderrSub;
   String? _error;
+  String _highlight = '';
 
   SSHClient? get _client =>
       SshSessionManager.instance.clientOf(widget.sessionId);
@@ -85,6 +88,22 @@ class _SshTerminalViewState extends ConsumerState<SshTerminalView> {
     _session?.close();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  void _send(String data) {
+    _session?.write(Uint8List.fromList(utf8.encode(data)));
+  }
+
+  void _toggleKeyboard() {
+    if (_focusNode.hasFocus) {
+      _focusNode.unfocus();
+    } else {
+      _focusNode.requestFocus();
+    }
+  }
+
+  void _setHighlight(String v) {
+    if (mounted) setState(() => _highlight = v);
   }
 
   @override
@@ -161,6 +180,25 @@ class _SshTerminalViewState extends ConsumerState<SshTerminalView> {
             ),
           ),
         ),
+        // SSH 终端也一样需要选择/复制条和快捷键条，手机软键盘没 Ctrl/方向键。
+        if (_session != null) ...[
+          TerminalSelectionBar(
+            terminal: _terminal,
+            controller: _controller,
+            highlight: _highlight,
+            onHighlightChanged: _setHighlight,
+          ),
+          TerminalKeyBar(
+            onSend: _send,
+            onToggleKeyboard: _toggleKeyboard,
+            highlightCommands: settings.terminalCommandHighlight,
+            fontSize: settings.terminalFontSize,
+          ),
+          SizedBox(height: MediaQuery.paddingOf(context).bottom * 0.2),
+        ] else
+          SizedBox(
+            height: 12 + MediaQuery.paddingOf(context).bottom * 0.2,
+          ),
       ],
     );
   }
