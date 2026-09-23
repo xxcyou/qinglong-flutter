@@ -1061,7 +1061,10 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       final src = await sftp.open(source);
       final bytes = await src.readBytes();
       await src.close();
-      final host = await _bridge.hostPath(path: target, scope: _scope);
+      final host = await _hostPathFor(target, state.scope);
+      if (host.isEmpty) {
+        throw StateError('目标目录不存在或不可写');
+      }
       await File(host).writeAsBytes(bytes, flush: true);
       if (cut) await _sftpFor(sourceSshId).then((s) => s.remove(source));
       return;
@@ -1069,10 +1072,9 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
 
     // 终端/APP -> SSH
     if (sourceScope != FileScope.ssh && state.scope == FileScope.ssh) {
-      final host =
-          await _bridge.hostPath(path: source, scope: sourceScope.name);
+      final host = await _hostPathFor(source, sourceScope);
       if (host.isEmpty) {
-        throw StateError('取不到源文件宿主路径');
+        throw StateError('取不到源文件宿主路径（文件不存在或已删除）');
       }
       final bytes = await File(host).readAsBytes();
       final sftp = await _sftpFor(state.sshSessionId!);
@@ -1087,11 +1089,10 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
     }
 
     // 终端 ↔ APP（不同 scope，但都在本地）
-    final srcHost =
-        await _bridge.hostPath(path: source, scope: sourceScope.name);
-    final dstHost = await _bridge.hostPath(path: target, scope: _scope);
+    final srcHost = await _hostPathFor(source, sourceScope);
+    final dstHost = await _hostPathFor(target, state.scope);
     if (srcHost.isEmpty || dstHost.isEmpty) {
-      throw StateError('取不到本地文件路径');
+      throw StateError('取不到本地文件路径（文件不存在或已删除）');
     }
     await File(srcHost).copy(dstHost);
     if (cut) await _bridge.deletePath(source, scope: sourceScope.name);
@@ -1149,6 +1150,14 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
     final clean = name.trim();
     if (dir.endsWith('/')) return '$dir$clean';
     return '$dir/$clean';
+  }
+
+  Future<String> _hostPathFor(String path, FileScope scope) async {
+    try {
+      return await _bridge.hostPath(path: path, scope: scope.name);
+    } catch (_) {
+      return '';
+    }
   }
 
   String _message(Object error) {
