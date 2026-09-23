@@ -1154,7 +1154,12 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
 
   Future<String> _hostPathFor(String path, FileScope scope) async {
     try {
-      return await _bridge.hostPath(path: path, scope: scope.name);
+      // 粘贴目标是还没创建的新文件，必须允许 hostPath 解析不存在的路径。
+      return await _bridge.hostPath(
+        path: path,
+        scope: scope.name,
+        mustExist: false,
+      );
     } catch (_) {
       return '';
     }

@@ -1103,8 +1103,9 @@ class ProotBridge(private val context: Context) {
             try {
                 val raw = call.argument<String>("path") ?: ""
                 val scope = call.argument<String>("scope") ?: "shell"
+                val mustExist = call.argument<Boolean>("mustExist") ?: true
                 val file = if (scope == "app") resolveAppPath(raw) else resolveGuestPath(raw)
-                if (!file.exists()) throw IllegalArgumentException("路径不存在：$raw")
+                if (mustExist && !file.exists()) throw IllegalArgumentException("路径不存在：$raw")
                 result.success(
                     mapOf(
                         "hostPath" to file.canonicalPath,

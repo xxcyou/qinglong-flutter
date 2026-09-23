@@ -376,10 +376,13 @@ class ProotBridge {
   /// /workspace/a.png 这种 guest 路径它们打不开。
   /// [scope] 传 'app' 表示传进来的本来就是宿主路径，只做越界校验。
   Future<String> hostPath(
-      {required String path, String scope = 'shell'}) async {
+      {required String path,
+      String scope = 'shell',
+      bool mustExist = true}) async {
     final result = await _channel.invokeMethod<dynamic>('hostPath', {
       'path': path,
       'scope': scope,
+      'mustExist': mustExist,
     });
     if (result is Map) return result['hostPath']?.toString() ?? '';
     throw StateError('取宿主路径返回异常');
