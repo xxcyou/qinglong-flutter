@@ -195,7 +195,9 @@ class _SshFilesPageState extends ConsumerState<SshFilesPage> {
               : '$_path/${file.name}';
       final remoteFile = await sftp.open(
         remote,
-        mode: SftpFileOpenMode.write | SftpFileOpenMode.truncate,
+        mode: SftpFileOpenMode.write |
+            SftpFileOpenMode.create |
+            SftpFileOpenMode.truncate,
       );
       await remoteFile.write(File(localPath).openRead().cast()).done;
       await remoteFile.close();

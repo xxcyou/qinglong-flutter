@@ -758,7 +758,9 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
     final sftp = await _sftpFor(state.sshSessionId!);
     final f = await sftp.open(
       path,
-      mode: SftpFileOpenMode.write | SftpFileOpenMode.truncate,
+      mode: SftpFileOpenMode.write |
+          SftpFileOpenMode.create |
+          SftpFileOpenMode.truncate,
     );
     await f.writeBytes(Uint8List.fromList(utf8.encode(content)));
     await f.close();
@@ -799,7 +801,9 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
           try {
             final dst = await sftp.open(
               remote,
-              mode: SftpFileOpenMode.write | SftpFileOpenMode.truncate,
+              mode: SftpFileOpenMode.write |
+                  SftpFileOpenMode.create |
+                  SftpFileOpenMode.truncate,
             );
             await dst.write(File(local).openRead().cast()).done;
             await dst.close();
@@ -1080,7 +1084,9 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       final sftp = await _sftpFor(state.sshSessionId!);
       final dst = await sftp.open(
         target,
-        mode: SftpFileOpenMode.write | SftpFileOpenMode.truncate,
+        mode: SftpFileOpenMode.write |
+            SftpFileOpenMode.create |
+            SftpFileOpenMode.truncate,
       );
       await dst.writeBytes(bytes);
       await dst.close();
@@ -1121,7 +1127,9 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
     final src = await sftp.open(from);
     final dst = await sftp.open(
       to,
-      mode: SftpFileOpenMode.write | SftpFileOpenMode.truncate,
+      mode: SftpFileOpenMode.write |
+          SftpFileOpenMode.create |
+          SftpFileOpenMode.truncate,
     );
     try {
       final bytes = await src.readBytes();
