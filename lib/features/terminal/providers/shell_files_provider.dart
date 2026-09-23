@@ -73,6 +73,8 @@ class ShellFilesState {
     this.selected = const {},
     this.clipboardPath,
     this.clipboardIsCut = false,
+    this.clipboardScope,
+    this.clipboardSshId,
     this.error,
   });
 
@@ -104,6 +106,10 @@ class ShellFilesState {
   /// 剪贴板：待复制/移动的路径。
   final String? clipboardPath;
   final bool clipboardIsCut;
+
+  /// 剪贴板来源作用域/SSH 会话。跨区粘贴（SSH ↔ 终端/APP）要用。
+  final String? clipboardScope;
+  final String? clipboardSshId;
 
   final String? error;
 
@@ -163,6 +169,8 @@ class ShellFilesState {
     Set<String>? selected,
     String? clipboardPath,
     bool? clipboardIsCut,
+    String? clipboardScope,
+    String? clipboardSshId,
     bool clearClipboard = false,
     String? error,
     bool clearError = false,
@@ -187,6 +195,10 @@ class ShellFilesState {
           clearClipboard ? null : clipboardPath ?? this.clipboardPath,
       clipboardIsCut:
           clearClipboard ? false : clipboardIsCut ?? this.clipboardIsCut,
+      clipboardScope:
+          clearClipboard ? null : clipboardScope ?? this.clipboardScope,
+      clipboardSshId:
+          clearClipboard ? null : clipboardSshId ?? this.clipboardSshId,
       error: clearError ? null : error ?? this.error,
     );
   }
@@ -201,6 +213,7 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
     FileScope.app: '',
     FileScope.ssh: '/',
   };
+  final Map<String, String> _sshPaths = {};
 
   @override
   ShellFilesState build() {
@@ -251,6 +264,9 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
         listing = await _sshListing(target);
       }
       _pathsByScope[state.scope] = listing.path;
+      if (state.scope == FileScope.ssh && state.sshSessionId != null) {
+        _sshPaths[state.sshSessionId!] = listing.path;
+      }
       state = state.copyWith(
         path: listing.path,
         roots: listing.roots.isEmpty ? state.roots : listing.roots,
@@ -291,7 +307,12 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
           return;
         }
         sshId = saved.first.id;
+        path = _sshPaths[sshId] ?? '/';
+      } else {
+        path = _sshPaths[sshId] ?? '/';
       }
+    } else if (scope == FileScope.ssh && sshId != null) {
+      path = _sshPaths[sshId] ?? '/';
     }
     state = state.copyWith(
       scope: scope,
@@ -301,7 +322,6 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
       clearSearch: true,
       selected: const {},
       clearError: true,
-      clearClipboard: true,
       path: path,
     );
     await open(path);
@@ -310,6 +330,11 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
   /// 切换当前 SSH 会话。未连接时自动用保存的账号连接。
   Future<void> setSshSession(String? id) async {
     if (id == null || state.scope != FileScope.ssh) return;
+    final oldId = state.sshSessionId;
+    if (oldId != null && oldId != id) {
+      _sshPaths[oldId] = state.path;
+    }
+    final path = _sshPaths[id] ?? '/';
     state = state.copyWith(
       sshSessionId: id,
       entries: const [],
@@ -317,14 +342,13 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
       clearSearch: true,
       selected: const {},
       clearError: true,
-      clearClipboard: true,
       loading: true,
-      path: '/',
+      path: path,
     );
     try {
       final ok = await _ensureSshConnected(id);
       if (!ok) return;
-      await open('/');
+      await open(path);
     } catch (e) {
       state = state.copyWith(
         error: _message(e),
@@ -402,13 +426,6 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
       entries: entries,
       rootLabels: const ['SSH 根目录'],
     );
-  }
-
-  /// SSH 下两个路径是否来自同一会话（剪贴板跨会话粘贴不安全）。
-  bool _sshClipboardSafe(String source) {
-    if (state.scope != FileScope.ssh) return false;
-    final id = state.sshSessionId;
-    return id != null && (source.startsWith('/') || source.startsWith('~/'));
   }
 
   Future<void> refresh() => open(state.path);
@@ -944,11 +961,21 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
             executable: executable,
           ));
 
-  void copyToClipboard(String path) =>
-      state = state.copyWith(clipboardPath: path, clipboardIsCut: false);
+  void copyToClipboard(String path) => state = state.copyWith(
+        clipboardPath: path,
+        clipboardIsCut: false,
+        clipboardScope: state.scope.name,
+        clipboardSshId:
+            state.scope == FileScope.ssh ? state.sshSessionId : null,
+      );
 
-  void cutToClipboard(String path) =>
-      state = state.copyWith(clipboardPath: path, clipboardIsCut: true);
+  void cutToClipboard(String path) => state = state.copyWith(
+        clipboardPath: path,
+        clipboardIsCut: true,
+        clipboardScope: state.scope.name,
+        clipboardSshId:
+            state.scope == FileScope.ssh ? state.sshSessionId : null,
+      );
 
   /// 粘贴：剪切 = move，复制 = copy。同名自动加后缀，不覆盖已有文件。
   ///
@@ -958,9 +985,9 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
     if (source == null) return false;
     final dir = targetDir ?? state.path;
     final name = source.split('/').last;
-    var target = _join(dir, name);
-    // 粘到别的目录时手上没有那个目录的清单，同名判断只对当前目录有效；
-    // 底层 copy/move 本身也拒绝覆盖，所以最坏情况是给出"目标已存在"错误。
+    var target =
+        state.scope == FileScope.ssh ? _sshJoin(dir, name) : _join(dir, name);
+    // 同名自动加后缀，不覆盖已有文件。
     final existing = dir == state.path
         ? {for (final e in state.entries) e.path}
         : <String>{};
@@ -970,29 +997,122 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       final ext = dot > 0 ? name.substring(dot) : '';
       var i = 2;
       while (existing.contains(target)) {
-        target = _join(dir, '$stem($i)$ext');
+        target = state.scope == FileScope.ssh
+            ? _sshJoin(dir, '$stem($i)$ext')
+            : _join(dir, '$stem($i)$ext');
         i++;
       }
     }
     final cut = state.clipboardIsCut;
-    final ok = await _guard(() {
-      if (state.scope == FileScope.ssh) {
-        if (!_sshClipboardSafe(source)) {
-          throw StateError('SSH 剪切板只支持同会话内粘贴');
-        }
-        final remoteDir = dir;
-        final remoteTarget = _sshJoin(remoteDir, name);
-        return cut
-            ? _sftpFor(state.sshSessionId!)
-                .then((sftp) => sftp.rename(source, remoteTarget))
-            : _sshCopy(source, remoteTarget);
-      }
-      return cut
-          ? _bridge.movePath(from: source, to: target, scope: _scope)
-          : _bridge.copyPath(from: source, to: target, scope: _scope);
-    });
+    final ok = await _guard(() => _pasteAction(source, target, cut, dir));
     if (ok) state = state.copyWith(clearClipboard: true);
     return ok;
+  }
+
+  Future<void> _pasteAction(
+    String source,
+    String target,
+    bool cut,
+    String dir,
+  ) async {
+    final sourceScopeName = state.clipboardScope;
+    final sourceSshId = state.clipboardSshId;
+    final sourceScope = sourceScopeName == null
+        ? state.scope
+        : FileScope.values.firstWhere(
+            (e) => e.name == sourceScopeName,
+            orElse: () => state.scope,
+          );
+    final sameScope = sourceScope == state.scope &&
+        (sourceScope != FileScope.ssh || sourceSshId == state.sshSessionId);
+
+    if (sameScope) {
+      if (state.scope == FileScope.ssh) {
+        final remoteTarget = target;
+        if (cut) {
+          await _sftpFor(state.sshSessionId!)
+              .then((sftp) => sftp.rename(source, remoteTarget));
+        } else {
+          await _sshCopy(source, remoteTarget);
+        }
+        return;
+      }
+      if (cut) {
+        await _bridge.movePath(from: source, to: target, scope: _scope);
+      } else {
+        await _bridge.copyPath(from: source, to: target, scope: _scope);
+      }
+      return;
+    }
+
+    // 跨区：先判断目录。目录级跨区暂不支持，避免半截复制。
+    final isDir = await _crossSourceIsDir(
+      source,
+      sourceScope,
+      sourceSshId,
+    );
+    if (isDir) {
+      throw StateError('跨区复制/剪切暂只支持文件，文件夹请先从里面复制文件');
+    }
+
+    // SSH -> 终端/APP
+    if (sourceScope == FileScope.ssh && state.scope != FileScope.ssh) {
+      final sftp = await _sftpFor(sourceSshId!);
+      final src = await sftp.open(source);
+      final bytes = await src.readBytes();
+      await src.close();
+      final host = await _bridge.hostPath(path: target, scope: _scope);
+      await File(host).writeAsBytes(bytes, flush: true);
+      if (cut) await _sftpFor(sourceSshId).then((s) => s.remove(source));
+      return;
+    }
+
+    // 终端/APP -> SSH
+    if (sourceScope != FileScope.ssh && state.scope == FileScope.ssh) {
+      final host =
+          await _bridge.hostPath(path: source, scope: sourceScope.name);
+      if (host.isEmpty) {
+        throw StateError('取不到源文件宿主路径');
+      }
+      final bytes = await File(host).readAsBytes();
+      final sftp = await _sftpFor(state.sshSessionId!);
+      final dst = await sftp.open(
+        target,
+        mode: SftpFileOpenMode.write | SftpFileOpenMode.truncate,
+      );
+      await dst.writeBytes(bytes);
+      await dst.close();
+      if (cut) await _bridge.deletePath(source, scope: sourceScope.name);
+      return;
+    }
+
+    // 终端 ↔ APP（不同 scope，但都在本地）
+    final srcHost =
+        await _bridge.hostPath(path: source, scope: sourceScope.name);
+    final dstHost = await _bridge.hostPath(path: target, scope: _scope);
+    if (srcHost.isEmpty || dstHost.isEmpty) {
+      throw StateError('取不到本地文件路径');
+    }
+    await File(srcHost).copy(dstHost);
+    if (cut) await _bridge.deletePath(source, scope: sourceScope.name);
+  }
+
+  Future<bool> _crossSourceIsDir(
+    String path,
+    FileScope scope,
+    String? sshId,
+  ) async {
+    try {
+      if (scope == FileScope.ssh) {
+        final sftp = await _sftpFor(sshId!);
+        final attrs = await sftp.stat(path);
+        return attrs.isDirectory;
+      }
+      final s = await _bridge.stat(path, scope: scope.name);
+      return s.entry.isDirectory;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> _sshCopy(String from, String to) async {

@@ -1555,22 +1555,45 @@ class _SshSessionPicker extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final sshState = ref.watch(sshSessionsProvider);
-    return DropdownButton<String?>(
-      value: state.sshSessionId,
-      isExpanded: true,
-      hint: const Text('选择 SSH 会话（未连接会自动连接）'),
-      items: [
-        for (final s in sshState.sessions)
-          DropdownMenuItem(
-            value: s.id,
-            child: Text(
-              '${s.name} (${s.username}@${s.host}) · '
-              '${s.isConnected ? '已连接' : '未连接·自动连接'}',
-              overflow: TextOverflow.ellipsis,
+    final sessions = sshState.sessions;
+    if (sessions.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: Text('还没有 SSH 会话，请先在 SSH 会话管理里新建'),
+      );
+    }
+
+    return SizedBox(
+      height: 40,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        itemCount: sessions.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final s = sessions[i];
+          final selected = state.sshSessionId == s.id;
+          final scheme = Theme.of(context).colorScheme;
+          return ChoiceChip(
+            selected: selected,
+            showCheckmark: false,
+            avatar: Icon(
+              s.isConnected ? Icons.dns_outlined : Icons.cloud_outlined,
+              size: 15,
+              color: s.isConnected ? Colors.greenAccent : scheme.outline,
             ),
-          ),
-      ],
-      onChanged: (v) => ref.read(shellFilesProvider.notifier).setSshSession(v),
+            label: Text(
+              '${s.name}${s.isConnected ? '' : '（未连接）'}',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+            onSelected: (_) =>
+                ref.read(shellFilesProvider.notifier).setSshSession(s.id),
+          );
+        },
+      ),
     );
   }
 }
