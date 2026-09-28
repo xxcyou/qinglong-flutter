@@ -2,12 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/cache/cache_cleaner.dart';
-import '../../../core/debug/api_debug_log.dart';
 import '../../../shared/glass_scaffold.dart';
 import '../../../core/llm/llm_registry_provider.dart';
 import '../../ai/floating/ai_dock_provider.dart';
 import '../../ai/providers/chat_provider.dart';
-import '../../debug/pages/api_debug_page.dart';
 import '../providers/settings_provider.dart';
 import 'ai_settings_page.dart';
 import 'font_settings_page.dart';
@@ -311,74 +309,6 @@ class SettingsPage extends ConsumerWidget {
               ],
             ),
           ),
-          const SectionLabel('调试'),
-          GlassCard(
-            child: Row(
-              children: [
-                const Icon(Icons.bug_report_outlined),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '调试日志',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '记录 API 请求 / 响应 / 错误，供排障使用',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Switch(
-                  value: settings.debugLogEnabled,
-                  onChanged: (v) {
-                    ApiDebugLog.enabled = v;
-                    notifier.update(settings.copyWith(debugLogEnabled: v));
-                  },
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          GlassCard(
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const ApiDebugPage()),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.bug_report_outlined),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'API 调试日志',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '查看最近请求 / 响应 / 错误，便于排查加载失败',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Icon(Icons.chevron_right),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
           const SectionLabel('关于'),
           GlassCard(
             child: Row(

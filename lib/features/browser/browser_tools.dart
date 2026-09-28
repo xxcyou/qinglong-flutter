@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../ai/agent/external_tool.dart';
 import '../../core/local_shell/shell_lock.dart';
 import 'browser_engine.dart';
+import 'models/browser_models.dart';
 
 /// 把浏览器内核包成 AI 工具。
 ///
@@ -133,6 +134,290 @@ class BrowserTools {
             if (url.isNotEmpty) '地址：$url',
             if (title.isNotEmpty) '标题：$title',
           ].join('\n');
+        },
+      ),
+      ExternalTool(
+        name: 'browser_ua',
+        description: '管理内置浏览器的 User-Agent。action=get 查看当前 UA，list 列出全部可选 UA（含备注），'
+            'set/switch 切换 UA（可带 reload=true 自动刷新页面），add 往列表添加（可带 note 备注），'
+            'remark 修改某条 UA 的备注，remove 删除，reset 恢复默认手机 UA。UA 列表与备注都会持久化。',
+        parameters: obj([], {
+          'action': {
+            'type': 'string',
+            'enum': ['get', 'list', 'set', 'switch', 'add', 'remark', 'remove', 'reset'],
+            'description': '默认 get',
+          },
+          'ua': {
+            'type': 'string',
+            'description': 'action=set/switch/add/remark/remove 时用的完整 User-Agent 字符串',
+          },
+          'note': {
+            'type': 'string',
+            'description': 'action=add/remark 时的备注，用于区分 UA 用途',
+          },
+          'reload': {
+            'type': 'boolean',
+            'description': 'action=set/switch 时 true 表示设置后刷新当前页面',
+          },
+        }),
+        origin: origin,
+        isWrite: true,
+        invoke: (args) async {
+          await engine.loadUserAgentSettings();
+          final action = args['action']?.toString() ?? 'get';
+          if (action == 'list') {
+            final list = engine.userAgentListNotifier.value;
+            final notes = engine.userAgentNotesNotifier.value;
+            return [
+              '当前：${engine.userAgent}',
+              if (list.isEmpty) '（列表为空）',
+              '可选 UA（${list.length}）：',
+              for (final ua in list)
+                notes[ua] == null
+                    ? '• $ua'
+                    : '• $ua —— ${notes[ua]}',
+            ].join('\n');
+          }
+          if (action == 'add') {
+            final ua = args['ua']?.toString() ?? '';
+            if (ua.trim().isEmpty) return 'ua 不能为空。';
+            await engine.addUserAgent(ua, note: args['note']?.toString() ?? '');
+            return '已添加到 UA 列表。当前列表 ${engine.userAgentListNotifier.value.length} 条。';
+          }
+          if (action == 'remark') {
+            final ua = args['ua']?.toString() ?? '';
+            if (ua.trim().isEmpty) return 'ua 不能为空。';
+            await engine.setUserAgentNote(ua, args['note']?.toString() ?? '');
+            return '已保存备注：${engine.userAgentNotesNotifier.value[ua] ?? '（空）'}';
+          }
+          if (action == 'remove') {
+            final ua = args['ua']?.toString() ?? '';
+            if (ua.trim().isEmpty) return 'ua 不能为空。';
+            await engine.removeUserAgent(ua);
+            return '已从 UA 列表删除。当前列表 ${engine.userAgentListNotifier.value.length} 条。';
+          }
+          if (action == 'set' || action == 'switch') {
+            final ua = args['ua']?.toString() ?? '';
+            if (ua.trim().isEmpty) return 'ua 不能为空。';
+            await engine.setUserAgent(ua);
+            if (args['reload'] == true && engine.isReady) {
+              await engine.reload();
+              return '已切换 UA 并刷新页面：\n${engine.userAgent}';
+            }
+            return '已切换浏览器 UA：\n${engine.userAgent}';
+          }
+          if (action == 'reset') {
+            await engine.resetUserAgent();
+            return '已恢复默认手机 UA：\n${engine.userAgent}';
+          }
+          return '当前浏览器 UA：\n${engine.userAgent}';
+        },
+      ),
+      ExternalTool(
+        name: 'browser_ws',
+        description: '管理/深读当前页面的 WebSocket：list 是预览（只列会话摘要和最近消息），'
+            'messages 是按会话 ID + 消息排列 ID 分页深读（不加载全部，省 token）；'
+            'send 给指定连接发数据，close 关闭指定连接。'
+            '会话 ID 就是 conn_id，消息排列 ID 是会话内从 0 开始的下标。',
+        parameters: obj([], {
+          'action': {
+            'type': 'string',
+            'enum': ['list', 'messages', 'send', 'close'],
+            'description': '默认 list',
+          },
+          'conn_id': {
+            'type': 'string',
+            'description': 'action=messages 时的会话 ID；action=send/close 时也要用它',
+          },
+          'start': {
+            'type': 'integer',
+            'description': 'action=messages 起读消息排列 ID，默认 0',
+          },
+          'count': {
+            'type': 'integer',
+            'description': 'action=messages 一次读多少条，默认 20，最大 200',
+          },
+          'max_chars': {
+            'type': 'integer',
+            'description': '每条消息最多展示多少字符，默认 400，超长只给头部+长度',
+          },
+          'data': {
+            'type': 'string',
+            'description': 'action=send 时要发送的数据',
+          },
+        }),
+        origin: origin,
+        isWrite: true,
+        invoke: (args) async {
+          final action = args['action']?.toString() ?? 'list';
+          if (action == 'messages') {
+            final id = args['conn_id']?.toString() ?? '';
+            if (id.isEmpty) return 'conn_id 不能为空（browser_ws list 里能看到会话 ID）。';
+            final start = (args['start'] as num?)?.toInt() ?? 0;
+            final count = ((args['count'] as num?)?.toInt() ?? 20).clamp(1, 200);
+            final maxChars = ((args['max_chars'] as num?)?.toInt() ?? 400).clamp(40, 4000);
+            CapturedRequest? session;
+            for (final r in engine.requests.value) {
+              if (r.kind == 'ws' && r.connId == id) {
+                session = r;
+                break;
+              }
+            }
+            if (session == null) return '没有这个 WebSocket 会话：$id（用 browser_ws list 看现有 conn_id）。';
+            final msgs = session.wsMessages;
+            if (msgs.isEmpty) return '会话 $id 还没有消息。';
+            if (start < 0 || start >= msgs.length) {
+              return '起始排列 ID 越界：会话共 ${msgs.length} 条，start=$start';
+            }
+            final end = (start + count > msgs.length) ? msgs.length : start + count;
+            final sb = <String>['会话 $id 消息 $start-${end - 1}/${msgs.length}：'];
+            for (var i = start; i < end; i++) {
+              final m = msgs[i];
+              final dir = m.sent ? '↑发送' : '↓接收';
+              sb.add('[$i] $dir ${_truncateForAi(m.text, maxChars)}');
+            }
+            if (end < msgs.length) {
+              sb.add('…还有 ${msgs.length - end} 条未读，继续调 start=$end');
+            } else {
+              sb.add('已到会话末尾。');
+            }
+            return sb.join('\n');
+          }
+          if (action == 'send') {
+            final id = args['conn_id']?.toString() ?? '';
+            if (id.isEmpty) return 'conn_id 不能为空。';
+            if (engine.isReady) {
+              final result = await engine.wsSend(id, args['data']?.toString() ?? '');
+              return result == 'sent'
+                  ? '已发送 WebSocket 数据。'
+                  : '发送失败：$result';
+            }
+            return '浏览器还没打开页面。';
+          }
+          if (action == 'close') {
+            final id = args['conn_id']?.toString() ?? '';
+            if (id.isEmpty) return 'conn_id 不能为空。';
+            if (!engine.isReady) return '浏览器还没打开页面。';
+            final result = await engine.wsClose(id);
+            return result == 'closed' ? '已关闭 WebSocket。' : '关闭失败：$result';
+          }
+          if (!engine.isReady) return '浏览器还没打开过页面，先 browser_open。';
+          final active = await engine.wsActiveIds();
+          final activeSet = active.toSet();
+          final sessions =
+              engine.requests.value.where((r) => r.kind == 'ws' && r.connId.isNotEmpty).toList();
+          if (active.isEmpty && sessions.isEmpty) return '当前没有 WebSocket 会话。';
+          final sb = <String>[
+            'WebSocket 会话（${sessions.length} 个，${active.length} 个活跃）：',
+          ];
+          final cap = sessions.length > 30 ? 30 : sessions.length;
+          for (var i = 0; i < cap; i++) {
+            final r = sessions[i];
+            final status = activeSet.contains(r.connId)
+                ? '活跃'
+                : (r.live ? '通讯中' : '已结束');
+            sb.add(
+              '• ${r.connId} ${r.url}'
+              '（$status，${r.wsMessages.length} 条消息）',
+            );
+            if (r.wsMessages.isNotEmpty) {
+              final last = r.wsMessages.last;
+              sb.add(
+                '  最近：${last.sent ? "↑" : "↓"} ${_truncateForAi(last.text, 120)}',
+              );
+            }
+          }
+          if (sessions.length > cap) sb.add('…还有 ${sessions.length - cap} 个会话，用 deep read 分页看。');
+          return sb.join('\n');
+        },
+      ),
+      ExternalTool(
+        name: 'browser_sse',
+        description: '查看/深读当前页面的 SSE（Server-Sent Events）推送：list 是预览（只列会话摘要和最近消息），'
+            'messages 是按会话 ID + 消息排列 ID 分页深读（不加载全部，省 token）。'
+            'SSE 是单向服务端推送，浏览器端不能主动发数据；要断开只能等页面或刷新。'
+            '会话 ID 就是 conn_id（list 里能看到），消息排列 ID 从 0 开始。',
+        parameters: obj([], {
+          'action': {
+            'type': 'string',
+            'enum': ['list', 'messages'],
+            'description': '默认 list',
+          },
+          'session_id': {
+            'type': 'string',
+            'description': 'action=messages 时的 SSE 会话 ID（browser_sse list 里能看到）',
+          },
+          'start': {
+            'type': 'integer',
+            'description': 'action=messages 起读消息排列 ID，默认 0',
+          },
+          'count': {
+            'type': 'integer',
+            'description': 'action=messages 一次读多少条，默认 20，最大 200',
+          },
+          'max_chars': {
+            'type': 'integer',
+            'description': '每条消息最多展示多少字符，默认 400，超长只给头部+长度',
+          },
+          'limit': {
+            'type': 'integer',
+            'description': 'list 预览最多列多少个会话/最近消息，默认 20',
+          },
+        }),
+        origin: origin,
+        invoke: (args) async {
+          if (!engine.isReady) return '浏览器还没打开过页面，先 browser_open。';
+          final action = args['action']?.toString() ?? 'list';
+          if (action == 'messages') {
+            final id = args['session_id']?.toString() ?? '';
+            if (id.isEmpty) return 'session_id 不能为空（browser_sse list 里能看到会话 ID）。';
+            final start = (args['start'] as num?)?.toInt() ?? 0;
+            final count = ((args['count'] as num?)?.toInt() ?? 20).clamp(1, 200);
+            final maxChars = ((args['max_chars'] as num?)?.toInt() ?? 400).clamp(40, 4000);
+            CapturedRequest? session;
+            for (final r in engine.requests.value) {
+              if (r.kind == 'sse' && r.connId == id) {
+                session = r;
+                break;
+              }
+            }
+            if (session == null) return '没有这个 SSE 会话：$id（用 browser_sse list 看现有 conn_id）。';
+            final msgs = session.wsMessages;
+            if (msgs.isEmpty) return '会话 $id 还没有消息。';
+            if (start < 0 || start >= msgs.length) {
+              return '起始排列 ID 越界：会话共 ${msgs.length} 条，start=$start';
+            }
+            final end = (start + count > msgs.length) ? msgs.length : start + count;
+            final sb = <String>['会话 $id 消息 $start-${end - 1}/${msgs.length}：'];
+            for (var i = start; i < end; i++) {
+              sb.add('[$i] ↓ ${_truncateForAi(msgs[i].text, maxChars)}');
+            }
+            if (end < msgs.length) {
+              sb.add('…还有 ${msgs.length - end} 条未读，继续调 start=$end');
+            } else {
+              sb.add('已到会话末尾。');
+            }
+            return sb.join('\n');
+          }
+          final limit = ((args['limit'] as num?)?.toInt() ?? 20).clamp(1, 50);
+          final sessions =
+              engine.requests.value.where((r) => r.kind == 'sse' && r.connId.isNotEmpty).toList();
+          if (sessions.isEmpty) return '还没有抓到 SSE 会话。';
+          final shown = sessions.length <= limit ? sessions.length : limit;
+          final sb = <String>[
+            'SSE 会话（${sessions.length} 个，预览 $shown）：',
+          ];
+          for (var i = 0; i < shown; i++) {
+            final r = sessions[i];
+            sb.add(
+              '• ${r.connId} ${r.url}'
+              '（${r.live ? "通讯中" : "已结束"}，${r.wsMessages.length} 条推送）',
+            );
+            if (r.wsMessages.isNotEmpty) {
+              sb.add('  最近：${_truncateForAi(r.wsMessages.last.text, 120)}');
+            }
+          }
+          return sb.join('\n');
         },
       ),
       ExternalTool(
@@ -312,10 +597,14 @@ class BrowserTools {
         parameters: obj([], {
           'action': {
             'type': 'string',
-            'enum': ['get', 'set', 'clear'],
+            'enum': ['get', 'set', 'delete', 'clear'],
             'description': '默认 get',
           },
           'url': {'type': 'string', 'description': '哪个地址下的 Cookie，默认当前页'},
+          'name': {
+            'type': 'string',
+            'description': 'action=delete 时点名要删的 Cookie 名',
+          },
           'value': {
             'type': 'string',
             'description': 'action=set 时的完整 Set-Cookie 串，如 '
@@ -345,6 +634,36 @@ class BrowserTools {
                   : '写了，但回读**没找到** $name。常见原因：domain 和目标域不匹配、'
                       '带了 Secure 但页面是 http、或者 path 不含当前路径。'
                       '现在这个地址下的 cookie：${back.isEmpty ? '（空）' : back}';
+            case 'delete':
+              final name = args['name']?.toString() ?? '';
+              if (name.isEmpty) return 'name 不能为空。';
+              final target = url.isEmpty ? engine.currentUrl.value : url;
+              final rows = await engine.cookieRows(url.isEmpty ? null : url);
+              Map<String, dynamic>? row;
+              for (final r in rows) {
+                if (r['name']?.toString() == name) {
+                  row = r;
+                  break;
+                }
+              }
+              if (row == null) {
+                return '当前域下找不到名为「$name」的 Cookie。';
+              }
+              final path = row['path']?.toString() ?? '/';
+              final domain =
+                  (row['domain'] ?? row['host'])?.toString() ?? '';
+              final base = target.isEmpty
+                  ? (domain.isEmpty ? '' : 'http://$domain/')
+                  : target;
+              final value = '$name=; Max-Age=0; Path=$path'
+                  '${domain.isEmpty ? '' : '; Domain=$domain'}';
+              await engine.putCookie(base, value);
+              final left = await engine.cookieRows(url.isEmpty ? null : url);
+              final still = left.any((r) => r['name']?.toString() == name);
+              return still
+                  ? '⚠️ 已尝试删除 $name，但复查还在（HttpOnly 或被内核保护）。'
+                      '整域清理用 action=clear。'
+                  : '已删除 Cookie：$name。';
             case 'clear':
               await engine.clearSession();
               return '已清空全部 Cookie、站点存储与缓存，当前页已重置为空白页'
@@ -396,12 +715,16 @@ class BrowserTools {
         parameters: obj([], {
           'action': {
             'type': 'string',
-            'enum': ['get', 'set'],
+            'enum': ['get', 'set', 'delete'],
             'description': '默认 get'
           },
           'values': {
             'type': 'object',
             'description': 'action=set 时要写的键值对（值必须是字符串）',
+          },
+          'key': {
+            'type': 'string',
+            'description': 'action=delete 时点名要删的 key',
           },
           'session': {
             'type': 'boolean',
@@ -412,13 +735,24 @@ class BrowserTools {
         isWrite: true,
         invoke: (args) async {
           if (!engine.isReady) return '浏览器还没打开过页面，先用 browser_open。';
-          if (args['action']?.toString() == 'set') {
+          final action = args['action']?.toString() ?? 'get';
+          if (action == 'set') {
             final raw = args['values'];
             if (raw is! Map || raw.isEmpty) return 'values 为空。';
             return engine.storageSet(
               raw.map((k, v) => MapEntry(k.toString(), v?.toString() ?? '')),
               session: args['session'] == true,
             );
+          }
+          if (action == 'delete') {
+            final key = args['key']?.toString() ?? '';
+            if (key.isEmpty) return 'key 不能为空。';
+            if (args['session'] == true) {
+              await engine.sessionStorageRemove(key);
+            } else {
+              await engine.localStorageRemove(key);
+            }
+            return '已删除 ${args['session'] == true ? 'sessionStorage' : 'localStorage'} 的「$key」。';
           }
           return engine.storageDump();
         },
@@ -655,26 +989,29 @@ class BrowserTools {
       ),
       ExternalTool(
         name: 'browser_hook',
-        description: '抓包改写脚本：往浏览器里装 JS 钩子，改请求 / 改返回 / 假造返回 / 拦掉。'
-            '**这是"我要改这个 POST 的某个参数"的正确工具**——'
-            'browser_script 只跑一次页面代码，改不到已经发出去的请求。\n'
-            '脚本就是一段 JS，里面定义这两个函数（哪个都可以省）：\n'
-            'function onRequest(req){}  改 req.url / req.method / req.headers（普通对象）/ '
+        description: '抓包/自启动脚本：往浏览器里装 JS 钩子。'
+            '两种写法都支持：\n'
+            '1）改网络包：定义 onRequest(req) / onResponse(res)（哪个都可以省）。\n'
+            '   function onRequest(req){} 改 req.url / req.method / req.headers（普通对象）/ '
             'req.body（字符串）；req.block=true 整包拦掉；'
             'req.mock={status,body,headers} 不发出去直接假返回。\n'
-            'function onResponse(res){} 改 res.status / res.headers / res.body；'
+            '   function onResponse(res){} 改 res.status / res.headers / res.body；'
             'res.request 是对应的请求；res.kind 是 fetch 还是 xhr。\n'
+            '2）自启动逻辑：代码顶层会执行一次（IIFE、window.WebSocket 包装、'
+            'EventSource 监听、全局补丁等），不写 onRequest/onResponse 也有效。\n'
             '脚本里还能用 QL.log(...) 打日志到浏览器日志页，QL.state 存自己的中间值。\n'
-            '例（把下单金额改掉，并给返回体加个字段）：\n'
+            '例（改单金额）：'
             'function onRequest(req){ if(req.url.includes("/api/order")&&req.method==="POST"){ '
             'req.body=req.body.replace(\'"amount":1\',\'"amount":99\'); QL.log("改了",req.body); } }\n'
-            'function onResponse(res){ if(res.url.includes("/api/me")){ '
-            'var d=JSON.parse(res.body); d.vip=true; res.body=JSON.stringify(d); } }\n'
+            '例（自启动监听 WebSocket 发送）：'
+            'window.__wsSpyInstalled?0:(window.__wsSpyInstalled=1,'
+            'QL.log("spy started"), window.WebSocket.prototype.send=function(d){'
+            'try{QL.log(this.url,String(d))}catch(e){} return OWS.send.apply(this,arguments)});\n'
             '动作：list 看清单、add 加、update 改（名字/代码/开关）、get 看代码、'
             'remove 删、clear 清空、hits 看各改了几次。\n'
-            '只覆盖 fetch / XHR，注入前发出的请求抓不到（刷新一次再看）。\n'
-            '脚本会落盘、跨重启一直生效，用完记得 remove，'
-            '否则用户后面自己上网也被改。',
+            '注意：自启动脚本只在页面重新注入/刷新时执行一次；'
+            'fetch/XHR 钩子在注入前发出的请求抓不到。脚本会落盘、跨重启一直生效，'
+            '用完记得 remove，否则用户后面自己上网也被改。',
         parameters: obj([
           'action'
         ], {
@@ -693,7 +1030,8 @@ class BrowserTools {
           'name': {'type': 'string', 'description': '脚本名字（add 必填，update 可改）'},
           'code': {
             'type': 'string',
-            'description': 'JS 代码，里面定义 onRequest / onResponse',
+            'description': 'JS 代码：可以定义 onRequest/onResponse 改包，'
+                '也可以是自启动逻辑（如 window.WebSocket 包装、QL.log 日志）。',
           },
           'id': {
             'type': 'integer',
@@ -711,7 +1049,8 @@ class BrowserTools {
             case 'add':
               final code = args['code']?.toString() ?? '';
               if (code.trim().isEmpty) {
-                return '没给 code。写一段 JS，里面定义 onRequest(req) 或 onResponse(res)。';
+                return '没给 code。写一段 JS：onRequest/onResponse 改包，'
+                    '或自启动逻辑（如 WebSocket 监听、QL.log）。';
               }
               return engine.addScript(
                 name: args['name']?.toString() ?? '未命名脚本',
@@ -915,4 +1254,11 @@ class BrowserTools {
           '接口返回的 JSON 又稳又省 token。',
     ].join('\n');
   }
+}
+
+
+/// AI 读取会话消息时用的截断：只给头部 + 总长，避免长消息撑爆 token。
+String _truncateForAi(String text, int maxChars) {
+  if (text.length <= maxChars) return text;
+  return '${text.substring(0, maxChars)}…（共 ${text.length} 字符）';
 }

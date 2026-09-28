@@ -62,4 +62,6 @@ dependencies {
     // FileProvider：文件管理器"用其它 APP 打开"需要 content:// URI。
     // flutter_embedding 已经间接带了同版本，这里显式声明只是为了能直接 import。
     implementation("androidx.core:core:1.13.1")
+    // WebViewCompat.addDocumentStartJavaScript：网页任何 JS 执行前注入抓包钩子。
+    implementation("androidx.webkit:webkit:1.12.1")
 }

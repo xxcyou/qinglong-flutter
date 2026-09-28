@@ -49,7 +49,7 @@ class _EnvEditPageState extends ConsumerState<EnvEditPage> {
       remarks: _remarksController.text.trim().isEmpty
           ? null
           : _remarksController.text.trim(),
-      status: widget.env?.status ?? 1,
+      status: widget.env?.status ?? 0,
     );
     try {
       final notifier = ref.read(envListProvider.notifier);

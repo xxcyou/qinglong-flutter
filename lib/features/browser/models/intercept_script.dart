@@ -38,7 +38,9 @@ class InterceptScript {
         RegExp(r'onResponse\s*=').hasMatch(code)) {
       has.add('响应');
     }
-    return has.isEmpty ? '没有钩子' : has.join(' + ');
+    // 没有请求/响应钩子时，代码里的顶层逻辑（IIFE、window.WebSocket 包装等）
+    // 会在脚本装载时执行一次，所以不是“无效”，而是自启动脚本。
+    return has.isEmpty ? '自启动' : has.join(' + ');
   }
 
   String get summary {
@@ -54,10 +56,8 @@ class InterceptScript {
   String validate() {
     if (name.trim().isEmpty) return '脚本要有名字';
     if (!hasCode) return '脚本是空的';
-    if (!RegExp(r'\bonRequest\b').hasMatch(code) &&
-        !RegExp(r'\bonResponse\b').hasMatch(code)) {
-      return '代码里既没有 onRequest 也没有 onResponse，不会被调用';
-    }
+    // 不强制要求 onRequest/onResponse：脚本顶层逻辑在每次装载时本来就会执行。
+    // 典型场景是 WebSocket/EventSource 监听、全局补丁，这类代码没有 hook 也是有效的。
     return '';
   }
 

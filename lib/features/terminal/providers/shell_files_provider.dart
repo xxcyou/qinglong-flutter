@@ -4,11 +4,15 @@ import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/local_shell/proot_bridge.dart';
 import 'ssh_session_provider.dart';
+
+/// 文件管理器当前目录。悬浮终端、悬浮球 AI 都要读它。
+final ValueNotifier<String> fileManagerCwd = ValueNotifier('/workspace');
 
 /// 文件管理的两套根：终端（PRoot guest 挂载点）与 APP 自身沙箱目录。
 enum FileScope {
@@ -264,6 +268,7 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
         listing = await _sshListing(target);
       }
       _pathsByScope[state.scope] = listing.path;
+      fileManagerCwd.value = listing.path;
       if (state.scope == FileScope.ssh && state.sshSessionId != null) {
         _sshPaths[state.sshSessionId!] = listing.path;
       }

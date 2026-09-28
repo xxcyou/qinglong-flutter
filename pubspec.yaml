@@ -1,7 +1,7 @@
 name: qinglong_flutter
-description: 青龙面板 Flutter 客户端（含青龙专用 AI）。完整工程骨架 + P0/P1 核心实现。
+description: 青龙AI —— 青龙面板移动客户端，内置浏览器抓包与 AI 助手。
 publish_to: 'none'
-version: 0.1.0+1
+version: 1.0.0+1
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

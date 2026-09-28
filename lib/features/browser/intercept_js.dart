@@ -77,10 +77,29 @@ const String interceptJs = r'''
         for (var k in h) { if (Object.prototype.hasOwnProperty.call(h, k)) a.push(s(k) + ': ' + s(h[k])); }
       }
     } catch(e){}
-    return a.join('\n').slice(0, 8000);
+    return a.join('\n');
   }
 
   function send(o){ try { QLBridge.postMessage(JSON.stringify(o)); } catch(e){} }
+  // 大响应体不能一次塞进 postMessage：Android WebView 的 JS 通道对单条消息
+  // 有大小限制，太大的 res 会被整个丢掉，表现就是“只有请求没有响应”。
+  // 超过 200KB 就拆成头消息 + 多个 res_chunk 分片传，Dart 侧拼回完整 body。
+  var RES_CHUNK = 200000;
+  function sendRes(id, o){
+    var body = s(o.body || '');
+    var head = {
+      t:'res', id:id, status:o.status, ok:o.ok, ms:o.ms,
+      err:o.err || '', ct:o.ct || '', rh:o.rh || '', sh:o.sh || '',
+      mut:o.mut || ''
+    };
+    if (body.length <= RES_CHUNK) { head.body = body; send(head); return; }
+    head.body = '';
+    head.bodyTotal = body.length;
+    send(head);
+    for (var i = 0; i < body.length; i += RES_CHUNK) {
+      send({t:'res_chunk', id:id, body: body.substring(i, i + RES_CHUNK)});
+    }
+  }
   function s(v){ return v == null ? '' : String(v); }
   // 头表压成一行行 `k: v`，Dart 侧原样展示（顺序保持发出的顺序）。
   // 敏感头不在这里过滤：抓包面板就是给用户自己看的，删了反而查不了问题。
@@ -98,7 +117,7 @@ const String interceptJs = r'''
         }
       }
     } catch(e){}
-    return a.join('\n').slice(0, 8000);
+    return a.join('\n');
   }
   function hit(id, acts){ send({t:'hit', id:id, acts:acts}); }
   function serr(id, msg){ send({t:'serr', id:id, msg:s(msg).slice(0,600)}); }
@@ -138,9 +157,8 @@ const String interceptJs = r'''
           var api = factory(makeApi(rec)) || {};
           rec.onRequest = api.onRequest || null;
           rec.onResponse = api.onResponse || null;
-          if (!rec.onRequest && !rec.onResponse) {
-            serr(rec.id, '脚本里没有 onRequest / onResponse，不会被调用');
-          }
+          // 没有 onRequest/onResponse 也允许：顶层代码在 new Function 时已经执行，
+          // 适合 WebSocket / EventSource / 全局补丁这类自启动脚本。
         } catch(e) {
           serr(rec.id, '编译失败：' + String(e));
         }
@@ -302,6 +320,152 @@ const String interceptJs = r'''
     };
   }
 
+
+  // ---- WebSocket 抓包 + 向连接发数据 -----------------------------------
+  var wsSeq = 0;
+  window.__qlWs = {};
+  window.__qlWsMeta = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
+  window.__qlWsSend = function(id, data){
+    var ws = window.__qlWs[id];
+    if (!ws) return 'no-socket';
+    try { ws.send(data); return 'sent'; } catch(e){ return 'err:' + e; }
+  };
+  window.__qlWsClose = function(id){
+    var ws = window.__qlWs[id];
+    if (!ws) return 'no-socket';
+    try { ws.close(); delete window.__qlWs[id]; return 'closed'; } catch(e){ return 'err:' + e; }
+  };
+  var OWS = window.WebSocket;
+  if (OWS) {
+    var nativeSend = OWS.prototype.send;
+    var nativeClose = OWS.prototype.close;
+    window.WebSocket = function(url, protocols){
+      var ws = (protocols === undefined) ? new OWS(url) : new OWS(url, protocols);
+      var id = 'ws' + (++wsSeq);
+      window.__qlWs[id] = ws;
+      if (window.__qlWsMeta) {
+        try { window.__qlWsMeta.set(ws, {id:id, url:s(url)}); } catch(e){}
+      }
+      send({t:'ws', id:id, ev:'open', url:s(url), dir:''});
+      ws.addEventListener('open', function(){
+        send({t:'ws', id:id, ev:'open', url:s(url), dir:''});
+      });
+      ws.addEventListener('message', function(e){
+        var v = e.data;
+        try {
+          if (typeof Blob !== 'undefined' && v instanceof Blob) {
+            v = '[Blob ' + v.size + 'B]';
+          } else if (v instanceof ArrayBuffer) {
+            v = '[ArrayBuffer]';
+          }
+        } catch(x){ v = '[binary]'; }
+        send({t:'ws', id:id, ev:'msg', dir:'recv', data:s(v), url:s(url)});
+      });
+      ws.addEventListener('error', function(e){
+        send({t:'ws', id:id, ev:'error', err:(e && e.message) || 'WebSocket error', url:s(url), dir:''});
+      });
+      ws.addEventListener('close', function(e){
+        delete window.__qlWs[id];
+        send({t:'ws', id:id, ev:'close', code:e.code, reason:s(e.reason||''), url:s(url), dir:''});
+      });
+      var selfUrl = s(url);
+      ws.send = function(data){
+        var v = data;
+        try {
+          if (typeof Blob !== 'undefined' && v instanceof Blob) v = '[Blob ' + v.size + 'B]';
+          if (v instanceof ArrayBuffer) v = '[ArrayBuffer]';
+        } catch(x){}
+        send({t:'ws', id:id, ev:'msg', dir:'sent', data:s(v), url:selfUrl});
+        return nativeSend.apply(ws, arguments);
+      };
+      ws.close = function(code, reason){
+        try { send({t:'ws', id:id, ev:'close', code:code, reason:s(reason||''), url:selfUrl, dir:''}); } catch(e){}
+        delete window.__qlWs[id];
+        if (window.__qlWsMeta) { try { window.__qlWsMeta.delete(ws); } catch(e){} }
+        return nativeClose.apply(ws, arguments);
+      };
+      return ws;
+    };
+    var protoSend = OWS.prototype.send;
+    OWS.prototype.send = function(data){
+      var m = window.__qlWsMeta && window.__qlWsMeta.get(this);
+      var v = data;
+      try {
+        if (typeof Blob !== 'undefined' && v instanceof Blob) v = '[Blob ' + v.size + 'B]';
+        if (v instanceof ArrayBuffer) v = '[ArrayBuffer]';
+      } catch(x){}
+      if (m) {
+        send({t:'ws', id:m.id, ev:'msg', dir:'sent', data:s(v), url:s(m.url)});
+      }
+      return protoSend.apply(this, arguments);
+    };
+    var protoClose = OWS.prototype.close;
+    OWS.prototype.close = function(code, reason){
+      var m = window.__qlWsMeta && window.__qlWsMeta.get(this);
+      if (m) {
+        try { send({t:'ws', id:m.id, ev:'close', code:code, reason:s(reason||''), url:s(m.url), dir:''}); } catch(e){}
+        delete window.__qlWs[m.id];
+        if (window.__qlWsMeta) { try { window.__qlWsMeta.delete(this); } catch(e){} }
+      }
+      return protoClose.apply(this, arguments);
+    };
+    window.WebSocket.prototype = OWS.prototype;
+    window.WebSocket.CONNECTING = OWS.CONNECTING;
+    window.WebSocket.OPEN = OWS.OPEN;
+    window.WebSocket.CLOSING = OWS.CLOSING;
+    window.WebSocket.CLOSED = OWS.CLOSED;
+  }
+
+  // ---- SSE 抓包 ---------------------------------------------------------
+  var sseSeq = 0;
+  var OES = window.EventSource;
+  if (OES) {
+    window.__qlSseClose = function(id){
+      var es = (window.__qlSse || {})[id];
+      if (!es) return 'no-socket';
+      try { es.close(); return 'closed'; }
+      catch(e){ return 'close-failed:' + e; }
+    };
+    window.EventSource = function(url, config){
+      var es = (config === undefined) ? new OES(url) : new OES(url, config);
+      var id = 'sse' + (++sseSeq);
+      window.__qlSse = window.__qlSse || {};
+      window.__qlSse[id] = es;
+      es.addEventListener('open', function(){
+        send({t:'sse', id:id, ev:'open', url:s(url)});
+      });
+      es.addEventListener('message', function(e){
+        send({t:'sse', id:id, ev:'msg', data:s(e.data||''), url:s(url), last:s(e.lastEventId||'')});
+      });
+      es.addEventListener('error', function(e){
+        send({t:'sse', id:id, ev:'error', err:(e && e.message)||'EventSource error', url:s(url), data:''});
+      });
+      // 大多数 Push 服务用自定义事件名（如 tick / update）而不是默认 message。
+      // 只监听 message 会漏掉这些数据。这里也拦截 addEventListener，
+      // 把页面注册的任意命名事件包一层，事件发生时上报。
+      var origAdd = es.addEventListener.bind(es);
+      es.addEventListener = function(type, listener, options){
+        if (type !== 'open' && type !== 'error' && type !== 'message') {
+          var orig = listener;
+          if (typeof orig === 'function') {
+            listener = function(e){
+              try {
+                send({t:'sse', id:id, ev:'msg', data:s(e.data||''), url:s(url), last:s(e.lastEventId||''), event:type});
+              } catch(x){}
+              return orig.apply(this, arguments);
+            };
+          }
+        }
+        return origAdd(type, listener, options);
+      };
+      return es;
+    };
+    window.EventSource.prototype = OES.prototype;
+    window.EventSource.CONNECTING = OES.CONNECTING;
+    window.EventSource.OPEN = OES.OPEN;
+    window.EventSource.CLOSED = OES.CLOSED;
+  }
+
   // ------------------------------------------------------------ fetch
   var of = window.fetch;
   window.fetch = async function(input, init){
@@ -324,20 +488,20 @@ const String interceptJs = r'''
     var url0 = ctx.url;
     var plan = runRequest(ctx);
     send({t:'req', id:id, kind:'fetch', method:ctx.method, url:ctx.url,
-          body:s(ctx.body).slice(0,20000), mut:plan.acts.join('、'),
+          body:s(ctx.body), mut:plan.acts.join('、'),
           rh:reqHdr(ctx.headers),
           from: plan.urlChanged ? url0 : ''});
 
     if (plan.blocked) {
-      send({t:'res', id:id, status:0, ok:false, ms:0, err:'脚本拦截', mut:'拦截'});
+      sendRes(id, { status:0, ok:false, ms:0, err:'脚本拦截', mut:'拦截'});
       throw new TypeError('Failed to fetch (被抓包脚本拦截)');
     }
     if (plan.mock) {
       var mst = Number(plan.mock.status || 200);
       var mbody = plan.mock.body == null ? '' : s(plan.mock.body);
       var mh = plan.mock.headers || {'content-type':'application/json'};
-      send({t:'res', id:id, status:mst, ok:mst<400, ms:Date.now()-t0,
-            ct:mh['content-type']||'', body:mbody.slice(0,200000),
+      sendRes(id, { status:mst, ok:mst<400, ms:Date.now()-t0,
+            ct:mh['content-type']||'', body:mbody,
             sh:hdr(mh), mut:'假返回'});
       var noBody = (mst===204||mst===205||mst===304);
       return new Response(noBody ? null : mbody, {status:mst, headers:mh});
@@ -372,13 +536,29 @@ const String interceptJs = r'''
         var nres = await nativeFetch(ctx);
         var nbody = nres.body == null ? '' : s(nres.body);
         var nh = nres.headers || {};
-        send({t:'res', id:id, status:Number(nres.status), ok:nres.status>=200&&nres.status<400,
+        sendRes(id, { status:Number(nres.status), ok:nres.status>=200&&nres.status<400,
               ms:Date.now()-t0, ct:(nh['content-type']||nh['Content-Type']||''),
-              body:nbody.slice(0,200000), rh:reqHdr(ctx.headers), sh:fmtHdrs(nh), mut:''});
+              body:nbody, rh:reqHdr(ctx.headers), sh:fmtHdrs(nh), mut:''});
         return new Response(nbody, {status: Number(nres.status), headers: new Headers(nh)});
       } catch(e2) {
-        send({t:'res', id:id, status:0, ok:false, ms:Date.now()-t0, err:String(e), mut:''});
+        sendRes(id, { status:0, ok:false, ms:Date.now()-t0, err:String(e), mut:''});
         throw e;
+      }
+    }
+
+    // 跨域 no-cors 的响应在浏览器里是 opaque：status=0、body 读不到，
+    // 直接记就是 0 字节。这时走 Dart 侧原生 HTTP 再抓一次，把真实状态和内容拿回来。
+    if (res.type === 'opaque' || res.status === 0) {
+      try {
+        var nres = await nativeFetch(ctx);
+        var nbody = nres.body == null ? '' : s(nres.body);
+        var nh = nres.headers || {};
+        sendRes(id, { status:Number(nres.status), ok:nres.status>=200&&nres.status<400,
+              ms:Date.now()-t0, ct:(nh['content-type']||nh['Content-Type']||''),
+              body:nbody, rh:reqHdr(ctx.headers), sh:fmtHdrs(nh), mut:''});
+        return new Response(nbody, {status: Number(nres.status), headers: new Headers(nh)});
+      } catch(e2) {
+        // 原生也失败就继续按浏览器结果记（最多是 0）。
       }
     }
 
@@ -394,11 +574,11 @@ const String interceptJs = r'''
     };
     var out = runResponse(rctx);
     var mut = plan.acts.concat(out.acts).join('、');
-    send({t:'res', id:id, status:rctx.status, ok:rctx.status>=200&&rctx.status<400,
+    sendRes(id, { status:rctx.status, ok:rctx.status>=200&&rctx.status<400,
           ms:Date.now()-t0,
           ct:rctx.headers['content-type'] ||
              ((res.headers && res.headers.get('content-type')) || ''),
-          body:s(rctx.body).slice(0,200000),
+          body:s(rctx.body),
           rh:reqHdr(ctx.headers), sh:hdr(rctx.headers), mut:mut});
     if (out.acts.length === 0) return res;
     var newHeaders;
@@ -471,11 +651,22 @@ const String interceptJs = r'''
           }
         } catch(e){}
       }
-      send({t:'res', id:id, status:rctx.status,
+      sendRes(id, { status:rctx.status,
             ok:rctx.status>=200&&rctx.status<400, ms:Date.now()-t0,
             ct:rctx.headers['content-type']||'',
-            body:s(rctx.body).slice(0,200000),
+            body:s(rctx.body),
             rh:reqHdr(ctx.headers), sh:hdr(rctx.headers), mut:mut});
+      // 跨域 XHR 拿不到 responseText（status=0、body 空）时，也用原生
+      // HTTP 补抓一次真实响应，否则列表里永远 0 字节。
+      if ((x.status === 0 || s(raw) === '') && ctx.url && !typed) {
+        nativeFetch(ctx).then(function(nres){
+          var nh = nres.headers || {};
+          sendRes(id, { status:Number(nres.status), ok:nres.status>=200&&nres.status<400,
+                ms:Date.now()-t0, ct:(nh['content-type']||nh['Content-Type']||''),
+                body:nres.body == null ? '' : s(nres.body),
+                rh:reqHdr(ctx.headers), sh:fmtHdrs(nh), mut:mut});
+        }).catch(function(){});
+      }
     });
 
     var open = x.open;
@@ -494,13 +685,13 @@ const String interceptJs = r'''
       var url0 = ctx.url;
       plan = runRequest(ctx);
       send({t:'req', id:id, kind:'xhr', method:ctx.method, url:ctx.url,
-            body:s(ctx.body).slice(0,20000), mut:plan.acts.join('、'),
+            body:s(ctx.body), mut:plan.acts.join('、'),
             rh:reqHdr(ctx.headers),
             from: plan.urlChanged ? url0 : ''});
 
       if (plan.blocked) {
         reported = true;
-        send({t:'res', id:id, status:0, ok:false, ms:0, err:'脚本拦截', mut:'拦截'});
+        sendRes(id, { status:0, ok:false, ms:0, err:'脚本拦截', mut:'拦截'});
         setTimeout(function(){
           try {
             x.dispatchEvent(new ProgressEvent('error'));
@@ -513,8 +704,8 @@ const String interceptJs = r'''
         reported = true;
         var mst = Number(plan.mock.status || 200);
         var mbody = plan.mock.body == null ? '' : s(plan.mock.body);
-        send({t:'res', id:id, status:mst, ok:mst<400, ms:Date.now()-t0,
-              body:mbody.slice(0,200000), rh:reqHdr(ctx.headers), mut:'假返回'});
+        sendRes(id, { status:mst, ok:mst<400, ms:Date.now()-t0,
+              body:mbody, rh:reqHdr(ctx.headers), mut:'假返回'});
         setTimeout(function(){
           try {
             Object.defineProperty(x, 'readyState', {get:function(){ return 4; }, configurable:true});

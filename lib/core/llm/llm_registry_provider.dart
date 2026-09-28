@@ -150,6 +150,12 @@ class LlmRegistryNotifier extends Notifier<LlmRegistry> {
     unawaited(_save());
   }
 
+  /// 从磁盘重新加载（AI 工具直接改 SharedPreferences 后调用，刷新 UI）。
+  Future<void> reload() async {
+    _loaded = false;
+    await load();
+  }
+
   Future<void> _save() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -270,6 +276,7 @@ class LlmRegistryNotifier extends Notifier<LlmRegistry> {
       extraBody: _decodeBody(target.extraBody),
       extraHeaders: _decodeHeaders(target.extraHeaders),
       receiveTimeoutSeconds: target.timeoutSeconds,
+      protocol: target.protocol,
     );
   }
 

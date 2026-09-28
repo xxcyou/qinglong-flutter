@@ -105,6 +105,11 @@ class _AiCanvasViewState extends State<AiCanvasView> {
     if (widget.controller?._reload == _reload) {
       widget.controller?._reload = null;
     }
+    // 用户关窗/取消/页面 aiClose 都会导致这里 dispose。
+    // 如果还在等结果，就按“未提交”放行，别让 AI 挂死等手动停止。
+    if (!_submitted) {
+      CanvasResultBus.cancel(widget.canvas.id);
+    }
     _server?.close();
     CanvasBus.unregister(_busName);
     super.dispose();

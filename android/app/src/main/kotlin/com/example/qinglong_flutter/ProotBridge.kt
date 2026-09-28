@@ -31,8 +31,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 class ProotBridge(private val context: Context) {
 
@@ -75,6 +77,20 @@ class ProotBridge(private val context: Context) {
 
     /** 正在跑的命令数：卡住时用来告诉用户"是不是有别的命令占着"。 */
     private val runningExecs = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** 后台会话：AI 创建的常驻进程（web 服务、监听进程等）。 */
+    private class ExecSession(
+        val id: Long,
+        val command: String,
+        val startedAt: Long,
+        val process: Process,
+    ) {
+        var exitCode: Int? = null
+    }
+    private val execSessions = ConcurrentHashMap<Long, ExecSession>()
+    private val sessionOutputs = ConcurrentHashMap<Long, StringBuilder>()
+    private val execSessionSeq = AtomicLong(1)
+
     private var terminalProcess: Process? = null
     private var terminalHandle: Long = 0L
 
@@ -92,6 +108,10 @@ class ProotBridge(private val context: Context) {
                 "getStatus" -> handleGetStatus(result)
                 "installRuntime" -> handleInstall(call, result)
                 "exec" -> handleExec(call, result)
+                "execSessionStart" -> handleExecSessionStart(call, result)
+                "execSessionList" -> handleExecSessionList(result)
+                "execSessionStatus" -> handleExecSessionStatus(call, result)
+                "execSessionStop" -> handleExecSessionStop(call, result)
                 "listFiles" -> handleListFiles(call, result)
                 "readFile" -> handleReadFile(call, result)
                 "writeFile" -> handleWriteFile(call, result)
@@ -1445,6 +1465,138 @@ class ProotBridge(private val context: Context) {
         }
     }
 
+    private fun handleExecSessionStart(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        execExecutor.execute {
+            try {
+                val manifest = readManifest()
+                val version = manifest.getString("runtime_version")
+                if (!prootBin(version).isFile) {
+                    result.error("runtime_not_installed", "请先安装 Runtime V2", null)
+                    return@execute
+                }
+                val command = call.argument<String>("command") ?: "/bin/true"
+                val args = call.argument<List<String>>("args") ?: emptyList()
+                val cwd = call.argument<String>("cwd")?.let { resolveGuestPath(it) } ?: workspaceDir()
+                ensureProotExecutable(version)
+                prepareGuestNetwork(version)
+                val pb = processBuilderFor(buildProotArgs(version, command, args), version)
+                pb.directory(cwd)
+                pb.redirectErrorStream(true)
+                val process = pb.start()
+                val id = execSessionSeq.getAndIncrement()
+                val session = ExecSession(id, command, System.currentTimeMillis(), process)
+                execSessions[id] = session
+                val output = StringBuilder()
+                sessionOutputs[id] = output
+
+                val readerThread = Thread {
+                    try {
+                        val reader = BufferedReader(InputStreamReader(process.inputStream))
+                        var line = reader.readLine()
+                        while (line != null) {
+                            synchronized(output) {
+                                output.append(line).append('\n')
+                                val max = 200 * 1024
+                                if (output.length > max) {
+                                    output.delete(0, output.length - max)
+                                }
+                            }
+                            line = reader.readLine()
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
+                readerThread.isDaemon = true
+                readerThread.start()
+
+                val waitThread = Thread {
+                    try {
+                        session.exitCode = process.waitFor()
+                    } catch (_: Throwable) {
+                    }
+                }
+                waitThread.isDaemon = true
+                waitThread.start()
+
+                result.success(
+                    mapOf(
+                        "id" to id,
+                        "command" to command,
+                        "running" to true,
+                        "startedAt" to session.startedAt,
+                    ),
+                )
+            } catch (e: Exception) {
+                result.error("session_start_failed", e.message ?: e.toString(), null)
+            }
+        }
+    }
+
+    private fun handleExecSessionList(result: MethodChannel.Result) {
+        val list = execSessions.map { (id, s) ->
+            sortedMapOf(
+                "id" to id,
+                "command" to s.command,
+                "running" to s.process.isAlive,
+                "exitCode" to s.exitCode,
+                "startedAt" to s.startedAt,
+                "outputBytes" to (sessionOutputs[id]?.length ?: 0),
+            )
+        }.sortedBy { it["id"] as Long }
+        result.success(list)
+    }
+
+    private fun handleExecSessionStatus(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val id = call.argument<Number>("id")?.toLong() ?: run {
+            result.error("bad_session", "缺少 session id", null)
+            return
+        }
+        val session = execSessions[id] ?: run {
+            result.error("not_found", "后台会话 $id 不存在", null)
+            return
+        }
+        val output = sessionOutputs[id]?.toString() ?: ""
+        val tail = if (output.length > 20000) output.substring(output.length - 20000) else output
+        result.success(
+            mapOf(
+                "id" to id,
+                "command" to session.command,
+                "running" to session.process.isAlive,
+                "exitCode" to session.exitCode,
+                "startedAt" to session.startedAt,
+                "output" to tail,
+                "outputBytes" to output.length,
+            ),
+        )
+    }
+
+    private fun handleExecSessionStop(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val id = call.argument<Number>("id")?.toLong() ?: run {
+            result.error("bad_session", "缺少 session id", null)
+            return
+        }
+        val session = execSessions.remove(id) ?: run {
+            result.error("not_found", "后台会话 $id 不存在", null)
+            return
+        }
+        sessionOutputs.remove(id)
+        try {
+            session.process.destroyForcibly()
+            session.process.waitFor(3, TimeUnit.SECONDS)
+        } catch (_: Throwable) {
+        }
+        result.success(mapOf("stopped" to true, "id" to id))
+    }
+
     private fun handleExec(call: MethodCall, result: MethodChannel.Result) {
         execExecutor.execute {
             runningExecs.incrementAndGet()
@@ -1462,7 +1614,7 @@ class ProotBridge(private val context: Context) {
                 val timeoutSeconds =
                     (call.argument<Number>("timeoutSeconds")?.toLong() ?: 60L)
                         .coerceIn(1L, 1800L)
-                val cwd = call.argument<String>("cwd")?.let(::File) ?: workspaceDir()
+                val cwd = call.argument<String>("cwd")?.let { resolveGuestPath(it) } ?: workspaceDir()
                 ensureProotExecutable(version)
                 prepareGuestNetwork(version)
                 val pb = processBuilderFor(buildProotArgs(version, command, args), version)

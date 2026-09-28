@@ -309,6 +309,58 @@ class ProotBridge {
     }
   }
 
+  /// 启动一个后台会话（PRoot 内常驻进程，例如 web 服务）。
+  ///
+  /// 返回 session id；进程不会被 exec 的超时机制杀掉，会一直跑，
+  /// 直到 [execSessionStop] 主动停止或 App 进程结束。
+  Future<Map<String, dynamic>> execSessionStart({
+    required String command,
+    List<String> args = const [],
+    String? cwd,
+  }) async {
+    final result = await _channel.invokeMethod<dynamic>('execSessionStart', {
+      'command': command,
+      'args': args,
+      'cwd': cwd,
+    });
+    if (result is Map) {
+      return result.map((k, v) => MapEntry(k.toString(), v));
+    }
+    throw StateError('PRoot 后台会话启动返回异常');
+  }
+
+  /// 列出当前所有后台会话。
+  Future<List<Map<String, dynamic>>> execSessionList() async {
+    final result = await _channel.invokeMethod<dynamic>('execSessionList');
+    if (result is List) {
+      return [
+        for (final item in result)
+          if (item is Map)
+            item.map((k, v) => MapEntry(k.toString(), v)),
+      ];
+    }
+    throw StateError('PRoot 后台会话列表返回异常');
+  }
+
+  /// 查询某个后台会话的状态和最近输出。
+  Future<Map<String, dynamic>> execSessionStatus(int id) async {
+    final result = await _channel.invokeMethod<dynamic>('execSessionStatus', {
+      'id': id,
+    });
+    if (result is Map) {
+      return result.map((k, v) => MapEntry(k.toString(), v));
+    }
+    throw StateError('PRoot 后台会话状态返回异常');
+  }
+
+  /// 停止一个后台会话。
+  Future<bool> execSessionStop(int id) async {
+    final result = await _channel.invokeMethod<dynamic>('execSessionStop', {
+      'id': id,
+    });
+    return result is Map && result['stopped'] == true;
+  }
+
   /// 列目录。[path] 为 guest 路径（/workspace、/home/coomi、/opt/coomi-dev、/tmp）。
   Future<ShellDirectoryListing> listFiles({String path = '/workspace'}) async {
     final result = await _channel.invokeMethod<dynamic>('listFiles', {

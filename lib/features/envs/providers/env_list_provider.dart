@@ -1,8 +1,18 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../panels/providers/panel_list_provider.dart';
 import '../api/env_api.dart';
 import '../models/env_var.dart';
+
+/// 所有修改环境变量的入口（页面、AI）都调用这个，通知已打开的环境变量页刷新。
+class EnvChangeNotifier extends ChangeNotifier {
+  EnvChangeNotifier._();
+  static final EnvChangeNotifier instance = EnvChangeNotifier._();
+  void notifyChanged() => notifyListeners();
+}
+
+final envChangeProvider = Provider<EnvChangeNotifier>((ref) => EnvChangeNotifier.instance);
 
 enum EnvStatusFilter {
   all('全部'),
@@ -53,6 +63,9 @@ class EnvListNotifier extends Notifier<EnvListState> {
       if (previous?.id != next?.id && next != null) {
         Future.microtask(load);
       }
+    });
+    ref.listen<EnvChangeNotifier>(envChangeProvider, (_, __) {
+      Future.microtask(load);
     });
     return const EnvListState();
   }

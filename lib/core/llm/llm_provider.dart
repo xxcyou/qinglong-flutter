@@ -63,6 +63,28 @@ class ModelCapabilities {
       );
 }
 
+/// 接入协议。默认 OpenAI 兼容 `/chat/completions`；Anthropic 原生 Messages API。
+enum LlmProtocol {
+  openai,
+  anthropic,
+  google;
+
+  String get wireName => switch (this) {
+        LlmProtocol.openai => 'openai',
+        LlmProtocol.anthropic => 'anthropic',
+        LlmProtocol.google => 'google',
+      };
+
+  static LlmProtocol fromWire(Object? value) {
+    if (value is String) {
+      final v = value.toLowerCase();
+      if (v == 'anthropic') return LlmProtocol.anthropic;
+      if (v == 'google' || v == 'gemini') return LlmProtocol.google;
+    }
+    return LlmProtocol.openai;
+  }
+}
+
 class LlmProviderConfig {
   const LlmProviderConfig({
     required this.id,
@@ -80,6 +102,7 @@ class LlmProviderConfig {
     this.outputPluginPath = '',
     this.outputPluginPaths = const [],
     this.visionModel = '',
+    this.protocol = LlmProtocol.openai,
   });
 
   /// 稳定 id。子代理配置、活动提供商都按 id 引用，改名字不会失联。
@@ -125,6 +148,9 @@ class LlmProviderConfig {
   /// 图片识别模型。有图时这一轮用这个模型代替默认模型；
   /// 留空 = 这家不支持发图片（聊天里也不会让你挂图）。
   final String visionModel;
+
+  /// 接入协议：OpenAI 兼容还是 Anthropic 原生 Messages API。
+  final LlmProtocol protocol;
 
   /// 输出整理插件 .js 文件的 PRoot 路径（旧的单插件字段，兼容老数据）。
   final String outputPluginPath;
@@ -212,6 +238,7 @@ class LlmProviderConfig {
     String? outputPluginPath,
     List<String>? outputPluginPaths,
     String? visionModel,
+    LlmProtocol? protocol,
   }) {
     return LlmProviderConfig(
       id: id,
@@ -229,6 +256,7 @@ class LlmProviderConfig {
       outputPluginPath: outputPluginPath ?? this.outputPluginPath,
       outputPluginPaths: outputPluginPaths ?? this.outputPluginPaths,
       visionModel: visionModel ?? this.visionModel,
+      protocol: protocol ?? this.protocol,
     );
   }
 
@@ -251,6 +279,7 @@ class LlmProviderConfig {
         'outputPluginPath': outputPluginPath,
         'outputPluginPaths': outputPluginPaths,
         'visionModel': visionModel,
+        'protocol': protocol.wireName,
       };
 
   static LlmProviderConfig fromJson(Map<String, dynamic> json) {
@@ -293,6 +322,7 @@ class LlmProviderConfig {
         for (final p in (json['outputPluginPaths'] as List? ?? const []))
           p.toString(),
       ],
+      protocol: LlmProtocol.fromWire(json['protocol']),
     );
   }
 }

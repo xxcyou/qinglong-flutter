@@ -15,7 +15,9 @@ class EnvVar {
   final int status;
   final int? position;
 
-  bool get isEnabled => status == 1;
+  /// 青龙 EnvStatus 枚举：0=normal（启用），1=disabled（禁用）。
+  /// 别按直觉当成 1=启用，否则 web 上全是启用、App 会全部显示禁用。
+  bool get isEnabled => status == 0;
 
   factory EnvVar.fromJson(Map<String, dynamic> json) {
     int? asInt(dynamic v) {

@@ -4,8 +4,10 @@ import android.content.Context
 import android.webkit.CookieManager
 import android.webkit.WebStorage
 import android.webkit.WebView
+import androidx.webkit.WebViewCompat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugins.webviewflutter.WebViewFlutterAndroidExternalApi
 
 /**
  * 浏览器内核的"持久化 + 会话"补丁层。
@@ -229,6 +231,33 @@ class WebBridge(private val context: Context) {
                                 "acceptCookie" to CookieManager.getInstance().acceptCookie(),
                             )
                         )
+                    }
+
+                    "addDocumentStartScript" -> {
+                        try {
+                            val identifier = call.argument<Number>("identifier")?.toLong() ?: -1L
+                            val script = call.argument<String>("script") ?: ""
+                            val allowed = call.argument<List<String>>("allowedOriginRules") ?: listOf("*")
+                            if (identifier <= 0 || script.isEmpty()) {
+                                result.error("BAD_ARGS", "identifier/script 为空", null)
+                            } else {
+                                val webView = WebViewFlutterAndroidExternalApi.getWebView(engine, identifier)
+                                if (webView == null) {
+                                    result.error("NO_WEBVIEW", "找不到 WebView，标识符 $identifier", null)
+                                } else {
+                                    // 在页面任何脚本执行之前注入抓包钩子，WebSocket/SSE/fetch/XHR
+                                    // 在 document-start 就能被接管，解决"页面内联脚本先建 WS 导致漏包"。
+                                    WebViewCompat.addDocumentStartJavaScript(
+                                        webView,
+                                        script,
+                                        allowed.toSet(),
+                                    )
+                                    result.success(true)
+                                }
+                            }
+                        } catch (e: Throwable) {
+                            result.error("DOC_START_FAILED", e.message, null)
+                        }
                     }
 
                     else -> result.notImplemented()

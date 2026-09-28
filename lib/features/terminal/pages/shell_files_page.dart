@@ -17,6 +17,7 @@ import '../../../shared/image_viewer_page.dart';
 import '../../../shared/text_input_dialog.dart';
 import '../providers/shell_files_provider.dart';
 import '../providers/ssh_session_provider.dart';
+import '../floating_terminal.dart';
 // import 'ssh_files_page.dart';
 import '../widgets/file_action_sheet.dart';
 import '../../../shared/mono_text.dart';
@@ -119,6 +120,14 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
         ? '搜索结果 ${entries.length} 项'
         : '${state.scope.label} · ${entries.length} 项';
     final actions = <Widget>[
+      IconButton(
+        tooltip: '在此目录打开悬浮终端',
+        onPressed: () => FloatingTerminal.show(
+          context,
+          cwd: state.scope == FileScope.shell ? state.path : null,
+        ),
+        icon: const Icon(Icons.terminal_rounded),
+      ),
       IconButton(
         tooltip: '搜索',
         onPressed: () {

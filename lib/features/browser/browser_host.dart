@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -17,6 +19,73 @@ import 'intercept_js.dart';
 import 'models/browser_models.dart';
 import 'models/intercept_script.dart';
 import '../../shared/mono_text.dart';
+
+/// 浏览器内部弹窗用的 builder 类型。
+typedef BrowserDialogBuilder<T> =
+    Widget Function(BuildContext context, void Function([T?]) pop);
+
+/// 在浏览器自己的 Overlay 里弹一个对话框。
+///
+/// 浏览器宿主挂在主 App Navigator 外面，直接 showDialog 会因为找不到
+/// Navigator 而静默失败。这里用 OverlayEntry 手搓一个不需要 Navigator 的
+/// 模态层：barrier + 居中内容 + pop 回调。
+Future<T?> showBrowserDialog<T>({
+  required BuildContext context,
+  required BrowserDialogBuilder<T> builder,
+  bool barrierDismissible = true,
+}) {
+  final overlay = Overlay.of(context);
+  final completer = Completer<T?>();
+  var closed = false;
+  late final OverlayEntry entry;
+  void finish([T? result]) {
+    if (closed) return;
+    closed = true;
+    entry.remove();
+    if (!completer.isCompleted) completer.complete(result);
+  }
+
+  entry = OverlayEntry(
+    opaque: false,
+    maintainState: false,
+    builder: (dialogContext) => _BrowserDialogHost<T>(
+      child: builder(dialogContext, finish),
+      onDismiss: barrierDismissible ? () => finish(null) : null,
+    ),
+  );
+  overlay.insert(entry);
+  return completer.future;
+}
+
+class _BrowserDialogHost<T> extends StatelessWidget {
+  const _BrowserDialogHost({required this.child, this.onDismiss});
+
+  final Widget child;
+  final VoidCallback? onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: ModalBarrier(
+            dismissible: onDismiss != null,
+            color: Colors.black54,
+            onDismiss: onDismiss,
+          ),
+        ),
+        Center(
+          child: SafeArea(
+            child: Material(
+              type: MaterialType.transparency,
+              child: child,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
 
 /// 浏览器宿主：一个常驻的悬浮窗浏览器。
 ///
@@ -75,6 +144,15 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
 
   /// 0 页面 / 1 抓包 / 2 日志 / 3 脚本
   int _tab = 0;
+
+  /// 抓包详情：点列表项后在这里看结构化内容，null = 回到列表。
+  CapturedRequest? _detailRequest;
+
+  /// 抓包列表搜索关键字。
+  String _captureQuery = '';
+
+  /// 抓包列表快捷过滤：all / error / json。
+  String _captureFilter = 'all';
 
   /// 用户正在编辑地址栏时不要被导航事件覆盖输入。
   bool _urlFocusIdle = true;
@@ -365,6 +443,8 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                   child: switch (_tab) {
                     1 => _captureList(),
                     2 => _consoleList(),
+                    3 => _scriptList(),
+                    4 => _devtoolsList(),
                     _ => _scriptList(),
                   },
                 ),
@@ -567,6 +647,12 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                             3,
                             Icons.data_object_rounded,
                           ),
+                        ),
+                        const SizedBox(width: 5),
+                        _tabChip(
+                          '开发者',
+                          4,
+                          Icons.developer_mode_outlined,
                         ),
                       ],
                     ),
@@ -813,6 +899,64 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     );
   }
 
+  bool _captureMatches(CapturedRequest r) {
+    final q = _captureQuery.trim().toLowerCase();
+    if (q.isNotEmpty) {
+      final haystack = [
+        r.method,
+        r.url,
+        r.status.toString(),
+        r.requestBody,
+        r.responseBody,
+        r.requestHeaders,
+        r.responseHeaders,
+        r.error,
+        r.contentType,
+      ].join('\n').toLowerCase();
+      if (!haystack.contains(q)) return false;
+    }
+    if (_captureFilter == 'error') {
+      return r.error.isNotEmpty || r.status >= 400;
+    }
+    if (_captureFilter == 'json') {
+      return _isJsonText(r.requestBody) || _isJsonText(r.responseBody);
+    }
+    return true;
+  }
+
+  static bool _isJsonText(String raw) {
+    final text = raw.trim();
+    if (text.isEmpty) return false;
+    if (!text.startsWith('{') && !text.startsWith('[')) return false;
+    try {
+      jsonDecode(text);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Widget _captureFilterChip(ColorScheme scheme, String value, String label) {
+    final selected = _captureFilter == value;
+    return ChoiceChip(
+      label: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+        ),
+      ),
+      selected: selected,
+      onSelected: (_) => setState(() => _captureFilter = value),
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      selectedColor: scheme.primaryContainer,
+      backgroundColor: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+      side: BorderSide.none,
+    );
+  }
+
   Widget _captureList() {
     final scheme = Theme.of(context).colorScheme;
     return GlassBackdrop(
@@ -831,13 +975,84 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
               ),
             );
           }
-          return ListView.builder(
-            padding: const EdgeInsets.fromLTRB(10, 8, 10, 24),
-            itemCount: list.length,
-            itemBuilder: (context, index) => _RequestTile(
-              request: list[index],
-              onMakeHook: () => _newScriptFrom(list[index]),
-            ),
+          if (_detailRequest != null) {
+            return _CaptureDetail(
+              request: _detailRequest!,
+              onBack: () => setState(() => _detailRequest = null),
+              onMakeHook: () => _newScriptFrom(_detailRequest!),
+            );
+          }
+          final filtered = [
+            for (final r in list)
+              if (_captureMatches(r)) r,
+          ];
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 2),
+                child: TextField(
+                  onChanged: (v) => setState(() => _captureQuery = v),
+                  style: const TextStyle(fontSize: 12),
+                  decoration: InputDecoration(
+                    hintText: '搜索 URL / 方法 / 状态 / 请求体 / 响应体',
+                    hintStyle: const TextStyle(fontSize: 11.5),
+                    prefixIcon: const Icon(Icons.search_rounded, size: 18),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide.none,
+                    ),
+                    filled: true,
+                    fillColor:
+                        scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                child: Row(
+                  children: [
+                    _captureFilterChip(scheme, 'all', '全部'),
+                    const SizedBox(width: 6),
+                    _captureFilterChip(scheme, 'error', '报错'),
+                    const SizedBox(width: 6),
+                    _captureFilterChip(scheme, 'json', 'JSON'),
+                    const Spacer(),
+                    Text(
+                      '${filtered.length}/${list.length}',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: filtered.isEmpty
+                    ? Center(
+                        child: Text(
+                          '没有匹配的抓包记录',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(10, 4, 10, 24),
+                        itemCount: filtered.length,
+                        itemBuilder: (context, index) => _RequestTile(
+                          request: filtered[index],
+                          onOpen: () => setState(
+                            () => _detailRequest = filtered[index],
+                          ),
+                          onMakeHook: () => _newScriptFrom(filtered[index]),
+                        ),
+                      ),
+              ),
+            ],
           );
         },
       ),
@@ -907,9 +1122,11 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                         child: Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 24),
                           child: Text(
-                            '脚本里写 onRequest(req) / onResponse(res)，\n'
-                            '想改什么改什么：改地址、改头、改请求体、改返回体，'
-                            '或直接 block / mock。\n\n'
+                            '脚本两种写法：\n'
+                            '1）onRequest(req) / onResponse(res) 改包：改地址、改头、'
+                            '改请求体、改返回体、block / mock。\n'
+                            '2）自启动脚本：顶部代码装 WebSocket / EventSource 监听等，'
+                            '不写 onRequest/onResponse 也有效。\n\n'
                             '点「新建」自己写，或在「抓包」里点开一条请求 → '
                             '「按这个包写脚本」；AI 用 browser_hook 也能装。',
                             textAlign: TextAlign.center,
@@ -1275,49 +1492,14 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     );
   }
 
+  Widget _devtoolsList() {
+    return _DevToolsPanel(engine: _engine);
+  }
+
   Widget _consoleList() {
-    final scheme = Theme.of(context).colorScheme;
+    // 日志和可执行 JS 已合并成一个控制台：页面 console 输出 + 手动 JS 都在这。
     return GlassBackdrop(
-      child: ValueListenableBuilder<List<ConsoleLine>>(
-        valueListenable: _engine.console,
-        builder: (context, list, _) {
-          if (list.isEmpty) {
-            return Center(
-              child: Text(
-                '页面还没有输出日志',
-                style: TextStyle(
-                  fontSize: 12.5,
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-            );
-          }
-          return ListView.builder(
-            padding: const EdgeInsets.fromLTRB(10, 8, 10, 24),
-            itemCount: list.length,
-            itemBuilder: (context, index) {
-              final line = list[index];
-              final color = switch (line.level) {
-                'error' => scheme.error,
-                'warn' => Colors.orange.shade700,
-                _ => scheme.onSurfaceVariant,
-              };
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 3),
-                child: SelectableText(
-                  '[${line.level}] ${line.text}',
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    fontFamily: kMonoFamily,
-                    fontFamilyFallback: kMonoFallback,
-                    color: color,
-                  ),
-                ),
-              );
-            },
-          );
-        },
-      ),
+      child: _ConsolePanel(engine: _engine),
     );
   }
 }
@@ -1369,44 +1551,38 @@ class _Grip extends StatelessWidget {
   }
 }
 
-class _RequestTile extends StatefulWidget {
-  const _RequestTile({required this.request, this.onMakeHook});
+class _RequestTile extends StatelessWidget {
+  const _RequestTile({
+    required this.request,
+    required this.onOpen,
+    this.onMakeHook,
+  });
 
   final CapturedRequest request;
+  final VoidCallback onOpen;
   final VoidCallback? onMakeHook;
-
-  @override
-  State<_RequestTile> createState() => _RequestTileState();
-}
-
-class _RequestTileState extends State<_RequestTile> {
-  bool _open = false;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final r = widget.request;
+    final r = request;
     final color = r.pending
         ? scheme.onSurfaceVariant
         : (r.status >= 400 || r.error.isNotEmpty)
             ? scheme.error
             : Colors.green.shade600;
-    // 注意：不能用 GlassPanel 的 onTap。它把一个铺满整块的 InkWell 盖在内容
-    // **上面**，展开后里面的「改这个包 / 复制返回」就永远点不到——手指落下先被
-    // 那层 InkWell 吃掉，表现是"点按钮只把这条收起来了"。
-    // 所以只让标题行负责展开收起。
     return GlassPanel(
       radius: 14,
       blur: 14,
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => setState(() => _open = !_open),
-            child: Row(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onOpen,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
                 Container(
                   padding:
@@ -1432,6 +1608,27 @@ class _RequestTileState extends State<_RequestTile> {
                     fontWeight: FontWeight.w700,
                   ),
                 ),
+                if (r.live) ...[
+                  const SizedBox(width: 5),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 1,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      '● 通讯中',
+                      style: TextStyle(
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.green.shade700,
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
@@ -1455,112 +1652,3137 @@ class _RequestTileState extends State<_RequestTile> {
                   ),
               ],
             ),
+            if (r.mutation.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.published_with_changes_outlined,
+                      size: 12,
+                      color: scheme.primary,
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        '已改写：${r.mutation}',
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                          color: scheme.primary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (r.responseBody.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        r.responseBody.replaceAll('\n', ' '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    if (onMakeHook != null)
+                      IconButton(
+                        tooltip: '按这个包写脚本',
+                        visualDensity: VisualDensity.compact,
+                        constraints:
+                            const BoxConstraints(minWidth: 32, minHeight: 32),
+                        padding: EdgeInsets.zero,
+                        iconSize: 16,
+                        icon: const Icon(Icons.data_object_rounded),
+                        onPressed: onMakeHook,
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 抓包详情：像专业抓包工具一样按「总览 / 请求头 / 请求体 / 响应头 / 响应体」
+/// 分 Tab 展示，正文不再截断。
+class _CaptureDetail extends StatelessWidget {
+  const _CaptureDetail({
+    required this.request,
+    required this.onBack,
+    this.onMakeHook,
+  });
+
+  final CapturedRequest request;
+  final VoidCallback onBack;
+  final VoidCallback? onMakeHook;
+
+  static String _sizeLabel(String text) {
+    final bytes = utf8.encode(text).length;
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final r = request;
+    final color = r.pending
+        ? scheme.onSurfaceVariant
+        : (r.status >= 400 || r.error.isNotEmpty)
+            ? scheme.error
+            : Colors.green.shade600;
+    if (r.kind == 'ws' || r.kind == 'sse') {
+      return GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onHorizontalDragEnd: (details) {
+          if (details.primaryVelocity != null &&
+              details.primaryVelocity! > 250) {
+            onBack();
+          }
+        },
+        child: GlassBackdrop(
+          child: _WsSessionDetail(
+            request: r,
+            onBack: onBack,
           ),
-          // 这个包被脚本动过：必须显眼，否则用户会以为服务器就是这么返回的。
-          if (r.mutation.isNotEmpty)
+        ),
+      );
+    }
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onHorizontalDragEnd: (details) {
+        if (details.primaryVelocity != null && details.primaryVelocity! > 250) {
+          onBack();
+        }
+      },
+      child: GlassBackdrop(
+        child: DefaultTabController(
+          length: 6,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
             Padding(
-              padding: const EdgeInsets.only(top: 3),
+              padding: const EdgeInsets.fromLTRB(4, 6, 12, 2),
               child: Row(
                 children: [
-                  Icon(
-                    Icons.published_with_changes_outlined,
-                    size: 12,
-                    color: scheme.primary,
+                  IconButton(
+                    tooltip: '返回列表',
+                    onPressed: onBack,
+                    icon: const Icon(Icons.arrow_back_rounded),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  const SizedBox(width: 2),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 5,
+                                vertical: 1,
+                              ),
+                              decoration: BoxDecoration(
+                                color: color.withValues(alpha: 0.14),
+                                borderRadius: BorderRadius.circular(5),
+                              ),
+                              child: Text(
+                                r.pending ? '···' : '${r.status}',
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: color,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Flexible(
+                              child: Text(
+                                r.method,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          r.url,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            height: 1.2,
+                            fontFamily: kMonoFamily,
+                            fontFamilyFallback: kMonoFallback,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          [
+                            if (r.host.isNotEmpty) r.host,
+                            if (r.contentType.isNotEmpty) r.contentType,
+                            if (r.ms > 0) '${r.ms} ms',
+                            '响应 ${_sizeLabel(r.responseBody)}',
+                            if (r.kind.isNotEmpty) r.kind,
+                          ].join(' · '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                   const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      '已改写：${r.mutation}',
+                  IconButton(
+                    tooltip: '复制返回体',
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: r.responseBody));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('返回体已复制'),
+                          duration: Duration(seconds: 1),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.copy_rounded),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  if (onMakeHook != null)
+                    IconButton(
+                      tooltip: '按这个包写脚本',
+                      onPressed: onMakeHook,
+                      icon: const Icon(Icons.data_object_rounded),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                ],
+              ),
+            ),
+            TabBar(
+              isScrollable: true,
+              tabAlignment: TabAlignment.start,
+              labelStyle: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+              unselectedLabelStyle: const TextStyle(fontSize: 12),
+              indicatorSize: TabBarIndicatorSize.label,
+              tabs: const [
+                Tab(text: '总览'),
+                Tab(text: '请求头'),
+                Tab(text: '请求体'),
+                Tab(text: '响应头'),
+                Tab(text: '响应体'),
+                Tab(text: '重发'),
+              ],
+            ),
+            Expanded(
+              child: TabBarView(
+                children: [
+                  _OverviewTab(request: r),
+                  _HeadersTab(
+                    title: '请求头',
+                    raw: r.requestHeaders,
+                    emptyText: '（无请求头）',
+                  ),
+                  _BodyTab(
+                    title: '请求体',
+                    body: r.requestBody,
+                    copyLabel: '复制请求体',
+                  ),
+                  _HeadersTab(
+                    title: '响应头',
+                    raw: r.responseHeaders,
+                    emptyText: '（无响应头）',
+                  ),
+                  _BodyTab(
+                    title: '响应体',
+                    body: r.responseBody,
+                    copyLabel: '复制响应体',
+                  ),
+                  _ReplayTab(request: r),
+                ],
+              ),
+            ),
+          ],
+        ),
+        ),
+      ),
+    );
+  }
+}
+
+/// WS/SSE 会话右侧的“消息结构预览图”：像代码编辑器 minimap 一样，
+/// 用色条表示每条消息的位置和长短；点击/拖动某个位置，会话列表滚动到对应消息。
+class _WsSessionMinimap extends StatefulWidget {
+  const _WsSessionMinimap({
+    required this.request,
+    required this.expanded,
+    required this.estimateHeight,
+    required this.onTap,
+    required this.scheme,
+    required this.scrollFraction,
+  });
+
+  final CapturedRequest request;
+  final Set<int> expanded;
+  final double Function(WsMessage, int) estimateHeight;
+  final ValueChanged<int> onTap;
+  final ColorScheme scheme;
+  final ValueListenable<double> scrollFraction;
+
+  @override
+  State<_WsSessionMinimap> createState() => _WsSessionMinimapState();
+}
+
+class _WsSessionMinimapState extends State<_WsSessionMinimap> {
+  int? _activeIndex;
+  bool _dragging = false;
+  int _lastHapticIndex = -1;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.scrollFraction.addListener(_syncFromScroll);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _syncFromScroll();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _WsSessionMinimap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.scrollFraction != widget.scrollFraction) {
+      oldWidget.scrollFraction.removeListener(_syncFromScroll);
+      widget.scrollFraction.addListener(_syncFromScroll);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.scrollFraction.removeListener(_syncFromScroll);
+    super.dispose();
+  }
+
+  List<double> _heights() => [
+        for (var i = 0; i < widget.request.wsMessages.length; i++)
+          widget.estimateHeight(widget.request.wsMessages[i], i),
+      ];
+
+  int? _indexAtFraction(double fraction) {
+    final heights = _heights();
+    final total = heights.fold<double>(0, (a, b) => a + b);
+    if (total <= 0 || heights.isEmpty) return null;
+    final f = fraction.clamp(0.0, 1.0).toDouble();
+    var acc = 0.0;
+    for (var i = 0; i < heights.length; i++) {
+      acc += heights[i] / total;
+      if (f <= acc) return i;
+    }
+    return heights.length - 1;
+  }
+
+  int? _indexAt(Offset local, Size size) {
+    if (size.height <= 0) return null;
+    return _indexAtFraction(local.dy / size.height);
+  }
+
+  /// 普通滑动列表时，ScrollNotification 更新 fraction，
+  /// 这里把放大块同步到“当前屏幕大概位置”，实现绑定。
+  void _syncFromScroll() {
+    if (!mounted || _dragging) return;
+    final idx = _indexAtFraction(widget.scrollFraction.value);
+    if (idx != null && idx != _activeIndex) {
+      setState(() => _activeIndex = idx);
+    }
+  }
+
+  void _handle(Offset local, Size size) {
+    final index = _indexAt(local, size);
+    if (index == null) return;
+    if (_activeIndex != index || !_dragging) {
+      setState(() {
+        _activeIndex = index;
+        _dragging = true;
+      });
+    }
+    if (index != _lastHapticIndex) {
+      _lastHapticIndex = index;
+      HapticFeedback.selectionClick();
+    }
+    widget.onTap(index);
+  }
+
+  void _end() {
+    if (!_dragging) return;
+    // 松手不取消选中：放大块保留在当前轴上，作为“现在大概在哪”的指示。
+    setState(() => _dragging = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 34,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final size = Size(34, constraints.maxHeight);
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (d) => _handle(d.localPosition, size),
+            onVerticalDragStart: (d) => _handle(d.localPosition, size),
+            onVerticalDragUpdate: (d) => _handle(d.localPosition, size),
+            onVerticalDragEnd: (_) => _end(),
+            onVerticalDragCancel: _end,
+            onTapUp: (_) => _end(),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: CustomPaint(
+                size: size,
+                painter: _MinimapPainter(
+                  heights: _heights(),
+                  messages: widget.request.wsMessages,
+                  scheme: widget.scheme,
+                  activeIndex: _activeIndex,
+                  isDragging: _dragging,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _MinimapPainter extends CustomPainter {
+  _MinimapPainter({
+    required this.heights,
+    required this.messages,
+    required this.scheme,
+    this.activeIndex,
+    this.isDragging = false,
+  });
+
+  final List<double> heights;
+  final List<WsMessage> messages;
+  final ColorScheme scheme;
+  final int? activeIndex;
+  final bool isDragging;
+
+  static const _stepFactors = [1.0, 0.82, 0.66, 0.52, 0.40, 0.30];
+
+  double _widthFactor(int index) {
+    if (activeIndex == null) return 0.42;
+    final step = (index - activeIndex!).abs();
+    if (step < _stepFactors.length) return _stepFactors[step];
+    return 0.24;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final total = heights.fold<double>(0, (a, b) => a + b);
+    if (total <= 0 || size.height <= 0) return;
+    final trackPaint = Paint()
+      ..color = scheme.surfaceContainerHighest.withValues(alpha: 0.55)
+      ..style = PaintingStyle.fill;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(0, 0, size.width, size.height),
+        const Radius.circular(8),
+      ),
+      trackPaint,
+    );
+
+    double? activeCenterY;
+    var y = 0.0;
+    for (var i = 0; i < heights.length; i++) {
+      final rawH = heights[i] / total * size.height;
+      final h = rawH < 2 ? 2.0 : rawH;
+      if (y + h > size.height) break;
+      final msg = messages[i];
+      final baseColor = msg.sent
+          ? scheme.primary
+          : (_isSystemLike(msg)
+              ? scheme.outline
+              : scheme.onSurfaceVariant);
+      final alpha = (activeIndex != null && i == activeIndex) ? 0.95 : 0.55;
+      final paint = Paint()
+        ..color = baseColor.withValues(alpha: alpha)
+        ..style = PaintingStyle.fill;
+
+      final factor = _widthFactor(i);
+      final w = size.width * factor;
+      final x = (size.width - w) / 2;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(x, y, w, h - 0.5),
+          const Radius.circular(2),
+        ),
+        paint,
+      );
+      if (i == activeIndex) activeCenterY = y + h / 2;
+      y += h;
+    }
+
+    // 选中放大镜：固定尺寸，不随消息数量缩小；松手也不消失，作为轴位置指示。
+    if (activeCenterY != null) {
+      final cy = activeCenterY.clamp(0.0, size.height).toDouble();
+      final magnifyFill = Paint()
+        ..color = scheme.primary.withValues(alpha: 0.22)
+        ..style = PaintingStyle.fill;
+      final magnifyStroke = Paint()
+        ..color = scheme.primary.withValues(alpha: 0.9)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
+      final rect = RRect.fromRectAndRadius(
+        Rect.fromCenter(
+          center: Offset(size.width / 2, cy),
+          width: size.width - 1,
+          height: 28,
+        ),
+        const Radius.circular(9),
+      );
+      canvas.drawRRect(rect, magnifyFill);
+      canvas.drawRRect(rect, magnifyStroke);
+    }
+  }
+
+  static bool _isSystemLike(WsMessage m) {
+    return !m.sent &&
+        (m.text.startsWith('WebSocket 已连接') ||
+            m.text.startsWith('SSE 已连接') ||
+            m.text.contains('已关闭') ||
+            m.text.startsWith('错误：'));
+  }
+
+  @override
+  bool shouldRepaint(_MinimapPainter oldDelegate) =>
+      oldDelegate.heights != heights ||
+      oldDelegate.messages != messages ||
+      oldDelegate.scheme != scheme ||
+      oldDelegate.activeIndex != activeIndex ||
+      oldDelegate.isDragging != isDragging;
+}
+
+class _WsSessionDetail extends StatefulWidget {
+  const _WsSessionDetail({required this.request, required this.onBack});
+
+  final CapturedRequest request;
+  final VoidCallback onBack;
+
+  @override
+  State<_WsSessionDetail> createState() => _WsSessionDetailState();
+}
+
+class _WsSessionDetailState extends State<_WsSessionDetail> {
+  static const _collapseThreshold = 220;
+  final TextEditingController _controller = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  final ValueNotifier<double> _scrollFraction = ValueNotifier(0);
+  final Set<int> _expandedMessages = {};
+  bool _sending = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _scrollController.dispose();
+    _scrollFraction.dispose();
+    super.dispose();
+  }
+
+  String _prettyMessage(String raw) {
+    final t = raw.trim();
+    if (t.isEmpty) return raw;
+    if (t.startsWith('{') || t.startsWith('[')) {
+      try {
+        return const JsonEncoder.withIndent('  ').convert(jsonDecode(t));
+      } catch (_) {}
+    }
+    return raw;
+  }
+
+  TextSpan _highlightWsText(String text, ColorScheme scheme) {
+    final spans = <TextSpan>[];
+    var i = 0;
+    final plain = TextStyle(
+      color: scheme.onSurface,
+      fontFamily: kMonoFamily,
+      fontFamilyFallback: kMonoFallback,
+    );
+    final stringColor = Colors.green.shade600;
+    final keyColor = const Color(0xFF4FC1FF);
+    final numberColor = const Color(0xFFD19A66);
+    final boolColor = const Color(0xFFC678DD);
+    final punctColor = scheme.onSurfaceVariant;
+
+    bool isIdent(int at, String word) {
+      if (at + word.length > text.length) return false;
+      if (text.substring(at, at + word.length) != word) return false;
+      final before = at == 0 ? '' : text[at - 1];
+      final after = at + word.length >= text.length
+          ? ''
+          : text[at + word.length];
+      return !RegExp(r'[A-Za-z0-9_]').hasMatch(before) &&
+          !RegExp(r'[A-Za-z0-9_]').hasMatch(after);
+    }
+
+    while (i < text.length) {
+      final ch = text[i];
+      if (ch == '"') {
+        final start = i;
+        i++;
+        final buffer = <String>[text[start]];
+        while (i < text.length) {
+          buffer.add(text[i]);
+          if (text[i] == '\\' && i + 1 < text.length) {
+            buffer.add(text[i + 1]);
+            i += 2;
+            continue;
+          }
+          if (text[i] == '"') {
+            i++;
+            break;
+          }
+          i++;
+        }
+        final rawToken = buffer.join();
+        // 对象键后面的非空白是冒号 -> 高亮成键的颜色。
+        var look = i;
+        while (look < text.length && (text[look] == ' ' || text[look] == '\n' || text[look] == '\t')) {
+          look++;
+        }
+        final isKey = look < text.length && text[look] == ':';
+        spans.add(
+          TextSpan(
+            text: rawToken,
+            style: TextStyle(color: isKey ? keyColor : stringColor),
+          ),
+        );
+        continue;
+      }
+      if (ch == '-' ||
+          (text.codeUnitAt(i) >= 48 && text.codeUnitAt(i) <= 57)) {
+        final match = RegExp(r'-?\d+(\.\d+)?([eE][+-]?\d+)?')
+            .matchAsPrefix(text, i);
+        if (match != null) {
+          spans.add(
+            TextSpan(text: match.group(0), style: TextStyle(color: numberColor)),
+          );
+          i += match.group(0)!.length;
+          continue;
+        }
+      }
+      const words = ['true', 'false', 'null'];
+      String? word;
+      for (final w in words) {
+        if (isIdent(i, w)) {
+          word = w;
+          break;
+        }
+      }
+      if (word != null) {
+        spans.add(
+          TextSpan(text: word, style: TextStyle(color: boolColor)),
+        );
+        i += word.length;
+        continue;
+      }
+      if ('{}[]:,.'.contains(ch)) {
+        spans.add(TextSpan(text: ch, style: TextStyle(color: punctColor)));
+        i++;
+        continue;
+      }
+      final start = i;
+      while (i < text.length &&
+          text[i] != '"' &&
+          !'{}[]:,.'.contains(text[i]) &&
+          !(text.codeUnitAt(i) >= 48 && text.codeUnitAt(i) <= 57)) {
+        i++;
+      }
+      if (i == start) {
+        spans.add(TextSpan(text: text[i], style: plain));
+        i++;
+      } else {
+        spans.add(TextSpan(text: text.substring(start, i), style: plain));
+      }
+    }
+    return TextSpan(children: spans);
+  }
+
+  void _copyText(String text) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('消息已复制'),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 160,
+      ),
+    );
+  }
+
+  bool _isSystemMessage(WsMessage m) {
+    return !m.sent &&
+        (m.text.startsWith('WebSocket 已连接') ||
+            m.text.startsWith('SSE 已连接') ||
+            m.text.contains('已关闭') ||
+            m.text.startsWith('错误：'));
+  }
+
+  bool _isLongMessage(String text) => text.length > _collapseThreshold;
+
+  String _previewText(String text, int max) =>
+      text.length <= max ? text : '${text.substring(0, max)}…';
+
+  void _toggleExpanded(int index) {
+    setState(() {
+      if (!_expandedMessages.remove(index)) _expandedMessages.add(index);
+    });
+  }
+
+  /// 估算每条消息在 ListView 里占的高度，用于 minimap 分段和点击跳转。
+  /// 不需要精确到像素，能按消息长短分档即可。
+  double _estimateMessageHeight(WsMessage m, int index) {
+    if (_isSystemMessage(m)) return 28;
+    final pretty = _prettyMessage(m.text);
+    final full = _expandedMessages.contains(index) || pretty.length <= _collapseThreshold;
+    final chars = full ? pretty.length : _collapseThreshold;
+    final lines = (chars / 40).ceil().clamp(1, 2000);
+    return 34 + lines * 16.5;
+  }
+
+  void _scrollToMessage(int index) {
+    final msgs = widget.request.wsMessages;
+    if (index < 0 || index >= msgs.length) return;
+    if (!_scrollController.hasClients) return;
+    var estTotal = 0.0;
+    for (var i = 0; i < msgs.length; i++) {
+      estTotal += _estimateMessageHeight(msgs[i], i);
+    }
+    if (estTotal <= 0) return;
+    var acc = 0.0;
+    for (var i = 0; i < index; i++) {
+      acc += _estimateMessageHeight(msgs[i], i);
+    }
+    // 归一化成比例再乘真实滚动范围：展开/折叠导致估算总高和真实高度不一致时，
+    // 点击仍然落在整条消息流对应的“比例位置”，不会越拉越偏。
+    final target = (acc / estTotal) * _scrollController.position.maxScrollExtent;
+    // minimap 拖动用 jumpTo：手指滑到哪，列表立刻跟到哪，像滚动条。
+    _scrollController.jumpTo(
+      target.clamp(0.0, _scrollController.position.maxScrollExtent),
+    );
+  }
+
+  Future<void> _send() async {
+    final data = _controller.text;
+    if (data.isEmpty || widget.request.connId.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _sending = true);
+    final result = await BrowserEngine.instance.wsSend(
+      widget.request.connId,
+      data,
+    );
+    if (!mounted) return;
+    setState(() => _sending = false);
+    if (result == 'sent') {
+      _controller.clear();
+    }
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(result == 'sent' ? '已发送' : '发送失败：$result'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 220,
+      ),
+    );
+  }
+
+  Future<void> _close() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final result = widget.request.kind == 'ws'
+        ? await BrowserEngine.instance.wsClose(widget.request.connId)
+        : await BrowserEngine.instance.sseClose(widget.request.connId);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(result == 'closed' ? '已断开' : '断开失败：$result'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 220,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final r = widget.request;
+    final isWs = r.kind == 'ws';
+    final color = r.live
+        ? Colors.green.shade600
+        : (r.error.isNotEmpty ? scheme.error : scheme.onSurfaceVariant);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 6, 12, 2),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: '返回列表',
+                onPressed: widget.onBack,
+                icon: const Icon(Icons.arrow_back_rounded),
+                visualDensity: VisualDensity.compact,
+              ),
+              const SizedBox(width: 2),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                          child: Text(
+                            r.live ? '● 通讯中' : '已结束',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w700,
+                              color: color,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          isWs ? 'WebSocket' : 'SSE',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      r.url,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 10.5,
-                        fontWeight: FontWeight.w600,
-                        color: scheme.primary,
+                        height: 1.2,
+                        color: scheme.onSurfaceVariant,
+                        fontFamily: kMonoFamily,
+                        fontFamilyFallback: kMonoFallback,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '连接 ID：${r.connId.isEmpty ? '未知' : r.connId}'
+                      ' · 共 ${r.wsMessages.length} 条消息'
+                      ' · 发送 ${r.wsMessages.where((m) => m.sent).length}'
+                      ' / 接收 ${r.wsMessages.where((m) => !m.sent).length}',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (r.live) ...[
+                IconButton(
+                  tooltip: '主动断开${isWs ? ' WebSocket' : ' SSE'}',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: _close,
+                  icon: Icon(
+                    Icons.link_off_rounded,
+                    size: 16,
+                    color: scheme.error,
+                  ),
+                ),
+              ],
+              IconButton(
+                tooltip: '复制会话信息',
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.copy_rounded, size: 16),
+                onPressed: () {
+                  Clipboard.setData(
+                    ClipboardData(
+                      text: [
+                        r.url,
+                        for (final m in r.wsMessages)
+                          (m.sent ? '↑ ' : '↓ ') + m.text,
+                      ].join('\n'),
+                    ),
+                  );
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('会话内容已复制'),
+                      duration: Duration(seconds: 1),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: r.wsMessages.isEmpty
+              ? Center(
+                  child: Text(
+                    isWs ? '等待 WebSocket 消息…' : '等待 SSE 推送…',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                )
+              : Row(
+                  children: [
+                    Expanded(
+                      child: NotificationListener<ScrollNotification>(
+                        onNotification: (n) {
+                          final m = n.metrics;
+                          if (m.maxScrollExtent > 0) {
+                            _scrollFraction.value =
+                                (m.pixels / m.maxScrollExtent)
+                                    .clamp(0.0, 1.0)
+                                    .toDouble();
+                          }
+                          return false;
+                        },
+                        child: ListView.builder(
+                        controller: _scrollController,
+                        padding: const EdgeInsets.fromLTRB(10, 4, 6, 8),
+                        itemCount: r.wsMessages.length,
+                        itemBuilder: (context, index) {
+                          final m = r.wsMessages[index];
+                          final isSystem = _isSystemMessage(m);
+                          if (isSystem) {
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 5),
+                              child: Center(
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 3,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: scheme.surfaceContainerHighest
+                                        .withValues(alpha: 0.7),
+                                    borderRadius: BorderRadius.circular(20),
+                                    border: Border.all(
+                                      color: scheme.outlineVariant
+                                          .withValues(alpha: 0.2),
+                                      width: 0.5,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    m.text,
+                                    style: TextStyle(
+                                      fontSize: 9.5,
+                                      color: scheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+                          final time =
+                              '${m.at.hour.toString().padLeft(2, '0')}:'
+                              '${m.at.minute.toString().padLeft(2, '0')}:'
+                              '${m.at.second.toString().padLeft(2, '0')}';
+                          final pretty = _prettyMessage(m.text);
+                          final long = _isLongMessage(pretty);
+                          final expanded = _expandedMessages.contains(index);
+                          final shown = long && !expanded
+                              ? _previewText(pretty, 160)
+                              : pretty;
+                          final bubbleColor = m.sent
+                              ? scheme.primaryContainer.withValues(alpha: 0.7)
+                              : scheme.surfaceContainerHighest.withValues(alpha: 0.85);
+                          final border = m.sent
+                              ? Border.all(
+                                  color: scheme.primary.withValues(alpha: 0.18),
+                                  width: 1,
+                                )
+                              : Border.all(
+                                  color: scheme.outlineVariant.withValues(alpha: 0.22),
+                                  width: 1,
+                                );
+                          return Align(
+                            alignment: m.sent
+                                ? Alignment.centerRight
+                                : Alignment.centerLeft,
+                            child: Container(
+                              constraints: BoxConstraints(
+                                maxWidth: MediaQuery.of(context).size.width * 0.72,
+                              ),
+                              margin: const EdgeInsets.symmetric(vertical: 4),
+                              padding: const EdgeInsets.fromLTRB(9, 5, 4, 5),
+                              decoration: BoxDecoration(
+                                color: bubbleColor,
+                                borderRadius: BorderRadius.circular(11),
+                                border: border,
+                              ),
+                              child: Column(
+                                crossAxisAlignment: m.sent
+                                    ? CrossAxisAlignment.end
+                                    : CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        m.sent
+                                            ? Icons.arrow_upward_rounded
+                                            : Icons.arrow_downward_rounded,
+                                        size: 11,
+                                        color: m.sent
+                                            ? scheme.primary
+                                            : scheme.onSurfaceVariant,
+                                      ),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        '${m.sent ? '发送' : '接收'}  $time',
+                                        style: TextStyle(
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.w600,
+                                          color: scheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 2),
+                                      InkWell(
+                                        borderRadius: BorderRadius.circular(4),
+                                        onTap: () => _copyText(m.text),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(2),
+                                          child: Icon(
+                                            Icons.copy_rounded,
+                                            size: 12,
+                                            color: scheme.onSurfaceVariant,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 5),
+                                    child: SelectableText.rich(
+                                      _highlightWsText(shown, scheme),
+                                      style: const TextStyle(
+                                        fontSize: 11.5,
+                                        height: 1.45,
+                                        fontFamily: kMonoFamily,
+                                        fontFamilyFallback: kMonoFallback,
+                                      ),
+                                    ),
+                                  ),
+                                  if (long)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 2),
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(6),
+                                        onTap: () => _toggleExpanded(index),
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 4,
+                                            vertical: 3,
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                expanded
+                                                    ? Icons.unfold_less_rounded
+                                                    : Icons.unfold_more_rounded,
+                                                size: 13,
+                                                color: scheme.primary,
+                                              ),
+                                              const SizedBox(width: 2),
+                                              Text(
+                                                expanded
+                                                    ? '收起'
+                                                    : '展开完整（${pretty.length} 字符）',
+                                                style: TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: scheme.primary,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                      ),
+                    ),
+                    if (r.wsMessages.length > 1)
+                      _WsSessionMinimap(
+                        request: r,
+                        expanded: _expandedMessages,
+                        estimateHeight: _estimateMessageHeight,
+                        onTap: _scrollToMessage,
+                        scheme: scheme,
+                        scrollFraction: _scrollFraction,
+                      ),
+                  ],
+                ),
+        ),
+        if (isWs) ...[
+          Container(
+            padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
+            decoration: BoxDecoration(
+              color: scheme.surface.withValues(alpha: 0.6),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _controller,
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      fontFamily: kMonoFamily,
+                      fontFamilyFallback: kMonoFallback,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: r.live ? '输入要发送的消息' : '连接已结束',
+                      isDense: true,
+                      filled: true,
+                      fillColor:
+                          scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    onSubmitted: (_) => r.live ? _send() : null,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                IconButton.filled(
+                  tooltip: '发送',
+                  onPressed: r.live && !_sending ? _send : null,
+                  icon: _sending
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.send_rounded, size: 16),
+                ),
+                if (r.live) ...[
+                  const SizedBox(width: 4),
+                  IconButton(
+                    tooltip: '关闭连接',
+                    onPressed: _close,
+                    icon: const Icon(Icons.close_rounded, size: 16),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ] else ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+            child: Text(
+              'SSE 是单向服务端推送，不支持主动发送数据。',
+              style: TextStyle(
+                fontSize: 10.5,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _OverviewTab extends StatelessWidget {
+  const _OverviewTab({required this.request});
+
+  final CapturedRequest request;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final r = request;
+    final rows = <(String, String, bool)>[
+      ('URL', r.url, true),
+      ('请求方式', r.method, true),
+      ('状态码', r.pending ? '等待响应' : '${r.status}', true),
+      ('主机', r.host, true),
+      ('类型', r.contentType.isEmpty ? r.kind : '${r.kind} · ${r.contentType}', true),
+      ('耗时', r.ms > 0 ? '${r.ms} ms' : '—', false),
+      ('请求体大小', _bodySize(r.requestBody), false),
+      ('响应体大小', _bodySize(r.responseBody), false),
+      if (r.error.isNotEmpty) ('错误', r.error, true),
+      if (r.mutation.isNotEmpty) ('已被脚本改写', r.mutation, true),
+    ];
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 24),
+      itemCount: rows.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 2),
+      itemBuilder: (context, index) {
+        final (label, value, mono) = rows[index];
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 90,
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              Expanded(
+                child: SelectableText(
+                  value.isEmpty ? '—' : value,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    height: 1.3,
+                    fontFamily: mono ? kMonoFamily : null,
+                    fontFamilyFallback: mono ? kMonoFallback : null,
+                    color: scheme.onSurface,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  static String _bodySize(String body) {
+    final bytes = utf8.encode(body).length;
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+  }
+}
+
+class _HeadersTab extends StatelessWidget {
+  const _HeadersTab({
+    required this.title,
+    required this.raw,
+    required this.emptyText,
+  });
+
+  final String title;
+  final String raw;
+  final String emptyText;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final lines = raw
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    if (lines.isEmpty) {
+      return Center(
+        child: Text(
+          emptyText,
+          style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+        ),
+      );
+    }
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+      itemCount: lines.length,
+      separatorBuilder: (_, __) => Divider(
+        height: 1,
+        color: scheme.outlineVariant.withValues(alpha: 0.4),
+      ),
+      itemBuilder: (context, index) {
+        final line = lines[index];
+        final split = line.indexOf(':');
+        final key = split <= 0 ? line.trim() : line.substring(0, split).trim();
+        final value = split <= 0 ? '' : line.substring(split + 1).trim();
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 5),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 110,
+                child: Text(
+                  key,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: scheme.primary,
+                    fontFamily: kMonoFamily,
+                    fontFamilyFallback: kMonoFallback,
+                  ),
+                ),
+              ),
+              Expanded(
+                child: SelectableText(
+                  value,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    height: 1.3,
+                    color: scheme.onSurface,
+                    fontFamily: kMonoFamily,
+                    fontFamilyFallback: kMonoFallback,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+enum _BodyViewMode { formatted, raw, hex }
+
+class _BodyTab extends StatefulWidget {
+  const _BodyTab({
+    required this.title,
+    required this.body,
+    required this.copyLabel,
+  });
+
+  final String title;
+  final String body;
+  final String copyLabel;
+
+  @override
+  State<_BodyTab> createState() => _BodyTabState();
+}
+
+class _BodyTabState extends State<_BodyTab> {
+  late final bool _isJson = _isJsonText(widget.body);
+  late _BodyViewMode _mode = _isJson ? _BodyViewMode.formatted : _BodyViewMode.raw;
+
+  static bool _isJsonText(String raw) {
+    final text = raw.trim();
+    if (text.isEmpty) return false;
+    if (!text.startsWith('{') && !text.startsWith('[')) return false;
+    try {
+      jsonDecode(text);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static String _hexDump(String text) {
+    final bytes = utf8.encode(text);
+    final sb = StringBuffer();
+    for (var i = 0; i < bytes.length; i += 16) {
+      sb
+        ..write(i.toRadixString(16).padLeft(8, '0'))
+        ..write('  ');
+      for (var j = 0; j < 16; j++) {
+        if (i + j < bytes.length) {
+          sb.write(bytes[i + j].toRadixString(16).padLeft(2, '0'));
+        } else {
+          sb.write('  ');
+        }
+        sb.write(j == 7 ? '  ' : ' ');
+      }
+      sb.write('  |');
+      for (var j = 0; j < 16 && i + j < bytes.length; j++) {
+        final c = bytes[i + j];
+        sb.write(c >= 32 && c < 127 ? String.fromCharCode(c) : '.');
+      }
+      sb.writeln('|');
+    }
+    return sb.toString().trimRight();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final body = widget.body;
+    if (body.isEmpty) {
+      return Center(
+        child: Text(
+          '（无）',
+          style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+        ),
+      );
+    }
+    final pretty = _isJson
+        ? const JsonEncoder.withIndent('  ').convert(jsonDecode(body.trim()))
+        : body;
+    final shown = switch (_mode) {
+      _BodyViewMode.formatted => pretty,
+      _BodyViewMode.raw => body,
+      _BodyViewMode.hex => _hexDump(body),
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 6, 8, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${_sizeLabel(body)} · ${body.split('\n').length} 行'
+                  '${_isJson ? ' · JSON' : ''}',
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: body));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('${widget.title}已复制'),
+                      duration: const Duration(seconds: 1),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.copy_rounded, size: 14),
+                label: Text(
+                  widget.copyLabel,
+                  style: const TextStyle(fontSize: 11.5),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: ToggleButtons(
+              isSelected: [
+                _mode == _BodyViewMode.formatted,
+                _mode == _BodyViewMode.raw,
+                _mode == _BodyViewMode.hex,
+              ],
+              onPressed: (i) =>
+                  setState(() => _mode = _BodyViewMode.values[i]),
+              constraints: const BoxConstraints(minHeight: 26, minWidth: 52),
+              children: const [
+                Text('格式化'),
+                Text('原始'),
+                Text('HEX'),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
+            child: _mode == _BodyViewMode.hex
+                ? SelectableText(
+                    shown,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      height: 1.35,
+                      fontFamily: kMonoFamily,
+                      fontFamilyFallback: kMonoFallback,
+                      color: scheme.onSurface,
+                    ),
+                  )
+                : SelectableText.rich(
+                    _isJson ? _jsonSpan(shown, scheme) : TextSpan(text: shown),
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      height: 1.35,
+                      fontFamily: kMonoFamily,
+                      fontFamilyFallback: kMonoFallback,
+                      color: scheme.onSurface,
+                    ),
+                  ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  TextSpan _jsonSpan(String text, ColorScheme scheme) {
+    final spans = <TextSpan>[];
+    var i = 0;
+
+    void push(String value, Color color) {
+      if (value.isEmpty) return;
+      spans.add(
+        TextSpan(
+          text: value,
+          style: TextStyle(color: color),
+        ),
+      );
+    }
+
+    while (i < text.length) {
+      final ch = text[i];
+      if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
+        final start = i;
+        while (i < text.length &&
+            (text[i] == ' ' ||
+                text[i] == '\t' ||
+                text[i] == '\r' ||
+                text[i] == '\n')) {
+          i++;
+        }
+        push(text.substring(start, i), scheme.onSurfaceVariant);
+        continue;
+      }
+      if ('{}[],:'.contains(ch)) {
+        push(ch, scheme.outline);
+        i++;
+        continue;
+      }
+      if (ch == '"') {
+        final start = i;
+        i++;
+        while (i < text.length) {
+          if (text[i] == '\\' && i + 1 < text.length) {
+            i += 2;
+            continue;
+          }
+          if (text[i] == '"') {
+            i++;
+            break;
+          }
+          i++;
+        }
+        final token = text.substring(start, i);
+        var j2 = i;
+        while (j2 < text.length && (text[j2] == ' ' || text[j2] == '\t')) {
+          j2++;
+        }
+        final isKey = j2 < text.length && text[j2] == ':';
+        push(token, isKey ? scheme.primary : Colors.green.shade600);
+        continue;
+      }
+      final rest = text.substring(i);
+      final numMatch =
+          RegExp(r'^-?\d+(\.\d+)?([eE][+-]?\d+)?').firstMatch(rest);
+      if (numMatch != null) {
+        push(numMatch.group(0)!, Colors.orange.shade700);
+        i += numMatch.group(0)!.length;
+        continue;
+      }
+      if (rest.startsWith('true') ||
+          rest.startsWith('false') ||
+          rest.startsWith('null')) {
+        final word = rest.startsWith('true')
+            ? 'true'
+            : (rest.startsWith('false') ? 'false' : 'null');
+        push(word, Colors.redAccent);
+        i += word.length;
+        continue;
+      }
+      push(ch, scheme.onSurface);
+      i++;
+    }
+    return TextSpan(children: spans);
+  }
+
+  static String _sizeLabel(String text) {
+    final bytes = utf8.encode(text).length;
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+  }
+}
+
+/// 重发请求：可以改方法、URL、请求头、请求体，改完直接发出去看结果。
+class _ReplayTab extends StatefulWidget {
+  const _ReplayTab({required this.request});
+
+  final CapturedRequest request;
+
+  @override
+  State<_ReplayTab> createState() => _ReplayTabState();
+}
+
+class _ReplayTabState extends State<_ReplayTab> {
+  late final TextEditingController _methodController =
+      TextEditingController(text: widget.request.method);
+  late final TextEditingController _urlController =
+      TextEditingController(text: widget.request.url);
+  late final TextEditingController _headersController =
+      TextEditingController(text: widget.request.requestHeaders);
+  late final TextEditingController _bodyController =
+      TextEditingController(text: widget.request.requestBody);
+  final TextEditingController _wsController = TextEditingController();
+
+  ReplayResult? _result;
+  bool _busy = false;
+  bool _wsBusy = false;
+
+  @override
+  void dispose() {
+    _methodController.dispose();
+    _urlController.dispose();
+    _headersController.dispose();
+    _bodyController.dispose();
+    _wsController.dispose();
+    super.dispose();
+  }
+
+  Map<String, String> _parseHeaders(String raw) {
+    final map = <String, String>{};
+    for (final line in raw.split('\n')) {
+      final l = line.trim();
+      if (l.isEmpty) continue;
+      final i = l.indexOf(':');
+      if (i <= 0) continue;
+      map[l.substring(0, i).trim()] = l.substring(i + 1).trim();
+    }
+    return map;
+  }
+
+  Widget _wsSendView(ColorScheme scheme) {
+    final r = widget.request;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+            children: [
+              Text(
+                'WebSocket 连接',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: scheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '连接 ID：${r.connId.isEmpty ? '未知' : r.connId}',
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontFamily: kMonoFamily,
+                  fontFamilyFallback: kMonoFallback,
+                ),
+              ),
+              Text(
+                r.url,
+                style: TextStyle(
+                  fontSize: 10.5,
+                  color: scheme.onSurfaceVariant,
+                  fontFamily: kMonoFamily,
+                  fontFamilyFallback: kMonoFallback,
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _wsController,
+                maxLines: 4,
+                minLines: 2,
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  fontFamily: kMonoFamily,
+                  fontFamilyFallback: kMonoFallback,
+                ),
+                decoration: const InputDecoration(
+                  labelText: '要发送的数据',
+                  border: OutlineInputBorder(),
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _wsBusy ? null : _sendWs,
+                      icon: _wsBusy
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.send_rounded, size: 16),
+                      label: Text(_wsBusy ? '发送中…' : '发送到连接'),
+                      style: FilledButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: _closeWs,
+                    icon: const Icon(Icons.close_rounded, size: 16),
+                    label: const Text('关闭'),
+                    style: OutlinedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '发送后抓包列表会新增一条「WS ↑ 发送」记录；服务端回包会出现「WS ↓ 接收」。',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _sendWs() async {
+    final data = _wsController.text;
+    if (widget.request.connId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('这条记录没有连接 ID，无法发送'),
+          duration: Duration(seconds: 1),
+        ),
+      );
+      return;
+    }
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _wsBusy = true);
+    final result = await BrowserEngine.instance.wsSend(
+      widget.request.connId,
+      data,
+    );
+    if (!mounted) return;
+    setState(() => _wsBusy = false);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(result == 'sent' ? '已发送到 WebSocket' : '发送失败：$result'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 260,
+      ),
+    );
+  }
+
+  Future<void> _closeWs() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final result = await BrowserEngine.instance.wsClose(widget.request.connId);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(result == 'closed' ? '已关闭 WebSocket' : '关闭结果：$result'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 260,
+      ),
+    );
+  }
+
+  Future<void> _send() async {
+    final url = _urlController.text.trim();
+    if (url.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('URL 不能为空'),
+          duration: Duration(seconds: 1),
+        ),
+      );
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _result = null;
+    });
+    final result = await BrowserEngine.instance.replay(
+      method: _methodController.text.trim().isEmpty
+          ? 'GET'
+          : _methodController.text.trim().toUpperCase(),
+      url: url,
+      headers: _parseHeaders(_headersController.text),
+      body: _bodyController.text,
+    );
+    if (!mounted) return;
+    setState(() {
+      _result = result;
+      _busy = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final statusColor = _result == null
+        ? scheme.onSurfaceVariant
+        : (_result!.error.isNotEmpty || _result!.statusCode >= 400)
+            ? scheme.error
+            : Colors.green.shade600;
+    if (widget.request.kind == 'ws') {
+      return _wsSendView(scheme);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+            children: [
+              Text(
+                '修改参数后重发',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: scheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 92,
+                    child: TextField(
+                      controller: _methodController,
+                      style: const TextStyle(fontSize: 12),
+                      decoration: const InputDecoration(
+                        labelText: '方法',
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _urlController,
+                      style: const TextStyle(fontSize: 12),
+                      decoration: const InputDecoration(
+                        labelText: 'URL',
+                        isDense: true,
                       ),
                     ),
                   ),
                 ],
               ),
-            ),
-          if (_open) ...[
-            const SizedBox(height: 6),
-            _kv('地址', r.url),
-            if (r.contentType.isNotEmpty) _kv('类型', r.contentType),
-            if (r.requestHeaders.isNotEmpty) _kv('请求头', r.requestHeaders),
-            if (r.requestBody.isNotEmpty) _kv('请求体', r.requestBody),
-            if (r.responseHeaders.isNotEmpty) _kv('响应头', r.responseHeaders),
-            if (r.responseBody.isNotEmpty) _kv('响应体', r.responseBody),
-            if (r.error.isNotEmpty) _kv('出错', r.error),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                if (widget.onMakeHook != null)
-                  TextButton.icon(
-                    onPressed: widget.onMakeHook,
-                    icon: const Icon(Icons.data_object_rounded, size: 14),
-                    label: const Text(
-                      '按这个包写脚本',
-                      style: TextStyle(fontSize: 11.5),
-                    ),
-                  ),
-                TextButton.icon(
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: r.responseBody));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('返回体已复制'),
-                        duration: Duration(seconds: 1),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.copy_rounded, size: 14),
-                  label: const Text('复制返回', style: TextStyle(fontSize: 11.5)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _headersController,
+                maxLines: 5,
+                minLines: 3,
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  fontFamily: kMonoFamily,
+                  fontFamilyFallback: kMonoFallback,
                 ),
-              ],
-            ),
-          ] else if (r.responseBody.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 3),
-              child: Text(
-                r.responseBody.replaceAll('\n', ' '),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: scheme.onSurfaceVariant,
+                decoration: const InputDecoration(
+                  labelText: '请求头（每行一个 key: value）',
+                  isDense: true,
+                  alignLabelWithHint: true,
+                  border: OutlineInputBorder(),
                 ),
               ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _bodyController,
+                maxLines: 8,
+                minLines: 4,
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  fontFamily: kMonoFamily,
+                  fontFamilyFallback: kMonoFallback,
+                ),
+                decoration: const InputDecoration(
+                  labelText: '请求体',
+                  isDense: true,
+                  alignLabelWithHint: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _busy ? null : _send,
+                      icon: _busy
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.send_rounded, size: 16),
+                      label: Text(_busy ? '发送中…' : '发送'),
+                      style: FilledButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              if (_result != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'HTTP ${_result!.statusCode} · ${_result!.ms} ms'
+                  '${_result!.error.isEmpty ? '' : ' · ${_result!.error}'}',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: statusColor,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        if (_result != null)
+          SizedBox(
+            height: 260,
+            child: _BodyTab(
+              title: '重发响应',
+              body: _result!.body,
+              copyLabel: '复制响应体',
             ),
+          ),
+      ],
+    );
+  }
+}
+
+/// 浏览器开发者面板：Cookie / localStorage / 可执行 JS 的控制台。
+class _DevToolsPanel extends StatefulWidget {
+  const _DevToolsPanel({required this.engine});
+
+  final BrowserEngine engine;
+
+  @override
+  State<_DevToolsPanel> createState() => _DevToolsPanelState();
+}
+
+class _DevToolsPanelState extends State<_DevToolsPanel> {
+  int _subTab = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassBackdrop(
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _chip(0, 'Cookie', Icons.cookie_outlined),
+                  const SizedBox(width: 6),
+                  _chip(1, 'LocalStorage', Icons.storage_outlined),
+                  const SizedBox(width: 6),
+                  _chip(2, 'SessionStorage', Icons.data_usage_outlined),
+                  const SizedBox(width: 6),
+                  _chip(3, '控制台', Icons.terminal_outlined),
+                  const SizedBox(width: 6),
+                  _chip(4, 'UA', Icons.badge_outlined),
+                ],
+              ),
+            ),
+          ),
+          Expanded(
+            child: switch (_subTab) {
+              0 => _CookiePanel(engine: widget.engine),
+              1 => _StoragePanel(
+                key: const ValueKey('local-storage-panel'),
+                engine: widget.engine,
+                session: false,
+              ),
+              2 => _StoragePanel(
+                key: const ValueKey('session-storage-panel'),
+                engine: widget.engine,
+                session: true,
+              ),
+              3 => _ConsolePanel(engine: widget.engine),
+              _ => _UaPanel(engine: widget.engine),
+            },
+          ),
         ],
       ),
     );
   }
 
-  Widget _kv(String key, String value) {
+  Widget _chip(int index, String label, IconData icon) {
     final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            key,
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w700,
-              color: scheme.onSurfaceVariant,
+    final selected = _subTab == index;
+    return ChoiceChip(
+      avatar: Icon(icon, size: 15),
+      label: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+        ),
+      ),
+      selected: selected,
+      onSelected: (_) => setState(() => _subTab = index),
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      selectedColor: scheme.primaryContainer,
+      backgroundColor: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+      side: BorderSide.none,
+    );
+  }
+}
+
+class _CookiePanel extends StatefulWidget {
+  const _CookiePanel({required this.engine});
+
+  final BrowserEngine engine;
+
+  @override
+  State<_CookiePanel> createState() => _CookiePanelState();
+}
+
+class _CookiePanelState extends State<_CookiePanel> {
+  late Future<List<Map<String, dynamic>>> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.engine.cookieRows();
+  }
+
+  void _reload() {
+    setState(() => _future = widget.engine.cookieRows());
+  }
+
+  String get _url => widget.engine.currentUrl.value;
+
+  Future<void> _edit([Map<String, dynamic>? row]) async {
+    final nameController =
+        TextEditingController(text: row?['name']?.toString() ?? '');
+    final valueController =
+        TextEditingController(text: row?['value']?.toString() ?? '');
+    final pathController =
+        TextEditingController(text: row?['path']?.toString() ?? '/');
+    final domainController = TextEditingController(
+      text: (row?['domain'] ?? row?['host'])?.toString() ?? _hostOf(_url),
+    );
+    var secure = row?['secure'] == true;
+    var httpOnly = row?['httpOnly'] == true;
+
+    final ok = await showBrowserDialog<bool>(
+      context: context,
+      builder: (dialogContext, pop) => AlertDialog(
+        title: Text(row == null ? '添加 Cookie' : '编辑 Cookie'),
+        content: StatefulBuilder(
+          builder: (dialogContext, setDialogState) => SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(labelText: 'Name'),
+                ),
+                TextField(
+                  controller: valueController,
+                  decoration: const InputDecoration(labelText: 'Value'),
+                ),
+                TextField(
+                  controller: pathController,
+                  decoration: const InputDecoration(labelText: 'Path'),
+                ),
+                TextField(
+                  controller: domainController,
+                  decoration: const InputDecoration(labelText: 'Domain'),
+                ),
+                CheckboxListTile(
+                  value: secure,
+                  onChanged: (v) => setDialogState(() => secure = v ?? false),
+                  title: const Text('Secure'),
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                ),
+                CheckboxListTile(
+                  value: httpOnly,
+                  onChanged: (v) => setDialogState(() => httpOnly = v ?? false),
+                  title: const Text('HttpOnly'),
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                ),
+              ],
             ),
           ),
-          SelectableText(
-            value.length > 4000 ? '${value.substring(0, 4000)}…（已截断）' : value,
-            style: const TextStyle(
-              fontSize: 11,
-              height: 1.3,
-              fontFamily: kMonoFamily,
-              fontFamilyFallback: kMonoFallback,
-            ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => pop(true),
+            child: const Text('保存'),
           ),
         ],
       ),
     );
+    if (ok != true) return;
+
+    final name = nameController.text.trim();
+    if (name.isEmpty) return;
+    final value = valueController.text;
+    final path = pathController.text.trim().isEmpty ? '/' : pathController.text.trim();
+    final domain = domainController.text.trim();
+    var cookie = '$name=$value; Path=$path';
+    if (domain.isNotEmpty) cookie += '; Domain=$domain';
+    if (secure) cookie += '; Secure';
+    if (httpOnly) cookie += '; HttpOnly';
+    await widget.engine.putCookie(
+      _url.isEmpty ? 'http://$domain/' : _url,
+      cookie,
+    );
+    _reload();
+  }
+
+  Future<void> _delete(Map<String, dynamic> row) async {
+    final name = row['name']?.toString() ?? '';
+    final path = row['path']?.toString() ?? '/';
+    final domain = (row['domain'] ?? row['host'])?.toString() ?? _hostOf(_url);
+    if (name.isEmpty) return;
+    await widget.engine.putCookie(
+      _url.isEmpty ? 'http://$domain/' : _url,
+      '$name=; Max-Age=0; Path=$path; Domain=$domain',
+    );
+    _reload();
+  }
+
+  static String _hostOf(String url) {
+    try {
+      return Uri.parse(url).host;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 2, 10, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _url.isEmpty ? '打开页面后管理当前站点 Cookie' : _url,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: () => _edit(),
+                icon: const Icon(Icons.add_rounded, size: 15),
+                label: const Text('添加', style: TextStyle(fontSize: 11.5)),
+              ),
+              IconButton(
+                tooltip: '刷新',
+                onPressed: _reload,
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.refresh_rounded, size: 16),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: FutureBuilder<List<Map<String, dynamic>>>(
+            future: _future,
+            builder: (context, snap) {
+              if (snap.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              final rows = snap.data ?? const [];
+              if (rows.isEmpty) {
+                return Center(
+                  child: Text(
+                    '这个站点还没有 Cookie',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                );
+              }
+              return ListView.builder(
+                padding: const EdgeInsets.fromLTRB(10, 2, 10, 24),
+                itemCount: rows.length,
+                itemBuilder: (context, index) {
+                  final row = rows[index];
+                  final name = row['name']?.toString() ?? '';
+                  final value = row['value']?.toString() ?? '';
+                  final flags = <String>[
+                    if (row['httpOnly'] == true) 'HttpOnly',
+                    if (row['secure'] == true) 'Secure',
+                    if ((row['path']?.toString() ?? '').isNotEmpty)
+                      row['path'].toString(),
+                  ];
+                  return GlassPanel(
+                    radius: 10,
+                    blur: 12,
+                    margin: const EdgeInsets.only(bottom: 5),
+                    padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                name,
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: scheme.primary,
+                                  fontFamily: kMonoFamily,
+                                  fontFamilyFallback: kMonoFallback,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              SelectableText(
+                                value,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  height: 1.25,
+                                  fontFamily: kMonoFamily,
+                                  fontFamilyFallback: kMonoFallback,
+                                ),
+                              ),
+                              if (flags.isNotEmpty)
+                                Text(
+                                  flags.join(' · '),
+                                  style: TextStyle(
+                                    fontSize: 9.5,
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: '编辑',
+                          visualDensity: VisualDensity.compact,
+                          constraints: const BoxConstraints(
+                            minWidth: 32,
+                            minHeight: 32,
+                          ),
+                          iconSize: 15,
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(Icons.edit_outlined),
+                          onPressed: () => _edit(row),
+                        ),
+                        IconButton(
+                          tooltip: '删除',
+                          visualDensity: VisualDensity.compact,
+                          constraints: const BoxConstraints(
+                            minWidth: 32,
+                            minHeight: 32,
+                          ),
+                          iconSize: 15,
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(Icons.delete_outline),
+                          onPressed: () => _delete(row),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _StoragePanel extends StatefulWidget {
+  const _StoragePanel({
+    super.key,
+    required this.engine,
+    this.session = false,
+  });
+
+  final BrowserEngine engine;
+  final bool session;
+
+  @override
+  State<_StoragePanel> createState() => _StoragePanelState();
+}
+
+class _StoragePanelState extends State<_StoragePanel> {
+  late Future<List<Map<String, String>>> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.session
+        ? widget.engine.sessionStorageRows()
+        : widget.engine.localStorageRows();
+  }
+
+  void _reload() {
+    setState(() {
+      _future = widget.session
+          ? widget.engine.sessionStorageRows()
+          : widget.engine.localStorageRows();
+    });
+  }
+
+  Future<void> _edit([Map<String, String>? row]) async {
+    final keyController =
+        TextEditingController(text: row?['key'] ?? '');
+    final valueController =
+        TextEditingController(text: row?['value'] ?? '');
+    final ok = await showBrowserDialog<bool>(
+      context: context,
+      builder: (dialogContext, pop) => AlertDialog(
+        title: Text(row == null ? '添加 localStorage' : '编辑 localStorage'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: keyController,
+              decoration: const InputDecoration(labelText: 'Key'),
+            ),
+            TextField(
+              controller: valueController,
+              decoration: const InputDecoration(labelText: 'Value'),
+              maxLines: 3,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => pop(true),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final key = keyController.text.trim();
+    if (key.isEmpty) return;
+    if (widget.session) {
+      await widget.engine.sessionStorageSet(key, valueController.text);
+    } else {
+      await widget.engine.localStorageSet(key, valueController.text);
+    }
+    _reload();
+  }
+
+  Future<void> _delete(Map<String, String> row) async {
+    if (widget.session) {
+      await widget.engine.sessionStorageRemove(row['key'] ?? '');
+    } else {
+      await widget.engine.localStorageRemove(row['key'] ?? '');
+    }
+    _reload();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 2, 10, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  widget.session
+                      ? '当前页面 origin 的 sessionStorage'
+                      : '当前页面 origin 的 localStorage',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: () => _edit(),
+                icon: const Icon(Icons.add_rounded, size: 15),
+                label: const Text('添加', style: TextStyle(fontSize: 11.5)),
+              ),
+              IconButton(
+                tooltip: '刷新',
+                onPressed: _reload,
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.refresh_rounded, size: 16),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: FutureBuilder<List<Map<String, String>>>(
+            future: _future,
+            builder: (context, snap) {
+              if (snap.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              final rows = snap.data ?? const [];
+              if (rows.isEmpty) {
+                return Center(
+                  child: Text(
+                    widget.session
+                        ? '这个站点还没有 sessionStorage'
+                        : '这个站点还没有 localStorage',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                );
+              }
+              return ListView.builder(
+                padding: const EdgeInsets.fromLTRB(10, 2, 10, 24),
+                itemCount: rows.length,
+                itemBuilder: (context, index) {
+                  final row = rows[index];
+                  return GlassPanel(
+                    radius: 10,
+                    blur: 12,
+                    margin: const EdgeInsets.only(bottom: 5),
+                    padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                row['key'] ?? '',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: scheme.primary,
+                                  fontFamily: kMonoFamily,
+                                  fontFamilyFallback: kMonoFallback,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              SelectableText(
+                                row['value'] ?? '',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  height: 1.25,
+                                  fontFamily: kMonoFamily,
+                                  fontFamilyFallback: kMonoFallback,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: '编辑',
+                          visualDensity: VisualDensity.compact,
+                          constraints: const BoxConstraints(
+                            minWidth: 32,
+                            minHeight: 32,
+                          ),
+                          iconSize: 15,
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(Icons.edit_outlined),
+                          onPressed: () => _edit(row),
+                        ),
+                        IconButton(
+                          tooltip: '删除',
+                          visualDensity: VisualDensity.compact,
+                          constraints: const BoxConstraints(
+                            minWidth: 32,
+                            minHeight: 32,
+                          ),
+                          iconSize: 15,
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(Icons.delete_outline),
+                          onPressed: () => _delete(row),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _UaPanel extends StatefulWidget {
+  const _UaPanel({required this.engine});
+
+  final BrowserEngine engine;
+
+  @override
+  State<_UaPanel> createState() => _UaPanelState();
+}
+
+class _UaPanelState extends State<_UaPanel> {
+  final TextEditingController _controller = TextEditingController();
+  final TextEditingController _noteController = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _noteController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _select(String ua) async {
+    final messenger = ScaffoldMessenger.of(context);
+    await widget.engine.setUserAgent(ua);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('已切换到该 UA（刷新页面后完全生效）'),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 280,
+      ),
+    );
+  }
+
+  Future<void> _add() async {
+    final ua = _controller.text.trim();
+    if (ua.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    await widget.engine.addUserAgent(ua, note: _noteController.text);
+    _controller.clear();
+    _noteController.clear();
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('已添加到 UA 列表'),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 220,
+      ),
+    );
+  }
+
+  Future<void> _delete(String ua) async {
+    final messenger = ScaffoldMessenger.of(context);
+    await widget.engine.removeUserAgent(ua);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('已从 UA 列表删除'),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 220,
+      ),
+    );
+  }
+
+  Future<void> _editNote(String ua, String current) async {
+    final controller = TextEditingController(text: current);
+    final saved = await showBrowserDialog<bool>(
+      context: context,
+      builder: (dialogContext, pop) => AlertDialog(
+        title: const Text('编辑 UA 备注'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: 2,
+          decoration: const InputDecoration(hintText: '例如：桌面版、微信内置、旧手机型号'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => pop(true),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    final note = controller.text.trim();
+    controller.dispose();
+    if (saved != true) return;
+    await widget.engine.setUserAgentNote(ua, note);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 2, 10, 4),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _controller,
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        fontFamily: kMonoFamily,
+                        fontFamilyFallback: kMonoFallback,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: '粘贴新的 UA 字符串',
+                        hintStyle: const TextStyle(fontSize: 10.5),
+                        isDense: true,
+                        filled: true,
+                        fillColor:
+                            scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                      onSubmitted: (_) => _add(),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  FilledButton(
+                    onPressed: _add,
+                    child: const Text('添加'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              TextField(
+                controller: _noteController,
+                style: const TextStyle(fontSize: 10.5),
+                decoration: InputDecoration(
+                  hintText: '备注（可选）：比如 桌面版 / 微信UA / 旧手机',
+                  hintStyle: const TextStyle(fontSize: 10.5),
+                  isDense: true,
+                  filled: true,
+                  fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ValueListenableBuilder<String>(
+            valueListenable: widget.engine.userAgentNotifier,
+            builder: (context, current, _) =>
+                ValueListenableBuilder<List<String>>(
+              valueListenable: widget.engine.userAgentListNotifier,
+              builder: (context, list, _) =>
+                  ValueListenableBuilder<Map<String, String>>(
+                valueListenable: widget.engine.userAgentNotesNotifier,
+                builder: (context, notes, _) {
+                  if (list.isEmpty) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  return ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(10, 4, 10, 24),
+                    itemCount: list.length + 1,
+                    itemBuilder: (context, index) {
+                      if (index == 0) {
+                        return Padding(
+                          padding: const EdgeInsets.only(
+                            left: 2,
+                            right: 2,
+                            bottom: 6,
+                          ),
+                          child: Text(
+                            '当前 UA：',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        );
+                      }
+                      final ua = list[index - 1];
+                      final selected = ua == current;
+                      final note = notes[ua] ?? '';
+                      return GlassPanel(
+                        radius: 10,
+                        blur: 12,
+                        margin: const EdgeInsets.only(bottom: 5),
+                        padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(8),
+                                onTap: () => _select(ua),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 4),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        selected
+                                            ? Icons.radio_button_checked_rounded
+                                            : Icons.radio_button_off_rounded,
+                                        size: 16,
+                                        color: selected
+                                            ? scheme.primary
+                                            : scheme.outline,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            SelectableText(
+                                              ua,
+                                              style: TextStyle(
+                                                fontSize: 10.5,
+                                                fontFamily: kMonoFamily,
+                                                fontFamilyFallback: kMonoFallback,
+                                                color: selected
+                                                    ? scheme.primary
+                                                    : scheme.onSurface,
+                                                fontWeight: selected
+                                                    ? FontWeight.w600
+                                                    : FontWeight.normal,
+                                              ),
+                                            ),
+                                            if (note.isNotEmpty)
+                                              Padding(
+                                                padding: const EdgeInsets.only(top: 2),
+                                                child: InkWell(
+                                                  borderRadius:
+                                                      BorderRadius.circular(4),
+                                                  onTap: () =>
+                                                      _editNote(ua, note),
+                                                  child: Padding(
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                            vertical: 2),
+                                                    child: Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        Icon(
+                                                          Icons.edit_note_rounded,
+                                                          size: 11,
+                                                          color: scheme
+                                                              .onSurfaceVariant,
+                                                        ),
+                                                        const SizedBox(
+                                                            width: 3),
+                                                        Flexible(
+                                                          child: Text(
+                                                            '📌 $note',
+                                                            style: TextStyle(
+                                                              fontSize: 10,
+                                                              color: scheme
+                                                                  .onSurfaceVariant,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ),
+                                              )
+                                            else
+                                              Padding(
+                                                padding:
+                                                    const EdgeInsets.only(
+                                                        top: 2),
+                                                child: InkWell(
+                                                  borderRadius:
+                                                      BorderRadius.circular(4),
+                                                  onTap: () => _editNote(ua, ''),
+                                                  child: Padding(
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                            vertical: 2),
+                                                    child: Text(
+                                                      '＋ 备注',
+                                                      style: TextStyle(
+                                                        fontSize: 10,
+                                                        color: scheme
+                                                            .onSurfaceVariant,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Tooltip(
+                              message: '编辑备注',
+                              child: SizedBox(
+                                width: 36,
+                                height: 36,
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(8),
+                                  onTap: () => _editNote(ua, note),
+                                  child: Icon(
+                                    Icons.edit_note_rounded,
+                                    size: 16,
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: '删除',
+                              visualDensity: VisualDensity.compact,
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
+                              iconSize: 15,
+                              padding: EdgeInsets.zero,
+                              icon: const Icon(Icons.delete_outline),
+                              onPressed: () => _delete(ua),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ConsolePanel extends StatefulWidget {
+  const _ConsolePanel({required this.engine});
+
+  final BrowserEngine engine;
+
+  @override
+  State<_ConsolePanel> createState() => _ConsolePanelState();
+}
+
+class _ConsolePanelState extends State<_ConsolePanel> {
+  final TextEditingController _controller = TextEditingController();
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _run() async {
+    final code = _controller.text.trim();
+    if (code.isEmpty) return;
+    widget.engine.addConsoleHistory('cmd', code);
+    _controller.clear();
+    setState(() => _busy = true);
+    try {
+      final result = await widget.engine.eval(code);
+      if (mounted) {
+        widget.engine.addConsoleHistory('out', result);
+      }
+    } catch (e) {
+      if (mounted) {
+        widget.engine.addConsoleHistory('err', e.toString());
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 2, 10, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _controller,
+                  maxLines: 3,
+                  minLines: 1,
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontFamily: kMonoFamily,
+                    fontFamilyFallback: kMonoFallback,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: '在页面里执行 JS，可写多行（日志和控制台已合并）',
+                    hintStyle: const TextStyle(fontSize: 11.5),
+                    isDense: true,
+                    filled: true,
+                    fillColor:
+                        scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                  onSubmitted: (_) => _run(),
+                ),
+              ),
+              const SizedBox(width: 6),
+              FilledButton(
+                onPressed: _busy ? null : _run,
+                child: _busy
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('运行'),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ValueListenableBuilder<List<Map<String, String>>>(
+            valueListenable: widget.engine.consoleHistory,
+            builder: (context, history, _) =>
+                ValueListenableBuilder<List<ConsoleLine>>(
+              valueListenable: widget.engine.console,
+              builder: (context, logs, _) {
+                if (history.isEmpty && logs.isEmpty) {
+                  return Center(
+                    child: Text(
+                      '页面日志和执行 JS 都会显示在这里',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  );
+                }
+                return ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(10, 4, 10, 24),
+                  itemCount: history.length + logs.length,
+                  itemBuilder: (context, index) {
+                    if (index < history.length) {
+                      return _historyEntry(history[index], scheme);
+                    }
+                    final line = logs[index - history.length];
+                    final color = switch (line.level) {
+                      'error' => scheme.error,
+                      'warn' => Colors.orange.shade700,
+                      _ => scheme.onSurfaceVariant,
+                    };
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 3),
+                      child: SelectableText(
+                        '[${line.level}] ${line.text}',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontFamily: kMonoFamily,
+                          fontFamilyFallback: kMonoFallback,
+                          color: color,
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _historyEntry(Map<String, String> e, ColorScheme scheme) {
+    final kind = e['kind'] ?? 'out';
+    final text = e['text'] ?? '';
+    if (kind == 'cmd') {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: SelectableText.rich(
+          TextSpan(
+            children: [
+              TextSpan(
+                text: '> ',
+                style: TextStyle(color: scheme.primary),
+              ),
+              _codeSpan(text, scheme),
+            ],
+          ),
+          style: const TextStyle(
+            fontSize: 11.5,
+            fontFamily: kMonoFamily,
+            fontFamilyFallback: kMonoFallback,
+          ),
+        ),
+      );
+    }
+    final color = kind == 'err' ? scheme.error : scheme.onSurface;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: SelectableText.rich(
+        _codeSpan(text, scheme),
+        style: TextStyle(
+          fontSize: 11.5,
+          fontFamily: kMonoFamily,
+          fontFamilyFallback: kMonoFallback,
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  TextSpan _codeSpan(String text, ColorScheme scheme) {
+    final spans = <TextSpan>[];
+    final keywords = {
+      'async', 'await', 'break', 'case', 'catch', 'class', 'const', 'continue',
+      'debugger', 'default', 'delete', 'do', 'else', 'export', 'extends',
+      'false', 'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof',
+      'let', 'new', 'null', 'return', 'static', 'super', 'switch', 'this',
+      'throw', 'true', 'try', 'typeof', 'undefined', 'var', 'void', 'while',
+      'with', 'yield',
+    };
+    var i = 0;
+    while (i < text.length) {
+      final ch = text[i];
+      final rest = text.substring(i);
+      // 字符串
+      if (ch == '"' || ch == "'" || ch == '`') {
+        final start = i;
+        i++;
+        while (i < text.length) {
+          if (text[i] == '\\' && i + 1 < text.length) {
+            i += 2;
+            continue;
+          }
+          if (text[i] == ch) {
+            i++;
+            break;
+          }
+          i++;
+        }
+        spans.add(
+          TextSpan(
+            text: text.substring(start, i),
+            style: TextStyle(color: Colors.green.shade600),
+          ),
+        );
+        continue;
+      }
+      // 行注释
+      if (ch == '/' && i + 1 < text.length && text[i + 1] == '/') {
+        final start = i;
+        while (i < text.length && text[i] != '\n') i++;
+        spans.add(
+          TextSpan(
+            text: text.substring(start, i),
+            style: TextStyle(color: scheme.onSurfaceVariant),
+          ),
+        );
+        continue;
+      }
+      // 数字
+      final numMatch =
+          RegExp(r'^-?\d+(\.\d+)?([eE][+-]?\d+)?').firstMatch(rest);
+      if (numMatch != null) {
+        spans.add(
+          TextSpan(
+            text: numMatch.group(0)!,
+            style: TextStyle(color: Colors.orange.shade700),
+          ),
+        );
+        i += numMatch.group(0)!.length;
+        continue;
+      }
+      // 标识符 / 关键字
+      final wordMatch = RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*').firstMatch(rest);
+      if (wordMatch != null) {
+        final word = wordMatch.group(0)!;
+        spans.add(
+          TextSpan(
+            text: word,
+            style: TextStyle(
+              color: keywords.contains(word)
+                  ? Colors.blue.shade400
+                  : scheme.onSurface,
+              fontWeight:
+                  keywords.contains(word) ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        );
+        i += word.length;
+        continue;
+      }
+      // 标点
+      if ('{}()[];,.?:+-*/=%<>!&|'.contains(ch)) {
+        spans.add(
+          TextSpan(
+            text: ch,
+            style: TextStyle(color: scheme.outline),
+          ),
+        );
+        i++;
+        continue;
+      }
+      spans.add(TextSpan(text: ch));
+      i++;
+    }
+    return TextSpan(children: spans);
   }
 }

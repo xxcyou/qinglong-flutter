@@ -3,10 +3,12 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/network/api_overrides.dart';
 import '../../../core/network/dio_client.dart';
 import '../../../core/storage/secure_storage.dart';
+import '../../../core/llm/llm_provider.dart';
 import '../knowledge/knowledge_store.dart';
 import '../../panels/models/panel_info.dart';
 import '../../panels/providers/panel_token_manager.dart';
@@ -16,6 +18,7 @@ import '../../crons/models/cron_task.dart';
 import '../../dependencies/api/dependency_api.dart';
 import '../../envs/api/env_api.dart';
 import '../../envs/models/env_var.dart';
+import '../../envs/providers/env_list_provider.dart';
 import '../../logs/api/log_api.dart';
 import '../../scripts/api/script_api.dart';
 import '../../scripts/models/script_node.dart';
@@ -26,6 +29,7 @@ import '../../../core/local_shell/proot_bridge.dart';
 import '../../../core/local_shell/sandbox.dart';
 import '../../../core/local_shell/shell_lock.dart';
 import '../../terminal/providers/ssh_session_provider.dart';
+import '../../terminal/providers/shell_files_provider.dart';
 import '../models/approval_mode.dart';
 
 class ToolDefinition {
@@ -76,6 +80,7 @@ class QlToolRegistry {
   QlToolRegistry({
     required PanelInfo? Function() panelGetter,
     this.approvalMode = AiApprovalMode.cautious,
+    this.onProvidersChanged,
   }) : _panelGetter = panelGetter;
 
   final PanelInfo? Function() _panelGetter;
@@ -84,11 +89,18 @@ class QlToolRegistry {
   /// 其它模式下仍保留系统关键路径保护。
   final AiApprovalMode approvalMode;
 
+  /// AI 修改了 AI 提供商配置后通知 Riverpod 重载，让 UI 立刻刷新。
+  final Future<void> Function()? onProvidersChanged;
+
   static const _stringProp = {
     'type': 'string',
   };
   static const _intProp = {
     'type': 'integer',
+  };
+  static const _listStringProp = {
+    'type': 'array',
+    'items': {'type': 'string'},
   };
   static Map<String, dynamic> _obj(
       List<String> required, Map<String, dynamic> properties) {
@@ -719,6 +731,92 @@ class QlToolRegistry {
           isWrite: false,
         ),
         ToolDefinition(
+          name: 'llm_protocol_list',
+          description: '列出 AI 提供商当前支持的接入协议（openai/anthropic/google）',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'llm_provider_list',
+          description:
+              '列出所有已配置的 AI 提供商：id、名称、Base URL、协议、模型、'
+              '默认模型、超时、额外头/体、输出插件、是否已保存 Key。'
+              '需要看 API Key 原文时用 llm_provider_get。',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'llm_provider_get',
+          description:
+              '获取一个 AI 提供商的全部参数，包括 API Key 原文、Base URL、'
+              '协议、模型列表、上下文限制、默认模型、超时、额外头/体、'
+              '输出插件路径等。参数 id 来自 llm_provider_list。',
+          parameters: _obj(['id'], {'id': _stringProp}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'llm_provider_add',
+          description:
+              '新增一个 AI 提供商。name/url 必填，protocol 可选'
+              '（openai/anthropic/google，默认 openai）。'
+              '可一并传入 apiKey、models、defaultModel、timeoutSeconds、'
+              'extraHeaders、extraBody、outputPluginPaths。新增后不会自动切换当前家。',
+          parameters: _obj([
+            'name',
+            'url'
+          ], {
+            'name': _stringProp,
+            'url': _stringProp,
+            'protocol': _stringProp,
+            'apiKey': _stringProp,
+            'models': _listStringProp,
+            'defaultModel': _stringProp,
+            'timeoutSeconds': _intProp,
+            'extraHeaders': _stringProp,
+            'extraBody': _stringProp,
+            'outputPluginPaths': _listStringProp,
+          }),
+          isWrite: true,
+          impact: '新增一条 AI 提供商连接配置（含可能的 API Key）',
+          reversible: true,
+        ),
+        ToolDefinition(
+          name: 'llm_provider_update',
+          description:
+              '更新一个已存在的 AI 提供商：可改名称、url、protocol、apiKey、'
+              'models、manualModels、defaultModel、timeoutSeconds、extraHeaders、'
+              'extraBody、outputPluginPaths、visionModel。'
+              '不传的字段保持不变；要清空字符串字段传空字符串。',
+          parameters: _obj([
+            'id'
+          ], {
+            'id': _stringProp,
+            'name': _stringProp,
+            'url': _stringProp,
+            'protocol': _stringProp,
+            'apiKey': _stringProp,
+            'models': _listStringProp,
+            'manualModels': _listStringProp,
+            'defaultModel': _stringProp,
+            'timeoutSeconds': _intProp,
+            'extraHeaders': _stringProp,
+            'extraBody': _stringProp,
+            'outputPluginPaths': _listStringProp,
+            'visionModel': _stringProp,
+          }),
+          isWrite: true,
+          impact: '修改 AI 提供商连接配置（可能替换 API Key）',
+          reversible: true,
+        ),
+        ToolDefinition(
+          name: 'ssh_session_get',
+          description:
+              '获取一个已保存 SSH 会话的全部配置和凭据：主机、端口、用户名、'
+              '认证方式、密码或私钥、key 口令。id 来自 ssh_session_list。',
+          parameters: _obj(['id'], {'id': _stringProp}),
+          isWrite: false,
+        ),
+        ToolDefinition(
           name: 'ssh_session_list',
           description: '列出当前已创建的 SSH 终端会话（含连接状态）',
           parameters: _obj([], {}),
@@ -857,6 +955,65 @@ class QlToolRegistry {
           }),
           isWrite: true,
           impact: '在本机 PRoot Debian 里写入脚本文件并执行它',
+          reversible: false,
+          danger: true,
+        ),
+        ToolDefinition(
+          name: 'shell_session_start',
+          description: '启动一个 PRoot 后台会话（长期运行的进程，例如 web 服务、监听服务）。'
+              '**这条不会阻塞等待命令结束**：它把进程放到后台常驻并立即返回 session id。'
+              '适合 `python3 -m http.server 8080`、`node server.js` 这类需要一直跑的服务。'
+              '普通一次性命令不要用它，直接用 shell_exec。'
+              '任务完成后要主动用 shell_session_stop 清理，避免留一堆后台进程。'
+              '可以用 shell_session_list / shell_session_status 查看和拿日志。',
+          parameters: _obj([
+            'command'
+          ], {
+            'command': {
+              'type': 'string',
+              'description': '要后台运行的程序/命令行（不经过 shell，直接用参数执行）。'
+                  '如需 shell 特性，可写成 /bin/bash -c "..."',
+            },
+            'args': {
+              'type': 'array',
+              'items': _stringProp,
+              'description': '可选：命令参数，例如 ["--host","0.0.0.0","--port","8080"]',
+            },
+            'cwd': {
+              'type': 'string',
+              'description': '工作目录（guest 路径，默认 /workspace）',
+            },
+            'name': {
+              'type': 'string',
+              'description': '会话备注名，AI/用户看着方便',
+            },
+          }),
+          isWrite: true,
+          impact: '在 PRoot 里启动一个常驻后台进程，会持续占用内存/端口',
+          reversible: false,
+          danger: true,
+        ),
+        ToolDefinition(
+          name: 'shell_session_list',
+          description: '列出当前所有 PRoot 后台会话：id、启动命令、是否还在运行、退出码、输出字节数。'
+              '任务收尾前用这个检查有没有遗漏要清理的服务。',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'shell_session_status',
+          description: '查看某个后台会话的状态：是否存活、退出码、最近输出（尾 20KB）。'
+              '程序崩了/端口被占用/启动失败都能从这里看到。',
+          parameters: _obj(['id'], {'id': _intProp}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'shell_session_stop',
+          description: '停止一个 PRoot 后台会话并清理它。AI 在目标任务完成后应该主动清理掉'
+              '自己启动的服务，除非用户明确说“保持运行”。',
+          parameters: _obj(['id'], {'id': _intProp}),
+          isWrite: true,
+          impact: '强杀一个 PRoot 后台进程，可能中断正在处理的任务',
           reversible: false,
           danger: true,
         ),
@@ -1019,6 +1176,14 @@ class QlToolRegistry {
           reversible: false,
         ),
         ToolDefinition(
+          name: 'filemanager_current_dir',
+          description: '获取文件管理器当前所在目录。用户在文件管理里打开某个文件夹后，'
+              'AI 用这个目录作为 shell_exec / 悬浮终端命令的工作目录，'
+              '做到“在用户当前文件夹里跑命令”。返回的是终端（PRoot）里的路径。',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
           name: 'panel_auth_info',
           description: '返回当前选中面板的 API 根地址、登录类型和已登录的授权 token（Authorization 值）。'
               '仅供 AI 调用青龙接口时使用，不要在回复里回显 token。',
@@ -1116,6 +1281,9 @@ class QlToolRegistry {
         ),
       ];
 
+  /// 后台会话的可读名称（由工具保存，跨会话重启会丢，够用）。
+  static final Map<int, String> _shellSessionNames = {};
+
   /// 这些工具只碰本机 Debian，不需要选中青龙面板。
   static const _localOnlyTools = {
     'shell_probe',
@@ -1130,6 +1298,11 @@ class QlToolRegistry {
     'shell_write_binary',
     'shell_read_binary',
     'shell_archive_extract',
+    'shell_session_start',
+    'shell_session_list',
+    'shell_session_status',
+    'shell_session_stop',
+    'filemanager_current_dir',
   };
 
   static List<String> _flattenScriptPaths(
@@ -1163,6 +1336,58 @@ class QlToolRegistry {
     }
     if (out.length >= maxMatches) out.add('…（达到 $maxMatches 条上限）');
     return out.join('\n');
+  }
+
+  Future<LlmRegistry> _providersFromDisk() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('llm_providers_v1');
+      if (raw == null || raw.isEmpty) return const LlmRegistry();
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        return LlmRegistry.fromJson(decoded);
+      }
+    } catch (_) {}
+    return const LlmRegistry();
+  }
+
+  Future<void> _providersToDisk(LlmRegistry registry) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('llm_providers_v1', jsonEncode(registry.toJson()));
+  }
+
+  Future<Map<String, dynamic>> _providerDetail(LlmProviderConfig p) async {
+    final key = await SecureStorage.readLlmApiKey(providerId: p.id);
+    return {
+      'id': p.id,
+      'name': p.name,
+      'label': p.label,
+      'baseUrl': p.baseUrl,
+      'protocol': p.protocol.wireName,
+      'apiKey': key ?? '',
+      'models': p.models,
+      'manualModels': p.manualModels,
+      'allModels': p.allModels,
+      'defaultModel': p.defaultModel,
+      'contextLimits': p.contextLimits,
+      'modelCapabilities': {
+        for (final e in p.modelCapabilities.entries)
+          e.key: e.value.toJson(),
+      },
+      'timeoutSeconds': p.timeoutSeconds,
+      'extraHeaders': p.extraHeaders,
+      'extraBody': p.extraBody,
+      'outputPluginPath': p.outputPluginPath,
+      'outputPluginPaths': p.outputPluginPaths,
+      'visionModel': p.visionModel,
+    };
+  }
+
+  /// 从磁盘新增/更新提供商后，通知 Riverpod 重载界面。
+  Future<void> _notifyProvidersChanged() async {
+    try {
+      await onProvidersChanged?.call();
+    } catch (_) {}
   }
 
   Future<String> execute({
@@ -1688,6 +1913,7 @@ class QlToolRegistry {
             remarks: args['remarks']?.toString(),
           ),
         );
+        EnvChangeNotifier.instance.notifyChanged();
         return '已创建环境变量 ${args['name']}';
 
       case 'env_update':
@@ -1700,27 +1926,49 @@ class QlToolRegistry {
             remarks: args['remarks']?.toString(),
           ),
         );
+        EnvChangeNotifier.instance.notifyChanged();
         return '已更新环境变量 ${args['name']}';
 
       case 'env_delete':
         await EnvApi.delete(apiBaseUrl: base, ids: _intList(args['ids']));
+        EnvChangeNotifier.instance.notifyChanged();
         return '已删除环境变量';
 
       case 'env_enable':
+        final enableIds = _intList(args['ids']);
         await EnvApi.setEnabled(
           apiBaseUrl: base,
-          ids: _intList(args['ids']),
+          ids: enableIds,
           enabled: true,
         );
-        return '已启用环境变量';
+        final enabledItems = await EnvApi.list(apiBaseUrl: base);
+        EnvChangeNotifier.instance.notifyChanged();
+        return jsonEncode({
+          'message': '已启用环境变量',
+          'ids': enableIds,
+          'enabled': [
+            for (final e in enabledItems)
+              if (enableIds.contains(e.id)) e.isEnabled,
+          ],
+        });
 
       case 'env_disable':
+        final disableIds = _intList(args['ids']);
         await EnvApi.setEnabled(
           apiBaseUrl: base,
-          ids: _intList(args['ids']),
+          ids: disableIds,
           enabled: false,
         );
-        return '已禁用环境变量';
+        final disabledItems = await EnvApi.list(apiBaseUrl: base);
+        EnvChangeNotifier.instance.notifyChanged();
+        return jsonEncode({
+          'message': '已禁用环境变量',
+          'ids': disableIds,
+          'enabled': [
+            for (final e in disabledItems)
+              if (disableIds.contains(e.id)) e.isEnabled,
+          ],
+        });
 
       case 'dep_list':
         final items = await DependencyApi.list(
@@ -1857,6 +2105,9 @@ class QlToolRegistry {
         await SystemApi.update(apiBaseUrl: base);
         return '已发送面板更新指令';
 
+      case 'filemanager_current_dir':
+        return '文件管理器当前目录：${fileManagerCwd.value}';
+
       case 'shell_probe':
         try {
           final status = await ProotBridge().status();
@@ -1868,6 +2119,155 @@ class QlToolRegistry {
         } catch (e) {
           return jsonEncode({'installed': false, 'error': e.toString()});
         }
+
+      case 'llm_protocol_list':
+        return jsonEncode([
+          for (final p in LlmProtocol.values) p.wireName,
+        ]);
+
+      case 'llm_provider_list': {
+        final registry = await _providersFromDisk();
+        return jsonEncode([
+          for (final p in registry.providers)
+            {
+              'id': p.id,
+              'name': p.name,
+              'label': p.label,
+              'baseUrl': p.baseUrl,
+              'protocol': p.protocol.wireName,
+              'models': p.allModels,
+              'defaultModel': p.defaultModel,
+              'timeoutSeconds': p.timeoutSeconds,
+              'hasApiKey':
+                  (await SecureStorage.readLlmApiKey(providerId: p.id))
+                      ?.isNotEmpty ==
+                      true,
+            }
+        ]);
+      }
+
+      case 'llm_provider_get': {
+        final id = args['id']?.toString() ?? '';
+        final registry = await _providersFromDisk();
+        final provider = registry.byId(id);
+        if (provider == null) {
+          return jsonEncode({'error': '找不到提供商 $id'});
+        }
+        return jsonEncode(await _providerDetail(provider));
+      }
+
+      case 'llm_provider_add': {
+        final name = args['name']?.toString().trim() ?? '';
+        final url = args['url']?.toString().trim() ?? '';
+        if (name.isEmpty || url.isEmpty) {
+          return jsonEncode({'error': 'name 和 url 必填'});
+        }
+        final registry = await _providersFromDisk();
+        final id = 'p${DateTime.now().microsecondsSinceEpoch}';
+        final provider = LlmProviderConfig(
+          id: id,
+          name: name,
+          baseUrl: url,
+          protocol: LlmProtocol.fromWire(args['protocol']),
+          models: [
+            for (final m in (args['models'] as List? ?? const []))
+              m.toString(),
+          ],
+          defaultModel: args['defaultModel']?.toString() ?? '',
+          timeoutSeconds: (args['timeoutSeconds'] as num?)?.toInt() ?? 180,
+          extraHeaders: args['extraHeaders']?.toString() ?? '',
+          extraBody: args['extraBody']?.toString() ?? '',
+          outputPluginPaths: [
+            for (final m in (args['outputPluginPaths'] as List? ?? const []))
+              m.toString(),
+          ],
+        );
+        await _providersToDisk(registry.copyWith(
+          providers: [...registry.providers, provider],
+          loaded: true,
+        ));
+        final key = args['apiKey']?.toString();
+        if (key != null && key.isNotEmpty) {
+          await SecureStorage.saveLlmApiKey(key, providerId: id);
+        }
+        await _notifyProvidersChanged();
+        return jsonEncode({'id': id, ...(await _providerDetail(provider))});
+      }
+
+      case 'llm_provider_update': {
+        final id = args['id']?.toString() ?? '';
+        final registry = await _providersFromDisk();
+        final old = registry.byId(id);
+        if (old == null) {
+          return jsonEncode({'error': '找不到提供商 $id'});
+        }
+        final url = args['url']?.toString();
+        final provider = old.copyWith(
+          name: args['name']?.toString(),
+          baseUrl: url,
+          protocol: args['protocol'] != null
+              ? LlmProtocol.fromWire(args['protocol'])
+              : null,
+          models: args['models'] is List
+              ? [for (final m in args['models'] as List) m.toString()]
+              : null,
+          manualModels: args['manualModels'] is List
+              ? [for (final m in args['manualModels'] as List) m.toString()]
+              : null,
+          defaultModel: args['defaultModel']?.toString(),
+          timeoutSeconds: (args['timeoutSeconds'] as num?)?.toInt(),
+          extraHeaders: args['extraHeaders']?.toString(),
+          extraBody: args['extraBody']?.toString(),
+          outputPluginPaths: args['outputPluginPaths'] is List
+              ? [for (final m in args['outputPluginPaths'] as List) m.toString()]
+              : null,
+          visionModel: args['visionModel']?.toString(),
+        );
+        await _providersToDisk(registry.copyWith(
+          providers: [
+            for (final p in registry.providers)
+              if (p.id == id) provider else p,
+          ],
+          loaded: true,
+        ));
+        if (args['apiKey'] != null) {
+          final key = args['apiKey'].toString();
+          if (key.isEmpty) {
+            await SecureStorage.deleteLlmApiKey(providerId: id);
+          } else {
+            await SecureStorage.saveLlmApiKey(key, providerId: id);
+          }
+        }
+        await _notifyProvidersChanged();
+        return jsonEncode(await _providerDetail(provider));
+      }
+
+      case 'ssh_session_get': {
+        final id = args['id']?.toString() ?? '';
+        SshSession? session;
+        for (final s in SshSessionManager.instance.sessions) {
+          if (s.id == id) {
+            session = s;
+            break;
+          }
+        }
+        final draft = SshSessionManager.instance.draftOf(id);
+        if (session == null || draft == null) {
+          return jsonEncode({'error': '找不到 SSH 会话 $id'});
+        }
+        return jsonEncode({
+          'id': session.id,
+          'name': session.name,
+          'host': session.host,
+          'port': session.port,
+          'username': session.username,
+          'authType': session.authType.name,
+          'status': session.status,
+          'password': draft.password ?? '',
+          'privateKey': draft.privateKey ?? '',
+          'keyPassphrase': draft.keyPassphrase ?? '',
+        });
+      }
 
       case 'ssh_session_list':
         return jsonEncode([
@@ -1988,6 +2388,40 @@ class QlToolRegistry {
               0, result.stdout.length > 20000 ? 20000 : result.stdout.length),
           'stderr': result.stderr,
         });
+
+      case 'shell_session_start':
+        final startResult = await ProotBridge().execSessionStart(
+          command: args['command'] as String,
+          args: _stringList(args['args']),
+          cwd: args['cwd']?.toString(),
+        );
+        final name = args['name']?.toString() ?? '';
+        if (name.isNotEmpty) {
+          startResult['name'] = name;
+          _shellSessionNames[(startResult['id'] as num).toInt()] = name;
+        }
+        return jsonEncode(startResult);
+
+      case 'shell_session_list':
+        final sessions = await ProotBridge().execSessionList();
+        for (final item in sessions) {
+          final id = (item['id'] as num).toInt();
+          final saved = _shellSessionNames[id];
+          if (saved != null) item['name'] = saved;
+        }
+        return jsonEncode(sessions);
+
+      case 'shell_session_status':
+        final sid = (args['id'] as num).toInt();
+        final status = await ProotBridge().execSessionStatus(sid);
+        final savedName = _shellSessionNames[sid];
+        if (savedName != null) status['name'] = savedName;
+        return jsonEncode(status);
+
+      case 'shell_session_stop':
+        final sid2 = (args['id'] as num).toInt();
+        final stopped = await ProotBridge().execSessionStop(sid2);
+        return jsonEncode({'stopped': stopped, 'id': sid2});
 
       case 'shell_script':
         return _runScript(args);

@@ -24,6 +24,27 @@ class WebBridge {
   static Future<void> acceptCookies(bool accept) =>
       _invoke<void>('acceptCookies', {'accept': accept});
 
+  /// 在 WebView 的 document-start（页面任何脚本执行前）注入一段 JS。
+  ///
+  /// 这是抓 WS/SSE/fetch/XHR 不漏包的真正解法：`runJavaScript` 只能在页面
+  /// 已经跑到某个时间点后执行，遇到"内联脚本一进页面就 new WebSocket"的站点
+  /// 一定晚一步；document-start 由内核保证在任何页面脚本前执行。
+  ///
+  /// [identifier] 是 `AndroidWebViewController.webViewIdentifier`；
+  /// [allowedOriginRules] 默认 `*`（所有 frame 都注入）。
+  static Future<bool> addDocumentStartScript({
+    required int identifier,
+    required String script,
+    List<String> allowedOriginRules = const ['*'],
+  }) async {
+    return await _invoke<bool>('addDocumentStartScript', {
+          'identifier': identifier,
+          'script': script,
+          'allowedOriginRules': allowedOriginRules,
+        }) ??
+        false;
+  }
+
   /// 某个地址下的完整 cookie 串，**包含 HttpOnly**。
   ///
   /// `document.cookie` 读不到 HttpOnly，而登录票（cf_clearance、各家的

@@ -215,7 +215,17 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
       final key = _bubbleKeys[i];
       if (key != null) keys.add(key);
     }
-    final pieces = await captureDissolvePieces(keys);
+    List<DissolvePiece> pieces;
+    try {
+      // 主动排一帧，避免 endOfFrame 等不到下一帧而卡住。
+      WidgetsBinding.instance.scheduleFrame();
+      pieces = await captureDissolvePieces(keys)
+          .timeout(const Duration(milliseconds: 1200));
+    } catch (_) {
+      // 抓图/动画只是锦上添花：不管抓没抓到、超没超时，
+      // 撤回本身必须照常执行，不能卡在这里让消息删不掉。
+      pieces = const [];
+    }
     // 粒子关在列表区里：飘到标题栏或输入框上面就露馅了。
     final listBox = _listKey.currentContext?.findRenderObject();
     Rect? clip;

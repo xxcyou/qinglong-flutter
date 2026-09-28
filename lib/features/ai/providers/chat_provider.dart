@@ -2560,9 +2560,33 @@ class ChatNotifier extends Notifier<ChatState> {
       target--;
     }
     if (target < 0) return;
+    final targetMessage = current.messages[target];
     final text = rollbackTo(target);
-    if (text.trim().isEmpty && state.pendingImages.isEmpty) return;
-    await send(text);
+
+    // 不能用 rollbackTo 返回的“展示文本”直接当用户输入重发：
+    // 模式-only 时 displayContent 是占位串「（仅挂载模式，未输入文字）」，
+    // 发出去模型会以为用户真的说了这句话。真正要发的应该是原始用户文字；
+    // 没打字只有模式/图片时，交给 send() 按当前挂载模式重新组装。
+    const modePlaceholder = '（仅挂载模式，未输入文字）';
+    String effective;
+    if (targetMessage.displayContent.isNotEmpty &&
+        targetMessage.displayContent != modePlaceholder) {
+      effective = targetMessage.displayContent;
+    } else if (targetMessage.displayContent == modePlaceholder) {
+      effective = '';
+    } else {
+      effective = targetMessage.content;
+    }
+
+    // rollback 返回值兜底：万一上面没取到，至少别把这条消息丢成空白。
+    if (effective.trim().isEmpty && text.trim().isNotEmpty) {
+      effective = text.trim();
+    }
+    if (effective.trim().isEmpty && state.pendingImages.isEmpty) {
+      // 还有模式挂载时会由 send() 正常发；这里只拦“什么都没有”的空重发。
+      if (_composeModePrompt().trim().isEmpty) return;
+    }
+    await send(effective);
   }
 
   void clear() {
@@ -3073,6 +3097,7 @@ class ChatNotifier extends Notifier<ChatState> {
       extraBody: base.extraBody,
       extraHeaders: base.extraHeaders,
       receiveTimeoutSeconds: base.receiveTimeoutSeconds,
+      protocol: base.protocol,
     );
   }
 
@@ -3436,6 +3461,7 @@ class ChatNotifier extends Notifier<ChatState> {
     final registry = QlToolRegistry(
       panelGetter: () => ref.read(currentPanelProvider),
       approvalMode: state.approvalMode,
+      onProvidersChanged: () => ref.read(llmRegistryProvider.notifier).reload(),
     );
     final history = _historyWithAutoCompress(
       userInput: userInput,
@@ -3606,6 +3632,8 @@ class ChatNotifier extends Notifier<ChatState> {
             registry: QlToolRegistry(
               panelGetter: () => ref.read(currentPanelProvider),
               approvalMode: state.approvalMode,
+              onProvidersChanged: () =>
+                  ref.read(llmRegistryProvider.notifier).reload(),
             ),
             confirmedActionKeys: confirmedKeys,
             externalTools: baseTools,

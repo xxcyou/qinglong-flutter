@@ -435,29 +435,6 @@ class AgentLoop {
     return volatile.any(name.startsWith);
   }
 
-  /// 这段正文是不是"在提问"。
-  ///
-  /// 用来抓一个很具体的翻车：追问链问到第三、第四个问题时，模型不再调
-  /// ask_user，而是把问题写进正文——界面上没有提问卡、也不会挂起等答案，
-  /// 用户看到的就是"提问不调工具了"。
-  static bool looksLikePlainQuestion(String text) {
-    final body = text.trim();
-    if (body.isEmpty) return false;
-    // 只看**最后一句**，不是最后 N 个字。
-    //
-    // 按字数截尾会误判："那句 Cannot find module? 是依赖没装，我已经装上了"——
-    // 问号在中间，结论在末尾，这是陈述句。按句子切开取最后一段就分得清了。
-    final sentences = body
-        .split(RegExp(r'[。！!；;\n]+'))
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
-        .toList();
-    final last = sentences.isEmpty ? body : sentences.last;
-    if (last.contains('？') || last.contains('?')) return true;
-    const heads = ['请问', '请告诉我', '你想', '要不要', '需要我', '选哪', '哪一个', '填什么'];
-    return heads.any(last.contains);
-  }
-
   /// 我们自己塞进历史的簿记原话。
   ///
   /// 现场故障：连问三个问题，第三问模型不调 ask_user 了，气泡里直接吐出
@@ -612,29 +589,20 @@ class AgentLoop {
 
   /// 正文里那个"本该用 ask_user 问出去、结果只写成了文字"的问题。
   ///
-  /// 三级判据，从强到弱：
+  /// 判据从强到弱：
   /// 1. 照抄提问卡排版（`❓` / `候选：`）——最硬的信号，见 [questionCardEcho]；
-  /// 2. [blockingQuestion]：任何位置上"不答就没法往下走"的那一问；
-  /// 3. [looksLikePlainQuestion]：最后一句在问话。
+  /// 2. [blockingQuestion]：任何位置上"不答就没法往下走"的那一问。
   ///
-  /// 为什么不能只留第 3 条：现场那条正文的**最后一行是"候选：…"**，
-  /// 问句夹在中间，只看最后一句就永远判不出来。
+  /// 普通结尾客套/开放式问句不算，避免每次回答完都被强制弹提问卡。
   static String unaskedQuestion(String text) {
     final body = text.trim();
     if (body.isEmpty) return '';
     final echo = questionCardEcho(body);
     if (echo.isNotEmpty) return echo;
-    final blocking = blockingQuestion(body);
-    if (blocking.isNotEmpty) return blocking;
-    // 最后一档：末句在问话，但没有"要信息"的字眼——闲聊式提问就长这样
-    //（"今天早上你吃早餐了吗？"里一个 blockingHeads 关键词都没有）。
-    // 客套收尾必须排除掉，否则一句"还需要我做别的吗？"就能触发打回重来。
-    if (looksLikePlainQuestion(body)) {
-      final sentences = _splitSentences(body);
-      final last = sentences.isEmpty ? body : sentences.last;
-      if (!_politeCloser.hasMatch(last)) return last;
-    }
-    return '';
+    // 只认“不回答就没法往下走”的真实阻塞问句。
+    // 普通结尾问一句“还需要我做什么吗？”、或者回答里顺带问个开放式问题，
+    // 都属于可答可不答，不该强制转成 ask_user。
+    return blockingQuestion(body);
   }
 
   /// 正文在**声称自己已经调过工具**吗（过去时的口气）。
@@ -1217,12 +1185,6 @@ class AgentLoop {
     var planFallbackCreated = false;
     // 长时间没用子代理时提醒一次；连续做很多独立小活时，串行硬扛是重点。
     var lastSubagentNudgeToolCalls = 0;
-    // "问题别写正文里"纠正过几次。
-    //
-    // 原来是个 bool（整轮只纠一次）。连着问三个问题时，第一次纠完就永久置位，
-    // 第二、第三问再把问题写成正文就没人管了——现场那条"第二问只有文字、
-    // 过程卡零工具"正是这么漏出去的。改成计数，最多纠 3 次。
-    var plainQuestionNudges = 0;
     // 这条会话之前已经用 ask_user 问过了——也就是正处在追问链里。
     //
     // 历史里的 assistant 消息不带 tool_calls 结构（那些 tool 结果没持久化，
@@ -1247,8 +1209,6 @@ class AgentLoop {
     var fakeClaimRetries = 0;
     // 本轮生成的“下一步”快捷建议（suggest_next 工具写入，UI 渲染成可点 chips）。
     var suggestions = <String>[];
-    // "收尾里夹着没问出去的问题"的打回次数（见 blockingQuestion）。
-    var finishQuestionRetries = 0;
     // "正文只是抄了系统簿记"的打回次数（见 echoedBookkeeping）。
     var echoRetries = 0;
     // 本次运行认得的全部工具名：用来判断正文里点的名字是不是真工具。
@@ -1518,9 +1478,10 @@ class AgentLoop {
         final pluginHasResponseHook =
             OutputPluginService.instance.hasResponseHook;
         final beforeFallback = response;
-        if (!pluginHasResponseHook) {
-          response = ToolMarkupRecovery.apply(response);
-        }
+        // 硬兜底：无论插件有没有声明 processResponse，只要正文/思考里残留
+        // <｜｜ calls> 这类泄漏标记，就必须在这里捞回来并清掉。
+        // 插件以后恢复时仍可以先行处理；这里的 ToolMarkupRecovery 是最后防线。
+        response = ToolMarkupRecovery.apply(response);
         final fallbackChanged = response.content != beforeFallback.content ||
             response.reasoningContent != beforeFallback.reasoningContent ||
             response.toolCalls.length != beforeFallback.toolCalls.length ||
@@ -1530,7 +1491,7 @@ class AgentLoop {
             'output_plugin',
             'response hook phase: pluginRan=${responsePlugin != null} '
                 'hasProcessResponse=$pluginHasResponseHook '
-                'fallbackApplied=${!pluginHasResponseHook && fallbackChanged} '
+                'fallbackAlwaysApplied=true '
                 'content ${beforeFallback.content.length}->${response.content.length}, '
                 'tools ${beforeFallback.toolCalls.length}->${response.toolCalls.length}, '
                 'broken=${beforeFallback.brokenToolMarkup}->${response.brokenToolMarkup}',
@@ -1646,65 +1607,6 @@ class AgentLoop {
                 kind: AgentEventKind.thinking,
                 message: '这一轮只抄了系统记录，已要求重做',
                 result: '这一轮只抄了系统记录，已要求重做',
-                turn: turnsUsed,
-              ),
-            );
-            continue;
-          }
-
-          // 追问链里把问题写进了正文：用户那边没有提问卡、也没挂起等答案，
-          // 这一轮等于白跑。拽回 ask_user 重发一次。
-          //
-          // ## 现场实录（第二问就断了）
-          //
-          // 让它连问三个问题：第一问规规矩矩 ask_user；第二问的气泡里直接是
-          //
-          //     哈哈丰盛就好，一天都有精神！🍳
-          //     ❓第二个问题：…你晚上一般几点睡？
-          //     （日常闲聊第二个问题）
-          //     候选：10点前，养生党 / 11点左右，正常作息 / …
-          //
-          // 过程卡里"思考 → 收尾"，零次工具调用；第三问根本没来。
-          //
-          // 两个原因叠在一起：
-          // ① 那套 `❓ / （说明）/ 候选：` 排版是**界面**渲染提问卡时拼的，却被
-          //    存进消息又发回给模型当范例（治本在 ChatNotifier 那侧）；
-          // ② 这道拦截原先只看 `looksLikePlainQuestion`——它只判**最后一句**，
-          //    而这段正文最后一行是"候选：…"，问句夹在中间，判不出来。
-          //    而且当时还挂着 `!plainQuestionNudged`（整轮只纠一次）：连着问
-          //    三个问题时，第一次纠完标记就永久置位，后面每一问都畅通无阻。
-          //
-          // 现在：判据换成 unaskedQuestion（认排版 / 认任意位置的阻塞问句 /
-          // 再退回最后一句），次数上限改成"最多 3 次"而不是"一次"——
-          // 追问链本来就该允许一问一纠。
-          final plainQuestion = askedBefore ? unaskedQuestion(content) : '';
-          if (plainQuestion.isNotEmpty &&
-              plainQuestionNudges < 3 &&
-              maxTurns - turnsUsed > 1) {
-            plainQuestionNudges++;
-            messages.add(LlmMessage(role: 'assistant', content: content));
-            // 这段正文作废：它就是那个"没问出去"的问题。
-            // 留着的话下一轮模型只发 ask_user、正文为空，content 还是这段旧文字，
-            // 气泡里就会出现两遍同一个问题（正文一遍、❓ 一遍）。
-            content = '';
-            messages.add(
-              LlmMessage(
-                role: 'user',
-                content: '你把问题写在正文里了（「$plainQuestion」），'
-                    '我这边不会弹出可回答的提问卡，界面也没有停下来等我回答——'
-                    '这个问题等于没问出去。'
-                    '注意：❓、（说明）、候选：这套排版是**我的界面**在渲染提问卡时'
-                    '自动画出来的，你手写一遍不算提问，必须真的调用 ask_user。'
-                    '现在调一次 ask_user 把这一个问题问出来'
-                    '（question 写问题本身，别带 ❓；候选放 options 数组）。'
-                    '前面已经问过几轮不影响，第几个问题都一样。',
-              ),
-            );
-            emit(
-              AgentEvent(
-                kind: AgentEventKind.thinking,
-                message: '问题写在正文里了，已要求改用 ask_user 提问',
-                result: '问题写在正文里了，已要求改用 ask_user 提问：$plainQuestion',
                 turn: turnsUsed,
               ),
             );
@@ -1884,65 +1786,8 @@ class AgentLoop {
           final status =
               finishCall.arguments['status']?.toString() ?? 'success';
           final summary = finishCall.arguments['summary']?.toString() ?? '';
-
-          // ===== 收尾里夹着一个还没问出去的问题：不许收工 =====
-          //
-          // 用户原话：**"假设我说四个提问，前三个好好的，第四个因为收尾导致
-          // 并无调用提问工具，也就是这个问题变成收尾提出不是提问工具提出"**。
-          //
-          // 前三问都规规矩矩走 ask_user（弹提问卡 + 挂起等答案）。到第四问时
-          // 模型觉得活干完了，就调 task_complete 把最后那问塞进 summary。
-          // task_complete 一命中立刻 return：界面不弹卡、不挂起，问题退化成
-          // 一段普通文字，用户以为 AI 自己拍了主意，实际它在等回话——整条
-          // 追问链在最后一步断掉。
-          //
-          // 所以这里在 return **之前**筛一遍收尾文案：夹着"必须用户回答才能
-          // 往下走"的问题就把收尾驳回，逼它改用 ask_user 问。客套收尾
-          // （"还需要我做别的吗？"）不算，见 blockingQuestion。
           final finishText =
               summary.trim().isNotEmpty ? summary.trim() : content;
-          // 用 unaskedQuestion 而不是 blockingQuestion：收尾文案里同样会出现
-          // 照抄的 `❓ / 候选：` 排版，只认"阻塞问句"会漏掉它。
-          final pendingAsk = unaskedQuestion(finishText);
-          if (pendingAsk.isNotEmpty &&
-              finishQuestionRetries < 2 &&
-              maxTurns - turnsUsed > 1) {
-            finishQuestionRetries++;
-            // 只把那句问题摘掉，别的活干了什么照样留着：
-            // 这段汇总本身是有用的，全清了用户就看不到已完成的部分。
-            final kept = finishText.replaceFirst(pendingAsk, '').trim();
-            content = kept.length < 8 ? '' : kept;
-            // 这一轮的 assistant 消息只带正文、不带 tool_calls：同轮别的工具
-            // 还没执行，把它们的 tool_calls 写进历史却没有配对的 tool 回复，
-            // 服务端会直接报"孤立的 tool_calls"。
-            if (finishText.isNotEmpty) {
-              messages.add(LlmMessage(role: 'assistant', content: finishText));
-            }
-            messages.add(
-              LlmMessage(
-                role: 'user',
-                content: '等一下，别收尾。你在收尾文案里问了我一句'
-                    '「$pendingAsk」——这句写在 task_complete 的 summary 里，'
-                    '我这边不会弹出可回答的提问卡，界面也不会停下来等我回答，'
-                    '这个问题等于没问出去。'
-                    '现在调用 ask_user 把它正式问一次（一次只问一个，'
-                    '有候选就带上 options）；'
-                    '前面已经用 ask_user 问过几轮不影响，第几个问题都一样。'
-                    '等我答完你再决定要不要收尾。'
-                    '如果这句其实不需要我回答（你自己能定），'
-                    '那就别问，直接按你的判断做完再 task_complete。',
-              ),
-            );
-            emit(
-              AgentEvent(
-                kind: AgentEventKind.thinking,
-                message: '收尾里夹着没问出去的问题，已要求改用 ask_user：$pendingAsk',
-                result: '收尾里夹着没问出去的问题，已要求改用 ask_user：$pendingAsk',
-                turn: turnsUsed,
-              ),
-            );
-            continue;
-          }
 
           // 收尾前硬边界：有子代理没跑完或结果没并入上下文，必须先等完并注入。
           if (await collectSubagentsBeforeFinish()) {

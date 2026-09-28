@@ -42,7 +42,7 @@ class LlmProviderPage extends ConsumerWidget {
               padding: const EdgeInsets.only(bottom: 8),
               child: GlassCard(
                 child: Text(
-                  '一家提供商 = 一个 OpenAI 兼容端点 + 一把 Key + 它自己的模型列表。'
+                  '一家提供商 = 一个 AI 端点（OpenAI 兼容或 Anthropic）+ 一把 Key + 它自己的模型列表。'
                   '添加多家之后，选模型时先挑家再挑模型，两边的模型缓存互不影响。',
                   style:
                       TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
@@ -54,6 +54,96 @@ class LlmProviderPage extends ConsumerWidget {
               provider: provider,
               active: provider.id == registry.active.id,
             ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: GlassCard(
+              onTap: () async {
+                final notifier = ref.read(llmRegistryProvider.notifier);
+                final id = await notifier.addProvider(
+                  name: 'Google Gemini',
+                  baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+                );
+                final added = ref.read(llmRegistryProvider).byId(id);
+                if (added != null) {
+                  await notifier.updateProvider(
+                    added.copyWith(protocol: LlmProtocol.google),
+                  );
+                }
+                if (!context.mounted) return;
+                await Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => LlmProviderEditPage(providerId: id),
+                  ),
+                );
+              },
+              child: Row(
+                children: [
+                  Icon(Icons.auto_awesome, color: scheme.primary),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '一键添加 Google Gemini',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        Text(
+                          '协议/地址/名称自动配好，只需填 API Key',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: GlassCard(
+              onTap: () async {
+                final notifier = ref.read(llmRegistryProvider.notifier);
+                final id = await notifier.addProvider(
+                  name: 'Anthropic Claude',
+                  baseUrl: 'https://api.anthropic.com/v1',
+                );
+                final added = ref.read(llmRegistryProvider).byId(id);
+                if (added != null) {
+                  await notifier.updateProvider(
+                    added.copyWith(protocol: LlmProtocol.anthropic),
+                  );
+                }
+                if (!context.mounted) return;
+                await Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => LlmProviderEditPage(providerId: id),
+                  ),
+                );
+              },
+              child: Row(
+                children: [
+                  Icon(Icons.auto_awesome, color: scheme.primary),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '一键添加 Anthropic Claude',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        Text(
+                          '协议/地址/名称自动配好，只需填 API Key',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: GlassCard(
@@ -422,6 +512,64 @@ class _LlmProviderEditPageState extends ConsumerState<LlmProviderEditPage> {
             },
           ),
           _PickRow(
+            icon: Icons.hub_outlined,
+            title: '接入协议',
+            value: provider.protocol == LlmProtocol.anthropic
+                ? 'Anthropic Messages API'
+                : 'OpenAI 兼容',
+            onTap: () async {
+              final choice = await showModalBottomSheet<LlmProtocol>(
+                context: context,
+                builder: (context) => SafeArea(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListTile(
+                        title: const Text('OpenAI 兼容'),
+                        subtitle: const Text(
+                          '通用 /chat/completions，适合 DeepSeek/OpenAI/智谱/自建网关',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                        trailing: provider.protocol == LlmProtocol.openai
+                            ? const Icon(Icons.check)
+                            : null,
+                        onTap: () =>
+                            Navigator.pop(context, LlmProtocol.openai),
+                      ),
+                      ListTile(
+                        title: const Text('Anthropic Messages API'),
+                        subtitle: const Text(
+                          '直连 Claude 官方或 Anthropic 兼容端点，使用 x-api-key 与 /v1/messages',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                        trailing: provider.protocol == LlmProtocol.anthropic
+                            ? const Icon(Icons.check)
+                            : null,
+                        onTap: () =>
+                            Navigator.pop(context, LlmProtocol.anthropic),
+                      ),
+                      ListTile(
+                        title: const Text('Google Gemini'),
+                        subtitle: const Text(
+                          '直连 Google Gemini，使用 x-goog-api-key 与 generateContent',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                        trailing: provider.protocol == LlmProtocol.google
+                            ? const Icon(Icons.check)
+                            : null,
+                        onTap: () =>
+                            Navigator.pop(context, LlmProtocol.google),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+              if (choice != null && choice != provider.protocol) {
+                await _save(provider.copyWith(protocol: choice));
+              }
+            },
+          ),
+          _PickRow(
             icon: Icons.link,
             title: 'Base URL',
             value: provider.baseUrl.isEmpty ? '未配置' : provider.baseUrl,
@@ -448,6 +596,14 @@ class _LlmProviderEditPageState extends ConsumerState<LlmProviderEditPage> {
                   ),
                   (label: 'Ollama', value: 'http://localhost:11434/v1'),
                   (label: 'OpenRouter', value: 'https://openrouter.ai/api/v1'),
+                  (
+                    label: 'Anthropic Claude',
+                    value: 'https://api.anthropic.com/v1'
+                  ),
+                  (
+                    label: 'Google Gemini',
+                    value: 'https://generativelanguage.googleapis.com/v1beta'
+                  ),
                 ],
               );
               if (v == null) return;
@@ -525,94 +681,8 @@ class _LlmProviderEditPageState extends ConsumerState<LlmProviderEditPage> {
             ),
           const SectionLabel('模型'),
           _ProviderModels(providerId: provider.id),
-          const SectionLabel('输出整理插件'),
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    '多个插件按顺序执行，可拖排序',
-                    style: TextStyle(fontSize: 12.5),
-                  ),
-                ),
-                FilledButton.tonalIcon(
-                  onPressed: () async {
-                    final picked = await LocalFilePicker.pick(
-                      context,
-                      maxChars: 200000,
-                    );
-                    if (picked == null || !context.mounted) return;
-                    if (!picked.path.toLowerCase().endsWith('.js')) {
-                      _toast('请选择 .js 插件文件');
-                      return;
-                    }
-                    final next = [
-                      ...provider.effectiveOutputPlugins,
-                      picked.path,
-                    ];
-                    final ok = await OutputPluginService.instance.loadAll(next);
-                    await _save(provider.copyWith(outputPluginPaths: next));
-                    if (ok) {
-                      _toast('已添加输出整理插件：${picked.name}');
-                    } else {
-                      _toast(
-                        '已添加，但有插件加载失败：'
-                        '${OutputPluginService.instance.lastError}',
-                      );
-                    }
-                  },
-                  icon: const Icon(Icons.add, size: 18),
-                  label: const Text('添加插件'),
-                ),
-              ],
-            ),
-          ),
-          if (provider.effectiveOutputPlugins.isEmpty)
-            const Padding(
-              padding: EdgeInsets.only(bottom: 8),
-              child: GlassPanel(
-                radius: 16,
-                blur: 14,
-                padding: EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                child: Text('未启用输出整理插件', style: TextStyle(fontSize: 13)),
-              ),
-            )
-          else
-            for (var i = 0;
-                i < provider.effectiveOutputPlugins.length;
-                i++) ...[
-              _buildPluginTile(
-                context,
-                provider,
-                i,
-                OutputPluginService.instance,
-              ),
-            ],
-          if (provider.effectiveOutputPlugins.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: GlassCard(
-                onTap: () async {
-                  await OutputPluginService.instance.loadAll(const []);
-                  await _save(provider.copyWith(outputPluginPaths: const []));
-                  _toast('已关闭全部输出整理插件');
-                },
-                child: Row(
-                  children: [
-                    Icon(Icons.block_outlined, color: scheme.error),
-                    const SizedBox(width: 12),
-                    Text(
-                      '关闭全部输出整理插件',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w600,
-                        color: scheme.error,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+          // 输出整理插件已暂时隐藏；泄漏标签统一由内置硬兜底处理。
+          // 后续恢复插件 UI 时还原原版代码即可。
           const SectionLabel('高级透传'),
           _PickRow(
             icon: Icons.data_object,

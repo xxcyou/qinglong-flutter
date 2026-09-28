@@ -7,7 +7,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
@@ -53,7 +56,166 @@ class ExternalJumpRequest {
   final DateTime createdAt;
 }
 
+class _ResponseChunk {
+  _ResponseChunk({required this.total});
+
+  final int total;
+  final StringBuffer buffer = StringBuffer();
+}
+
 class BrowserEngine {
+  static bool allowSelfSigned = false;
+  static const _defaultUserAgent =
+      'Mozilla/5.0 (Linux; Android 14; Redmi K50) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
+  static const _desktopUserAgent =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+  bool _uaLoaded = false;
+
+  /// 当前浏览器 User-Agent；改完立刻通知 UI，并可持久化。
+  final ValueNotifier<String> userAgentNotifier =
+      ValueNotifier(_defaultUserAgent);
+
+  /// 可切换的 UA 列表（增删改即时持久化）。
+  final ValueNotifier<List<String>> userAgentListNotifier =
+      ValueNotifier(const []);
+
+  /// UA 对应的备注（ua -> 备注），用于区分这么多条 UA 各自用途。
+  final ValueNotifier<Map<String, String>> userAgentNotesNotifier =
+      ValueNotifier({});
+
+  String get userAgent => userAgentNotifier.value;
+
+  Future<void> _loadUserAgent() async {
+    if (_uaLoaded) return;
+    _uaLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getString('browser_user_agent');
+      if (stored != null && stored.trim().isNotEmpty) {
+        userAgentNotifier.value = stored.trim();
+      }
+      final list = prefs.getStringList('browser_user_agent_list');
+      if (list != null && list.isNotEmpty) {
+        userAgentListNotifier.value = list;
+      } else {
+        userAgentListNotifier.value = [
+          _defaultUserAgent,
+          _desktopUserAgent,
+        ];
+      }
+      final notesJson = prefs.getString('browser_user_agent_notes');
+      if (notesJson != null && notesJson.isNotEmpty) {
+        final decoded = jsonDecode(notesJson);
+        if (decoded is Map) {
+          userAgentNotesNotifier.value = {
+            for (final e in decoded.entries)
+              if (e.key is String && e.value != null)
+                e.key.toString(): e.value.toString(),
+          };
+        }
+      }
+    } catch (_) {
+      userAgentListNotifier.value = [_defaultUserAgent, _desktopUserAgent];
+    }
+  }
+
+  /// 显式加载 UA 设置（供 AI 工具在浏览器还没打开时也能读列表）。
+  Future<void> loadUserAgentSettings() async => _loadUserAgent();
+
+  Future<void> setUserAgent(String ua) async {
+    final value = ua.trim();
+    if (value.isEmpty) return;
+    userAgentNotifier.value = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('browser_user_agent', value);
+    } catch (_) {}
+    try {
+      await _controller?.setUserAgent(value);
+    } catch (_) {}
+  }
+
+  Future<void> _saveUaNotes() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'browser_user_agent_notes',
+        jsonEncode(userAgentNotesNotifier.value),
+      );
+    } catch (_) {}
+  }
+
+  /// 更新某条 UA 的备注；备注为空就移除备注。
+  Future<void> setUserAgentNote(String ua, String note) async {
+    final value = ua.trim();
+    if (value.isEmpty) return;
+    final notes = Map.of(userAgentNotesNotifier.value);
+    final trimmed = note.trim();
+    if (trimmed.isEmpty) {
+      notes.remove(value);
+    } else {
+      notes[value] = trimmed;
+    }
+    userAgentNotesNotifier.value = notes;
+    await _saveUaNotes();
+  }
+
+  /// 往 UA 列表里加一条（非空且不重复），可带备注。
+  Future<void> addUserAgent(String ua, {String note = ''}) async {
+    final value = ua.trim();
+    if (value.isEmpty) return;
+    final list = List.of(userAgentListNotifier.value);
+    if (!list.contains(value)) {
+      list.add(value);
+      userAgentListNotifier.value = list;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setStringList('browser_user_agent_list', list);
+      } catch (_) {}
+    }
+    final trimmedNote = note.trim();
+    if (trimmedNote.isNotEmpty) {
+      final notes = Map.of(userAgentNotesNotifier.value);
+      notes[value] = trimmedNote;
+      userAgentNotesNotifier.value = notes;
+      await _saveUaNotes();
+    }
+  }
+
+  /// 从 UA 列表里删一条；如果删的是当前 UA，不自动切换。
+  Future<void> removeUserAgent(String ua) async {
+    final list = List.of(userAgentListNotifier.value)
+      ..remove(ua);
+    if (list.isEmpty) {
+      list.add(_defaultUserAgent);
+    }
+    userAgentListNotifier.value = list;
+    final notes = Map.of(userAgentNotesNotifier.value)..remove(ua);
+    userAgentNotesNotifier.value = notes;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList('browser_user_agent_list', list);
+      await prefs.setString(
+        'browser_user_agent_notes',
+        jsonEncode(notes),
+      );
+    } catch (_) {}
+  }
+
+  /// 恢复成默认手机 UA。
+  Future<void> resetUserAgent() async {
+    userAgentNotifier.value = _defaultUserAgent;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('browser_user_agent');
+    } catch (_) {}
+    try {
+      await _controller?.setUserAgent(_defaultUserAgent);
+    } catch (_) {}
+  }
+
   BrowserEngine._();
 
   static final BrowserEngine instance = BrowserEngine._();
@@ -78,6 +240,16 @@ class BrowserEngine {
   /// 抓到的请求。倒序显示，超过上限丢最老的。
   final ValueNotifier<List<CapturedRequest>> requests = ValueNotifier([]);
   final ValueNotifier<List<ConsoleLine>> console = ValueNotifier([]);
+
+  /// 开发者控制台手工执行 JS 的历史（跨 Tab 切换保留，刷新/重启后清空）。
+  final ValueNotifier<List<Map<String, String>>> consoleHistory =
+      ValueNotifier([]);
+
+  void addConsoleHistory(String kind, String text) {
+    final list = List.of(consoleHistory.value)
+      ..add({'kind': kind, 'text': text});
+    consoleHistory.value = list;
+  }
 
   /// AI 请用户接手时的提示语（例如"请完成人机验证"）。空 = 没在等。
   final ValueNotifier<String> waitingHint = ValueNotifier('');
@@ -151,6 +323,22 @@ class BrowserEngine {
             _retriedFailedMainNav = false;
             loading.value = true;
             currentUrl.value = url;
+            _bridgeIds.clear();
+            _resChunks.clear();
+            _wsSessions.clear();
+            _sseSessions.clear();
+            consoleHistory.value = [];
+            // 网页在 setTimeout(0) 里创建 WebSocket / fetch / XHR 时，比
+            // onPageFinished 早很多；只在 onPageFinished 装钩子会漏掉这种
+            // “页面刚加载就连”的抓包。这里在页面开始加载后尽早装，并错开几个
+            // 时间点重试（拦截脚本带 __qlHooked 幂等，重复注入无害）。
+            unawaited(_injectHooks());
+            for (final ms in [1, 20, 80]) {
+              Future<void>.delayed(
+                Duration(milliseconds: ms),
+                () => unawaited(_injectHooks()),
+              );
+            }
           },
           onPageFinished: (url) async {
             loading.value = false;
@@ -162,6 +350,12 @@ class BrowserEngine {
             // 登录 / 过验证之后 cookie 只在内存里，进程被杀就没了。
             // 每次加载完落一次盘，等于"关掉 APP 明天回来还是登录状态"。
             await WebBridge.flush();
+            // 主文档（HTML）抓包：把渲染后的 DOM 外层 HTML 作为响应体记下来，
+            // 不再让 HTML 请求显示成 0 字节。
+            var docHtml = '';
+            try {
+              docHtml = await evalSync('document.documentElement.outerHTML');
+            } catch (_) {}
             _record(
               CapturedRequest(
                 id: ++_docSeq,
@@ -170,6 +364,8 @@ class BrowserEngine {
                 kind: 'doc',
                 status: 200,
                 ok: true,
+                contentType: 'text/html',
+                responseBody: docHtml,
               ),
             );
           },
@@ -190,10 +386,9 @@ class BrowserEngine {
         ),
       );
     // 用真实手机 UA：默认 UA 里带 wv 字样，很多站点会因此直接给验证页。
-    await c.setUserAgent(
-      'Mozilla/5.0 (Linux; Android 14; Redmi K50) AppleWebKit/537.36 '
-      '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
-    );
+    // 用户/ AI 可以通过 setUserAgent 改，这里每次重建内核都读当前值。
+    await _loadUserAgent();
+    await c.setUserAgent(userAgentNotifier.value);
     _controller = c;
     controllerRevision.value++;
     await _applyBrowserLikeSettings(c);
@@ -227,10 +422,29 @@ class BrowserEngine {
       await platform.setOnConsoleMessage(
         (message) => _log(message.level.name, message.message),
       );
+      // document-start 注入抓包钩子：比 runJavaScript 更早，能截住页面
+      // 内联脚本一进来就创建的 WebSocket/SSE，解决反复出现的"ws 漏包"。
+      final hookOk = await WebBridge.addDocumentStartScript(
+        identifier: platform.webViewIdentifier,
+        script: interceptJs,
+      );
+      if (!hookOk) {
+        _log('warn', 'document-start 抓包钩子未生效，页面早期 WS/SSE 可能漏');
+      }
     }
   }
 
   int _docSeq = 0;
+
+  /// 页面 JS 的请求 id 从 1 开始，每次导航都会重置；为了不和 doc 请求 id
+  /// 撞车，也在同一页内把“JS id → 全局唯一 id”映射起来。
+  int _nextBridgeId = 100000;
+  final Map<int, int> _bridgeIds = {};
+  final Map<int, _ResponseChunk> _resChunks = {};
+
+  /// WebSocket/SSE 会话：connId -> 抓包记录 id（一个会话只记一条）。
+  final Map<String, int> _wsSessions = {};
+  final Map<String, int> _sseSessions = {};
 
   // ------------------------------------------------------------------ 桥
 
@@ -245,19 +459,22 @@ class BrowserEngine {
     }
     switch (json['t']) {
       case 'req':
+        final jsId = (json['id'] as num?)?.toInt() ?? -1;
+        final bridgeId = _bridgeId(jsId);
         _record(
           CapturedRequest(
-            id: (json['id'] as num?)?.toInt() ?? ++_docSeq,
+            id: bridgeId,
             method: json['method']?.toString() ?? 'GET',
-            url: json['url']?.toString() ?? '',
+            url: _absoluteUrl(json['url']?.toString() ?? ''),
             kind: json['kind']?.toString() ?? 'fetch',
-            requestBody: _cap(json['body']?.toString() ?? ''),
+            requestBody: json['body']?.toString() ?? '',
             requestHeaders: json['rh']?.toString() ?? '',
             mutation: json['mut']?.toString() ?? '',
           ),
         );
       case 'res':
-        final id = (json['id'] as num?)?.toInt() ?? -1;
+        final jsId = (json['id'] as num?)?.toInt() ?? -1;
+        final id = _bridgeIds[jsId] ?? -1;
         final list = requests.value;
         final hit = list.where((r) => r.id == id);
         if (hit.isEmpty) return;
@@ -267,7 +484,6 @@ class BrowserEngine {
           ..ok = json['ok'] == true
           ..ms = (json['ms'] as num?)?.toInt() ?? 0
           ..contentType = json['ct']?.toString() ?? ''
-          ..responseBody = _cap(json['body']?.toString() ?? '')
           ..error = json['err']?.toString() ?? '';
         // 请求头在 req 阶段已经记下了，res 阶段只在真带了才覆盖
         // （被脚本改过的那份才是真正发出去的）。
@@ -277,9 +493,36 @@ class BrowserEngine {
         // 改写说明由响应侧覆盖（它带着请求侧 + 响应侧的完整清单）；
         // 空串就保留请求阶段记下的那份。
         if (mut.isNotEmpty) r.mutation = mut;
+        final bodyTotal = (json['bodyTotal'] as num?)?.toInt() ?? 0;
+        if (bodyTotal > 0) {
+          r.responseBody = '';
+          _resChunks[id] = _ResponseChunk(total: bodyTotal);
+        } else {
+          _resChunks.remove(id);
+          r.responseBody = json['body']?.toString() ?? '';
+        }
         // 同一个对象改字段，ValueNotifier 认不出来，换个 List 触发刷新。
         requests.value = List.of(list);
         if (r.status >= 400) _log('warn', '${r.status} ${r.shortUrl}');
+      case 'res_chunk':
+        final chunkJsId = (json['id'] as num?)?.toInt() ?? -1;
+        final chunkId = _bridgeIds[chunkJsId] ?? -1;
+        final chunk = _resChunks[chunkId];
+        if (chunk == null) return;
+        chunk.buffer.write(json['body']?.toString() ?? '');
+        if (chunk.buffer.length >= chunk.total) {
+          final list = requests.value;
+          final hit = list.where((r) => r.id == chunkId);
+          if (hit.isNotEmpty) {
+            hit.first.responseBody = chunk.buffer.toString();
+            requests.value = List.of(list);
+          }
+          _resChunks.remove(chunkId);
+        }
+      case 'ws':
+        _recordWs(json);
+      case 'sse':
+        _recordSse(json);
       case 'hit':
         // 脚本改动了某个包：累计次数。这是判断"脚本到底生效了没"的唯一硬证据。
         final id = (json['id'] as num?)?.toInt() ?? -1;
@@ -383,15 +626,181 @@ class BrowserEngine {
     );
   }
 
-  /// 单条抓包内容上限：整页 HTML 动辄几百 KB，全留会把内存吃光。
-  static String _cap(String text, [int limit = 200000]) =>
-      text.length <= limit ? text : '${text.substring(0, limit)}…（已截断）';
+  /// 页面里抓到的 URL 可能是相对路径（fetch('/api')），转成绝对地址：
+  /// 列表展示、AI 看包、重发都是完整地址才用得上。
+  int _bridgeId(int jsId) {
+    if (jsId < 0) return ++_docSeq;
+    final existing = _bridgeIds[jsId];
+    if (existing != null) return existing;
+    final id = _nextBridgeId++;
+    _bridgeIds[jsId] = id;
+    return id;
+  }
+
+  String _absoluteUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri != null && uri.hasScheme) return url;
+    final base = Uri.tryParse(currentUrl.value);
+    if (base != null && base.hasScheme) {
+      try {
+        return base.resolve(url).toString();
+      } catch (_) {}
+    }
+    return url;
+  }
 
   void _record(CapturedRequest request) {
     final list = List.of(requests.value)..insert(0, request);
     if (list.length > _maxRequests) list.removeRange(_maxRequests, list.length);
     requests.value = list;
   }
+
+  void _recordWs(Map<String, dynamic> json) {
+    final id = json['id']?.toString() ?? '';
+    if (id.isEmpty) return;
+    final url = _absoluteUrl(json['url']?.toString() ?? '');
+    final ev = json['ev']?.toString() ?? '';
+    final dir = json['dir']?.toString() ?? '';
+    final data = json['data']?.toString() ?? '';
+    final err = json['err']?.toString() ?? '';
+    final code = json['code']?.toString() ?? '';
+    final reason = json['reason']?.toString() ?? '';
+    final list = List.of(requests.value);
+    final existingId = _wsSessions[id];
+    CapturedRequest? session;
+    if (existingId != null) {
+      for (final r in list) {
+        if (r.id == existingId) {
+          session = r;
+          break;
+        }
+      }
+    }
+    if (session == null) {
+      session = CapturedRequest(
+        id: _nextCaptureId(),
+        method: 'WS',
+        url: url,
+        kind: 'ws',
+        status: 101,
+        ok: true,
+        contentType: 'WebSocket',
+        connId: id,
+        live: true,
+        wsMessages: const [],
+      );
+      _wsSessions[id] = session.id;
+      list.insert(0, session);
+    }
+    if (ev == 'open') {
+      session
+        ..status = 101
+        ..ok = true
+        ..live = true;
+      session.wsMessages = List.of(session.wsMessages)
+        ..add(WsMessage(sent: false, text: 'WebSocket 已连接'));
+    } else if (ev == 'msg') {
+      final sent = dir == 'sent';
+      session
+        ..status = 101
+        ..ok = true
+        ..live = true
+        ..requestBody = sent ? data : session.requestBody
+        ..responseBody = sent ? session.responseBody : data;
+      session.wsMessages = List.of(session.wsMessages)
+        ..add(WsMessage(sent: sent, text: data));
+    } else if (ev == 'error') {
+      session
+        ..status = 0
+        ..ok = false
+        ..live = false
+        ..error = err.isEmpty ? 'WebSocket error' : err;
+      session.wsMessages = List.of(session.wsMessages)
+        ..add(WsMessage(sent: false, text: '错误：${err.isEmpty ? 'WebSocket error' : err}'));
+    } else if (ev == 'close') {
+      session
+        ..status = int.tryParse(code) ?? 1000
+        ..ok = true
+        ..live = false
+        ..responseBody = '已关闭${code.isEmpty ? '' : ' code=$code'}'
+            '${reason.isEmpty ? '' : ' $reason'}';
+      session.wsMessages = List.of(session.wsMessages)
+        ..add(WsMessage(
+          sent: false,
+          text: '连接已关闭${code.isEmpty ? '' : '（code=$code）'}'
+              '${reason.isEmpty ? '' : ' $reason'}',
+        ));
+    }
+    requests.value = list;
+  }
+
+  void _recordSse(Map<String, dynamic> json) {
+    final id = json['id']?.toString() ?? '';
+    if (id.isEmpty) return;
+    final url = _absoluteUrl(json['url']?.toString() ?? '');
+    final ev = json['ev']?.toString() ?? '';
+    final data = json['data']?.toString() ?? '';
+    final err = json['err']?.toString() ?? '';
+    final list = List.of(requests.value);
+    final existingId = _sseSessions[id];
+    CapturedRequest? session;
+    if (existingId != null) {
+      for (final r in list) {
+        if (r.id == existingId) {
+          session = r;
+          break;
+        }
+      }
+    }
+    if (session == null) {
+      session = CapturedRequest(
+        id: _nextCaptureId(),
+        method: 'SSE',
+        url: url,
+        kind: 'sse',
+        status: 200,
+        ok: true,
+        contentType: 'text/event-stream',
+        connId: id,
+        live: true,
+        wsMessages: const [],
+      );
+      _sseSessions[id] = session.id;
+      list.insert(0, session);
+    }
+    if (ev == 'open') {
+      session
+        ..status = 200
+        ..ok = true
+        ..live = true;
+      session.wsMessages = List.of(session.wsMessages)
+        ..add(WsMessage(sent: false, text: 'SSE 已连接'));
+    } else if (ev == 'msg') {
+      final eventName = json['event']?.toString() ?? '';
+      final label = eventName.isEmpty || eventName == 'message'
+          ? data
+          : '[$eventName] $data';
+      session
+        ..status = 200
+        ..ok = true
+        ..live = true
+        ..responseBody = label;
+      session.wsMessages = List.of(session.wsMessages)
+        ..add(WsMessage(sent: false, text: label));
+    } else if (ev == 'error') {
+      session
+        ..status = 0
+        ..ok = false
+        ..live = false
+        ..error = err.isEmpty ? 'EventSource error' : err;
+      session.wsMessages = List.of(session.wsMessages)
+        ..add(WsMessage(sent: false, text: '错误：${err.isEmpty ? 'EventSource error' : err}'));
+    }
+    requests.value = list;
+  }
+
+  int _captureSeq = 1000000;
+  int _nextCaptureId() => ++_captureSeq;
 
   void _log(String level, String text) {
     final list = List.of(console.value)
@@ -407,7 +816,33 @@ class BrowserEngine {
   /// 页面侧只是执行者（每次导航都重新编译一遍）。
   Future<void> _injectHooks() async {
     try {
-      await _controller?.runJavaScript(interceptJs);
+      // 除了主 frame 自己，还要把同一份钩子播种到同源 iframe 里。
+      // 有些站点的 SSE / WebSocket / fetch 在 iframe 里发，只在主 frame
+      // 挂钩子就会漏。这里把完整脚本串成 JS 字符串注入到每个可访问的
+      // iframe（跨域 frame 会静默跳过）。
+      const frameSpread = r'''
+(function(){
+  var source = window.__qlSource;
+  if (!source) return;
+  function injectWin(w){
+    try {
+      if (!w || w === window) return;
+      if (w.__qlHooked) return;
+      var doc = w.document;
+      if (!doc) return;
+      var s = doc.createElement('script');
+      s.textContent = source;
+      (doc.head || doc.documentElement || doc).appendChild(s);
+    } catch(e){}
+  }
+  for (var i=0;i<window.frames.length;i++) injectWin(window.frames[i]);
+})();
+''';
+      await _controller?.runJavaScript(
+        'window.__qlSource = ${jsonEncode(interceptJs)};\n'
+        '$interceptJs\n'
+        '$frameSpread',
+      );
       await _pushScripts();
     } catch (e) {
       Logger.e('browser', 'inject hooks failed', e);
@@ -535,6 +970,78 @@ class BrowserEngine {
     return url;
   }
 
+  /// 重发一条抓到的请求：用 Dart 侧的独立 Dio 直接发，不走面板鉴权拦截。
+  ///
+  /// 和浏览器抓包不同，重发不带页面 Cookie / UA / Referer；需要带上站内
+  /// 登录态时，先把请求头里的 Cookie 等从原包复制过去。
+  Future<ReplayResult> replay({
+    required String method,
+    required String url,
+    required Map<String, String> headers,
+    required String body,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    final dio = Dio(
+      BaseOptions(
+        connectTimeout: const Duration(seconds: 15),
+        sendTimeout: const Duration(seconds: 30),
+        receiveTimeout: const Duration(seconds: 60),
+        followRedirects: true,
+        validateStatus: (_) => true,
+        responseType: ResponseType.plain,
+      ),
+    );
+    dio.httpClientAdapter = IOHttpClientAdapter(
+      createHttpClient: () {
+        final client = HttpClient()
+          ..badCertificateCallback = (cert, host, port) =>
+              BrowserEngine.allowSelfSigned;
+        return client;
+      },
+    );
+    try {
+      final response = await dio.request<String>(
+        url,
+        data: body.isEmpty ? null : body,
+        options: Options(
+          method: method,
+          headers: headers.isEmpty ? null : headers,
+        ),
+      );
+      final responseHeaders = <String, String>{
+        for (final e in response.headers.map.entries)
+          e.key: e.value.join('; '),
+      };
+      return ReplayResult(
+        statusCode: response.statusCode ?? 0,
+        headers: responseHeaders,
+        body: response.data ?? '',
+        ms: stopwatch.elapsedMilliseconds,
+      );
+    } on DioException catch (e) {
+      final responseHeaders = <String, String>{
+        if (e.response != null)
+          for (final entry in e.response!.headers.map.entries)
+            entry.key: entry.value.join('; '),
+      };
+      return ReplayResult(
+        statusCode: e.response?.statusCode ?? 0,
+        headers: responseHeaders,
+        body: e.response?.data?.toString() ?? '',
+        ms: stopwatch.elapsedMilliseconds,
+        error: e.message ?? '${e.type}',
+      );
+    } catch (e) {
+      return ReplayResult(
+        statusCode: 0,
+        headers: const {},
+        body: '',
+        ms: stopwatch.elapsedMilliseconds,
+        error: e.toString(),
+      );
+    }
+  }
+
   Future<void> reload() async => _controller?.reload();
 
   /// 同步求值：只能拿"能转成字符串的立即值"。
@@ -571,6 +1078,61 @@ class BrowserEngine {
       _evalWaiters.remove(id);
       throw StateError('脚本执行超时（${timeout.inSeconds}s）');
     }
+  }
+
+  /// 向一条 WebSocket 连接发送数据（connId 从抓包列表里拿）。
+  Future<String> wsSend(String connId, String data) async {
+    if (connId.isEmpty) return '连接 ID 为空。';
+    return eval('''
+var r = window.__qlWsSend(${jsonEncode(connId)}, ${jsonEncode(data)});
+return r === 'no-socket' ? 'no-socket' : r;
+''');
+  }
+
+  /// 关闭一条 WebSocket 连接。
+  Future<String> wsClose(String connId) async {
+    if (connId.isEmpty) return '连接 ID 为空。';
+    return eval('''
+var r = window.__qlWsClose(${jsonEncode(connId)});
+return r === 'no-socket' ? 'no-socket' : r;
+''');
+  }
+
+  /// 列出当前页面还活着的 WebSocket 连接 ID。
+  Future<List<String>> wsActiveIds() async {
+    try {
+      final raw = await evalSync(
+        "JSON.stringify(Object.keys(window.__qlWs || {}))",
+      );
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded.map((e) => e.toString()).toList();
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  /// 关闭一条 SSE 连接（EventSource.close）。
+  Future<String> sseClose(String connId) async {
+    if (connId.isEmpty) return '连接 ID 为空。';
+    return eval('''
+var r = window.__qlSseClose ? window.__qlSseClose(${jsonEncode(connId)}) : 'no-hook';
+return r === 'no-socket' ? 'no-socket' : r;
+''');
+  }
+
+  /// 列出当前页面还活着的 SSE 连接 ID。
+  Future<List<String>> sseActiveIds() async {
+    try {
+      final raw = await evalSync(
+        "JSON.stringify(Object.keys(window.__qlSse || {}))",
+      );
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded.map((e) => e.toString()).toList();
+      }
+    } catch (_) {}
+    return const [];
   }
 
   /// 等某个条件成立（JS 表达式为真）。轮询实现，最长 [timeout]。
@@ -666,6 +1228,84 @@ return 'HTTP ' + res.status + '\\n' +
 
   /// 页面能看到的 cookie（不含 HttpOnly）。
   Future<String> cookies() => evalSync('document.cookie');
+
+  /// 当前源的 localStorage 全部键值。
+  Future<List<Map<String, String>>> localStorageRows() async {
+    try {
+      final raw = await evalSync(
+        "JSON.stringify(Object.keys(localStorage).map(k=>({key:k, value:localStorage.getItem(k)})))",
+      );
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return [
+          for (final item in decoded)
+            if (item is Map)
+              {
+                'key': item['key']?.toString() ?? '',
+                'value': item['value']?.toString() ?? '',
+              },
+        ];
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  /// 写一条 localStorage。
+  Future<void> localStorageSet(String key, String value) async {
+    final k = jsonEncode(key);
+    final v = jsonEncode(value);
+    await evalSync("localStorage.setItem($k, $v); 'ok'");
+  }
+
+  /// 删除一条 localStorage。
+  Future<void> localStorageRemove(String key) async {
+    final k = jsonEncode(key);
+    await evalSync("localStorage.removeItem($k); 'ok'");
+  }
+
+  /// 当前源的 sessionStorage 全部键值。
+  Future<List<Map<String, String>>> sessionStorageRows() async {
+    try {
+      final raw = await evalSync(
+        "JSON.stringify(Object.keys(sessionStorage).map(k=>({key:k, value:sessionStorage.getItem(k)})))",
+      );
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return [
+          for (final item in decoded)
+            if (item is Map)
+              {
+                'key': item['key']?.toString() ?? '',
+                'value': item['value']?.toString() ?? '',
+              },
+        ];
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  /// 写一条 sessionStorage。
+  Future<void> sessionStorageSet(String key, String value) async {
+    final k = jsonEncode(key);
+    final v = jsonEncode(value);
+    await evalSync("sessionStorage.setItem($k, $v); 'ok'");
+  }
+
+  /// 删除一条 sessionStorage。
+  Future<void> sessionStorageRemove(String key) async {
+    final k = jsonEncode(key);
+    await evalSync("sessionStorage.removeItem($k); 'ok'");
+  }
+
+  /// 清空当前源的 sessionStorage。
+  Future<void> sessionStorageClear() async {
+    await evalSync("sessionStorage.clear(); 'ok'");
+  }
+
+  /// 清空当前源的 localStorage。
+  Future<void> localStorageClear() async {
+    await evalSync("localStorage.clear(); 'ok'");
+  }
 
   /// **完整** cookie，含 HttpOnly。走原生 CookieManager，不是 document.cookie。
   ///

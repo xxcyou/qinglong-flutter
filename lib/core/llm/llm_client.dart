@@ -8,6 +8,7 @@ import '../network/api_exception.dart';
 import '../network/dio_client.dart';
 import '../network/error_handler.dart';
 import '../utils/logger.dart';
+import 'llm_provider.dart';
 import 'tool_call_recovery.dart';
 
 class LlmMessage {
@@ -102,6 +103,7 @@ class LlmConfig {
     this.extraHeaders = const {},
     this.extraBody = const {},
     this.receiveTimeoutSeconds = 180,
+    this.protocol = LlmProtocol.openai,
   });
 
   final String baseUrl;
@@ -126,6 +128,9 @@ class LlmConfig {
   final Map<String, dynamic> extraBody;
 
   final int receiveTimeoutSeconds;
+
+  /// 接入协议：OpenAI 兼容还是 Anthropic 原生。
+  final LlmProtocol protocol;
 
   bool get isConfigured =>
       baseUrl.trim().isNotEmpty &&
@@ -437,6 +442,264 @@ class _ToolAccum {
   final StringBuffer args = StringBuffer();
 }
 
+/// Anthropic 流式事件装配器。
+///
+/// 事件形状和 OpenAI 完全不同：没有 `choices[].delta`，而是一串
+/// `content_block_delta` / `message_delta`，文本、思考、工具参数分别走
+/// `text_delta` / `thinking_delta` / `input_json_delta`。
+class AnthropicStreamAssembler {
+  AnthropicStreamAssembler({this.onDelta});
+
+  final void Function(LlmDelta delta)? onDelta;
+
+  final StringBuffer _content = StringBuffer();
+  final StringBuffer _reasoning = StringBuffer();
+
+  /// index → 累积中的工具调用。Anthropic 按 block index 给分片。
+  final Map<int, _ToolAccum> _tools = {};
+
+  String _finishReason = '';
+  LlmUsage _usage = const LlmUsage();
+  bool _sawData = false;
+  bool _done = false;
+
+  String get content => _content.toString();
+  String get reasoning => LlmClient.sanitizeReasoning(_reasoning.toString());
+  String get finishReason => _finishReason;
+  LlmUsage get usage => _usage;
+  bool get sawData => _sawData;
+  bool get done => _done;
+
+  List<LlmToolCall> get toolCalls {
+    final keys = _tools.keys.toList()..sort();
+    final out = <LlmToolCall>[];
+    for (final k in keys) {
+      final t = _tools[k]!;
+      if (t.name.isEmpty) continue;
+      out.add(
+        LlmToolCall(
+          id: t.id,
+          name: t.name,
+          arguments: LlmClient.decodeToolArguments(t.args.toString()),
+        ),
+      );
+    }
+    return out;
+  }
+
+  bool addLine(String line) {
+    final text = line.trim();
+    if (text.isEmpty) return false;
+    if (text.startsWith(':')) return true;
+    if (!text.startsWith('data:')) return false;
+    final payload = text.substring(5).trim();
+    if (payload.isEmpty || payload == '[DONE]') {
+      if (payload == '[DONE]') {
+        _sawData = true;
+        _done = true;
+      }
+      return true;
+    }
+    Object? json;
+    try {
+      json = jsonDecode(payload);
+    } catch (_) {
+      return true;
+    }
+    if (json is! Map<String, dynamic>) return true;
+    _sawData = true;
+    _absorb(json);
+    return true;
+  }
+
+  void _absorb(Map<String, dynamic> json) {
+    final type = json['type']?.toString();
+    switch (type) {
+      case 'message_start':
+        final msg = json['message'];
+        if (msg is Map) {
+          final usageRaw = msg['usage'];
+          if (usageRaw is Map) _usage = _parseUsage(usageRaw);
+        }
+        break;
+      case 'content_block_start':
+        final block = json['content_block'];
+        if (block is Map) {
+          final index = (json['index'] as num?)?.toInt() ?? _tools.length;
+          final blockType = block['type']?.toString();
+          if (blockType == 'tool_use') {
+            final t = _tools.putIfAbsent(index, _ToolAccum.new);
+            t.id = block['id']?.toString() ?? t.id;
+            t.name = block['name']?.toString() ?? t.name;
+          }
+        }
+        break;
+      case 'content_block_delta':
+        final delta = json['delta'];
+        if (delta is Map) {
+          final index = (json['index'] as num?)?.toInt();
+          final deltaType = delta['type']?.toString();
+          if (deltaType == 'text_delta') {
+            final text = delta['text']?.toString() ?? '';
+            if (text.isNotEmpty) {
+              _content.write(text);
+              onDelta?.call(LlmDelta(content: text));
+            }
+          } else if (deltaType == 'thinking_delta') {
+            final text = delta['thinking']?.toString() ?? '';
+            if (text.isNotEmpty) {
+              _reasoning.write(text);
+              onDelta?.call(LlmDelta(reasoning: text));
+            }
+          } else if (deltaType == 'input_json_delta') {
+            final partial = delta['partial_json']?.toString() ?? '';
+            if (partial.isNotEmpty && index != null) {
+              _tools.putIfAbsent(index, _ToolAccum.new).args.write(partial);
+            }
+          }
+        }
+        break;
+      case 'message_delta':
+        final delta = json['delta'];
+        if (delta is Map) {
+          final reason = delta['stop_reason']?.toString() ?? '';
+          if (reason.isNotEmpty) _finishReason = reason;
+        }
+        final usageRaw = json['usage'];
+        if (usageRaw is Map) _usage = _parseUsage(usageRaw);
+        break;
+      case 'message_stop':
+        _done = true;
+        break;
+      case 'error':
+        // 错误事件不往外冒，沿用"静默跳过"策略；真正的 HTTP 错误已经在上面拦了。
+        break;
+    }
+  }
+
+  LlmUsage _parseUsage(Map raw) {
+    int pick(String key) => (raw[key] as num?)?.toInt() ?? 0;
+    final input = pick('input_tokens');
+    final output = pick('output_tokens');
+    final cacheRead = pick('cache_read_input_tokens');
+    final cacheCreation = pick('cache_creation_input_tokens');
+    return LlmUsage(
+      promptTokens: input,
+      completionTokens: output,
+      totalTokens: input + output,
+      cacheHitTokens: cacheRead,
+      cacheMissTokens: cacheCreation,
+    );
+  }
+}
+
+
+/// Google Gemini 流式事件装配器。
+///
+/// 每次 SSE data 里是一个 candidate 片段，text 直接给增量，
+/// functionCall 一般整块出现，usage 在最后的 usageMetadata 里。
+class GoogleStreamAssembler {
+  GoogleStreamAssembler({this.onDelta});
+
+  final void Function(LlmDelta delta)? onDelta;
+
+  final StringBuffer _content = StringBuffer();
+  final StringBuffer _reasoning = StringBuffer();
+  final Map<String, _ToolAccum> _tools = {};
+  String _finishReason = '';
+  LlmUsage _usage = const LlmUsage();
+  bool _sawData = false;
+  bool _done = false;
+
+  String get content => _content.toString();
+  String get reasoning => LlmClient.sanitizeReasoning(_reasoning.toString());
+  String get finishReason => _finishReason;
+  LlmUsage get usage => _usage;
+  bool get sawData => _sawData;
+  bool get done => _done;
+
+  List<LlmToolCall> get toolCalls {
+    final out = <LlmToolCall>[];
+    for (final t in _tools.values) {
+      if (t.name.isEmpty) continue;
+      out.add(
+        LlmToolCall(
+          id: t.id.isEmpty ? 'google_${out.length}' : t.id,
+          name: t.name,
+          arguments: LlmClient.decodeToolArguments(t.args.toString()),
+        ),
+      );
+    }
+    return out;
+  }
+
+  bool addLine(String line) {
+    final text = line.trim();
+    if (text.isEmpty) return false;
+    if (text.startsWith(':')) return true;
+    if (!text.startsWith('data:')) return false;
+    final payload = text.substring(5).trim();
+    if (payload.isEmpty) return true;
+    Object? json;
+    try {
+      json = jsonDecode(payload);
+    } catch (_) {
+      return true;
+    }
+    if (json is! Map<String, dynamic>) return true;
+    _sawData = true;
+    _absorb(json);
+    return true;
+  }
+
+  void _absorb(Map<String, dynamic> json) {
+    final candidates = json['candidates'];
+    if (candidates is List && candidates.isNotEmpty && candidates.first is Map) {
+      final cand = candidates.first as Map;
+      final reason = cand['finishReason']?.toString() ?? '';
+      if (reason.isNotEmpty && reason != 'null') _finishReason = reason;
+      final c = cand['content'];
+      if (c is Map) {
+        final parts = c['parts'];
+        if (parts is List) {
+          for (final part in parts) {
+            if (part is! Map) continue;
+            final text = part['text']?.toString() ?? '';
+            if (text.isNotEmpty) {
+              _content.write(text);
+              onDelta?.call(LlmDelta(content: text));
+            }
+            final thought = part['thought']?.toString() ?? '';
+            if (thought.isNotEmpty) {
+              _reasoning.write(thought);
+              onDelta?.call(LlmDelta(reasoning: thought));
+            }
+            final fc = part['functionCall'];
+            if (fc is Map) {
+              final name = fc['name']?.toString() ?? '';
+              if (name.isNotEmpty) {
+                final t = _tools.putIfAbsent(name, _ToolAccum.new);
+                t.name = name;
+                final args = fc['args'];
+                if (args is Map || args is List) {
+                  t.args.write(jsonEncode(args));
+                } else if (args != null) {
+                  t.args.write(args.toString());
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    final usage = json['usageMetadata'];
+    if (usage is Map) {
+      final parsed = LlmClient._fromGoogleUsage(usage);
+      if (!parsed.isEmpty) _usage = parsed;
+    }
+  }
+}
+
 class LlmClient {
   LlmClient._();
 
@@ -524,6 +787,41 @@ class LlmClient {
     return '$base/chat/completions';
   }
 
+  /// Anthropic Messages API 端点。
+  static String _anthropicEndpoint(String baseUrl) {
+    final raw = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (raw.endsWith('/v1/messages')) return raw;
+    if (raw.endsWith('/messages')) return raw;
+    if (raw.endsWith('/v1')) return '$raw/messages';
+    return '$raw/v1/messages';
+  }
+
+  static Map<String, String> _anthropicHeaders(LlmConfig config) => {
+        'x-api-key': config.apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        ...config.extraHeaders,
+      };
+
+  /// Google Gemini 端点。baseUrl 一般已带版本（如 /v1beta）。
+  static String _googleGenerateEndpoint(
+    String baseUrl,
+    String model, {
+    bool stream = false,
+  }) {
+    final base = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    final path = '/models/${Uri.encodeComponent(model)}'
+        ':${stream ? 'streamGenerateContent' : 'generateContent'}'
+        '${stream ? '?alt=sse' : ''}';
+    return '$base$path';
+  }
+
+  static Map<String, String> _googleHeaders(LlmConfig config) => {
+        'x-goog-api-key': config.apiKey,
+        'content-type': 'application/json',
+        ...config.extraHeaders,
+      };
+
   static Future<LlmResponse> complete({
     required LlmConfig config,
     required List<LlmMessage> messages,
@@ -579,6 +877,35 @@ class LlmClient {
     if (!config.isConfigured) {
       throw const ApiException(
           message: '请先在设置中配置 LLM Base URL / Model / API Key');
+    }
+    if (config.protocol == LlmProtocol.anthropic) {
+      final endpoint = _anthropicEndpoint(config.baseUrl);
+      if (onDelta == null) {
+        return _anthropicJsonOnce(
+          config: config,
+          messages: messages,
+          tools: tools,
+          cancelToken: cancelToken,
+          endpoint: endpoint,
+        );
+      }
+      return _anthropicStreamOnce(
+        config: config,
+        messages: messages,
+        tools: tools,
+        cancelToken: cancelToken,
+        endpoint: endpoint,
+        onDelta: onDelta,
+      );
+    }
+    if (config.protocol == LlmProtocol.google) {
+      return _googleComplete(
+        config: config,
+        messages: messages,
+        tools: tools,
+        cancelToken: cancelToken,
+        onDelta: onDelta,
+      );
     }
     final endpoint = _endpoint(config.baseUrl);
     if (onDelta == null) {
@@ -689,6 +1016,183 @@ class LlmClient {
       // 流式默认不报 usage，得显式要一份，否则计费和上下文占用全是 0。
       if (stream && includeUsage) 'stream_options': {'include_usage': true},
     };
+  }
+
+  /// Anthropic Messages API 请求体。
+  static Map<String, dynamic> _anthropicRequestBody({
+    required LlmConfig config,
+    required List<LlmMessage> messages,
+    List<LlmFunctionSpec>? tools,
+    bool stream = false,
+  }) {
+    final system = <String>[];
+    final converted = <Map<String, dynamic>>[];
+    for (final m in messages) {
+      if (m.role == 'system') {
+        if (m.content.trim().isNotEmpty) system.add(m.content.trim());
+        continue;
+      }
+      final blocks = <Map<String, dynamic>>[];
+      if (m.role == 'tool') {
+        blocks.add({
+          'type': 'tool_result',
+          'tool_use_id': m.toolCallId ?? '',
+          'content': m.content,
+        });
+        converted.add({'role': 'user', 'content': blocks});
+        continue;
+      }
+      for (final uri in m.images) {
+        final parsed = _parseDataUri(uri);
+        if (parsed != null) {
+          blocks.add({
+            'type': 'image',
+            'source': {
+              'type': 'base64',
+              'media_type': parsed[0],
+              'data': parsed[1],
+            },
+          });
+        }
+      }
+      if (m.content.trim().isNotEmpty) {
+        blocks.add({'type': 'text', 'text': m.content});
+      }
+      for (final t in m.toolCalls) {
+        blocks.add({
+          'type': 'tool_use',
+          'id': t.id,
+          'name': t.name,
+          'input': t.arguments,
+        });
+      }
+      if (blocks.isEmpty) continue;
+      converted.add({
+        'role': m.role == 'assistant' ? 'assistant' : 'user',
+        'content': blocks,
+      });
+    }
+    // Anthropic 严格要求 user/assistant 交替；连续同角色消息合并成一条。
+    final messagesOut = <Map<String, dynamic>>[];
+    for (final msg in converted) {
+      if (messagesOut.isNotEmpty && messagesOut.last['role'] == msg['role']) {
+        final prev = messagesOut.last['content'] as List;
+        messagesOut.last['content'] = [...prev, ...(msg['content'] as List)];
+      } else {
+        messagesOut.add(msg);
+      }
+    }
+    return {
+      'model': config.model,
+      'max_tokens': config.maxTokens ?? 4096,
+      if (config.temperature != null) 'temperature': config.temperature,
+      if (config.topP != null) 'top_p': config.topP,
+      ...config.extraBody,
+      if (system.isNotEmpty) 'system': system.join('\n\n'),
+      'messages': messagesOut,
+      if (tools != null && tools.isNotEmpty)
+        'tools': [
+          for (final t in tools)
+            {
+              'name': t.name,
+              'description': t.description,
+              'input_schema': t.parameters,
+            },
+        ],
+      if (stream) 'stream': true,
+    };
+  }
+
+  /// Google Gemini 请求体。
+  static Map<String, dynamic> _googleRequestBody({
+    required LlmConfig config,
+    required List<LlmMessage> messages,
+    List<LlmFunctionSpec>? tools,
+  }) {
+    final systemParts = <Map<String, dynamic>>[];
+    final contents = <Map<String, dynamic>>[];
+    for (final m in messages) {
+      if (m.role == 'system') {
+        if (m.content.trim().isNotEmpty) {
+          systemParts.add({'text': m.content});
+        }
+        continue;
+      }
+      final parts = <Map<String, dynamic>>[];
+      if (m.role == 'tool') {
+        parts.add({
+          'functionResponse': {
+            'name': m.name ?? '',
+            'response': {'result': m.content},
+          },
+        });
+      } else {
+        for (final uri in m.images) {
+          final parsed = _parseDataUri(uri);
+          if (parsed != null) {
+            parts.add({
+              'inlineData': {
+                'mimeType': parsed[0],
+                'data': parsed[1],
+              },
+            });
+          }
+        }
+        if (m.content.trim().isNotEmpty) {
+          parts.add({'text': m.content});
+        }
+        for (final t in m.toolCalls) {
+          parts.add({
+            'functionCall': {
+              'name': t.name,
+              'args': t.arguments,
+            },
+          });
+        }
+      }
+      if (parts.isEmpty) continue;
+      contents.add({
+        'role': m.role == 'assistant' ? 'model' : 'user',
+        'parts': parts,
+      });
+    }
+    return {
+      if (systemParts.isNotEmpty) 'systemInstruction': {'parts': systemParts},
+      'contents': contents,
+      if (tools != null && tools.isNotEmpty)
+        'tools': [
+          {
+            'functionDeclarations': [
+              for (final t in tools)
+                {
+                  'name': t.name,
+                  'description': t.description,
+                  'parameters': t.parameters,
+                },
+            ],
+          },
+        ],
+      'generationConfig': {
+        if (config.temperature != null) 'temperature': config.temperature,
+        if (config.topP != null) 'topP': config.topP,
+        if (config.maxTokens != null)
+          'maxOutputTokens': config.maxTokens,
+        ...config.extraBody,
+      },
+    };
+  }
+
+  /// data:image/png;base64,xxx → [mediaType, data]。
+  static List<String>? _parseDataUri(String uri) {
+    if (!uri.startsWith('data:')) return null;
+    final comma = uri.indexOf(',');
+    if (comma < 0) return null;
+    final meta = uri.substring(5, comma);
+    final data = uri.substring(comma + 1);
+    final semicolon = meta.indexOf(';');
+    final mime = semicolon >= 0 ? meta.substring(0, semicolon) : meta;
+    if (mime.isEmpty || data.isEmpty) return null;
+    return [mime, data];
   }
 
   /// 流式一轮：边收边把增量交给 [onDelta]，收完拼成完整回复。
@@ -888,6 +1392,420 @@ class LlmClient {
     }
   }
 
+  /// Anthropic 非流式一轮。
+  static Future<LlmResponse> _anthropicJsonOnce({
+    required LlmConfig config,
+    required List<LlmMessage> messages,
+    required String endpoint,
+    List<LlmFunctionSpec>? tools,
+    CancelToken? cancelToken,
+  }) async {
+    final requestBody = _anthropicRequestBody(
+      config: config,
+      messages: messages,
+      tools: tools,
+    );
+    if (ApiDebugLog.enabled) {
+      ApiDebugLog.instance.add(
+        kind: ApiDebugKind.request,
+        method: 'POST',
+        uri: endpoint,
+        message: 'AI 请求（Anthropic）${config.model}',
+        detail: _debugDumpBody(requestBody),
+      );
+    }
+    try {
+      final response = await DioClient.dio.post<dynamic>(
+        endpoint,
+        cancelToken: cancelToken,
+        options: Options(
+          headers: _anthropicHeaders(config),
+          extra: {'isAuthRequest': true},
+          sendTimeout: const Duration(seconds: 30),
+          receiveTimeout: Duration(seconds: config.receiveTimeoutSeconds),
+        ),
+        data: requestBody,
+      );
+      if (ApiDebugLog.enabled) {
+        ApiDebugLog.instance.add(
+          kind: ApiDebugKind.response,
+          method: 'POST',
+          uri: endpoint,
+          statusCode: response.statusCode,
+          message: 'AI 响应（Anthropic）${config.model}',
+          detail: _debugDumpBody(response.data),
+        );
+      }
+      return _fromAnthropicJsonBody(response.data, endpoint);
+    } on DioException catch (e) {
+      throw _mapLlmError(e);
+    }
+  }
+
+  /// Anthropic 流式一轮。
+  static Future<LlmResponse> _anthropicStreamOnce({
+    required LlmConfig config,
+    required List<LlmMessage> messages,
+    required String endpoint,
+    required void Function(LlmDelta delta) onDelta,
+    List<LlmFunctionSpec>? tools,
+    CancelToken? cancelToken,
+  }) async {
+    final requestBody = _anthropicRequestBody(
+      config: config,
+      messages: messages,
+      tools: tools,
+      stream: true,
+    );
+    if (ApiDebugLog.enabled) {
+      ApiDebugLog.instance.add(
+        kind: ApiDebugKind.request,
+        method: 'POST',
+        uri: endpoint,
+        message: 'AI 请求（Anthropic 流式）${config.model}',
+        detail: _debugDumpBody(requestBody),
+      );
+    }
+    final Response<ResponseBody> response;
+    try {
+      response = await DioClient.dio.post<ResponseBody>(
+        endpoint,
+        cancelToken: cancelToken,
+        options: Options(
+          headers: {
+            ..._anthropicHeaders(config),
+            'Accept': 'text/event-stream',
+          },
+          extra: {'isAuthRequest': true},
+          responseType: ResponseType.stream,
+          sendTimeout: const Duration(seconds: 30),
+          receiveTimeout: Duration(seconds: config.receiveTimeoutSeconds),
+          validateStatus: (_) => true,
+        ),
+        data: requestBody,
+      );
+    } on DioException catch (e) {
+      throw _mapLlmError(e);
+    }
+    final body = response.data;
+    if (body == null) {
+      throw const ApiException(
+        message: 'AI 服务没有返回响应体',
+        type: ApiExceptionType.network,
+      );
+    }
+    final status = response.statusCode ?? 0;
+    if (status < 200 || status >= 300) {
+      throw _statusException(status, _errorDetail(await _drain(body)));
+    }
+
+    final assembler = AnthropicStreamAssembler(onDelta: onDelta);
+    final raw = StringBuffer();
+    try {
+      final lines =
+          utf8.decoder.bind(body.stream).transform(const LineSplitter());
+      await for (final line in lines) {
+        if (!assembler.addLine(line)) {
+          if (raw.length < 200000) raw.write(line);
+          continue;
+        }
+        if (assembler.done) break;
+      }
+    } on DioException catch (e) {
+      throw _mapLlmError(e);
+    }
+
+    if (!assembler.sawData) {
+      try {
+        return _fromAnthropicJsonBody(jsonDecode(raw.toString()), endpoint);
+      } catch (_) {
+        return _anthropicJsonOnce(
+          config: config,
+          messages: messages,
+          tools: tools,
+          cancelToken: cancelToken,
+          endpoint: endpoint,
+        );
+      }
+    }
+    final result = _finalize(
+      endpoint: endpoint,
+      content: assembler.content,
+      reasoningContent: assembler.reasoning,
+      toolCalls: assembler.toolCalls,
+      finishReason: assembler.finishReason,
+      usage: assembler.usage,
+    );
+    if (ApiDebugLog.enabled) {
+      ApiDebugLog.instance.add(
+        kind: ApiDebugKind.response,
+        method: 'POST',
+        uri: endpoint,
+        statusCode: status,
+        message: 'AI 响应（Anthropic 流式）${config.model}',
+        detail: _debugDumpResponse(
+          content: result.content,
+          reasoning: result.reasoningContent,
+          toolCalls: result.toolCalls,
+          finishReason: result.finishReason,
+        ),
+      );
+    }
+    return result;
+  }
+
+  /// Google Gemini 统一入口：按是否需要增量选流式/非流式。
+  static Future<LlmResponse> _googleComplete({
+    required LlmConfig config,
+    required List<LlmMessage> messages,
+    required List<LlmFunctionSpec>? tools,
+    CancelToken? cancelToken,
+    void Function(LlmDelta delta)? onDelta,
+  }) async {
+    final endpoint = _googleGenerateEndpoint(
+      config.baseUrl,
+      config.model,
+      stream: onDelta != null,
+    );
+    if (onDelta == null) {
+      return _googleJsonOnce(
+        config: config,
+        messages: messages,
+        tools: tools,
+        cancelToken: cancelToken,
+        endpoint: endpoint,
+      );
+    }
+    return _googleStreamOnce(
+      config: config,
+      messages: messages,
+      tools: tools,
+      cancelToken: cancelToken,
+      endpoint: endpoint,
+      onDelta: onDelta,
+    );
+  }
+
+  static Future<LlmResponse> _googleJsonOnce({
+    required LlmConfig config,
+    required List<LlmMessage> messages,
+    required String endpoint,
+    List<LlmFunctionSpec>? tools,
+    CancelToken? cancelToken,
+  }) async {
+    final requestBody = _googleRequestBody(
+      config: config,
+      messages: messages,
+      tools: tools,
+    );
+    if (ApiDebugLog.enabled) {
+      ApiDebugLog.instance.add(
+        kind: ApiDebugKind.request,
+        method: 'POST',
+        uri: endpoint,
+        message: 'AI 请求（Google）${config.model}',
+        detail: _debugDumpBody(requestBody),
+      );
+    }
+    try {
+      final response = await DioClient.dio.post<dynamic>(
+        endpoint,
+        cancelToken: cancelToken,
+        options: Options(
+          headers: _googleHeaders(config),
+          extra: {'isAuthRequest': true},
+          sendTimeout: const Duration(seconds: 30),
+          receiveTimeout: Duration(seconds: config.receiveTimeoutSeconds),
+        ),
+        data: requestBody,
+      );
+      if (ApiDebugLog.enabled) {
+        ApiDebugLog.instance.add(
+          kind: ApiDebugKind.response,
+          method: 'POST',
+          uri: endpoint,
+          statusCode: response.statusCode,
+          message: 'AI 响应（Google）${config.model}',
+          detail: _debugDumpBody(response.data),
+        );
+      }
+      return _fromGoogleJsonBody(response.data, endpoint);
+    } on DioException catch (e) {
+      throw _mapLlmError(e);
+    }
+  }
+
+  static Future<LlmResponse> _googleStreamOnce({
+    required LlmConfig config,
+    required List<LlmMessage> messages,
+    required String endpoint,
+    required void Function(LlmDelta delta) onDelta,
+    List<LlmFunctionSpec>? tools,
+    CancelToken? cancelToken,
+  }) async {
+    final requestBody = _googleRequestBody(
+      config: config,
+      messages: messages,
+      tools: tools,
+    );
+    if (ApiDebugLog.enabled) {
+      ApiDebugLog.instance.add(
+        kind: ApiDebugKind.request,
+        method: 'POST',
+        uri: endpoint,
+        message: 'AI 请求（Google 流式）${config.model}',
+        detail: _debugDumpBody(requestBody),
+      );
+    }
+    final Response<ResponseBody> response;
+    try {
+      response = await DioClient.dio.post<ResponseBody>(
+        endpoint,
+        cancelToken: cancelToken,
+        options: Options(
+          headers: {
+            ..._googleHeaders(config),
+            'Accept': 'text/event-stream',
+          },
+          extra: {'isAuthRequest': true},
+          responseType: ResponseType.stream,
+          sendTimeout: const Duration(seconds: 30),
+          receiveTimeout: Duration(seconds: config.receiveTimeoutSeconds),
+          validateStatus: (_) => true,
+        ),
+        data: requestBody,
+      );
+    } on DioException catch (e) {
+      throw _mapLlmError(e);
+    }
+    final body = response.data;
+    if (body == null) {
+      throw const ApiException(
+        message: 'AI 服务没有返回响应体',
+        type: ApiExceptionType.network,
+      );
+    }
+    final status = response.statusCode ?? 0;
+    if (status < 200 || status >= 300) {
+      throw _statusException(status, _errorDetail(await _drain(body)));
+    }
+    final assembler = GoogleStreamAssembler(onDelta: onDelta);
+    final raw = StringBuffer();
+    try {
+      final lines =
+          utf8.decoder.bind(body.stream).transform(const LineSplitter());
+      await for (final line in lines) {
+        if (!assembler.addLine(line)) {
+          if (raw.length < 200000) raw.write(line);
+          continue;
+        }
+        if (assembler.done) break;
+      }
+    } on DioException catch (e) {
+      throw _mapLlmError(e);
+    }
+    if (!assembler.sawData) {
+      try {
+        return _fromGoogleJsonBody(jsonDecode(raw.toString()), endpoint);
+      } catch (_) {
+        return _googleJsonOnce(
+          config: config,
+          messages: messages,
+          tools: tools,
+          cancelToken: cancelToken,
+          endpoint: endpoint,
+        );
+      }
+    }
+    final result = _finalize(
+      endpoint: endpoint,
+      content: assembler.content,
+      reasoningContent: assembler.reasoning,
+      toolCalls: assembler.toolCalls,
+      finishReason: assembler.finishReason,
+      usage: assembler.usage,
+    );
+    if (ApiDebugLog.enabled) {
+      ApiDebugLog.instance.add(
+        kind: ApiDebugKind.response,
+        method: 'POST',
+        uri: endpoint,
+        statusCode: status,
+        message: 'AI 响应（Google 流式）${config.model}',
+        detail: _debugDumpResponse(
+          content: result.content,
+          reasoning: result.reasoningContent,
+          toolCalls: result.toolCalls,
+          finishReason: result.finishReason,
+        ),
+      );
+    }
+    return result;
+  }
+
+  /// 解析 Google Gemini 非流式响应体。
+  static LlmResponse _fromGoogleJsonBody(Object? data, String endpoint) {
+    final body = data is Map<String, dynamic> ? data : null;
+    final candidates = body?['candidates'];
+    final content = StringBuffer();
+    final reasoning = StringBuffer();
+    final toolCalls = <LlmToolCall>[];
+    if (candidates is List && candidates.isNotEmpty && candidates.first is Map) {
+      final cand = candidates.first as Map;
+      final finish = cand['finishReason']?.toString() ?? '';
+      final c = cand['content'];
+      if (c is Map) {
+        final parts = c['parts'];
+        if (parts is List) {
+          for (final part in parts) {
+            if (part is! Map) continue;
+            final text = part['text']?.toString() ?? '';
+            if (text.isNotEmpty) content.write(text);
+            final thought = part['thought']?.toString() ?? '';
+            if (thought.isNotEmpty) reasoning.write(thought);
+            final fc = part['functionCall'];
+            if (fc is Map) {
+              final args = fc['args'];
+              toolCalls.add(
+                LlmToolCall(
+                  id: 'google_${toolCalls.length}',
+                  name: fc['name']?.toString() ?? '',
+                  arguments: args is Map<String, dynamic>
+                      ? args
+                      : decodeToolArguments(args?.toString() ?? '{}'),
+                ),
+              );
+            }
+          }
+        }
+      }
+      final usageRaw = body?['usageMetadata'];
+      final usage = _fromGoogleUsage(usageRaw);
+      return _finalize(
+        endpoint: endpoint,
+        content: content.toString(),
+        reasoningContent: LlmClient.sanitizeReasoning(reasoning.toString()),
+        toolCalls: toolCalls,
+        finishReason: finish,
+        usage: usage,
+      );
+    }
+    return const LlmResponse();
+  }
+
+  static LlmUsage _fromGoogleUsage(Object? raw) {
+    if (raw is! Map) return const LlmUsage();
+    int pick(String key) => (raw[key] as num?)?.toInt() ?? 0;
+    final prompt = pick('promptTokenCount');
+    final completion = pick('candidatesTokenCount');
+    return LlmUsage(
+      promptTokens: prompt,
+      completionTokens: completion,
+      totalTokens: pick('totalTokenCount'),
+      cacheHitTokens: pick('cachedContentTokenCount'),
+    );
+  }
+
   /// 解析非流式响应体。
   static LlmResponse _fromJsonBody(Object? data, String endpoint) {
     final choices =
@@ -911,6 +1829,72 @@ class LlmClient {
       usage: usageRaw is Map ? LlmUsage.fromJson(usageRaw) : const LlmUsage(),
     );
   }
+
+  /// 解析 Anthropic Messages API 非流式响应体。
+  static LlmResponse _fromAnthropicJsonBody(Object? data, String endpoint) {
+    final body = data is Map<String, dynamic> ? data : null;
+    final contentRaw = body?['content'];
+    final content = StringBuffer();
+    final reasoning = StringBuffer();
+    final toolCalls = <LlmToolCall>[];
+    if (contentRaw is List) {
+      for (final item in contentRaw) {
+        if (item is! Map) continue;
+        final type = item['type']?.toString();
+        if (type == 'text') {
+          final text = item['text']?.toString() ?? '';
+          if (text.isNotEmpty) content.write(text);
+        } else if (type == 'thinking') {
+          final text = item['thinking']?.toString() ?? '';
+          if (text.isNotEmpty) reasoning.write(text);
+        } else if (type == 'tool_use') {
+          final input = item['input'];
+          toolCalls.add(
+            LlmToolCall(
+              id: item['id']?.toString() ?? '',
+              name: item['name']?.toString() ?? '',
+              arguments: input is Map<String, dynamic>
+                  ? input
+                  : decodeToolArguments(input?.toString() ?? '{}'),
+            ),
+          );
+        }
+      }
+    }
+    final usageRaw = body?['usage'];
+    final usage = _fromAnthropicUsage(usageRaw);
+    return _finalize(
+      endpoint: endpoint,
+      content: content.toString(),
+      reasoningContent: LlmClient.sanitizeReasoning(reasoning.toString()),
+      toolCalls: toolCalls,
+      finishReason: _mapAnthropicStopReason(body?['stop_reason']?.toString() ?? ''),
+      usage: usage,
+    );
+  }
+
+  static LlmUsage _fromAnthropicUsage(Object? raw) {
+    if (raw is! Map) return const LlmUsage();
+    int pick(String key) => (raw[key] as num?)?.toInt() ?? 0;
+    final input = pick('input_tokens');
+    final output = pick('output_tokens');
+    final cacheRead = pick('cache_read_input_tokens');
+    final cacheCreation = pick('cache_creation_input_tokens');
+    return LlmUsage(
+      promptTokens: input,
+      completionTokens: output,
+      totalTokens: input + output,
+      cacheHitTokens: cacheRead,
+      cacheMissTokens: cacheCreation,
+    );
+  }
+
+  static String _mapAnthropicStopReason(String reason) => switch (reason) {
+        'tool_use' => 'tool_calls',
+        'max_tokens' => 'length',
+        'stop_sequence' => 'stop',
+        _ => 'stop',
+      };
 
   /// 解析结构化 tool_calls（非流式那份；流式的分片拼装在 [LlmStreamAssembler]）。
   static List<LlmToolCall> parseToolCalls(Object? raw) {
@@ -1108,6 +2092,12 @@ class LlmClient {
     if (config.baseUrl.trim().isEmpty || config.apiKey.trim().isEmpty) {
       throw const ApiException(message: '请先配置 LLM Base URL 和 API Key');
     }
+    if (config.protocol == LlmProtocol.anthropic) {
+      return _listAnthropicModels(config);
+    }
+    if (config.protocol == LlmProtocol.google) {
+      return _listGoogleModels(config);
+    }
     final candidates = _modelsEndpoints(config.baseUrl);
     Object? lastError;
     for (final url in candidates) {
@@ -1169,6 +2159,136 @@ class LlmClient {
     }
     if (lastError is ApiException) throw lastError;
     throw ApiException(message: '获取模型列表失败：$lastError');
+  }
+
+  /// Anthropic 模型列表：官方端点需要 x-api-key 而不是 Bearer。
+  static Future<List<String>> _listAnthropicModels(LlmConfig config) async {
+    final candidates = _anthropicModelsEndpoints(config.baseUrl);
+    Object? lastError;
+    for (final url in candidates) {
+      try {
+        final response = await DioClient.dio.get<dynamic>(
+          url,
+          options: Options(
+            headers: _anthropicHeaders(config),
+            extra: {'isAuthRequest': true},
+            sendTimeout: const Duration(seconds: 20),
+            receiveTimeout: const Duration(seconds: 20),
+            validateStatus: (_) => true,
+            responseType: ResponseType.json,
+          ),
+        );
+        final code = response.statusCode ?? 0;
+        if (code == 404 || code == 405) {
+          lastError = ApiException(
+            message: '$url 返回 $code',
+            statusCode: code,
+          );
+          continue;
+        }
+        if (code < 200 || code >= 300) {
+          throw ApiException(
+            message: '获取模型列表失败（HTTP $code）'
+                '${_errorDetail(response.data).isEmpty ? "" : "：${_errorDetail(response.data)}"}',
+            statusCode: code,
+            type: code == 401
+                ? ApiExceptionType.unauthorized
+                : ApiExceptionType.business,
+          );
+        }
+        final models = _parseModelList(response.data);
+        if (models.isNotEmpty) return models;
+        lastError = const ApiException(message: '接口返回的列表是空的');
+      } on DioException catch (e) {
+        if (isCertError(e)) {
+          throw const ApiException(message: '获取模型列表失败。$certHint');
+        }
+        if (isPlaintextToTlsError(e)) {
+          throw const ApiException(message: '获取模型列表失败。$schemeHint');
+        }
+        lastError = ApiException(
+          message: '获取模型列表失败：${e.response?.statusCode ?? e.message}',
+          statusCode: e.response?.statusCode,
+          type: e.response?.statusCode == 401
+              ? ApiExceptionType.unauthorized
+              : ApiExceptionType.business,
+        );
+      }
+    }
+    if (lastError is ApiException) throw lastError;
+    throw ApiException(message: '获取模型列表失败：$lastError');
+  }
+
+  static Future<List<String>> _listGoogleModels(LlmConfig config) async {
+    final raw = config.baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    final url = '$raw/models';
+    try {
+      final response = await DioClient.dio.get<dynamic>(
+        url,
+        options: Options(
+          headers: _googleHeaders(config),
+          extra: {'isAuthRequest': true},
+          sendTimeout: const Duration(seconds: 20),
+          receiveTimeout: const Duration(seconds: 20),
+          validateStatus: (_) => true,
+          responseType: ResponseType.json,
+        ),
+      );
+      final code = response.statusCode ?? 0;
+      if (code < 200 || code >= 300) {
+        throw ApiException(
+          message: '获取模型列表失败（HTTP $code）'
+              '${_errorDetail(response.data).isEmpty ? "" : "：${_errorDetail(response.data)}"}',
+          statusCode: code,
+          type: code == 401
+              ? ApiExceptionType.unauthorized
+              : ApiExceptionType.business,
+        );
+      }
+      final body = response.data;
+      if (body is Map) {
+        final models = body['models'];
+        if (models is List) {
+          final out = <String>[];
+          for (final m in models) {
+            if (m is Map) {
+              final name = m['name']?.toString().trim() ?? '';
+              if (name.isEmpty) continue;
+              out.add(name.startsWith('models/')
+                  ? name.substring('models/'.length)
+                  : name);
+            } else if (m is String) {
+              out.add(m.trim());
+            }
+          }
+          if (out.isNotEmpty) return out;
+        }
+      }
+      throw const ApiException(message: '接口返回的列表是空的');
+    } on DioException catch (e) {
+      if (isCertError(e)) {
+        throw const ApiException(message: '获取模型列表失败。$certHint');
+      }
+      if (isPlaintextToTlsError(e)) {
+        throw const ApiException(message: '获取模型列表失败。$schemeHint');
+      }
+      throw ApiException(
+        message: '获取模型列表失败：${e.response?.statusCode ?? e.message}',
+        statusCode: e.response?.statusCode,
+        type: e.response?.statusCode == 401
+            ? ApiExceptionType.unauthorized
+            : ApiExceptionType.business,
+      );
+    }
+  }
+
+  static List<String> _anthropicModelsEndpoints(String baseUrl) {
+    final raw = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    final withV1 = raw.endsWith('/v1')
+        ? '$raw/models'
+        : '$raw/v1/models';
+    final without = '$raw/models';
+    return without == withV1 ? [withV1] : [withV1, without];
   }
 
   /// 候选 models 端点：带 /v1 与不带 /v1 各试一次。

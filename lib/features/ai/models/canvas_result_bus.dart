@@ -11,7 +11,7 @@ import 'dart:async';
 class CanvasResultBus {
   CanvasResultBus._();
 
-  static final Map<String, Completer<String>> _waiting = {};
+  static final Map<String, Completer<String?>> _waiting = {};
 
   /// 等一个画布的结果。超时或被取消时返回 null。
   static Future<String?> wait(
@@ -19,7 +19,7 @@ class CanvasResultBus {
     Duration timeout = const Duration(minutes: 10),
     bool Function()? isCancelled,
   }) async {
-    final completer = Completer<String>();
+    final completer = Completer<String?>();
     _waiting[canvasId] = completer;
     try {
       // 一边等结果，一边每秒看一眼有没有被"停止"——否则用户点了停止，
@@ -28,11 +28,11 @@ class CanvasResultBus {
       while (!completer.isCompleted) {
         if (isCancelled?.call() == true) return null;
         if (DateTime.now().isAfter(deadline)) return null;
-        final result = await Future.any([
-          completer.future.then<String?>((v) => v),
+        await Future.any([
+          completer.future,
           Future<String?>.delayed(const Duration(seconds: 1), () => null),
         ]);
-        if (result != null) return result;
+        if (completer.isCompleted) return await completer.future;
       }
       return completer.isCompleted ? await completer.future : null;
     } finally {
@@ -45,6 +45,14 @@ class CanvasResultBus {
     final completer = _waiting[canvasId];
     if (completer != null && !completer.isCompleted) {
       completer.complete(payload);
+    }
+  }
+
+  /// 用户关闭/取消画布时通知等待方：按"未提交"处理，让 AI 继续同一轮。
+  static void cancel(String canvasId) {
+    final completer = _waiting[canvasId];
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(null);
     }
   }
 

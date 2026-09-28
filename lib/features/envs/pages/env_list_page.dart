@@ -93,8 +93,14 @@ class _EnvListPageState extends ConsumerState<EnvListPage> {
           ? null
           : _EnvSelectionBar(
               count: _selectedIds.length,
-              onEnable: () => _batch((ids) => notifier.setEnabled(ids, true)),
-              onDisable: () => _batch((ids) => notifier.setEnabled(ids, false)),
+              onEnable: () => _batch(
+                (ids) => notifier.setEnabled(ids, true),
+                successMessage: '已启用 ${_selectedIds.length} 个环境变量',
+              ),
+              onDisable: () => _batch(
+                (ids) => notifier.setEnabled(ids, false),
+                successMessage: '已禁用 ${_selectedIds.length} 个环境变量',
+              ),
               onDelete: _deleteSelected,
             ),
       body: _buildBody(state, visible),
@@ -191,10 +197,20 @@ class _EnvListPageState extends ConsumerState<EnvListPage> {
                           }
                         });
                         break;
+                      case 'enable':
+                        _setEnabled(env, true);
+                        break;
+                      case 'disable':
+                        _setEnabled(env, false);
+                        break;
                     }
                   },
                   itemBuilder: (context) => [
                     const PopupMenuItem(value: 'ai', child: Text('发给 AI')),
+                    if (env.isEnabled)
+                      const PopupMenuItem(value: 'disable', child: Text('禁用'))
+                    else
+                      const PopupMenuItem(value: 'enable', child: Text('启用')),
                     PopupMenuItem(
                       value: 'toggle',
                       child: Text(revealed ? '隐藏值' : '显示值'),
@@ -244,12 +260,41 @@ class _EnvListPageState extends ConsumerState<EnvListPage> {
     }
   }
 
-  Future<void> _batch(Future<void> Function(List<int> ids) action) async {
+  Future<void> _setEnabled(EnvVar env, bool enabled) async {
+    final id = env.id;
+    if (id == null) return;
+    try {
+      await ref.read(envListProvider.notifier).setEnabled([id], enabled);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已${enabled ? '启用' : '禁用'} ${env.name}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('操作失败：${errorText(e)}')),
+        );
+      }
+    }
+  }
+
+  Future<void> _batch(
+    Future<void> Function(List<int> ids) action, {
+    String? successMessage,
+  }) async {
     final ids = _selectedIds.toList();
     if (ids.isEmpty) return;
     try {
       await action(ids);
-      if (mounted) setState(_selectedIds.clear);
+      if (mounted) {
+        setState(_selectedIds.clear);
+        if (successMessage != null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(successMessage)),
+          );
+        }
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
