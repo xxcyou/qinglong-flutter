@@ -32,6 +32,7 @@
 - **会话详情页**：
   - 长消息默认折叠，可一键展开完整内容
   - 右侧消息结构预览图（Minimap）：色块表示发送/接收/系统，消息长短映射块高度，支持拖动跳转、固定放大块指示当前轴位置
+- **Service Worker 请求捕获**：SW 是独立 JS 上下文，页面注入的 hook 看不到它；通过 AndroidX `ServiceWorkerControllerCompat` 在内核层挂 `shouldInterceptRequest`，把 SW 内的请求也记进抓包列表（`kind=sw`，目前记录方法 / URL / 请求头，响应体待后续扩展）
 - **AI 调试工具**：
   - `browser_ws`：预览 WebSocket 连接、深读消息、主动发送、主动断开
   - `browser_sse`：预览 SSE 会话、深读消息、主动断开

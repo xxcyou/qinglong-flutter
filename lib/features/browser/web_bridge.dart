@@ -13,6 +13,27 @@ class WebBridge {
 
   static const _channel = MethodChannel('coomi/web');
 
+  /// 原生层上报的请求（当前是 Service Worker 内发起的请求）。
+  static void Function(Map<String, dynamic> args)? onNativeRequest;
+
+  static bool _handlerReady = false;
+
+  /// 注册原生 -> Dart 的通道回调，接收 `nativeRequest` 等主动上报事件。
+  static void ensureHandler() {
+    if (_handlerReady) return;
+    _handlerReady = true;
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'nativeRequest') {
+        final args = call.arguments;
+        if (args is Map<Object?, Object?>) {
+          onNativeRequest?.call({
+            for (final e in args.entries) e.key.toString(): e.value,
+          });
+        }
+      }
+    });
+  }
+
   /// 把内存里的 cookie 立刻写盘。
   ///
   /// Android 的 CookieManager 默认攒在内存里，进程被系统杀掉时不保证落盘——
@@ -43,6 +64,17 @@ class WebBridge {
           'allowedOriginRules': allowedOriginRules,
         }) ??
         false;
+  }
+
+  /// 开启 Service Worker 请求捕获。
+  ///
+  /// 页面注入的 hook 看不到 SW 独立上下文里的请求，这里用 AndroidX
+  /// ServiceWorkerControllerCompat 在内核层挂 shouldInterceptRequest，
+  /// 把 SW 请求先记成 kind=sw 的抓包记录（当前只拿到请求头/方法/URL，
+  /// 响应体后续可再扩展）。
+  static Future<bool> enableServiceWorkerCapture() async {
+    ensureHandler();
+    return await _invoke<bool>('enableServiceWorkerCapture') ?? false;
   }
 
   /// 某个地址下的完整 cookie 串，**包含 HttpOnly**。

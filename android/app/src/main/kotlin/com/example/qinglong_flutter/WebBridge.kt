@@ -2,8 +2,12 @@ package com.example.qinglong_flutter
 
 import android.content.Context
 import android.webkit.CookieManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebStorage
 import android.webkit.WebView
+import androidx.webkit.ServiceWorkerClientCompat
+import androidx.webkit.ServiceWorkerControllerCompat
 import androidx.webkit.WebViewCompat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -26,13 +30,16 @@ import io.flutter.plugins.webviewflutter.WebViewFlutterAndroidExternalApi
  */
 class WebBridge(private val context: Context) {
 
+    private var channel: MethodChannel? = null
+
     companion object {
         const val CHANNEL = "coomi/web"
     }
 
     fun configure(engine: FlutterEngine) {
-        MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
-            .setMethodCallHandler { call, result ->
+        val ch = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
+        channel = ch
+        ch.setMethodCallHandler { call, result ->
                 when (call.method) {
                     // 把内存里的 cookie 立刻写盘。登录成功、页面加载完、
                     // 浏览器收起时各调一次，进程被杀也不丢登录态。
@@ -55,6 +62,36 @@ class WebBridge(private val context: Context) {
                             result.success(true)
                         } catch (e: Throwable) {
                             result.error("ACCEPT_FAILED", e.message, null)
+                        }
+                    }
+
+                    // 捕获 Service Worker 内发起的请求。
+                    //
+                    // 页面注入的 fetch/XHR/WS/SSE 钩子只在 page context 里生效，
+                    // Service Worker 是独立 JS 全局，页面脚本看不到它发出的网络请求。
+                    // 这里用 AndroidX 的 ServiceWorkerControllerCompat 在内核层挂
+                    // shouldInterceptRequest，把 SW 的请求原样上报给 Dart 抓包。
+                    "enableServiceWorkerCapture" -> {
+                        try {
+                            val controller = ServiceWorkerControllerCompat.getInstance()
+                            try {
+                                controller.serviceWorkerWebSettings
+                                    .setIncludeCookiesOnShouldInterceptRequestEnabled(true)
+                            } catch (_: Throwable) {
+                            }
+                            controller.setServiceWorkerClient(
+                                object : ServiceWorkerClientCompat() {
+                                    override fun shouldInterceptRequest(
+                                        request: WebResourceRequest
+                                    ): WebResourceResponse? {
+                                        sendNativeRequest(request)
+                                        return null
+                                    }
+                                }
+                            )
+                            result.success(true)
+                        } catch (e: Throwable) {
+                            result.error("SW_CAPTURE_FAILED", e.message, null)
                         }
                     }
 
@@ -429,6 +466,33 @@ class WebBridge(private val context: Context) {
         // 少数内核不回调，兜个超时，否则 Dart 侧永远等不到。
         android.os.Handler(android.os.Looper.getMainLooper())
             .postDelayed({ finish() }, 2000)
+    }
+
+    /// 把 Service Worker 的请求信息发到 Dart 侧抓包列表。
+    ///
+    /// shouldInterceptRequest 可能在非 UI 线程回调，统一 post 回主线程再发通道，
+    /// 避免 MethodChannel 线程问题。
+    private fun sendNativeRequest(request: WebResourceRequest) {
+        val headers = try {
+            request.requestHeaders?.entries?.joinToString("\n") { "${it.key}: ${it.value}" } ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+        val args = mapOf(
+            "method" to request.method,
+            "url" to request.url.toString(),
+            "requestHeaders" to headers,
+            "isForMainFrame" to request.isForMainFrame,
+            "isRedirect" to request.isRedirect,
+            "hasGesture" to request.hasGesture(),
+            "source" to "sw"
+        )
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                channel?.invokeMethod("nativeRequest", args, null)
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     /// 读内核的 cookie 库。只读一份拷贝：正在用的那个文件被 WebView

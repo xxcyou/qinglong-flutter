@@ -284,6 +284,7 @@ class BrowserEngine {
 
   /// 建内核。重复调用无副作用。
   bool _scriptsLoaded = false;
+  bool _swCaptureRegistered = false;
 
   Future<WebViewController> ensure() async {
     final existing = _controller;
@@ -391,6 +392,11 @@ class BrowserEngine {
     await c.setUserAgent(userAgentNotifier.value);
     _controller = c;
     controllerRevision.value++;
+    if (!_swCaptureRegistered) {
+      _swCaptureRegistered = true;
+      WebBridge.onNativeRequest = _onNativeServiceWorkerRequest;
+      unawaited(WebBridge.enableServiceWorkerCapture());
+    }
     await _applyBrowserLikeSettings(c);
     return c;
   }
@@ -647,6 +653,25 @@ class BrowserEngine {
       } catch (_) {}
     }
     return url;
+  }
+
+  /// 原生 Service Worker 请求捕获回调。
+  ///
+  /// SW 独立于页面上下文，页面钩子看不到；这里由 AndroidX
+  /// ServiceWorkerControllerCompat 把请求头/方法/URL 上报上来，
+  /// 记成 kind=sw 的抓包记录（暂不包含响应体）。
+  void _onNativeServiceWorkerRequest(Map<String, dynamic> args) {
+    final url = args['url']?.toString() ?? '';
+    if (url.isEmpty) return;
+    _record(
+      CapturedRequest(
+        id: _nextCaptureId(),
+        method: args['method']?.toString() ?? 'GET',
+        url: _absoluteUrl(url),
+        kind: 'sw',
+        requestHeaders: args['requestHeaders']?.toString() ?? '',
+      ),
+    );
   }
 
   void _record(CapturedRequest request) {
