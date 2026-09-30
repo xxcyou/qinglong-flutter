@@ -5112,16 +5112,24 @@ class _ProxyEditDialogState extends State<_ProxyEditDialog> {
               decoration: input.copyWith(hintText: '名称（可选，默认 host:port）'),
             ),
             const SizedBox(height: 8),
-            DropdownButtonFormField<String>(
-              key: ValueKey('proxy-scheme-$_scheme'),
-              initialValue: _scheme,
-              decoration: input,
-              items: const [
-                DropdownMenuItem(value: 'http', child: Text('HTTP')),
-                DropdownMenuItem(value: 'https', child: Text('HTTPS')),
-                DropdownMenuItem(value: 'socks5', child: Text('SOCKS5')),
-              ],
-              onChanged: (v) => setState(() => _scheme = v ?? 'http'),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: DropdownButton<String>(
+                value: _scheme,
+                isExpanded: true,
+                underline: const SizedBox.shrink(),
+                items: const [
+                  DropdownMenuItem(value: 'http', child: Text('HTTP')),
+                  DropdownMenuItem(value: 'https', child: Text('HTTPS')),
+                  DropdownMenuItem(value: 'socks5', child: Text('SOCKS5 (S5)')),
+                ],
+                onChanged: (v) =>
+                    setState(() => _scheme = v ?? 'http'),
+              ),
             ),
             const SizedBox(height: 8),
             TextField(
