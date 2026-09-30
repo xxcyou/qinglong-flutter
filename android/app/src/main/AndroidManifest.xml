@@ -27,6 +27,14 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- 默认浏览器支持：系统把 http/https 链接交给青龙AI打开。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="http"/>
+                <data android:scheme="https"/>
+            </intent-filter>
         </activity>
         <!-- 「用其它 APP 打开」必须用 content:// URI：Android 7 起 file:// 会抛
              FileUriExposedException，外部 APP 本来也读不到我们的私有目录。

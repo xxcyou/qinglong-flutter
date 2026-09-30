@@ -5,10 +5,12 @@ import android.os.Build
 import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        consumeViewIntent(intent)
         // 高刷屏不锁 60：把窗口首选模式指到设备支持的最高刷新率，
         // 让 Flutter 层和 WebView 的 HTML 动画都能吃满 120/144/240Hz。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -28,6 +30,44 @@ class MainActivity : FlutterActivity() {
         prootBridge = ProotBridge(this).also { it.configure(flutterEngine) }
         // 浏览器内核的 cookie 落盘 / 站点数据清理：Dart 侧接口缺这几件。
         WebBridge(this).configure(flutterEngine)
+        openChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "qinglong/open_url",
+        )
+        openChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "setReady" -> {
+                    openHandlerReady = true
+                    result.success(null)
+                }
+                "getPendingUrl" -> {
+                    val url = pendingUrl
+                    pendingUrl = null
+                    result.success(url)
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private var pendingUrl: String? = null
+    private var openChannel: MethodChannel? = null
+    private var openHandlerReady = false
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeViewIntent(intent)
+    }
+
+    private fun consumeViewIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val url = intent.dataString ?: return
+        pendingUrl = url
+        if (openHandlerReady && openChannel != null) {
+            openChannel?.invokeMethod("openUrl", url)
+            pendingUrl = null
+        }
     }
 
     @Deprecated("Flutter 插件体系仍走这条老回调；换 ActivityResultLauncher 要动整个 Activity 生命周期")

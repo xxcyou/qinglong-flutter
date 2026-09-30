@@ -34,6 +34,40 @@ class WebBridge {
     });
   }
 
+  /// 被系统指定为默认浏览器后收到的 url（intent://VIEW）。
+  static void Function(String url)? onOpenExternalUrl;
+
+  static const _openChannel = MethodChannel('qinglong/open_url');
+  static bool _openHandlerReady = false;
+
+  /// 注册默认浏览器外部链接通道，并拉取启动时带过来的 pending URL。
+  ///
+  /// 在 BrowserEngine.ensure 时调用一次。Android 侧收到 ACTION_VIEW 后：
+  /// - APP 还没起来 -> 存 pending，Dart 这里 getPendingUrl 取走；
+  /// - APP 已经在前台 -> native 直接 invokeMethod('openUrl') 推送。
+  static Future<void> initOpenUrlHandler() async {
+    if (_openHandlerReady) return;
+    _openHandlerReady = true;
+    _openChannel.setMethodCallHandler((call) async {
+      if (call.method == 'openUrl') {
+        final url = call.arguments?.toString() ?? '';
+        if (url.isNotEmpty) {
+          onOpenExternalUrl?.call(url);
+        }
+      }
+    });
+    try {
+      await _openChannel.invokeMethod<void>('setReady');
+    } catch (_) {}
+    try {
+      final pending =
+          await _openChannel.invokeMethod<String>('getPendingUrl');
+      if (pending != null && pending.isNotEmpty) {
+        onOpenExternalUrl?.call(pending);
+      }
+    } catch (_) {}
+  }
+
   /// 把内存里的 cookie 立刻写盘。
   ///
   /// Android 的 CookieManager 默认攒在内存里，进程被系统杀掉时不保证落盘——
