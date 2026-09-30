@@ -215,14 +215,16 @@ class BrowserTools {
       ),
       ExternalTool(
         name: 'browser_proxy',
-        description: '管理内置浏览器的网络代理。action=get 查看当前代理，list 列出全部代理配置，'
-            'set/switch 启用某个代理（可带 reload=true 刷新页面），add 新增代理（scheme 支持 http/https/socks5，'
-            '可带 username/password，active=true 立即启用），remove 删除，clear 恢复直连。'
+        description: '管理内置浏览器的网络代理。action=get 查看当前代理，view 查看某个代理完整配置，'
+            'list 列出全部代理，set/switch 启用某个代理（可带 reload=true 刷新页面），'
+            'add 新增代理（scheme 支持 http/https/socks5，可带 username/password，active=true 立即启用），'
+            'edit 编辑已有代理（不传的字段保持不变，传空字符串可清空 username/password），'
+            'remove 删除，clear 恢复直连。s5/socks 会统一按 socks5 处理。'
             '代理是内核级全局生效，切换后新请求走新代理；已打开的页面返回前记得 reload。',
         parameters: obj([], {
           'action': {
             'type': 'string',
-            'enum': ['get', 'list', 'set', 'switch', 'add', 'remove', 'clear'],
+            'enum': ['get', 'list', 'view', 'set', 'switch', 'add', 'edit', 'remove', 'clear'],
             'description': '默认 get',
           },
           'name': {
@@ -231,8 +233,8 @@ class BrowserTools {
           },
           'scheme': {
             'type': 'string',
-            'enum': ['http', 'https', 'socks5'],
-            'description': '代理协议，默认 http',
+            'enum': ['http', 'https', 'socks5', 'socks', 's5'],
+            'description': '代理协议，默认 http；s5/socks 会按 socks5 处理',
           },
           'host': {'type': 'string', 'description': '代理主机，如 127.0.0.1 或 proxy.example.com'},
           'port': {'type': 'integer', 'description': '代理端口'},
@@ -263,6 +265,38 @@ class BrowserTools {
               if (p.id == ref || p.name.toLowerCase() == key) return p;
             }
             return null;
+          }
+
+          String normScheme(String? s) {
+            final v = s?.trim().toLowerCase() ?? '';
+            if (v == 's5' || v == 'socks' || v == 'socks5') return 'socks5';
+            if (v == 'https') return 'https';
+            return 'http';
+          }
+
+          String detail(BrowserProxy p) => [
+            '名称：${p.name}',
+            '协议：${p.scheme}',
+            '地址：${p.scheme}://${p.host}:${p.port}',
+            if (p.username.isNotEmpty) '用户名：${p.username}',
+            if (p.password.isNotEmpty) '密码：******（已设置）',
+            if (p.bypass.isNotEmpty) '绕过：${p.bypass}',
+            '状态：${p.id == engine.activeProxyIdNotifier.value ? '启用中' : '未启用'}',
+            'id：${p.id}',
+          ].join('\n');
+
+          if (action == 'view' ||
+              (action == 'get' && (args['name']?.toString().trim().isNotEmpty ?? false))) {
+            final ref = args['name']?.toString() ?? '';
+            if (ref.isEmpty) {
+              final active = engine.activeProxy;
+              return active == null
+                  ? '当前直连，没有活动代理。'
+                  : detail(active);
+            }
+            final p = byRef(ref);
+            if (p == null) return '找不到代理「$ref」。';
+            return detail(p);
           }
 
           if (action == 'list') {
@@ -296,7 +330,7 @@ class BrowserTools {
               name: args['name']?.toString().trim().isNotEmpty == true
                   ? args['name']!.toString().trim()
                   : '$host:$port',
-              scheme: args['scheme']?.toString() ?? 'http',
+              scheme: normScheme(args['scheme']),
               host: host,
               port: port,
               username: args['username']?.toString() ?? '',
@@ -309,6 +343,46 @@ class BrowserTools {
             }
             return '已添加代理：${proxy.label}'
                 '${engine.activeProxy?.id == proxy.id ? '（当前已启用）' : ''}';
+          }
+          if (action == 'edit') {
+            final ref = args['name']?.toString() ?? '';
+            if (ref.isEmpty) return 'name 不能为空（要编辑的代理名称或 id）。';
+            final p = byRef(ref);
+            if (p == null) return '找不到代理「$ref」。';
+            final newHost = args.containsKey('host')
+                ? args['host']?.toString().trim() ?? ''
+                : p.host;
+            final newPort = args.containsKey('port')
+                ? (args['port'] as num?)?.toInt() ?? p.port
+                : p.port;
+            if (newHost.isEmpty || newPort <= 0 || newPort > 65535) {
+              return 'host/port 无效。';
+            }
+            final updated = BrowserProxy(
+              id: p.id,
+              name: args.containsKey('name') && args['name']?.toString().trim().isNotEmpty == true
+                  ? args['name']!.toString().trim()
+                  : p.name,
+              scheme: args.containsKey('scheme')
+                  ? normScheme(args['scheme']?.toString())
+                  : p.scheme,
+              host: newHost,
+              port: newPort,
+              username: args.containsKey('username')
+                  ? args['username']?.toString() ?? ''
+                  : p.username,
+              password: args.containsKey('password')
+                  ? args['password']?.toString() ?? ''
+                  : p.password,
+              bypass: args.containsKey('bypass')
+                  ? args['bypass']?.toString() ?? ''
+                  : p.bypass,
+            );
+            await engine.updateProxy(updated);
+            if (args['active'] == true) {
+              await engine.setActiveProxy(updated.id);
+            }
+            return '已编辑代理：\n${detail(updated)}';
           }
           if (action == 'remove') {
             final ref = args['name']?.toString() ?? '';
@@ -325,7 +399,7 @@ class BrowserTools {
           final active = engine.activeProxy;
           return active == null
               ? '浏览器当前直连（不走代理）。可用 browser_proxy add 添加代理。'
-              : '当前代理：${active.label}\n${active.url}';
+              : detail(active);
         },
       ),
       ExternalTool(
