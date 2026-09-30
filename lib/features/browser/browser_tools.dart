@@ -278,6 +278,7 @@ class BrowserTools {
             '名称：${p.name}',
             '协议：${p.scheme}',
             '地址：${p.scheme}://${p.host}:${p.port}',
+            '内核规则：${p.url}',
             if (p.username.isNotEmpty) '用户名：${p.username}',
             if (p.password.isNotEmpty) '密码：******（已设置）',
             if (p.bypass.isNotEmpty) '绕过：${p.bypass}',
