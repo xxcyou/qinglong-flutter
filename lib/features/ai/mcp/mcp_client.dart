@@ -105,17 +105,33 @@ class McpClient {
   }
 
   /// 调用工具，返回拼好的文本结果。
+  ///
+  /// 超时优先取参数里的 AI 自定义值（timeoutSeconds / timeout_seconds /
+  /// timeout_s / cmd_timeout_s / timeout，以及 MCP 网关内部注明的
+  /// __timeoutSeconds），让长任务按预估时长跑，而不是被统一 120 秒杀掉。
   Future<String> callTool(String name, Map<String, dynamic> args) async {
+    final timeout = _timeoutFromArgs(args);
+    if (args.containsKey('__timeoutSeconds')) {
+      args.remove('__timeoutSeconds');
+    }
     await ensureSession();
     Map<String, dynamic> result;
     try {
-      result = await _call('tools/call', {'name': name, 'arguments': args});
+      result = await _call(
+        'tools/call',
+        {'name': name, 'arguments': args},
+        timeout: timeout,
+      );
     } on StateError catch (e) {
       // 会话过期：重新握手后再试一次，避免让模型看到内部错误。
       if (!_isSessionError(e.message)) rethrow;
       resetSession();
       await ensureSession();
-      result = await _call('tools/call', {'name': name, 'arguments': args});
+      result = await _call(
+        'tools/call',
+        {'name': name, 'arguments': args},
+        timeout: timeout,
+      );
     }
     _handshaked = true;
     final isError = result['isError'] == true;
@@ -143,6 +159,32 @@ class McpClient {
     return text.isEmpty ? '（无返回内容）' : text;
   }
 
+  /// 从工具参数里读出 AI 预估的自定义超时（秒）。
+  ///
+  /// 兼容多种命名，MCP 网关折叠入口会把顶层 timeoutSeconds 放入
+  /// __timeoutSeconds 传给这里（内部标记，不会发给服务端）。
+  static Duration? _timeoutFromArgs(Map<String, dynamic> args) {
+    Object? raw;
+    if (args['__timeoutSeconds'] != null) {
+      raw = args['__timeoutSeconds'];
+    } else if (args['timeoutSeconds'] != null) {
+      raw = args['timeoutSeconds'];
+    } else if (args['timeout_seconds'] != null) {
+      raw = args['timeout_seconds'];
+    } else if (args['cmd_timeout_s'] != null) {
+      raw = args['cmd_timeout_s'];
+    } else if (args['timeout_s'] != null) {
+      raw = args['timeout_s'];
+    } else if (args['timeout'] != null) {
+      raw = args['timeout'];
+    }
+    final seconds = raw is num ? raw.toInt() : int.tryParse(raw?.toString() ?? '');
+    if (seconds == null || seconds <= 0) return null;
+    // 服务端按这个秒数跑命令，HTTP 等待还得留点余量，不然正好在命令
+    // 返回前一刻被客户端掐断。加 60 秒缓冲。
+    return Duration(seconds: seconds.clamp(1, 7200).toInt() + 60);
+  }
+
   static bool _isSessionError(String message) {
     final lower = message.toLowerCase();
     return lower.contains('session required') ||
@@ -159,6 +201,7 @@ class McpClient {
     String method,
     Map<String, dynamic> params, {
     bool expectSession = false,
+    Duration? timeout,
   }) async {
     _id += 1;
     final response = await _post({
@@ -166,7 +209,7 @@ class McpClient {
       'id': _id,
       'method': method,
       if (params.isNotEmpty) 'params': params,
-    });
+    }, timeout: timeout);
 
     if (expectSession) {
       final sid = response.headers.value('mcp-session-id') ??
@@ -195,14 +238,22 @@ class McpClient {
     return const {};
   }
 
-  Future<Response<dynamic>> _post(Map<String, dynamic> body) async {
+  Future<Response<dynamic>> _post(
+    Map<String, dynamic> body, {
+    Duration? timeout,
+  }) async {
     final headers = Map<String, String>.from(config.headers);
     if (_sessionId != null) headers['MCP-Session-Id'] = _sessionId!;
     try {
       return await _dio.post<dynamic>(
         config.url,
         data: jsonEncode(body),
-        options: Options(headers: headers),
+        options: Options(
+          headers: headers,
+          // AI 显式给了超时就用它覆盖默认 120 秒；不给仍保持默认。
+          sendTimeout: timeout,
+          receiveTimeout: timeout,
+        ),
       );
     } on DioException catch (e) {
       Logger.e('mcp', 'post failed ${config.url}', e);

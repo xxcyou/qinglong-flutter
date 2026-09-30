@@ -143,6 +143,10 @@ class McpGateway {
               'type': 'object',
               'description': '传给该工具的参数对象，没有参数就传 {}',
             },
+            'timeoutSeconds': {
+              'type': 'integer',
+              'description': '可选：预估本工具耗时（秒），覆盖默认 75 秒看门狗；例如长命令给 180/300/600',
+            },
           },
           'required': ['name'],
         },
@@ -154,9 +158,11 @@ class McpGateway {
           if (info['readOnly'] != true) {
             return '「$name」有副作用，不能用 mcp_query。改用 mcp_invoke 调用它。';
           }
+          final callArgs = _asMap(args['args']);
+          _applyTimeout(args, callArgs);
           return notifier.callTool(
             info['localName'] as String,
-            _asMap(args['args']),
+            callArgs,
           );
         },
       ),
@@ -172,6 +178,10 @@ class McpGateway {
               'type': 'object',
               'description': '传给该工具的参数对象，没有参数就传 {}',
             },
+            'timeoutSeconds': {
+              'type': 'integer',
+              'description': '可选：预估本工具耗时（秒），覆盖默认 75 秒看门狗；例如长命令给 180/300/600',
+            },
           },
           'required': ['name'],
         },
@@ -182,13 +192,26 @@ class McpGateway {
           final name = args['name']?.toString().trim() ?? '';
           final info = byName(name);
           if (info.isEmpty) return suggest(name);
+          final callArgs = _asMap(args['args']);
+          _applyTimeout(args, callArgs);
           return notifier.callTool(
             info['localName'] as String,
-            _asMap(args['args']),
+            callArgs,
           );
         },
       ),
     ];
+  }
+
+  static void _applyTimeout(
+    Map<String, dynamic> gatewayArgs,
+    Map<String, dynamic> callArgs,
+  ) {
+    final seconds = (gatewayArgs['timeoutSeconds'] as num?)?.toInt();
+    if (seconds != null && seconds > 0) {
+      // 内部标记：McpClient 会把它读作超时并从发给服务端的参数里移除。
+      callArgs['__timeoutSeconds'] = seconds;
+    }
   }
 
   static Map<String, dynamic> _asMap(Object? raw) {

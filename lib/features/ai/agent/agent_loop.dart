@@ -377,7 +377,9 @@ class AgentLoop {
   /// “长时间零进展”来判断。这里只给一个很大的兜底，防程序错误导致永久挂死。
   static const _subagentWaitTimeout = Duration(days: 1);
 
-  static Duration _timeoutFor(String name) {
+  static Duration _timeoutFor(String name, [Map<String, dynamic>? args]) {
+    final custom = _customTimeoutFromArgs(args);
+    if (custom != null) return custom;
     if (name == 'task_worker' || name == 'parallel_agents') {
       return _subagentToolTimeout;
     }
@@ -408,6 +410,36 @@ class AgentLoop {
       'shell_archive_extract',
     ];
     return slow.any(name.startsWith) ? _slowToolTimeout : _toolTimeout;
+  }
+
+  /// 从工具参数里读 AI 预估的自定义超时（秒）。
+  ///
+  /// shell_exec / shell_script / MCP 网关（mcp_query/mcp_invoke）等工具
+  /// 都支持 timeoutSeconds；MCP 网关还把顶层 timeoutSeconds 写进了内部
+  /// __timeoutSeconds。有自定义值就按它放大看门狗，避免"统一 75 秒杀掉长任务"。
+  static Object? _timeoutRaw(Map args) {
+    if (args['__timeoutSeconds'] != null) return args['__timeoutSeconds'];
+    if (args['timeoutSeconds'] != null) return args['timeoutSeconds'];
+    if (args['timeout_seconds'] != null) return args['timeout_seconds'];
+    if (args['cmd_timeout_s'] != null) return args['cmd_timeout_s'];
+    if (args['timeout_s'] != null) return args['timeout_s'];
+    if (args['timeout'] != null) return args['timeout'];
+    return null;
+  }
+
+  static Duration? _customTimeoutFromArgs(Map<String, dynamic>? args) {
+    if (args == null || args.isEmpty) return null;
+    Object? raw = _timeoutRaw(args);
+    // MCP 网关：超时经常放在 args 里的底层工具参数里
+    // （例如 execute_command 的 cmd_timeout_s），也认。
+    if (raw == null && args['args'] is Map) {
+      final inner = args['args'] as Map;
+      if (inner.isNotEmpty) raw = _timeoutRaw(inner);
+    }
+    final seconds = raw is num ? raw.toInt() : int.tryParse(raw?.toString() ?? '');
+    if (seconds == null || seconds <= 0) return null;
+    // 命令本体超时外再留 120 秒余量：排队、锁、启动开销、壳层等待都算进去。
+    return Duration(seconds: seconds.clamp(1, 7200).toInt() + 120);
   }
 
   /// 天生一直在变的工具：结果**永不复用**。
@@ -2545,7 +2577,7 @@ class AgentLoop {
                 return;
               }
 
-              final deadline = _timeoutFor(call.name);
+              final deadline = _timeoutFor(call.name, call.arguments);
               try {
                 // 看门狗：工具自己不返回时，这里到点就抛 TimeoutException。
                 // 注意它只是**放弃等待**，底层那个请求可能还在跑（Dart 没法强杀

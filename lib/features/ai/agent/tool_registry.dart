@@ -98,6 +98,11 @@ class QlToolRegistry {
   static const _intProp = {
     'type': 'integer',
   };
+  static const _timeoutProp = {
+    'type': 'integer',
+    'description': 'AI 预估本工具耗时（秒）；长命令给足余量，如 180/300/600，'
+        '别让默认超时把正常任务杀掉',
+  };
   static const _listStringProp = {
     'type': 'array',
     'items': {'type': 'string'},
@@ -918,7 +923,7 @@ class QlToolRegistry {
               'items': _stringProp,
               'description': '可选：给了 args 就按"程序+参数"直接执行，不过 shell',
             },
-            'timeoutSeconds': _intProp,
+            'timeoutSeconds': _timeoutProp,
           }),
           isWrite: true,
           impact: '在本机 PRoot Debian 里执行命令，可读写 workspace 并访问网络',
@@ -951,7 +956,7 @@ class QlToolRegistry {
               'description': '传给脚本的命令行参数',
             },
             'stdin': {'type': 'string', 'description': '喂给脚本标准输入的内容'},
-            'timeoutSeconds': _intProp,
+            'timeoutSeconds': _timeoutProp,
           }),
           isWrite: true,
           impact: '在本机 PRoot Debian 里写入脚本文件并执行它',
