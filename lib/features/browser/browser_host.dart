@@ -3618,6 +3618,8 @@ class _DevToolsPanelState extends State<_DevToolsPanel> {
                   _chip(3, '控制台', Icons.terminal_outlined),
                   const SizedBox(width: 6),
                   _chip(4, 'UA', Icons.badge_outlined),
+                  const SizedBox(width: 6),
+                  _chip(5, '代理', Icons.vpn_lock_outlined),
                 ],
               ),
             ),
@@ -3636,7 +3638,8 @@ class _DevToolsPanelState extends State<_DevToolsPanel> {
                 session: true,
               ),
               3 => _ConsolePanel(engine: widget.engine),
-              _ => _UaPanel(engine: widget.engine),
+              4 => _UaPanel(engine: widget.engine),
+              _ => _ProxyPanel(engine: widget.engine),
             },
           ),
         ],
@@ -4786,3 +4789,385 @@ class _ConsolePanelState extends State<_ConsolePanel> {
     return TextSpan(children: spans);
   }
 }
+
+
+class _ProxyPanel extends StatefulWidget {
+  const _ProxyPanel({required this.engine});
+
+  final BrowserEngine engine;
+
+  @override
+  State<_ProxyPanel> createState() => _ProxyPanelState();
+}
+
+class _ProxyPanelState extends State<_ProxyPanel> {
+  Future<void> _edit([BrowserProxy? proxy]) async {
+    final saved = await showBrowserDialog<BrowserProxy>(
+      context: context,
+      builder: (dialogContext, pop) => _ProxyEditDialog(
+        initial: proxy,
+        onSave: pop,
+        onCancel: () => pop(null),
+      ),
+    );
+    if (saved == null) return;
+    if (proxy == null) {
+      await widget.engine.addProxy(saved);
+    } else {
+      await widget.engine.updateProxy(saved);
+    }
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(proxy == null ? '已添加代理并生效' : '已保存代理'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 220,
+      ),
+    );
+  }
+
+  Future<void> _activate(BrowserProxy proxy) async {
+    final messenger = ScaffoldMessenger.of(context);
+    await widget.engine.setActiveProxy(proxy.id);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('已启用该代理，刷新页面后完全生效'),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 280,
+      ),
+    );
+  }
+
+  Future<void> _delete(String id) async {
+    final messenger = ScaffoldMessenger.of(context);
+    await widget.engine.removeProxy(id);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('已删除代理'),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 180,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 2, 10, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: ValueListenableBuilder<String>(
+                  valueListenable: widget.engine.activeProxyIdNotifier,
+                  builder: (context, activeId, _) {
+                    final active = widget.engine.activeProxy;
+                    return Text(
+                      active == null
+                          ? '当前：直连（不走代理）'
+                          : '当前：${active.label}',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w700,
+                        color: active == null
+                            ? scheme.onSurfaceVariant
+                            : scheme.primary,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                onPressed: () => _edit(),
+                icon: const Icon(Icons.add, size: 15),
+                label: const Text('添加代理'),
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ValueListenableBuilder<List<BrowserProxy>>(
+            valueListenable: widget.engine.proxiesNotifier,
+            builder: (context, list, _) {
+              if (list.isEmpty) {
+                return Center(
+                  child: Text(
+                    '还没有代理配置\n点右上角“添加代理”',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                );
+              }
+              return ListView.builder(
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 24),
+                itemCount: list.length,
+                itemBuilder: (context, index) {
+                  final proxy = list[index];
+                  final active = proxy.id ==
+                      widget.engine.activeProxyIdNotifier.value;
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Material(
+                      color: active
+                          ? scheme.primaryContainer.withValues(alpha: 0.35)
+                          : scheme.surfaceContainerHighest.withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(10),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => _activate(proxy),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 8,
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                active
+                                    ? Icons.check_circle_rounded
+                                    : Icons.public,
+                                size: 16,
+                                color: active
+                                    ? scheme.primary
+                                    : scheme.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      proxy.name,
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    Text(
+                                      '${proxy.scheme}://${proxy.host}:${proxy.port}',
+                                      style: TextStyle(
+                                        fontSize: 9.5,
+                                        fontFamily: kMonoFamily,
+                                        fontFamilyFallback: kMonoFallback,
+                                        color: scheme.onSurfaceVariant,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: '编辑',
+                                visualDensity: VisualDensity.compact,
+                                constraints: const BoxConstraints(
+                                  minWidth: 32,
+                                  minHeight: 32,
+                                ),
+                                iconSize: 15,
+                                padding: EdgeInsets.zero,
+                                icon: const Icon(Icons.edit_outlined),
+                                onPressed: () => _edit(proxy),
+                              ),
+                              IconButton(
+                                tooltip: '删除',
+                                visualDensity: VisualDensity.compact,
+                                constraints: const BoxConstraints(
+                                  minWidth: 32,
+                                  minHeight: 32,
+                                ),
+                                iconSize: 15,
+                                padding: EdgeInsets.zero,
+                                icon: const Icon(Icons.delete_outline),
+                                onPressed: () => _delete(proxy.id),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ProxyEditDialog extends StatefulWidget {
+  const _ProxyEditDialog({
+    required this.initial,
+    required this.onSave,
+    required this.onCancel,
+  });
+
+  final BrowserProxy? initial;
+  final ValueChanged<BrowserProxy?> onSave;
+  final VoidCallback onCancel;
+
+  @override
+  State<_ProxyEditDialog> createState() => _ProxyEditDialogState();
+}
+
+class _ProxyEditDialogState extends State<_ProxyEditDialog> {
+  late final TextEditingController _name;
+  late final TextEditingController _host;
+  late final TextEditingController _port;
+  late final TextEditingController _username;
+  late final TextEditingController _password;
+  late final TextEditingController _bypass;
+  late String _scheme;
+
+  @override
+  void initState() {
+    super.initState();
+    final p = widget.initial;
+    _name = TextEditingController(text: p?.name ?? '');
+    _host = TextEditingController(text: p?.host ?? '');
+    _port = TextEditingController(text: p?.port.toString() ?? '8080');
+    _username = TextEditingController(text: p?.username ?? '');
+    _password = TextEditingController(text: p?.password ?? '');
+    _bypass = TextEditingController(text: p?.bypass ?? '');
+    _scheme = p?.scheme ?? 'http';
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _host.dispose();
+    _port.dispose();
+    _username.dispose();
+    _password.dispose();
+    _bypass.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final host = _host.text.trim();
+    final port = int.tryParse(_port.text.trim()) ?? 0;
+    if (host.isEmpty || port <= 0 || port > 65535) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('请填写有效的主机和端口（1-65535）'),
+          duration: Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    widget.onSave(
+      BrowserProxy(
+        id: widget.initial?.id,
+        name: _name.text.trim().isEmpty ? '$host:$port' : _name.text.trim(),
+        scheme: _scheme,
+        host: host,
+        port: port,
+        username: _username.text.trim(),
+        password: _password.text,
+        bypass: _bypass.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final input = InputDecoration(
+      isDense: true,
+      filled: true,
+      fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide.none,
+      ),
+    );
+    return AlertDialog(
+      title: Text(widget.initial == null ? '添加代理' : '编辑代理'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _name,
+              decoration: input.copyWith(hintText: '名称（可选，默认 host:port）'),
+            ),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              initialValue: _scheme,
+              decoration: input,
+              items: const [
+                DropdownMenuItem(value: 'http', child: Text('HTTP')),
+                DropdownMenuItem(value: 'https', child: Text('HTTPS')),
+                DropdownMenuItem(value: 'socks5', child: Text('SOCKS5')),
+              ],
+              onChanged: (v) => setState(() => _scheme = v ?? 'http'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _host,
+              decoration: input.copyWith(hintText: '主机，如 127.0.0.1'),
+              style: const TextStyle(fontFamily: kMonoFamily),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _port,
+              keyboardType: TextInputType.number,
+              decoration: input.copyWith(hintText: '端口，如 8080'),
+              style: const TextStyle(fontFamily: kMonoFamily),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _username,
+              decoration: input.copyWith(hintText: '用户名（可选）'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _password,
+              obscureText: true,
+              decoration: input.copyWith(hintText: '密码（可选）'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _bypass,
+              maxLines: 2,
+              decoration: input.copyWith(
+                hintText: '绕过代理（逗号分隔，可留空）',
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: widget.onCancel,
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('保存'),
+        ),
+      ],
+    );
+  }
+}
+

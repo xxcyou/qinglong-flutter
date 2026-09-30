@@ -6,6 +6,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebStorage
 import android.webkit.WebView
+import androidx.webkit.ProxyConfig
+import androidx.webkit.ProxyController
 import androidx.webkit.ServiceWorkerClientCompat
 import androidx.webkit.ServiceWorkerControllerCompat
 import androidx.webkit.WebViewCompat
@@ -92,6 +94,43 @@ class WebBridge(private val context: Context) {
                             result.success(true)
                         } catch (e: Throwable) {
                             result.error("SW_CAPTURE_FAILED", e.message, null)
+                        }
+                    }
+
+                    // 浏览器代理：内核级 ProxyController，可切换 http/https/socks5
+                    // 代理或恢复直连（url 为空）。代理是全局生效的，切换后新请求
+                    // 会走新规则，已打开的页面需要刷新才会重新走网络。
+                    "setProxy" -> {
+                        try {
+                            val url = call.argument<String>("url") ?: ""
+                            val bypass = call.argument<String>("bypass") ?: ""
+                            val proxyController = ProxyController.getInstance()
+                            val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+                            val done = Runnable {
+                                try {
+                                    executor.shutdown()
+                                } catch (_: Throwable) {
+                                }
+                                android.os.Handler(android.os.Looper.getMainLooper())
+                                    .post { result.success(true) }
+                            }
+                            if (url.isEmpty()) {
+                                proxyController.clearProxyOverride(executor, done)
+                            } else {
+                                val builder = ProxyConfig.Builder()
+                                    .addProxyRule(url)
+                                if (bypass.isNotBlank()) {
+                                    for (rule in bypass.split(",")) {
+                                        val trimmed = rule.trim()
+                                        if (trimmed.isNotEmpty()) {
+                                            builder.addBypassRule(trimmed)
+                                        }
+                                    }
+                                }
+                                proxyController.setProxyOverride(builder.build(), executor, done)
+                            }
+                        } catch (e: Throwable) {
+                            result.error("PROXY_FAILED", e.message, null)
                         }
                     }
 

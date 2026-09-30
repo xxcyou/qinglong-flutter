@@ -38,6 +38,7 @@
   - `browser_sse`：预览 SSE 会话、深读消息、主动断开
   - `browser_hook`：加载自定义 JS 钩子；支持自启动脚本（不必提供 `onRequest/onResponse`）
   - `browser_fetch`：用独立请求重发抓到的请求，排除面板鉴权干扰
+- **浏览器代理**：支持 http / https / socks5 配置，开发者面板「代理」页可添加/编辑/切换/删除，AI 可用 `browser_proxy` 管理；代理内核级全局生效，切回直连也随时可用
 - 外部跳转拦截：网页要拉起微信/QQ/支付宝等外部 App 时先弹确认框，AI 可决定放行或拒绝
 
 ### 本地 Linux（PRoot Debian）

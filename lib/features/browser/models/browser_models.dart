@@ -120,6 +120,68 @@ class CapturedRequest {
       };
 }
 
+/// 浏览器代理配置。
+///
+/// 支持 http / https / socks5 三种 scheme，保存用户名密码后按
+/// `scheme://user:pass@host:port` 生成内核规则（部分 WebView 内核可能
+/// 不支持 URL 里的账号密码，遇到鉴权代理建议先用无鉴权测试）。
+class BrowserProxy {
+  BrowserProxy({
+    String? id,
+    required this.name,
+    required this.scheme,
+    required this.host,
+    required this.port,
+    this.username = '',
+    this.password = '',
+    this.bypass = '',
+  }) : id = id ?? 'p${DateTime.now().microsecondsSinceEpoch}';
+
+  final String id;
+  String name;
+  String scheme;
+  String host;
+  int port;
+  String username;
+  String password;
+  String bypass;
+
+  String get url {
+    final auth = username.isEmpty
+        ? ''
+        : '${Uri.encodeComponent(username)}:${Uri.encodeComponent(password)}@';
+    return '$scheme://$auth$host:$port';
+  }
+
+  String get label {
+    final auth = username.isEmpty ? '' : '$username@';
+    return '$name（$scheme://$auth$host:$port）';
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'scheme': scheme,
+        'host': host,
+        'port': port,
+        'username': username,
+        'password': password,
+        'bypass': bypass,
+      };
+
+  factory BrowserProxy.fromJson(Map<String, dynamic> json) => BrowserProxy(
+        id: json['id']?.toString(),
+        name: json['name']?.toString() ?? '',
+        scheme: json['scheme']?.toString() ?? 'http',
+        host: json['host']?.toString() ?? '',
+        port: (json['port'] as num?)?.toInt() ?? 8080,
+        username: json['username']?.toString() ?? '',
+        password: json['password']?.toString() ?? '',
+        bypass: json['bypass']?.toString() ?? '',
+      );
+}
+
+/// 页面里 console.* 的一行输出。注入脚本调试时看它。
 /// 页面里 console.* 的一行输出。注入脚本调试时看它。
 class ConsoleLine {
   ConsoleLine({required this.level, required this.text, DateTime? at})

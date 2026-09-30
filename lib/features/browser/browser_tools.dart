@@ -214,6 +214,121 @@ class BrowserTools {
         },
       ),
       ExternalTool(
+        name: 'browser_proxy',
+        description: '管理内置浏览器的网络代理。action=get 查看当前代理，list 列出全部代理配置，'
+            'set/switch 启用某个代理（可带 reload=true 刷新页面），add 新增代理（scheme 支持 http/https/socks5，'
+            '可带 username/password，active=true 立即启用），remove 删除，clear 恢复直连。'
+            '代理是内核级全局生效，切换后新请求走新代理；已打开的页面返回前记得 reload。',
+        parameters: obj([], {
+          'action': {
+            'type': 'string',
+            'enum': ['get', 'list', 'set', 'switch', 'add', 'remove', 'clear'],
+            'description': '默认 get',
+          },
+          'name': {
+            'type': 'string',
+            'description': '代理名称；set/remove 时可用名称或 id，add 时必填',
+          },
+          'scheme': {
+            'type': 'string',
+            'enum': ['http', 'https', 'socks5'],
+            'description': '代理协议，默认 http',
+          },
+          'host': {'type': 'string', 'description': '代理主机，如 127.0.0.1 或 proxy.example.com'},
+          'port': {'type': 'integer', 'description': '代理端口'},
+          'username': {'type': 'string', 'description': '代理用户名（可选）'},
+          'password': {'type': 'string', 'description': '代理密码（可选）'},
+          'bypass': {
+            'type': 'string',
+            'description': '不走代理的地址，逗号分隔；留空默认放过局域网/本机',
+          },
+          'active': {
+            'type': 'boolean',
+            'description': 'add 时 true 表示添加后立即启用',
+          },
+          'reload': {
+            'type': 'boolean',
+            'description': 'set/switch 时 true 表示切换并刷新当前页面',
+          },
+        }),
+        origin: origin,
+        isWrite: true,
+        invoke: (args) async {
+          await engine.loadProxySettings();
+          final action = args['action']?.toString() ?? 'get';
+          final proxies = engine.proxiesNotifier.value;
+          BrowserProxy? byRef(String ref) {
+            final key = ref.trim().toLowerCase();
+            for (final p in proxies) {
+              if (p.id == ref || p.name.toLowerCase() == key) return p;
+            }
+            return null;
+          }
+
+          if (action == 'list') {
+            final active = engine.activeProxy;
+            return [
+              '当前：${active?.label ?? '直连（不走代理）'}',
+              if (proxies.isEmpty) '（还没有代理配置）',
+              '代理配置（${proxies.length}）：',
+              for (final p in proxies)
+                '${p.id == engine.activeProxyIdNotifier.value ? '✓ ' : '• '}${p.label}'
+                    '${p.bypass.isEmpty ? '' : ' 绕过:${p.bypass}'}',
+            ].join('\n');
+          }
+          if (action == 'set' || action == 'switch') {
+            final ref = args['name']?.toString() ?? '';
+            if (ref.isEmpty) return 'name 不能为空（代理名称或 id）。';
+            final p = byRef(ref);
+            if (p == null) return '找不到代理「$ref」。可用 browser_proxy list 查看。';
+            await engine.setActiveProxy(p.id);
+            if (args['reload'] == true && engine.isReady) {
+              await engine.reload();
+              return '已启用代理：${p.label}，并已刷新当前页面。';
+            }
+            return '已启用代理：${p.label}。已打开的页面刷新后完全生效。';
+          }
+          if (action == 'add') {
+            final host = args['host']?.toString().trim() ?? '';
+            final port = (args['port'] as num?)?.toInt() ?? 0;
+            if (host.isEmpty || port <= 0) return 'host 和 port 必填。';
+            final proxy = BrowserProxy(
+              name: args['name']?.toString().trim().isNotEmpty == true
+                  ? args['name']!.toString().trim()
+                  : '$host:$port',
+              scheme: args['scheme']?.toString() ?? 'http',
+              host: host,
+              port: port,
+              username: args['username']?.toString() ?? '',
+              password: args['password']?.toString() ?? '',
+              bypass: args['bypass']?.toString() ?? '',
+            );
+            await engine.addProxy(proxy);
+            if (args['active'] == true) {
+              await engine.setActiveProxy(proxy.id);
+            }
+            return '已添加代理：${proxy.label}'
+                '${engine.activeProxy?.id == proxy.id ? '（当前已启用）' : ''}';
+          }
+          if (action == 'remove') {
+            final ref = args['name']?.toString() ?? '';
+            if (ref.isEmpty) return 'name 不能为空（代理名称或 id）。';
+            final p = byRef(ref);
+            if (p == null) return '找不到代理「$ref」。';
+            await engine.removeProxy(p.id);
+            return '已删除代理：${p.name}';
+          }
+          if (action == 'clear') {
+            await engine.clearProxy();
+            return '已恢复直连，浏览器不再走代理。';
+          }
+          final active = engine.activeProxy;
+          return active == null
+              ? '浏览器当前直连（不走代理）。可用 browser_proxy add 添加代理。'
+              : '当前代理：${active.label}\n${active.url}';
+        },
+      ),
+      ExternalTool(
         name: 'browser_ws',
         description: '管理/深读当前页面的 WebSocket：list 是预览（只列会话摘要和最近消息），'
             'messages 是按会话 ID + 消息排列 ID 分页深读（不加载全部，省 token）；'

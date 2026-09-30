@@ -77,6 +77,18 @@ class WebBridge {
     return await _invoke<bool>('enableServiceWorkerCapture') ?? false;
   }
 
+  /// 设置浏览器内核代理（url 为空 = 恢复直连）。
+  ///
+  /// 使用 AndroidX ProxyController，代理全局生效；切换后已打开的页面
+  /// 需要刷新才会走新代理。
+  static Future<bool> setProxy(String url, {String bypass = ''}) async {
+    return await _invoke<bool>('setProxy', {
+          'url': url,
+          'bypass': bypass,
+        }) ??
+        false;
+  }
+
   /// 某个地址下的完整 cookie 串，**包含 HttpOnly**。
   ///
   /// `document.cookie` 读不到 HttpOnly，而登录票（cf_clearance、各家的

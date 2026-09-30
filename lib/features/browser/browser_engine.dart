@@ -87,6 +87,23 @@ class BrowserEngine {
 
   String get userAgent => userAgentNotifier.value;
 
+  bool _proxyLoaded = false;
+
+  /// 已保存的浏览器代理配置列表（持久化）。
+  final ValueNotifier<List<BrowserProxy>> proxiesNotifier = ValueNotifier([]);
+
+  /// 当前启用的代理 id；空字符串 = 直连。
+  final ValueNotifier<String> activeProxyIdNotifier = ValueNotifier('');
+
+  BrowserProxy? get activeProxy {
+    final id = activeProxyIdNotifier.value;
+    if (id.isEmpty) return null;
+    for (final p in proxiesNotifier.value) {
+      if (p.id == id) return p;
+    }
+    return null;
+  }
+
   Future<void> _loadUserAgent() async {
     if (_uaLoaded) return;
     _uaLoaded = true;
@@ -214,6 +231,107 @@ class BrowserEngine {
     try {
       await _controller?.setUserAgent(_defaultUserAgent);
     } catch (_) {}
+  }
+
+  /// 显式加载代理设置（供 AI/UI 在浏览器没打开时也能读列表）。
+  Future<void> loadProxySettings() async => _loadProxySettings();
+
+  Future<void> _loadProxySettings() async {
+    if (_proxyLoaded) return;
+    _proxyLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final listJson = prefs.getString('browser_proxy_list');
+      if (listJson != null && listJson.trim().isNotEmpty) {
+        final decoded = jsonDecode(listJson);
+        if (decoded is List) {
+          proxiesNotifier.value = [
+            for (final item in decoded)
+              if (item is Map) BrowserProxy.fromJson(Map<String, dynamic>.from(item)),
+          ];
+        }
+      }
+      activeProxyIdNotifier.value = prefs.getString('browser_proxy_active') ?? '';
+    } catch (_) {}
+    await _applyActiveProxy();
+  }
+
+  Future<void> _saveProxySettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'browser_proxy_list',
+        jsonEncode([for (final p in proxiesNotifier.value) p.toJson()]),
+      );
+      await prefs.setString('browser_proxy_active', activeProxyIdNotifier.value);
+    } catch (_) {}
+  }
+
+  Future<void> addProxy(BrowserProxy proxy) async {
+    final list = List.of(proxiesNotifier.value);
+    // 同 id 视为更新。
+    final index = list.indexWhere((p) => p.id == proxy.id);
+    if (index >= 0) {
+      list[index] = proxy;
+    } else {
+      list.add(proxy);
+    }
+    proxiesNotifier.value = list;
+    // 第一条自动启用，方便"加完就能用"。
+    if (activeProxyIdNotifier.value.isEmpty) {
+      activeProxyIdNotifier.value = proxy.id;
+    }
+    await _saveProxySettings();
+    await _applyActiveProxy();
+  }
+
+  Future<void> updateProxy(BrowserProxy proxy) async {
+    final list = List.of(proxiesNotifier.value);
+    final index = list.indexWhere((p) => p.id == proxy.id);
+    if (index < 0) return;
+    list[index] = proxy;
+    proxiesNotifier.value = list;
+    await _saveProxySettings();
+    if (activeProxyIdNotifier.value == proxy.id) {
+      await _applyActiveProxy();
+    }
+  }
+
+  Future<void> removeProxy(String id) async {
+    final list = List.of(proxiesNotifier.value)
+      ..removeWhere((p) => p.id == id);
+    proxiesNotifier.value = list;
+    if (activeProxyIdNotifier.value == id) {
+      activeProxyIdNotifier.value = '';
+      await _applyActiveProxy();
+    }
+    await _saveProxySettings();
+  }
+
+  Future<void> setActiveProxy(String id) async {
+    final hit = proxiesNotifier.value.where((p) => p.id == id);
+    if (hit.isEmpty) return;
+    activeProxyIdNotifier.value = id;
+    await _saveProxySettings();
+    await _applyActiveProxy();
+  }
+
+  Future<void> clearProxy() async {
+    activeProxyIdNotifier.value = '';
+    await _saveProxySettings();
+    await _applyActiveProxy();
+  }
+
+  Future<void> _applyActiveProxy() async {
+    final active = activeProxy;
+    if (active == null) {
+      await WebBridge.setProxy('');
+      return;
+    }
+    final bypass = active.bypass.trim().isEmpty
+        ? '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.1,localhost'
+        : active.bypass.trim();
+    await WebBridge.setProxy(active.url, bypass: bypass);
   }
 
   BrowserEngine._();
@@ -389,6 +507,7 @@ class BrowserEngine {
     // 用真实手机 UA：默认 UA 里带 wv 字样，很多站点会因此直接给验证页。
     // 用户/ AI 可以通过 setUserAgent 改，这里每次重建内核都读当前值。
     await _loadUserAgent();
+    await loadProxySettings();
     await c.setUserAgent(userAgentNotifier.value);
     _controller = c;
     controllerRevision.value++;
