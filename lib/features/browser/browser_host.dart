@@ -5112,24 +5112,37 @@ class _ProxyEditDialogState extends State<_ProxyEditDialog> {
               decoration: input.copyWith(hintText: '名称（可选，默认 host:port）'),
             ),
             const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: DropdownButton<String>(
-                value: _scheme,
-                isExpanded: true,
-                underline: const SizedBox.shrink(),
-                items: const [
-                  DropdownMenuItem(value: 'http', child: Text('HTTP')),
-                  DropdownMenuItem(value: 'https', child: Text('HTTPS')),
-                  DropdownMenuItem(value: 'socks5', child: Text('SOCKS5 (S5)')),
-                ],
-                onChanged: (v) =>
-                    setState(() => _scheme = v ?? 'http'),
-              ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '协议',
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    for (final item in const [
+                      ('http', 'HTTP'),
+                      ('https', 'HTTPS'),
+                      ('socks5', 'SOCKS5 (S5)'),
+                    ])
+                      ChoiceChip(
+                        label: Text(item.$2),
+                        selected: _scheme == item.$1,
+                        visualDensity: VisualDensity.compact,
+                        onSelected: (_) =>
+                            setState(() => _scheme = item.$1),
+                      ),
+                  ],
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             TextField(
