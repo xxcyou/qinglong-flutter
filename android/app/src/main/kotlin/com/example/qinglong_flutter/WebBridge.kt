@@ -117,8 +117,11 @@ class WebBridge(private val context: Context) {
                             if (url.isEmpty()) {
                                 proxyController.clearProxyOverride(executor, done)
                             } else {
+                                // AndroidX 的 ProxyConfig 只认 http/https/socks，socks5:// 会被当
+                                // 成无效/默认 http，所以在这里显式转成 socks://（即 SOCKS5）。
+                                val proxyUrl = url.replaceFirst("socks5://", "socks://")
                                 val builder = ProxyConfig.Builder()
-                                    .addProxyRule(url)
+                                    .addProxyRule(proxyUrl)
                                 if (bypass.isNotBlank()) {
                                     for (rule in bypass.split(",")) {
                                         val trimmed = rule.trim()

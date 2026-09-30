@@ -5113,6 +5113,7 @@ class _ProxyEditDialogState extends State<_ProxyEditDialog> {
             ),
             const SizedBox(height: 8),
             DropdownButtonFormField<String>(
+              key: ValueKey('proxy-scheme-$_scheme'),
               initialValue: _scheme,
               decoration: input,
               items: const [

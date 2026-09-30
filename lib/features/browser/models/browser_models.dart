@@ -146,11 +146,16 @@ class BrowserProxy {
   String password;
   String bypass;
 
+  /// 传给 AndroidX ProxyConfig 的规则。
+  ///
+  /// 注意：AndroidX 只认 `http` / `https` / `socks`，`socks5://` 不识别；
+  /// 所以 SOCKS5 配置在这里统一转成 `socks://`（默认按 SOCKS5 处理）。
   String get url {
+    final proxyScheme = scheme == 'socks5' ? 'socks' : scheme;
     final auth = username.isEmpty
         ? ''
         : '${Uri.encodeComponent(username)}:${Uri.encodeComponent(password)}@';
-    return '$scheme://$auth$host:$port';
+    return '$proxyScheme://$auth$host:$port';
   }
 
   String get label {
