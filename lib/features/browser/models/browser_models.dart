@@ -186,6 +186,64 @@ class BrowserProxy {
       );
 }
 
+/// 浏览器收藏。同一条 URL 重复收藏会覆盖标题。
+class BrowserBookmark {
+  BrowserBookmark({
+    String? id,
+    required this.title,
+    required this.url,
+    DateTime? createdAt,
+  })  : id = id ?? 'b${DateTime.now().microsecondsSinceEpoch}',
+        createdAt = createdAt ?? DateTime.now();
+
+  final String id;
+  String title;
+  String url;
+  final DateTime createdAt;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'url': url,
+        'createdAt': createdAt.toIso8601String(),
+      };
+
+  factory BrowserBookmark.fromJson(Map<String, dynamic> json) => BrowserBookmark(
+        id: json['id']?.toString(),
+        title: json['title']?.toString() ?? '',
+        url: json['url']?.toString() ?? '',
+        createdAt:
+            DateTime.tryParse(json['createdAt']?.toString() ?? '') ?? DateTime.now(),
+      );
+}
+
+/// 浏览器历史记录。
+class BrowserHistoryEntry {
+  BrowserHistoryEntry({
+    required this.title,
+    required this.url,
+    required this.visitedAt,
+  });
+
+  final String title;
+  final String url;
+  final DateTime visitedAt;
+
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        'url': url,
+        'visitedAt': visitedAt.toIso8601String(),
+      };
+
+  factory BrowserHistoryEntry.fromJson(Map<String, dynamic> json) =>
+      BrowserHistoryEntry(
+        title: json['title']?.toString() ?? '',
+        url: json['url']?.toString() ?? '',
+        visitedAt: DateTime.tryParse(json['visitedAt']?.toString() ?? '') ??
+            DateTime.now(),
+      );
+}
+
 /// 页面里 console.* 的一行输出。注入脚本调试时看它。
 /// 页面里 console.* 的一行输出。注入脚本调试时看它。
 class ConsoleLine {

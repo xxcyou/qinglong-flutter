@@ -205,6 +205,12 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     if (mounted) setState(() {});
   }
 
+  void _openUrlFromPanel(String url) {
+    _engine.claimByUser();
+    setState(() => _tab = 0);
+    unawaited(_engine.open(url));
+  }
+
   /// 脚本编辑器开着时编辑的是谁。null = 编辑器没开。
   /// id < 0 表示"新脚本，还没存过"。
   InterceptScript? _editing;
@@ -445,6 +451,14 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                     2 => _consoleList(),
                     3 => _scriptList(),
                     4 => _devtoolsList(),
+                    5 => _BookmarksPanel(
+                      engine: _engine,
+                      onOpenUrl: _openUrlFromPanel,
+                    ),
+                    6 => _HistoryPanel(
+                      engine: _engine,
+                      onOpenUrl: _openUrlFromPanel,
+                    ),
                     _ => _scriptList(),
                   },
                 ),
@@ -654,6 +668,10 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                           4,
                           Icons.developer_mode_outlined,
                         ),
+                        const SizedBox(width: 5),
+                        _tabChip('收藏', 5, Icons.star_border_outlined),
+                        const SizedBox(width: 5),
+                        _tabChip('历史', 6, Icons.history_outlined),
                       ],
                     ),
                   ),
@@ -5124,23 +5142,37 @@ class _ProxyEditDialogState extends State<_ProxyEditDialog> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: [
-                    for (final item in const [
-                      ('http', 'HTTP'),
-                      ('https', 'HTTPS'),
-                      ('socks5', 'SOCKS5 (S5)'),
-                    ])
-                      ChoiceChip(
-                        label: Text(item.$2),
-                        selected: _scheme == item.$1,
-                        visualDensity: VisualDensity.compact,
-                        onSelected: (_) =>
-                            setState(() => _scheme = item.$1),
-                      ),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(
+                      value: 'http',
+                      label: Text('HTTP'),
+                      icon: Icon(Icons.public, size: 14),
+                    ),
+                    ButtonSegment(
+                      value: 'https',
+                      label: Text('HTTPS'),
+                      icon: Icon(Icons.lock_outline, size: 14),
+                    ),
+                    ButtonSegment(
+                      value: 'socks5',
+                      label: Text('SOCKS5'),
+                      icon: Icon(Icons.vpn_lock_outlined, size: 14),
+                    ),
                   ],
+                  selected: {_scheme},
+                  showSelectedIcon: false,
+                  style: ButtonStyle(
+                    visualDensity: VisualDensity.compact,
+                    textStyle: WidgetStatePropertyAll(
+                      const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  onSelectionChanged: (selection) =>
+                      setState(() => _scheme = selection.first),
                 ),
               ],
             ),
@@ -5190,6 +5222,350 @@ class _ProxyEditDialogState extends State<_ProxyEditDialog> {
         ),
       ],
     );
+  }
+}
+
+
+class _BookmarksPanel extends StatefulWidget {
+  const _BookmarksPanel({required this.engine, required this.onOpenUrl});
+
+  final BrowserEngine engine;
+  final void Function(String url) onOpenUrl;
+
+  @override
+  State<_BookmarksPanel> createState() => _BookmarksPanelState();
+}
+
+class _BookmarksPanelState extends State<_BookmarksPanel> {
+  Future<void> _addCurrent() async {
+    final url = widget.engine.currentUrl.value.trim();
+    if (url.isEmpty) return;
+    await widget.engine.addBookmark(
+      url,
+      title: widget.engine.title.value,
+    );
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text('已收藏：${widget.engine.title.value.isEmpty ? url : widget.engine.title.value}'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _remove(String id) async {
+    await widget.engine.removeBookmark(id);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 2, 10, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: ValueListenableBuilder<List<BrowserBookmark>>(
+                  valueListenable: widget.engine.bookmarks,
+                  builder: (context, list, _) => Text(
+                    '收藏夹（${list.length}）',
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w700,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                onPressed: _addCurrent,
+                icon: const Icon(Icons.star_outline_rounded, size: 15),
+                label: const Text('收藏当前页'),
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ValueListenableBuilder<List<BrowserBookmark>>(
+            valueListenable: widget.engine.bookmarks,
+            builder: (context, list, _) {
+              if (list.isEmpty) {
+                return Center(
+                  child: Text(
+                    '还没有收藏\n在当前页面点“收藏当前页”即可添加',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                );
+              }
+              return ListView.builder(
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 24),
+                itemCount: list.length,
+                itemBuilder: (context, index) {
+                  final b = list[index];
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Material(
+                      color: scheme.surfaceContainerHighest.withValues(
+                        alpha: 0.3,
+                      ),
+                      borderRadius: BorderRadius.circular(10),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => widget.onOpenUrl(b.url),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 8,
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.star_outline_rounded,
+                                size: 16,
+                                color: Colors.orange.shade700,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      b.title,
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    Text(
+                                      b.url,
+                                      style: TextStyle(
+                                        fontSize: 9.5,
+                                        fontFamily: kMonoFamily,
+                                        fontFamilyFallback: kMonoFallback,
+                                        color: scheme.onSurfaceVariant,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: '删除收藏',
+                                visualDensity: VisualDensity.compact,
+                                constraints: const BoxConstraints(
+                                  minWidth: 32,
+                                  minHeight: 32,
+                                ),
+                                iconSize: 15,
+                                padding: EdgeInsets.zero,
+                                icon: const Icon(Icons.delete_outline),
+                                onPressed: () => _remove(b.id),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HistoryPanel extends StatefulWidget {
+  const _HistoryPanel({required this.engine, required this.onOpenUrl});
+
+  final BrowserEngine engine;
+  final void Function(String url) onOpenUrl;
+
+  @override
+  State<_HistoryPanel> createState() => _HistoryPanelState();
+}
+
+class _HistoryPanelState extends State<_HistoryPanel> {
+  Future<void> _clear() async {
+    await widget.engine.clearHistory();
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('历史已清空'),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 180,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 2, 10, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: ValueListenableBuilder<List<BrowserHistoryEntry>>(
+                  valueListenable: widget.engine.history,
+                  builder: (context, list, _) => Text(
+                    '历史记录（${list.length}）',
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w700,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton.icon(
+                onPressed: _clear,
+                icon: const Icon(Icons.delete_sweep_outlined, size: 15),
+                label: const Text('清空'),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  foregroundColor: scheme.error,
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ValueListenableBuilder<List<BrowserHistoryEntry>>(
+            valueListenable: widget.engine.history,
+            builder: (context, list, _) {
+              if (list.isEmpty) {
+                return Center(
+                  child: Text(
+                    '暂时还没有浏览历史',
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                );
+              }
+              return ListView.builder(
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 24),
+                itemCount: list.length,
+                itemBuilder: (context, index) {
+                  final h = list[index];
+                  final time = h.visitedAt.toLocal();
+                  final timeText = _fmtTime(time);
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 5),
+                    child: Material(
+                      color: scheme.surfaceContainerHighest.withValues(
+                        alpha: 0.3,
+                      ),
+                      borderRadius: BorderRadius.circular(10),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => widget.onOpenUrl(h.url),
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(10, 7, 4, 7),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.history_outlined,
+                                size: 15,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      h.title,
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    Text(
+                                      h.url,
+                                      style: TextStyle(
+                                        fontSize: 9.5,
+                                        fontFamily: kMonoFamily,
+                                        fontFamilyFallback: kMonoFallback,
+                                        color: scheme.onSurfaceVariant,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Text(
+                                timeText,
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  color: scheme.onSurfaceVariant,
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: '删除此条',
+                                visualDensity: VisualDensity.compact,
+                                constraints: const BoxConstraints(
+                                  minWidth: 30,
+                                  minHeight: 30,
+                                ),
+                                iconSize: 15,
+                                padding: EdgeInsets.zero,
+                                icon: const Icon(Icons.close),
+                                onPressed: () =>
+                                    widget.engine.removeHistoryAt(index),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _fmtTime(DateTime t) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(t.year, t.month, t.day);
+    final two = (int v) => v.toString().padLeft(2, '0');
+    final hm = '${two(t.hour)}:${two(t.minute)}';
+    if (day == today) return hm;
+    if (day == today.subtract(const Duration(days: 1))) return '昨天 $hm';
+    return '${two(t.month)}-${two(t.day)} $hm';
   }
 }
 

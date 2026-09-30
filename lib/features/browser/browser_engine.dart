@@ -104,6 +104,16 @@ class BrowserEngine {
     return null;
   }
 
+  bool _bookmarksLoaded = false;
+
+  /// 收藏夹（持久化）。
+  final ValueNotifier<List<BrowserBookmark>> bookmarks = ValueNotifier([]);
+
+  /// 历史记录（持久化，倒序，最多保存 800 条）。
+  final ValueNotifier<List<BrowserHistoryEntry>> history = ValueNotifier([]);
+
+  static const _maxHistory = 800;
+
   Future<void> _loadUserAgent() async {
     if (_uaLoaded) return;
     _uaLoaded = true;
@@ -334,6 +344,137 @@ class BrowserEngine {
     await WebBridge.setProxy(active.url, bypass: bypass);
   }
 
+  /// 加载收藏和历史（供 UI/AI 第一时间读取）。
+  Future<void> loadBookmarksAndHistory() async {
+    if (_bookmarksLoaded) return;
+    _bookmarksLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final bJson = prefs.getString('browser_bookmarks');
+      if (bJson != null && bJson.trim().isNotEmpty) {
+        final decoded = jsonDecode(bJson);
+        if (decoded is List) {
+          bookmarks.value = [
+            for (final item in decoded)
+              if (item is Map)
+                BrowserBookmark.fromJson(Map<String, dynamic>.from(item)),
+          ];
+        }
+      }
+      final hJson = prefs.getString('browser_history');
+      if (hJson != null && hJson.trim().isNotEmpty) {
+        final decoded = jsonDecode(hJson);
+        if (decoded is List) {
+          history.value = [
+            for (final item in decoded)
+              if (item is Map)
+                BrowserHistoryEntry.fromJson(Map<String, dynamic>.from(item)),
+          ];
+          // 倒序显示最新在前。
+          history.value.sort((a, b) => b.visitedAt.compareTo(a.visitedAt));
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveBookmarks() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'browser_bookmarks',
+        jsonEncode([for (final b in bookmarks.value) b.toJson()]),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _saveHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'browser_history',
+        jsonEncode([for (final h in history.value) h.toJson()]),
+      );
+    } catch (_) {}
+  }
+
+  /// 收藏当前页面；重复 URL 会被去重并更新标题。
+  Future<void> addBookmark(String url, {String title = ''}) async {
+    final target = url.trim();
+    if (target.isEmpty) return;
+    await loadBookmarksAndHistory();
+    final list = List.of(bookmarks.value);
+    final name = title.trim().isEmpty ? _bookmarkTitleFor(target) : title.trim();
+    final index = list.indexWhere((b) => b.url == target);
+    if (index >= 0) {
+      list[index] = BrowserBookmark(
+        id: list[index].id,
+        title: name,
+        url: target,
+        createdAt: list[index].createdAt,
+      );
+    } else {
+      list.insert(0, BrowserBookmark(title: name, url: target));
+    }
+    bookmarks.value = list;
+    await _saveBookmarks();
+  }
+
+  Future<void> removeBookmark(String id) async {
+    final list = List.of(bookmarks.value)
+      ..removeWhere((b) => b.id == id);
+    bookmarks.value = list;
+    await _saveBookmarks();
+  }
+
+  /// 页面加载完成时写入一条历史。
+  Future<void> recordHistory(String url, String title) async {
+    final target = url.trim();
+    if (target.isEmpty) return;
+    if (target.startsWith('about:') ||
+        target.startsWith('data:') ||
+        target.startsWith('devtools:')) {
+      return;
+    }
+    await loadBookmarksAndHistory();
+    final now = DateTime.now();
+    final list = List.of(history.value)
+      ..removeWhere((h) => h.url == target && h.title == title);
+    list.insert(0, BrowserHistoryEntry(
+      title: title.trim().isEmpty ? _bookmarkTitleFor(target) : title.trim(),
+      url: target,
+      visitedAt: now,
+    ));
+    if (list.length > _maxHistory) {
+      list.removeRange(_maxHistory, list.length);
+    }
+    history.value = list;
+    await _saveHistory();
+  }
+
+  Future<void> removeHistoryAt(int index) async {
+    if (index < 0 || index >= history.value.length) return;
+    final list = List.of(history.value)..removeAt(index);
+    history.value = list;
+    await _saveHistory();
+  }
+
+  Future<void> clearHistory() async {
+    history.value = [];
+    await _saveHistory();
+  }
+
+  String _bookmarkTitleFor(String url) {
+    try {
+      final uri = Uri.parse(url);
+      final host = uri.host.isEmpty ? url : uri.host;
+      final seg = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+      if (seg.isNotEmpty) return Uri.decodeComponent(seg.last);
+      return host;
+    } catch (_) {
+      return url;
+    }
+  }
+
   BrowserEngine._();
 
   static final BrowserEngine instance = BrowserEngine._();
@@ -466,6 +607,7 @@ class BrowserEngine {
             canGoBack.value = await _controller?.canGoBack() ?? false;
             // 每次导航后 JS 环境重建，钩子要重新装。
             await _injectHooks();
+            await recordHistory(url, title.value);
             // 登录 / 过验证之后 cookie 只在内存里，进程被杀就没了。
             // 每次加载完落一次盘，等于"关掉 APP 明天回来还是登录状态"。
             await WebBridge.flush();
@@ -508,6 +650,7 @@ class BrowserEngine {
     // 用户/ AI 可以通过 setUserAgent 改，这里每次重建内核都读当前值。
     await _loadUserAgent();
     await loadProxySettings();
+    await loadBookmarksAndHistory();
     await c.setUserAgent(userAgentNotifier.value);
     _controller = c;
     controllerRevision.value++;
@@ -516,6 +659,9 @@ class BrowserEngine {
       WebBridge.onNativeRequest = _onNativeServiceWorkerRequest;
       unawaited(WebBridge.enableServiceWorkerCapture());
     }
+    // 被系统设为默认浏览器后，外部链接从这里进来。
+    WebBridge.onOpenExternalUrl = _openExternalUrl;
+    await WebBridge.initOpenUrlHandler();
     await _applyBrowserLikeSettings(c);
     return c;
   }
@@ -1010,6 +1156,16 @@ class BrowserEngine {
   }
 
   // -------------------------------------------------------------- 基本操作
+
+  Future<void> _openExternalUrl(String url) async {
+    try {
+      await ensure();
+      visible.value = true;
+      await open(url);
+    } catch (e) {
+      _log('error', '外部链接打开失败：$e');
+    }
+  }
 
   Future<void> open(String url) async {
     final firstBoot = _controller == null;
