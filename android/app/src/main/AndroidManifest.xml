@@ -23,6 +23,11 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
               />
+            <!-- 我们自己做 ACTION_VIEW 转发（走 openUrl 给内置浏览器），
+                 关掉 Flutter 默认深链处理，避免 GoException: no routes for location: https://... -->
+            <meta-data
+              android:name="flutter_deeplinking_enabled"
+              android:value="false" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
