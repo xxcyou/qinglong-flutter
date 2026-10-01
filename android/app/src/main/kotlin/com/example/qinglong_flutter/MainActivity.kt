@@ -8,6 +8,11 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    /// 作为默认浏览器收到 ACTION_VIEW 时，Flutter 会把 URL 当成 GoRouter
+    /// 的 initialRoute 去匹配，导致 “no routes for location: https://...”。
+    /// 这里强制从首页启动；URL 走 qinglong/open_url 通道交给内置浏览器。
+    override fun getInitialRoute(): String? = "/"
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         consumeViewIntent(intent)
