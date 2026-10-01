@@ -138,13 +138,13 @@ class BrowserTools {
       ),
       ExternalTool(
         name: 'browser_profile',
-        description: '管理浏览器分身/快照（虚拟浏览器镜像）。不是真多个浏览器，而是把同一个真实浏览器'
-            '的状态保存成多份镜像，切换时整份替换当前数据。action=list 列出全部分身，'
-            'current 查看当前分身，new 新建分身（clone_current=true 复制当前分身数据），'
-            'view 查看某个分身完整快照详情，switch 切换到指定分身（按 id 或 name），'
-            'save 把当前正在用的分身保存成最新快照，rename 重命名，remove 删除（主浏览器不可删），'
-            'update 更新分身数据（name/ua/proxy_id/current_url，可清空收藏/历史/Cookie/本地数据）。'
-            '每个分身独立保存：UA 指纹、当前代理、当前网址、收藏、历史、Cookie、localStorage。',
+        description: '管理浏览器快照（虚拟浏览器镜像）。不是真多个浏览器，而是把同一个真实浏览器'
+            '的状态保存成多份镜像，切换时整份替换当前数据。action=list 列出全部快照，'
+            'current 查看当前快照，new 新建快照（clone_current=true 复制当前快照数据），'
+            'view 查看某个快照完整快照详情，switch 切换到指定快照（按 id 或 name），'
+            'save 把当前正在用的快照保存成最新快照，rename 重命名，remove 删除（主浏览器不可删），'
+            'update 更新快照数据（name/ua/proxy_id/current_url，可清空收藏/历史/Cookie/本地数据）。'
+            '每个快照独立保存：UA 指纹、当前代理、当前网址、收藏、历史、Cookie、localStorage。',
         parameters: obj([], {
           'action': {
             'type': 'string',
@@ -156,15 +156,15 @@ class BrowserTools {
           },
           'id': {
             'type': 'string',
-            'description': '分身 id；switch/rename/remove 时可用 name 代替',
+            'description': '快照 id；switch/rename/remove 时可用 name 代替',
           },
           'name': {
             'type': 'string',
-            'description': '分身名称；new 新建时指定，rename 时作为新名称',
+            'description': '快照名称；new 新建时指定，rename 时作为新名称',
           },
           'clone_current': {
             'type': 'boolean',
-            'description': 'action=new 时 true=复制当前分身（含登录态/历史/收藏），false=空白分身',
+            'description': 'action=new 时 true=复制当前快照（含登录态/历史/收藏），false=空白快照',
           },
           'ua': {
             'type': 'string',
@@ -176,23 +176,23 @@ class BrowserTools {
           },
           'current_url': {
             'type': 'string',
-            'description': 'action=update 时设置该分身切换后打开的网址',
+            'description': 'action=update 时设置该快照切换后打开的网址',
           },
           'clear_bookmarks': {
             'type': 'boolean',
-            'description': 'action=update 时 true=清空该分身的收藏',
+            'description': 'action=update 时 true=清空该快照的收藏',
           },
           'clear_history': {
             'type': 'boolean',
-            'description': 'action=update 时 true=清空该分身的历史',
+            'description': 'action=update 时 true=清空该快照的历史',
           },
           'clear_cookies': {
             'type': 'boolean',
-            'description': 'action=update 时 true=清空该分身的 Cookie 登录态',
+            'description': 'action=update 时 true=清空该快照的 Cookie 登录态',
           },
           'clear_local_storage': {
             'type': 'boolean',
-            'description': 'action=update 时 true=清空该分身的 localStorage 快照',
+            'description': 'action=update 时 true=清空该快照的 localStorage 快照',
           },
         }),
         origin: origin,
@@ -204,8 +204,8 @@ class BrowserTools {
             final list = engine.profilesNotifier.value;
             final active = engine.activeProfileIdNotifier.value;
             final parts = <String>[
-              if (action == 'current') '当前分身：${engine.currentProfile?.name ?? ''}'
-              else '全部分身（${list.length}）：',
+              if (action == 'current') '当前快照：${engine.currentProfile?.name ?? ''}'
+              else '全部快照（${list.length}）：',
             ];
             for (final p in list) {
               final mark = p.id == active ? '▶ ' : '';
@@ -230,16 +230,16 @@ class BrowserTools {
               cloneCurrent: clone,
             );
             return clone
-                ? '已新建分身「${p.name}」并复制了当前浏览器的数据。'
+                ? '已新建快照「${p.name}」并复制了当前浏览器的数据。'
                     '用 browser_profile switch id=${p.id} 切换过去。'
-                : '已新建空白分身「${p.name}」（id=${p.id}）。'
+                : '已新建空白快照「${p.name}」（id=${p.id}）。'
                     '可先用 browser_ua set / browser_proxy set 配置它的指纹和代理，'
                     '再用 browser_profile switch id=${p.id} 切换过去。';
           }
           if (action == 'save') {
             await engine.saveCurrentSnapshot();
             final name = engine.currentProfile?.name ?? '';
-            return '已将当前分身「$name」保存为最新快照。';
+            return '已将当前快照「$name」保存为最新快照。';
           }
           final idOrName = args['id']?.toString() ?? '';
           if (idOrName.trim().isEmpty) return 'id 或 name 不能为空。';
@@ -247,7 +247,7 @@ class BrowserTools {
               .where((p) => p.id == idOrName || p.name == idOrName)
               .toList();
           if (matches.isEmpty) {
-            return '找不到分身「$idOrName」。先 browser_profile list 看可用 id。';
+            return '找不到快照「$idOrName」。先 browser_profile list 看可用 id。';
           }
           final target = matches.first;
           if (action == 'view') {
@@ -310,7 +310,7 @@ class BrowserTools {
                 final r = await engine.switchProfile(target.id);
                 return r['error'] != null
                     ? '切换失败：${r['error']}'
-                    : '已切换到「${r['profile']}」。当前浏览器的指纹、登录态、收藏、历史、页面都已换成这个分身的数据。';
+                    : '已切换到「${r['profile']}」。当前浏览器的指纹、登录态、收藏、历史、页面都已换成这个快照的数据。';
               },
               label: 'browser_profile:switch ${target.name}',
               timeout: const Duration(minutes: 6),
@@ -326,7 +326,7 @@ class BrowserTools {
           if (action == 'remove') {
             if (target.isMain) return '主浏览器不可删除。';
             final ok = await engine.removeProfile(target.id);
-            return ok ? '已删除分身「${target.name}」。' : '删除失败。';
+            return ok ? '已删除快照「${target.name}」。' : '删除失败。';
           }
           return '未知 action：$action';
         },

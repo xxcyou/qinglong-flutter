@@ -832,7 +832,7 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                         const SizedBox(width: 5),
                         _tabChip('历史', 6, Icons.history_outlined),
                         const SizedBox(width: 5),
-                        _tabChip('分身', 7, Icons.account_tree_outlined),
+                        _tabChip('快照', 7, Icons.account_tree_outlined),
                       ],
                     ),
                   ),
@@ -5995,7 +5995,7 @@ class _ProfilePanelState extends State<_ProfilePanel> {
         var copyCurrent = false;
         return StatefulBuilder(
           builder: (ctx, setDialogState) => AlertDialog(
-            title: const Text('新建浏览器分身', style: TextStyle(fontSize: 14)),
+            title: const Text('新建浏览器快照', style: TextStyle(fontSize: 14)),
             content: SizedBox(
               width: 240,
               child: Column(
@@ -6006,7 +6006,7 @@ class _ProfilePanelState extends State<_ProfilePanel> {
                     autofocus: true,
                     style: const TextStyle(fontSize: 12),
                     decoration: const InputDecoration(
-                      labelText: '分身名称',
+                      labelText: '快照名称',
                       isDense: true,
                     ),
                   ),
@@ -6079,7 +6079,7 @@ class _ProfilePanelState extends State<_ProfilePanel> {
       builder: (ctx, pop) {
         final controller = TextEditingController(text: p.name);
         return AlertDialog(
-          title: const Text('重命名分身', style: TextStyle(fontSize: 14)),
+          title: const Text('重命名快照', style: TextStyle(fontSize: 14)),
           content: SizedBox(
             width: 240,
             child: TextField(
@@ -6111,7 +6111,7 @@ class _ProfilePanelState extends State<_ProfilePanel> {
     final ok = await showBrowserDialog<bool>(
       context: context,
       builder: (ctx, pop) => AlertDialog(
-        title: const Text('删除分身？', style: TextStyle(fontSize: 14)),
+        title: const Text('删除快照？', style: TextStyle(fontSize: 14)),
         content: Text(
           '「${p.name}」的指纹、登录态、收藏、历史都会删除，无法恢复。',
           style: const TextStyle(fontSize: 11),
@@ -6155,7 +6155,7 @@ class _ProfilePanelState extends State<_ProfilePanel> {
                   builder: (context, activeId, _) {
                     final name = widget.engine.currentProfile?.name ?? '主浏览器';
                     return Text(
-                      '分身 · 当前：$name',
+                      '快照 · 当前：$name',
                       style: TextStyle(
                         fontSize: 10.5,
                         fontWeight: FontWeight.w700,
@@ -6192,7 +6192,7 @@ class _ProfilePanelState extends State<_ProfilePanel> {
               if (list.isEmpty) {
                 return Center(
                   child: Text(
-                    '还没有分身\n点右上角「新建」创建一个',
+                    '还没有快照\n点右上角「新建」创建一个',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 10.5,
@@ -6429,6 +6429,7 @@ class _ProfileTile extends StatelessWidget {
                   label: '收藏',
                   value: '${profile.bookmarks.length}',
                   color: scheme.primary,
+                  progress: (profile.bookmarks.length / 100).clamp(0.0, 1.0),
                 ),
               ),
               const SizedBox(width: 6),
@@ -6438,6 +6439,7 @@ class _ProfileTile extends StatelessWidget {
                   label: '历史',
                   value: '${profile.history.length}',
                   color: scheme.tertiary,
+                  progress: (profile.history.length / 500).clamp(0.0, 1.0),
                 ),
               ),
               const SizedBox(width: 6),
@@ -6447,6 +6449,7 @@ class _ProfileTile extends StatelessWidget {
                   label: '登录态',
                   value: '${profile.cookies.length}',
                   color: scheme.error,
+                  progress: (profile.cookies.length / 300).clamp(0.0, 1.0),
                 ),
               ),
               const SizedBox(width: 6),
@@ -6456,6 +6459,8 @@ class _ProfileTile extends StatelessWidget {
                   label: '本地',
                   value: '${profile.localStorage.length}',
                   color: scheme.secondary,
+                  progress: (profile.localStorage.length / 20)
+                      .clamp(0.0, 1.0),
                 ),
               ),
             ],
@@ -6471,7 +6476,7 @@ class _ProfileTile extends StatelessWidget {
                   textStyle: const TextStyle(fontSize: 10),
                 ),
                 icon: const Icon(Icons.swap_horiz_rounded, size: 14),
-                label: const Text('切换到此分身'),
+                label: const Text('切换到此快照'),
               ),
             ),
           ],
@@ -6487,17 +6492,19 @@ class _MiniStat extends StatelessWidget {
     required this.label,
     required this.value,
     required this.color,
+    this.progress = 0,
   });
 
   final IconData icon;
   final String label;
   final String value;
   final Color color;
+  final double progress;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.07),
         borderRadius: BorderRadius.circular(8),
@@ -6519,6 +6526,16 @@ class _MiniStat extends StatelessWidget {
             style: TextStyle(
               fontSize: 8,
               color: color.withValues(alpha: 0.9),
+            ),
+          ),
+          const SizedBox(height: 3),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 3,
+              backgroundColor: color.withValues(alpha: 0.12),
+              valueColor: AlwaysStoppedAnimation(color),
             ),
           ),
         ],
@@ -6606,6 +6623,61 @@ class _ProfileDetailViewState extends State<_ProfileDetailView> {
     });
   }
 
+  Widget _buildHealthBar(ColorScheme scheme) {
+    final score = ((_bookmarks.length / 100).clamp(0.0, 1.0) +
+            (_history.length / 500).clamp(0.0, 1.0) +
+            (_cookies.length / 300).clamp(0.0, 1.0) +
+            (_localStorage.length / 20).clamp(0.0, 1.0)) /
+        4;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.insert_chart_outlined_rounded,
+                  size: 13, color: scheme.primary),
+              const SizedBox(width: 5),
+              Text(
+                '数据完整度',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '${(score * 100).round()}%',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  color: scheme.primary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(3),
+            child: LinearProgressIndicator(
+              value: score,
+              minHeight: 5,
+              backgroundColor: scheme.surfaceContainerHighest,
+              valueColor: AlwaysStoppedAnimation(scheme.primary),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _nameCtrl.dispose();
@@ -6640,7 +6712,7 @@ class _ProfileDetailViewState extends State<_ProfileDetailView> {
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(
       SnackBar(
-        content: Text(ok ? '分身数据已保存' : '保存失败'),
+        content: Text(ok ? '快照数据已保存' : '保存失败'),
         duration: const Duration(seconds: 1),
         behavior: SnackBarBehavior.floating,
         width: 180,
@@ -6692,7 +6764,7 @@ class _ProfileDetailViewState extends State<_ProfileDetailView> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '分身数据 · ${p.name}${isActive ? '（当前）' : ''}',
+                      '快照数据 · ${p.name}${isActive ? '（当前）' : ''}',
                       style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w800,
@@ -6720,7 +6792,7 @@ class _ProfileDetailViewState extends State<_ProfileDetailView> {
                   TextField(
                     controller: _nameCtrl,
                     style: const TextStyle(fontSize: 11),
-                    decoration: _fieldDecoration('分身名称'),
+                    decoration: _fieldDecoration('快照名称'),
                   ),
                   const SizedBox(height: 10),
                   _fieldLabel('指纹 / UA', Icons.fingerprint_rounded),
@@ -6775,6 +6847,8 @@ class _ProfileDetailViewState extends State<_ProfileDetailView> {
                     ),
                   ),
                   const SizedBox(height: 12),
+                  _buildHealthBar(scheme),
+                  const SizedBox(height: 10),
                   Row(
                     children: [
                       Expanded(
@@ -6783,24 +6857,41 @@ class _ProfileDetailViewState extends State<_ProfileDetailView> {
                           label: '收藏',
                           value: '${_bookmarks.length}',
                           color: scheme.primary,
+                          progress: (_bookmarks.length / 100)
+                              .clamp(0.0, 1.0),
                         ),
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 6),
                       Expanded(
                         child: _DataCard(
                           icon: Icons.history_outlined,
                           label: '历史',
                           value: '${_history.length}',
                           color: scheme.tertiary,
+                          progress: (_history.length / 500)
+                              .clamp(0.0, 1.0),
                         ),
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 6),
                       Expanded(
                         child: _DataCard(
                           icon: Icons.cookie_outlined,
                           label: 'Cookie',
                           value: '${_cookieDomains.length} 域',
                           color: scheme.error,
+                          progress: (_cookies.length / 300)
+                              .clamp(0.0, 1.0),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: _DataCard(
+                          icon: Icons.storage_outlined,
+                          label: '本地',
+                          value: '${_localStorage.length} 域',
+                          color: scheme.secondary,
+                          progress: (_localStorage.length / 20)
+                              .clamp(0.0, 1.0),
                         ),
                       ),
                     ],
@@ -7032,7 +7123,7 @@ class _ProfileDetailViewState extends State<_ProfileDetailView> {
                     FilledButton.icon(
                       onPressed: _switchHere,
                       icon: const Icon(Icons.swap_horiz_rounded, size: 16),
-                      label: const Text('切换到此分身'),
+                      label: const Text('切换到此快照'),
                     ),
                   ],
                 ],
@@ -7088,17 +7179,19 @@ class _DataCard extends StatelessWidget {
     required this.label,
     required this.value,
     required this.color,
+    this.progress = 0,
   });
 
   final IconData icon;
   final String label;
   final String value;
   final Color color;
+  final double progress;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 10),
+      padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 4),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(12),
@@ -7106,12 +7199,12 @@ class _DataCard extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Icon(icon, size: 16, color: color),
-          const SizedBox(height: 4),
+          Icon(icon, size: 15, color: color),
+          const SizedBox(height: 3),
           Text(
             value,
             style: TextStyle(
-              fontSize: 13,
+              fontSize: 12,
               fontWeight: FontWeight.w800,
               color: color,
             ),
@@ -7119,8 +7212,18 @@ class _DataCard extends StatelessWidget {
           Text(
             label,
             style: TextStyle(
-              fontSize: 9,
+              fontSize: 8,
               color: color.withValues(alpha: 0.8),
+            ),
+          ),
+          const SizedBox(height: 4),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 3,
+              backgroundColor: color.withValues(alpha: 0.12),
+              valueColor: AlwaysStoppedAnimation(color),
             ),
           ),
         ],
