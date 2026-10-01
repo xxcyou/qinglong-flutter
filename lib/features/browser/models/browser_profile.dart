@@ -16,10 +16,12 @@ class BrowserProfile {
     List<BrowserBookmark>? bookmarks,
     List<BrowserHistoryEntry>? history,
     List<Map<String, dynamic>>? cookies,
+    Map<String, Map<String, String>>? localStorage,
     DateTime? updatedAt,
   })  : bookmarks = bookmarks ?? [],
         history = history ?? [],
         cookies = cookies ?? [],
+        localStorage = localStorage ?? {},
         updatedAt = updatedAt ?? DateTime.now();
 
   final String id;
@@ -31,6 +33,10 @@ class BrowserProfile {
   List<BrowserBookmark> bookmarks;
   List<BrowserHistoryEntry> history;
   List<Map<String, dynamic>> cookies;
+
+  /// 本地数据快照：origin -> localStorage 键值（同镜像一样，切换时整份替换）。
+  /// localStorage 可以通过页面 JS 读到；IndexedDB/Cache 等原生存储暂未包含。
+  Map<String, Map<String, String>> localStorage;
   DateTime updatedAt;
 
   Map<String, dynamic> toJson() => {
@@ -43,6 +49,7 @@ class BrowserProfile {
         'bookmarks': [for (final b in bookmarks) b.toJson()],
         'history': [for (final h in history) h.toJson()],
         'cookies': cookies,
+        'localStorage': localStorage,
         'updatedAt': updatedAt.toIso8601String(),
       };
 
@@ -69,6 +76,13 @@ class BrowserProfile {
           if (item is Map)
             Map<String, dynamic>.from(item),
       ],
+      localStorage: {
+        for (final e in (json['localStorage'] as Map? ?? const {}).entries)
+          e.key.toString(): {
+            for (final kv in (e.value as Map? ?? const {}).entries)
+              kv.key.toString(): kv.value.toString(),
+          },
+      },
       updatedAt:
           DateTime.tryParse(json['updatedAt']?.toString() ?? '') ??
               DateTime.now(),

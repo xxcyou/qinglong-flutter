@@ -489,6 +489,59 @@ class BrowserEngine {
     return null;
   }
 
+  /// 当前页面 origin（如 https://example.com），供外部快照/编辑使用。
+  String? get currentOrigin => _currentOrigin;
+
+  String? get _currentOrigin {
+    final url = currentUrl.value.trim();
+    if (url.isEmpty) return null;
+    try {
+      final uri = Uri.parse(url);
+      if (!uri.hasScheme || !uri.host.isNotEmpty) return null;
+      final port = uri.hasPort ? ':${uri.port}' : '';
+      return '${uri.scheme}://${uri.host}$port';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 把当前页面 localStorage 导出成快照（origin 维度的键值）。
+  Future<Map<String, String>> snapshotLocalStorage() async {
+    if (_controller == null || !isReady) return const {};
+    try {
+      final raw = await evalSync(
+        "JSON.stringify(Object.fromEntries(Object.entries(localStorage)))",
+      );
+      if (raw.trim().isEmpty || raw.trim() == 'null') return const {};
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        return decoded.map((k, v) => MapEntry(k, '$v'));
+      }
+    } catch (_) {}
+    return const {};
+  }
+
+  /// 切换分身时，把当前 localStorage 整库清掉并只恢复目标分身的当前域数据。
+  Future<void> _restoreLocalStorage(BrowserProfile profile) async {
+    // 先整库清掉站点本地数据，避免上一个分身的 localStorage/IndexedDB 残留。
+    try {
+      await WebBridge.clearStorage();
+    } catch (_) {}
+    if (profile.localStorage.isEmpty) return;
+    final origin = _currentOrigin;
+    if (origin == null) return;
+    final data = profile.localStorage[origin];
+    if (data == null || data.isEmpty) return;
+    try {
+      await evalSync("localStorage.clear(); 'ok'");
+      for (final e in data.entries) {
+        await evalSync(
+          "localStorage.setItem(${jsonEncode(e.key)}, ${jsonEncode(e.value)}); 'ok'",
+        );
+      }
+    } catch (_) {}
+  }
+
   Future<void> _captureCurrentToProfile(BrowserProfile profile) async {
     await loadBookmarksAndHistory();
     profile.currentUrl = currentUrl.value.isEmpty ? null : currentUrl.value;
@@ -499,7 +552,30 @@ class BrowserEngine {
     try {
       profile.cookies = await WebBridge.dumpCookies();
     } catch (_) {}
+    try {
+      final origin = _currentOrigin;
+      if (origin != null) {
+        final data = await snapshotLocalStorage();
+        if (data.isEmpty) {
+          profile.localStorage.remove(origin);
+        } else {
+          profile.localStorage[origin] = data;
+        }
+      }
+    } catch (_) {}
     profile.updatedAt = DateTime.now();
+  }
+
+  /// 把“正在用的这个分身”当前状态自动落一份快照。
+  ///
+  /// 页面加载完、浏览器收起时调，这样用户登录后即使不切换分身，
+  /// 镜像里也能看到他刚登录的 Cookie / localStorage，而不是还停在旧快照。
+  Future<void> _autoSnapshotCurrentProfile() async {
+    await loadProfiles();
+    final p = currentProfile;
+    if (p == null) return;
+    await _captureCurrentToProfile(p);
+    await _saveProfiles();
   }
 
   Future<BrowserProfile> createProfile({
@@ -526,6 +602,13 @@ class BrowserEngine {
       bookmarks: cloneCurrent ? List.of(bookmarks.value) : [],
       history: cloneCurrent ? List.of(history.value) : [],
       cookies: cloneCurrent ? await WebBridge.dumpCookies() : [],
+      localStorage: cloneCurrent
+          ? (() {
+              final origin = _currentOrigin;
+              if (origin == null) return <String, Map<String, String>>{};
+              return {origin: currentProfile?.localStorage[origin] ?? {}};
+            })()
+          : {},
     );
     profilesNotifier.value = [...profilesNotifier.value, profile];
     await _saveProfiles();
@@ -590,6 +673,7 @@ class BrowserEngine {
     String? currentUrl,
     List<BrowserBookmark>? bookmarks,
     List<BrowserHistoryEntry>? history,
+    Map<String, Map<String, String>>? localStorage,
   }) async {
     await loadProfiles();
     final list = List.of(profilesNotifier.value);
@@ -602,6 +686,9 @@ class BrowserEngine {
     if (currentUrl != null) target.currentUrl = currentUrl.trim().isEmpty ? null : currentUrl.trim();
     if (bookmarks != null) target.bookmarks = List.of(bookmarks);
     if (history != null) target.history = List.of(history);
+    if (localStorage != null) target.localStorage = {
+      for (final e in localStorage.entries) e.key: Map.of(e.value),
+    };
     target.updatedAt = DateTime.now();
     profilesNotifier.value = list;
 
@@ -674,6 +761,7 @@ class BrowserEngine {
       } else {
         await open('about:blank');
       }
+      await _restoreLocalStorage(profile);
     }
   }
 
@@ -917,6 +1005,7 @@ class BrowserEngine {
             // 登录 / 过验证之后 cookie 只在内存里，进程被杀就没了。
             // 每次加载完落一次盘，等于"关掉 APP 明天回来还是登录状态"。
             await WebBridge.flush();
+            unawaited(_autoSnapshotCurrentProfile());
             // 主文档（HTML）抓包：把渲染后的 DOM 外层 HTML 作为响应体记下来，
             // 不再让 HTML 请求显示成 0 字节。
             var docHtml = '';
@@ -2017,7 +2106,10 @@ return 'HTTP ' + res.status + '\\n' +
   }
 
   /// 立刻把 cookie 写盘。收起浏览器、AI 拿完票时调一次。
-  Future<void> persist() => WebBridge.flush();
+  Future<void> persist() async {
+    await WebBridge.flush();
+    await _autoSnapshotCurrentProfile();
+  }
 
   /// 退出登录/换账号：清 cookie + 站点数据。[origin] 为空则清全部站点。
   ///

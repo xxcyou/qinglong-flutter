@@ -185,7 +185,7 @@ class BrowserTools {
                 '  id=${p.id}\n'
                 '  UA指纹=${uaName.length > 60 ? '${uaName.substring(0, 60)}…' : uaName}\n'
                 '  网址=$url\n'
-                '  收藏=${p.bookmarks.length} 历史=${p.history.length} Cookie=$cookieN 条',
+                '  收藏=${p.bookmarks.length} 历史=${p.history.length} Cookie=$cookieN 条 本地=${p.localStorage.length}域',
               );
             }
             return parts.join('\n');

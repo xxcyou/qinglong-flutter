@@ -15,6 +15,7 @@ import '../../shared/float_stack.dart';
 import '../../shared/highlighting_code_controller.dart';
 import 'browser_engine.dart';
 import 'browser_window.dart';
+import 'web_bridge.dart';
 import 'intercept_js.dart';
 import 'models/browser_models.dart';
 import 'models/browser_profile.dart';
@@ -6318,7 +6319,7 @@ class _ProfileTile extends StatelessWidget {
                       ),
                       const SizedBox(height: 1),
                       Text(
-                        '$url · 收藏${profile.bookmarks.length} 历史${profile.history.length} 登录态${profile.cookies.isEmpty ? 0 : profile.cookies.length} 条',
+                        '$url · 收藏${profile.bookmarks.length} 历史${profile.history.length} 登录态${profile.cookies.isEmpty ? 0 : profile.cookies.length} 条 · 本地${profile.localStorage.length}域',
                         style: TextStyle(
                           fontSize: 9,
                           color: scheme.onSurfaceVariant,
@@ -6402,6 +6403,7 @@ class _ProfileDetailViewState extends State<_ProfileDetailView> {
   late List<BrowserHistoryEntry> _history;
   List<Map<String, dynamic>> _cookies = [];
   Map<String, int> _cookieDomains = {};
+  Map<String, Map<String, String>> _localStorage = {};
 
   BrowserProfile? _profile() {
     for (final p in widget.engine.profilesNotifier.value) {
@@ -6421,7 +6423,39 @@ class _ProfileDetailViewState extends State<_ProfileDetailView> {
     _bookmarks = List.of(p?.bookmarks ?? const []);
     _history = List.of(p?.history ?? const []);
     _cookies = List.of(p?.cookies ?? const []);
+    _localStorage = {
+      for (final e in (p?.localStorage ?? const {}).entries)
+        e.key: Map.of(e.value),
+    };
     _cookieDomains = _summarizeCookies();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _refreshLiveData();
+    });
+  }
+
+  Future<void> _refreshLiveData() async {
+    final p = _profile();
+    if (p == null) return;
+    final isActive = p.id == widget.engine.activeProfileIdNotifier.value;
+    if (!isActive) return;
+    final cookies = await WebBridge.dumpCookies();
+    final origin = widget.engine.currentOrigin;
+    Map<String, String> local = const {};
+    if (origin != null && widget.engine.isReady) {
+      local = await widget.engine.snapshotLocalStorage();
+    }
+    if (!mounted) return;
+    setState(() {
+      _cookies = cookies;
+      _cookieDomains = _summarizeCookies();
+      if (origin != null) {
+        if (local.isEmpty) {
+          _localStorage.remove(origin);
+        } else {
+          _localStorage[origin] = local;
+        }
+      }
+    });
   }
 
   @override
@@ -6451,6 +6485,7 @@ class _ProfileDetailViewState extends State<_ProfileDetailView> {
       currentUrl: _urlCtrl.text,
       bookmarks: _bookmarks,
       history: _history,
+      localStorage: _localStorage,
     );
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
@@ -6741,6 +6776,85 @@ class _ProfileDetailViewState extends State<_ProfileDetailView> {
                               ),
                             ),
                           ],
+                        ),
+                      ),
+                  ],
+                  const SizedBox(height: 6),
+                  _fieldLabel('本地数据快照', Icons.storage_outlined),
+                  if (_localStorage.isEmpty)
+                    const Text(
+                      '暂无 localStorage 快照\n（当前页如果已登录，会自动抓取并保存）',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Color(0x88000000),
+                      ),
+                    )
+                  else ...[
+                    for (final e in _localStorage.entries)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 3),
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: scheme.surfaceContainerHighest
+                                .withValues(alpha: 0.4),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.public_rounded,
+                                    size: 12,
+                                    color: scheme.primary,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Expanded(
+                                    child: Text(
+                                      e.key,
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 5,
+                                      vertical: 1,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: scheme.primary.withValues(
+                                        alpha: 0.15,
+                                      ),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      '${e.value.length} 键',
+                                      style: const TextStyle(fontSize: 8.5),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              for (final kv in e.value.entries.take(5))
+                                Text(
+                                  '${kv.key} = ${kv.value.length > 60 ? '${kv.value.substring(0, 60)}…' : kv.value}',
+                                  style: const TextStyle(fontSize: 9),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              if (e.value.length > 5)
+                                Text(
+                                  '… 还有 ${e.value.length - 5} 个键',
+                                  style: const TextStyle(fontSize: 9),
+                                ),
+                            ],
+                          ),
                         ),
                       ),
                   ],
