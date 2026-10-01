@@ -163,54 +163,73 @@ class BrowserTools {
         origin: origin,
         isWrite: true,
         invoke: (args) async {
-          await engine.loadUserAgentSettings();
           final action = args['action']?.toString() ?? 'get';
-          if (action == 'list') {
-            final list = engine.userAgentListNotifier.value;
-            final notes = engine.userAgentNotesNotifier.value;
-            return [
-              '当前：${engine.userAgent}',
-              if (list.isEmpty) '（列表为空）',
-              '可选 UA（${list.length}）：',
-              for (final ua in list)
-                notes[ua] == null
-                    ? '• $ua'
-                    : '• $ua —— ${notes[ua]}',
-            ].join('\n');
-          }
-          if (action == 'add') {
-            final ua = args['ua']?.toString() ?? '';
-            if (ua.trim().isEmpty) return 'ua 不能为空。';
-            await engine.addUserAgent(ua, note: args['note']?.toString() ?? '');
-            return '已添加到 UA 列表。当前列表 ${engine.userAgentListNotifier.value.length} 条。';
-          }
-          if (action == 'remark') {
-            final ua = args['ua']?.toString() ?? '';
-            if (ua.trim().isEmpty) return 'ua 不能为空。';
-            await engine.setUserAgentNote(ua, args['note']?.toString() ?? '');
-            return '已保存备注：${engine.userAgentNotesNotifier.value[ua] ?? '（空）'}';
-          }
-          if (action == 'remove') {
-            final ua = args['ua']?.toString() ?? '';
-            if (ua.trim().isEmpty) return 'ua 不能为空。';
-            await engine.removeUserAgent(ua);
-            return '已从 UA 列表删除。当前列表 ${engine.userAgentListNotifier.value.length} 条。';
-          }
-          if (action == 'set' || action == 'switch') {
-            final ua = args['ua']?.toString() ?? '';
-            if (ua.trim().isEmpty) return 'ua 不能为空。';
-            await engine.setUserAgent(ua);
-            if (args['reload'] == true && engine.isReady) {
-              await engine.reload();
-              return '已切换 UA 并刷新页面：\n${engine.userAgent}';
+          Future<String> run() async {
+            await engine.loadUserAgentSettings();
+            if (action == 'list') {
+              final list = engine.userAgentListNotifier.value;
+              final notes = engine.userAgentNotesNotifier.value;
+              return [
+                '当前：${engine.userAgent}',
+                if (list.isEmpty) '（列表为空）',
+                '可选 UA（${list.length}）：',
+                for (final ua in list)
+                  notes[ua] == null
+                      ? '• $ua'
+                      : '• $ua —— ${notes[ua]}',
+              ].join('\n');
             }
-            return '已切换浏览器 UA：\n${engine.userAgent}';
+            if (action == 'add') {
+              final ua = args['ua']?.toString() ?? '';
+              if (ua.trim().isEmpty) return 'ua 不能为空。';
+              await engine.addUserAgent(
+                ua,
+                note: args['note']?.toString() ?? '',
+              );
+              return '已添加到 UA 列表。当前列表 ${engine.userAgentListNotifier.value.length} 条。';
+            }
+            if (action == 'remark') {
+              final ua = args['ua']?.toString() ?? '';
+              if (ua.trim().isEmpty) return 'ua 不能为空。';
+              await engine.setUserAgentNote(
+                ua,
+                args['note']?.toString() ?? '',
+              );
+              return '已保存备注：${engine.userAgentNotesNotifier.value[ua] ?? '（空）'}';
+            }
+            if (action == 'remove') {
+              final ua = args['ua']?.toString() ?? '';
+              if (ua.trim().isEmpty) return 'ua 不能为空。';
+              await engine.removeUserAgent(ua);
+              return '已从 UA 列表删除。当前列表 ${engine.userAgentListNotifier.value.length} 条。';
+            }
+            if (action == 'set' || action == 'switch') {
+              final ua = args['ua']?.toString() ?? '';
+              if (ua.trim().isEmpty) return 'ua 不能为空。';
+              await engine.setUserAgent(ua);
+              if (args['reload'] == true && engine.isReady) {
+                await engine.reload();
+                return '已切换 UA 并刷新页面：\n${engine.userAgent}';
+              }
+              return '已切换浏览器 UA：\n${engine.userAgent}';
+            }
+            if (action == 'reset') {
+              await engine.resetUserAgent();
+              return '已恢复默认手机 UA：\n${engine.userAgent}';
+            }
+            return '当前浏览器 UA：\n${engine.userAgent}';
           }
-          if (action == 'reset') {
-            await engine.resetUserAgent();
-            return '已恢复默认手机 UA：\n${engine.userAgent}';
+          // 纯配置类动作（list/add/remark/remove）不碰 WebView，不用排浏览器锁；
+          // set/switch/reset 才需要排队，避免和 browser_open 等操作互相抢页面。
+          if (const {'set', 'switch', 'reset'}.contains(action)) {
+            return ShellLock.run(
+              ShellLock.browser,
+              run,
+              label: 'browser_ua:$action',
+              timeout: const Duration(minutes: 6),
+            );
           }
-          return '当前浏览器 UA：\n${engine.userAgent}';
+          return run();
         },
       ),
       ExternalTool(
