@@ -21,6 +21,32 @@ class _LinuxContainerPageState extends ConsumerState<LinuxContainerPage> {
   String? _error;
   bool _busy = false;
 
+  Color _distroColor(String distro) {
+    switch (distro.toLowerCase()) {
+      case 'debian':
+        return const Color(0xFFA81D33);
+      case 'ubuntu':
+        return const Color(0xFFE95420);
+      case 'alpine':
+        return const Color(0xFF0D597F);
+      default:
+        return Theme.of(context).colorScheme.primary;
+    }
+  }
+
+  IconData _distroIcon(String distro) {
+    switch (distro.toLowerCase()) {
+      case 'debian':
+        return Icons.verified_user_rounded;
+      case 'ubuntu':
+        return Icons.circle_rounded;
+      case 'alpine':
+        return Icons.landscape_rounded;
+      default:
+        return Icons.dns_outlined;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -253,57 +279,15 @@ class _LinuxContainerPageState extends ConsumerState<LinuxContainerPage> {
                   ),
                 ),
               ),
-              for (final online in _online)
-                GlassCard(
-                  child: Row(
-                    children: [
-                      Icon(Icons.cloud_download_outlined,
-                          color: scheme.primary),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              online['name']?.toString() ?? '',
-                              style: const TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              online['description']?.toString() ?? '',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: scheme.onSurfaceVariant,
-                              ),
-                            ),
-                            if ((online['sizeBytes'] is num) &&
-                                (online['sizeBytes'] as num) > 0)
-                              Text(
-                                '大小约 ${((online['sizeBytes'] as num) / 1048576).toStringAsFixed(1)} MB',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: scheme.onSurfaceVariant,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      FilledButton.tonal(
-                        onPressed: _busy
-                            ? null
-                            : () => _download(online),
-                        child: Text(
-                          _busy ? '…' : '下载',
-                          style: const TextStyle(fontSize: 11),
-                        ),
-                      ),
-                    ],
-                  ),
+              for (final online in _online) ...[
+                _OnlineContainerCard(
+                  online: online,
+                  color: _distroColor(online['distro']?.toString() ?? ''),
+                  icon: _distroIcon(online['distro']?.toString() ?? ''),
+                  busy: _busy,
+                  onDownload: () => _download(online),
                 ),
+              ],
               const SizedBox(height: 4),
             ],
             if (_containers.isNotEmpty) ...[
@@ -448,6 +432,111 @@ class _LinuxContainerPageState extends ConsumerState<LinuxContainerPage> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _OnlineContainerCard extends StatelessWidget {
+  const _OnlineContainerCard({
+    required this.online,
+    required this.color,
+    required this.icon,
+    required this.busy,
+    required this.onDownload,
+  });
+
+  final Map<String, dynamic> online;
+  final Color color;
+  final IconData icon;
+  final bool busy;
+  final VoidCallback onDownload;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final size = (online['sizeBytes'] is num) ? (online['sizeBytes'] as num).toDouble() : 0.0;
+    final sizeText = size > 0 ? '${(size / 1048576).toStringAsFixed(1)} MB' : '未知大小';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            color.withValues(alpha: 0.18),
+            scheme.surfaceContainerHighest.withValues(alpha: 0.35),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.18),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: color.withValues(alpha: 0.4)),
+                ),
+                child: Icon(icon, size: 20, color: color),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      online['name']?.toString() ?? '',
+                      style: const TextStyle(
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      online['description']?.toString() ?? '',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Icon(Icons.storage_outlined, size: 13, color: scheme.onSurfaceVariant),
+              const SizedBox(width: 4),
+              Text(
+                sizeText,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              const Spacer(),
+              FilledButton.tonalIcon(
+                onPressed: busy ? null : onDownload,
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(fontSize: 11),
+                ),
+                icon: const Icon(Icons.download_rounded, size: 15),
+                label: Text(busy ? '下载中…' : '下载'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

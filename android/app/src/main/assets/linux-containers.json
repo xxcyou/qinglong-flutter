@@ -13,18 +13,6 @@
       }
     },
     {
-      "id": "alpine-3.20",
-      "name": "Alpine Linux 3.20",
-      "description": "轻量 (~4MB)，适合跑静态服务和脚本",
-      "distro": "alpine",
-      "sizeBytes": 3947906,
-      "rootfs": {
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-minirootfs-3.20.3-aarch64.tar.gz",
-        "sha256": "041fa34a81788242df9e78fa69b97ab45b8ec47ddbf88864755610414a7bf3de",
-        "size": 3947906
-      }
-    },
-    {
       "id": "ubuntu-24.04",
       "name": "Ubuntu 24.04",
       "description": "Ubuntu Noble 基础系统，软件包更全",
@@ -34,6 +22,42 @@
         "url": "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-arm64.tar.gz",
         "sha256": "a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2",
         "size": 29936675
+      }
+    },
+    {
+      "id": "ubuntu-22.04",
+      "name": "Ubuntu 22.04",
+      "description": "Ubuntu Jammy 基础系统，老项目兼容性好",
+      "distro": "ubuntu",
+      "sizeBytes": 27671306,
+      "rootfs": {
+        "url": "https://cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-arm64.tar.gz",
+        "sha256": "075d4abd2817a5023ab0a82f5cb314c5ec0aa64a9c0b40fd3154ca3bfdae979f",
+        "size": 27671306
+      }
+    },
+    {
+      "id": "alpine-3.21",
+      "name": "Alpine Linux 3.21",
+      "description": "新版 Alpine，轻量 (~4MB)，适合跑静态服务和脚本",
+      "distro": "alpine",
+      "sizeBytes": 3850365,
+      "rootfs": {
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.3-aarch64.tar.gz",
+        "sha256": "ead8a4b37867bd19e7417dd078748e2312c0aea364403d96758d63ea8ff261ea",
+        "size": 3850365
+      }
+    },
+    {
+      "id": "alpine-3.20",
+      "name": "Alpine Linux 3.20",
+      "description": "上个稳定版 Alpine，轻量 (~4MB)",
+      "distro": "alpine",
+      "sizeBytes": 3947906,
+      "rootfs": {
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-minirootfs-3.20.3-aarch64.tar.gz",
+        "sha256": "041fa34a81788242df9e78fa69b97ab45b8ec47ddbf88864755610414a7bf3de",
+        "size": 3947906
       }
     }
   ]
