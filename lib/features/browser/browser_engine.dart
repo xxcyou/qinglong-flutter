@@ -430,6 +430,7 @@ class BrowserEngine {
   Future<void> recordHistory(String url, String title) async {
     final target = url.trim();
     if (target.isEmpty) return;
+    if (privacyMode.value) return;
     if (target.startsWith('about:') ||
         target.startsWith('data:') ||
         target.startsWith('devtools:')) {
@@ -495,6 +496,31 @@ class BrowserEngine {
   final ValueNotifier<String> currentUrl = ValueNotifier('');
   final ValueNotifier<String> title = ValueNotifier('');
   final ValueNotifier<bool> loading = ValueNotifier(false);
+
+  /// 无痕模式：开启后不写入浏览历史。
+  final ValueNotifier<bool> privacyMode = ValueNotifier(false);
+
+  bool get isDesktopMode => userAgent == _desktopUserAgent;
+
+  Future<void> toggleDesktopMode() async {
+    if (isDesktopMode) {
+      await setUserAgent(_defaultUserAgent);
+    } else {
+      await setUserAgent(_desktopUserAgent);
+    }
+    if (isReady) await reload();
+  }
+
+  /// 交给系统默认浏览器打开（用于“外部打开当前页”）。
+  Future<bool> openInSystemBrowser(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null || !uri.hasScheme) return false;
+    try {
+      return await launchUrl(uri, mode: LaunchMode.platformDefault);
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// 抓到的请求。倒序显示，超过上限丢最老的。
   final ValueNotifier<List<CapturedRequest>> requests = ValueNotifier([]);

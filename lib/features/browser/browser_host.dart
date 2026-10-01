@@ -211,6 +211,157 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     unawaited(_engine.open(url));
   }
 
+  Future<void> _showBrowserMenu() async {
+    final url = _engine.currentUrl.value.trim();
+    final action = await showBrowserDialog<String>(
+      context: context,
+      builder: (dialogContext, pop) {
+        final scheme = Theme.of(dialogContext).colorScheme;
+        Widget tile({
+          required IconData icon,
+          required String title,
+          String? subtitle,
+          Widget? trailing,
+          required String value,
+        }) {
+          return ListTile(
+            dense: true,
+            visualDensity: VisualDensity.compact,
+            leading: Icon(icon, size: 18, color: scheme.primary),
+            title: Text(title, style: const TextStyle(fontSize: 12)),
+            subtitle: subtitle == null
+                ? null
+                : Text(subtitle, style: const TextStyle(fontSize: 10)),
+            trailing: trailing,
+            onTap: () => pop(value),
+          );
+        }
+
+        return AlertDialog(
+          titlePadding: const EdgeInsets.fromLTRB(20, 16, 8, 0),
+          title: const Text('浏览器工具', style: TextStyle(fontSize: 14)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                tile(
+                  icon: _engine.isDesktopMode
+                      ? Icons.smartphone_outlined
+                      : Icons.desktop_windows_outlined,
+                  title: _engine.isDesktopMode ? '恢复手机版网页' : '桌面版网站',
+                  subtitle: '切换 User-Agent 后刷新当前页',
+                  value: 'desktop',
+                ),
+                tile(
+                  icon: Icons.visibility_off_outlined,
+                  title: _engine.privacyMode.value ? '无痕模式：开' : '无痕模式',
+                  subtitle: '开启后不再写入浏览历史',
+                  trailing: Icon(
+                    _engine.privacyMode.value
+                        ? Icons.check_circle_rounded
+                        : Icons.radio_button_unchecked_rounded,
+                    size: 16,
+                    color: _engine.privacyMode.value
+                        ? scheme.primary
+                        : scheme.onSurfaceVariant,
+                  ),
+                  value: 'privacy',
+                ),
+                if (url.isNotEmpty)
+                  tile(
+                    icon: Icons.copy_outlined,
+                    title: '复制链接',
+                    value: 'copy',
+                  ),
+                if (url.isNotEmpty)
+                  tile(
+                    icon: Icons.open_in_new_rounded,
+                    title: '用系统浏览器打开',
+                    value: 'external',
+                  ),
+                tile(
+                  icon: Icons.home_outlined,
+                  title: '主页',
+                  subtitle: '打开 Bing 搜索',
+                  value: 'home',
+                ),
+                tile(
+                  icon: Icons.star_outline_rounded,
+                  title: '收藏当前页',
+                  value: 'bookmark',
+                ),
+                tile(
+                  icon: Icons.refresh_rounded,
+                  title: '刷新页面',
+                  value: 'reload',
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => pop(null),
+              child: const Text('关闭'),
+            ),
+          ],
+        );
+      },
+    );
+    if (action == null || !mounted) return;
+    switch (action) {
+      case 'desktop':
+        await _engine.toggleDesktopMode();
+        break;
+      case 'privacy':
+        _engine.privacyMode.value = !_engine.privacyMode.value;
+        break;
+      case 'copy':
+        if (url.isNotEmpty) {
+          await Clipboard.setData(ClipboardData(text: url));
+          if (!mounted) return;
+          final messenger = ScaffoldMessenger.of(context);
+          messenger.hideCurrentSnackBar();
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text('链接已复制'),
+              duration: const Duration(seconds: 1),
+              behavior: SnackBarBehavior.floating,
+              width: 160,
+            ),
+          );
+        }
+        break;
+      case 'external':
+        if (url.isNotEmpty) {
+          await _engine.openInSystemBrowser(url);
+        }
+        break;
+      case 'home':
+        await _engine.open('https://www.bing.com');
+        setState(() => _tab = 0);
+        break;
+      case 'bookmark':
+        if (url.isNotEmpty) {
+          await _engine.addBookmark(url, title: _engine.title.value);
+          if (!mounted) return;
+          final messenger = ScaffoldMessenger.of(context);
+          messenger.hideCurrentSnackBar();
+          messenger.showSnackBar(
+            const SnackBar(
+              content: Text('已收藏当前页'),
+              duration: Duration(seconds: 1),
+              behavior: SnackBarBehavior.floating,
+              width: 180,
+            ),
+          );
+        }
+        break;
+      case 'reload':
+        await _engine.reload();
+        break;
+    }
+  }
+
   /// 脚本编辑器开着时编辑的是谁。null = 编辑器没开。
   /// id < 0 表示"新脚本，还没存过"。
   InterceptScript? _editing;
@@ -605,6 +756,11 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                 ),
                 Expanded(child: _urlBar(scheme)),
                 _iconBtn(Icons.refresh_rounded, '刷新', _engine.reload),
+                _iconBtn(
+                  Icons.more_horiz_rounded,
+                  '更多',
+                  _showBrowserMenu,
+                ),
                 _iconBtn(
                   win.maximized
                       ? Icons.close_fullscreen_rounded
@@ -5393,6 +5549,7 @@ class _BookmarksPanelState extends State<_BookmarksPanel> {
   }
 }
 
+
 class _HistoryPanel extends StatefulWidget {
   const _HistoryPanel({required this.engine, required this.onOpenUrl});
 
@@ -5404,10 +5561,38 @@ class _HistoryPanel extends StatefulWidget {
 }
 
 class _HistoryPanelState extends State<_HistoryPanel> {
-  Future<void> _clear() async {
+  final _search = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  Future<void> _clearAll() async {
+    final ok = await showBrowserDialog<bool>(
+      context: context,
+      builder: (dialogContext, pop) => AlertDialog(
+        title: const Text('清空全部历史？'),
+        content: const Text('删除后无法恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => pop(true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
     await widget.engine.clearHistory();
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
     messenger.showSnackBar(
       const SnackBar(
         content: Text('历史已清空'),
@@ -5418,31 +5603,102 @@ class _HistoryPanelState extends State<_HistoryPanel> {
     );
   }
 
+  Future<void> _copy(String url) async {
+    await Clipboard.setData(ClipboardData(text: url));
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text('链接已复制'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 160,
+      ),
+    );
+  }
+
+  String _groupLabel(DateTime t) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(t.year, t.month, t.day);
+    if (day == today) return '今天';
+    if (day == today.subtract(const Duration(days: 1))) return '昨天';
+    if (now.difference(day).inDays < 7) return '本周';
+    return '更早';
+  }
+
+  List<({String label, List<BrowserHistoryEntry> items})> _group(
+    List<BrowserHistoryEntry> input,
+  ) {
+    final order = ['今天', '昨天', '本周', '更早'];
+    final buckets = <String, List<BrowserHistoryEntry>>{
+      for (final label in order) label: [],
+    };
+    for (final h in input) {
+      buckets[_groupLabel(h.visitedAt)]!.add(h);
+    }
+    return [
+      for (final label in order)
+        if (buckets[label]!.isNotEmpty)
+          (label: label, items: buckets[label]!),
+    ];
+  }
+
+  String _hostOf(String url) {
+    try {
+      return Uri.parse(url).host;
+    } catch (_) {
+      return url;
+    }
+  }
+
+  String _timeOf(DateTime t) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(t.year, t.month, t.day);
+    final two = (int v) => v.toString().padLeft(2, '0');
+    final hm = '${two(t.hour)}:${two(t.minute)}';
+    if (day == today) return hm;
+    if (day == today.subtract(const Duration(days: 1))) return '昨天 $hm';
+    return '${two(t.month)}-${two(t.day)} $hm';
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(10, 2, 10, 4),
+          padding: const EdgeInsets.fromLTRB(10, 6, 10, 4),
           child: Row(
             children: [
               Expanded(
                 child: ValueListenableBuilder<List<BrowserHistoryEntry>>(
                   valueListenable: widget.engine.history,
-                  builder: (context, list, _) => Text(
-                    '历史记录（${list.length}）',
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w700,
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
+                  builder: (context, list, _) {
+                    final filtered = _query.trim().isEmpty
+                        ? list.length
+                        : list
+                            .where((h) =>
+                                h.title.toLowerCase().contains(_query.trim().toLowerCase()) ||
+                                h.url.toLowerCase().contains(_query.trim().toLowerCase()) ||
+                                _hostOf(h.url).toLowerCase().contains(_query.trim().toLowerCase()))
+                            .length;
+                    return Text(
+                      '历史 · $filtered${_query.trim().isEmpty ? ' / ${list.length}' : ''}',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w700,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    );
+                  },
                 ),
               ),
               const SizedBox(width: 8),
               TextButton.icon(
-                onPressed: _clear,
+                onPressed: _clearAll,
                 icon: const Icon(Icons.delete_sweep_outlined, size: 15),
                 label: const Text('清空'),
                 style: TextButton.styleFrom(
@@ -5453,14 +5709,62 @@ class _HistoryPanelState extends State<_HistoryPanel> {
             ],
           ),
         ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 2, 10, 6),
+          child: TextField(
+            controller: _search,
+            onChanged: (v) => setState(() => _query = v),
+            style: const TextStyle(fontSize: 11),
+            decoration: InputDecoration(
+              isDense: true,
+              filled: true,
+              fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+              contentPadding: const EdgeInsets.symmetric(vertical: 8),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: BorderSide.none,
+              ),
+              hintText: '搜索历史（标题 / 网址 / 域名）',
+              hintStyle: const TextStyle(fontSize: 10.5),
+              prefixIcon: const Icon(Icons.search, size: 15),
+              suffixIcon: _query.isEmpty
+                  ? null
+                  : IconButton(
+                      tooltip: '清除',
+                      iconSize: 15,
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints(
+                        minWidth: 30,
+                        minHeight: 30,
+                      ),
+                      padding: EdgeInsets.zero,
+                      icon: const Icon(Icons.close),
+                      onPressed: () {
+                        _search.clear();
+                        setState(() => _query = '');
+                      },
+                    ),
+            ),
+          ),
+        ),
         Expanded(
           child: ValueListenableBuilder<List<BrowserHistoryEntry>>(
             valueListenable: widget.engine.history,
             builder: (context, list, _) {
-              if (list.isEmpty) {
+              final q = _query.trim().toLowerCase();
+              final filtered = q.isEmpty
+                  ? list
+                  : list
+                      .where((h) =>
+                          h.title.toLowerCase().contains(q) ||
+                          h.url.toLowerCase().contains(q) ||
+                          _hostOf(h.url).toLowerCase().contains(q))
+                      .toList();
+              if (filtered.isEmpty) {
                 return Center(
                   child: Text(
-                    '暂时还没有浏览历史',
+                    q.isEmpty ? '暂时没有浏览历史' : '没有匹配「$_query」的历史',
+                    textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 10.5,
                       color: scheme.onSurfaceVariant,
@@ -5468,86 +5772,44 @@ class _HistoryPanelState extends State<_HistoryPanel> {
                   ),
                 );
               }
+              final groups = _group(filtered);
               return ListView.builder(
-                padding: const EdgeInsets.fromLTRB(10, 4, 10, 24),
-                itemCount: list.length,
+                padding: const EdgeInsets.fromLTRB(10, 2, 10, 24),
+                itemCount: groups.length + filtered.length,
                 itemBuilder: (context, index) {
-                  final h = list[index];
-                  final time = h.visitedAt.toLocal();
-                  final timeText = _fmtTime(time);
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 5),
-                    child: Material(
-                      color: scheme.surfaceContainerHighest.withValues(
-                        alpha: 0.3,
-                      ),
-                      borderRadius: BorderRadius.circular(10),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(10),
-                        onTap: () => widget.onOpenUrl(h.url),
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(10, 7, 4, 7),
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.history_outlined,
-                                size: 15,
-                                color: scheme.onSurfaceVariant,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      h.title,
-                                      style: const TextStyle(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    Text(
-                                      h.url,
-                                      style: TextStyle(
-                                        fontSize: 9.5,
-                                        fontFamily: kMonoFamily,
-                                        fontFamilyFallback: kMonoFallback,
-                                        color: scheme.onSurfaceVariant,
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Text(
-                                timeText,
-                                style: TextStyle(
-                                  fontSize: 9,
-                                  color: scheme.onSurfaceVariant,
-                                ),
-                              ),
-                              IconButton(
-                                tooltip: '删除此条',
-                                visualDensity: VisualDensity.compact,
-                                constraints: const BoxConstraints(
-                                  minWidth: 30,
-                                  minHeight: 30,
-                                ),
-                                iconSize: 15,
-                                padding: EdgeInsets.zero,
-                                icon: const Icon(Icons.close),
-                                onPressed: () =>
-                                    widget.engine.removeHistoryAt(index),
-                              ),
-                            ],
+                  var cursor = 0;
+                  for (final g in groups) {
+                    if (index == cursor) {
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(2, 10, 2, 4),
+                        child: Text(
+                          g.label,
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0.5,
+                            color: scheme.primary,
                           ),
                         ),
-                      ),
-                    ),
-                  );
+                      );
+                    }
+                    cursor += 1;
+                    if (index < cursor + g.items.length) {
+                      final h = g.items[index - cursor];
+                      return _HistoryTile(
+                        entry: h,
+                        host: _hostOf(h.url),
+                        time: _timeOf(h.visitedAt),
+                        onOpen: () => widget.onOpenUrl(h.url),
+                        onCopy: () => _copy(h.url),
+                        onDelete: () => widget.engine.removeHistoryAt(
+                          list.indexOf(h),
+                        ),
+                      );
+                    }
+                    cursor += g.items.length;
+                  }
+                  return const SizedBox.shrink();
                 },
               );
             },
@@ -5556,16 +5818,154 @@ class _HistoryPanelState extends State<_HistoryPanel> {
       ],
     );
   }
-
-  String _fmtTime(DateTime t) {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final day = DateTime(t.year, t.month, t.day);
-    final two = (int v) => v.toString().padLeft(2, '0');
-    final hm = '${two(t.hour)}:${two(t.minute)}';
-    if (day == today) return hm;
-    if (day == today.subtract(const Duration(days: 1))) return '昨天 $hm';
-    return '${two(t.month)}-${two(t.day)} $hm';
-  }
 }
 
+class _HistoryTile extends StatelessWidget {
+  const _HistoryTile({
+    required this.entry,
+    required this.host,
+    required this.time,
+    required this.onOpen,
+    required this.onCopy,
+    required this.onDelete,
+  });
+
+  final BrowserHistoryEntry entry;
+  final String host;
+  final String time;
+  final VoidCallback onOpen;
+  final VoidCallback onCopy;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final initial = host.isEmpty
+        ? '#'
+        : host.substring(0, 1).toUpperCase();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Material(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onOpen,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(8, 6, 2, 6),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 16,
+                  backgroundColor: scheme.primaryContainer.withValues(
+                    alpha: 0.6,
+                  ),
+                  child: Text(
+                    initial,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: scheme.onPrimaryContainer,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        entry.title.isEmpty ? host : entry.title,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              host.isEmpty ? entry.url : host,
+                              style: TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.w600,
+                                color: scheme.primary,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (host.isNotEmpty) ...[
+                            const SizedBox(width: 4),
+                            Icon(
+                              Icons.arrow_forward_ios_rounded,
+                              size: 7,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                _shortPath(entry.url),
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  fontFamily: kMonoFamily,
+                                  fontFamilyFallback: kMonoFallback,
+                                  color: scheme.onSurfaceVariant,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                Text(
+                  time,
+                  style: TextStyle(
+                    fontSize: 9,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                IconButton(
+                  tooltip: '复制链接',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                  iconSize: 14,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.copy_outlined),
+                  onPressed: onCopy,
+                ),
+                IconButton(
+                  tooltip: '删除此条',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                  iconSize: 14,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.close),
+                  onPressed: onDelete,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _shortPath(String url) {
+    try {
+      final uri = Uri.parse(url);
+      final path = uri.path.isEmpty ? '/' : uri.path;
+      if (path.length <= 24) return path;
+      return '${path.substring(0, 12)}…${path.substring(path.length - 8)}';
+    } catch (_) {
+      return '';
+    }
+  }
+}
