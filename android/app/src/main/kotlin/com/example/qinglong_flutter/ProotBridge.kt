@@ -750,7 +750,7 @@ class ProotBridge(private val context: Context) {
                 val proot = File(staging, "bin/proot")
                 if (!proot.isFile) throw IllegalStateException("PRoot host archive has no bin/proot")
                 proot.setExecutable(true, false)
-                if (!File(staging, "rootfs/bin/sh").isFile) throw IllegalStateException("rootfs extraction incomplete")
+                if (!isValidRootfs(File(staging, "rootfs"))) throw IllegalStateException("rootfs extraction incomplete")
                 val target = File(File(runtimeRoot(), "versions"), newId)
                 if (target.exists()) deleteRecursive(target)
                 if (!staging.renameTo(target)) throw IllegalStateException("cannot activate container")
@@ -852,7 +852,8 @@ class ProotBridge(private val context: Context) {
                     }
                 }
                 if (!File(staging, "bin/proot").isFile) throw IllegalStateException("导入包缺少 PRoot 主机组件")
-                if (!File(File(staging, "rootfs"), "bin/sh").isFile && !File(staging, "bin/sh").isFile) {
+                val rootfsDirForCheck = File(staging, "rootfs")
+                if (!isValidRootfs(rootfsDirForCheck) && !isValidRootfs(staging)) {
                     throw IllegalStateException("导入包不是有效的 Linux 根文件系统")
                 }
                 val target = File(File(runtimeRoot(), "versions"), newId)
@@ -1125,6 +1126,17 @@ class ProotBridge(private val context: Context) {
     }
 
     /// 根目录是否可用（用于列表里决定是否给出 "/" 这个根入口）。
+    /** 判断一个解出来的 rootfs 是否可用。Alpine 的 /bin/sh 是到 busybox 的符号链接，
+     * 直接 isFile 会判成不存在；Debian/Ubuntu 的 shell 可能在 /bin/bash 或 /usr/bin/dash。 */
+    private fun isValidRootfs(rootfs: File): Boolean {
+        if (!rootfs.isDirectory) return false
+        if (File(rootfs, "bin/sh").isFile) return true
+        if (File(rootfs, "bin/busybox").isFile) return true
+        if (File(rootfs, "usr/bin/dash").isFile) return true
+        if (File(rootfs, "usr/bin/bash").isFile) return true
+        return File(rootfs, "etc/os-release").isFile
+    }
+
     private fun rootfsAvailable(): Boolean = try {
         installedRootfs()
         true
@@ -2009,7 +2021,12 @@ class ProotBridge(private val context: Context) {
                 }
                 ensureProotExecutable(version)
                 prepareGuestNetwork(version)
-                val command = buildProotArgs(version, "/bin/bash", listOf("--login", "-i"))
+                val shell = if (File(rootfsDir(version), "bin/bash").isFile) {
+                    buildProotArgs(version, "/bin/bash", listOf("--login", "-i"))
+                } else {
+                    buildProotArgs(version, "/bin/sh", emptyList())
+                }
+                val command = shell
                 val pb = processBuilderFor(command, version)
                 val env = pb.environment().entries.map { "${it.key}=${it.value}" }.toTypedArray()
                 val handle = ptySpawn(command.toTypedArray(), env, workspaceDir().absolutePath)
