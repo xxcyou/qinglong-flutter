@@ -21,6 +21,7 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
@@ -679,10 +680,33 @@ class ProotBridge(private val context: Context) {
         return JSONObject(input.bufferedReader(Charsets.UTF_8).use { it.readText() })
     }
 
+    private fun jsonToAny(value: Any?): Any? {
+        return when (value) {
+            is JSONObject -> {
+                val map = LinkedHashMap<String, Any?>()
+                val keys = value.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next() as String
+                    map[k] = jsonToAny(value.opt(k))
+                }
+                map
+            }
+            is JSONArray -> {
+                val list = ArrayList<Any?>()
+                for (i in 0 until value.length()) {
+                    list.add(jsonToAny(value.opt(i)))
+                }
+                list
+            }
+            else -> value
+        }
+    }
+
     private fun handleContainerCatalog(result: MethodChannel.Result) {
         try {
             val catalog = readContainerCatalog()
-            result.success(mapOf("containers" to catalog.getJSONArray("containers")))
+            val containers = jsonToAny(catalog.getJSONArray("containers")) as List<Any?>
+            result.success(mapOf("containers" to containers))
         } catch (e: Exception) {
             result.error("container_catalog_failed", e.message ?: e.toString(), null)
         }
