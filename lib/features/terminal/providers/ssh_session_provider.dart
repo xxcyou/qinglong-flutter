@@ -103,6 +103,7 @@ class SshSessionManager {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_prefsKey);
       final list = jsonDecode(raw ?? '[]') as List? ?? const [];
+      final seenKeys = <String>{};
       for (final item in list) {
         if (item is! Map) continue;
         final id = item['id']?.toString() ?? '';
@@ -113,6 +114,14 @@ class SshSessionManager {
         final username = item['username']?.toString() ?? '';
         final port = (item['port'] as num?)?.toInt() ?? 22;
         if (id.isEmpty || host.isEmpty || username.isEmpty) continue;
+        final key = '$host:$port:$username';
+        // 历史遗留脏数据：同一主机/端口/用户名只保留一条，其余跳过并清凭据。
+        if (!seenKeys.add(key)) {
+          try {
+            await SecureStorage.deleteSshSecret(id);
+          } catch (_) {}
+          continue;
+        }
         final secret = await SecureStorage.readSshSecret(id);
         if (secret == null) continue;
         _sessions[id] = SshSession(
@@ -141,6 +150,28 @@ class SshSessionManager {
 
   String _newId() =>
       'ssh_${DateTime.now().millisecondsSinceEpoch}_${_sessions.length}';
+
+  String _keyOf(SshSessionDraft draft) =>
+      '${draft.host}:${draft.port}:${draft.username}';
+
+  /// 找同主机/端口/用户名的已保存会话。找到就复用，避免 AI 重复创建 SSH。
+  String? _existingIdFor(SshSessionDraft draft, {String? id}) {
+    if (id != null && _sessions.containsKey(id)) return id;
+    final key = _keyOf(draft);
+    for (final entry in _sessions.entries) {
+      final d = _drafts[entry.key];
+      if (d != null && _keyOf(d) == key) return entry.key;
+    }
+    return null;
+  }
+
+  /// 标记某个会话已断开并从活动连接表移除（同一 client 才移除）。
+  void _markDisconnected(String id, [String reason = 'disconnected']) {
+    final s = _sessions[id];
+    if (s == null) return;
+    _sessions[id] = s.copyWith(status: reason);
+    _notify();
+  }
 
   /// 保存/更新一个会话（只保存配置，不连接）。
   Future<String> save(SshSessionDraft draft, {String? id}) async {
@@ -175,7 +206,18 @@ class SshSessionManager {
     String? id,
   }) async {
     await loadSaved();
-    final targetId = id ?? await save(draft);
+    // 同一个主机/端口/用户名复用同一条会话，不重复创建。
+    final existingId = _existingIdFor(draft, id: id);
+    final targetId = existingId ?? await save(draft);
+    final alive = _clients[targetId];
+    if (alive != null && !alive.isClosed) {
+      // 已经连着，直接返回，避免 AI 误判“断开”又开一条。
+      final current = _sessions[targetId];
+      if (current != null) return current;
+    }
+    if (alive != null && alive.isClosed) {
+      _clients.remove(targetId);
+    }
     _drafts[targetId] = draft;
     _sessions[targetId] = SshSession(
       id: targetId,
@@ -222,6 +264,19 @@ class SshSessionManager {
         status: 'connected',
       );
       _notify();
+      // 意外断链（网络掉线/服务器踢掉/NAT 超时）时自动把状态改回 disconnected，
+      // 这样 AI 下次会复用同一条会话重连，而不是又创建一条新的。
+      unawaited(client.done.then<void>((_) {
+        if (_clients[targetId] == client) {
+          _clients.remove(targetId);
+          _markDisconnected(targetId);
+        }
+      }, onError: (Object e, StackTrace st) {
+        if (_clients[targetId] == client) {
+          _clients.remove(targetId);
+          _markDisconnected(targetId, 'error: 连接断开: $e');
+        }
+      }));
       return _sessions[targetId]!;
     } catch (e) {
       client?.close();
@@ -289,6 +344,11 @@ class SshSessionManager {
   Future<String> execute(String id, String command) async {
     final client = _clients[id];
     if (client == null) throw StateError('SSH 未连接：$id');
+    if (client.isClosed) {
+      _clients.remove(id);
+      _markDisconnected(id, 'error: 连接已断开');
+      throw StateError('SSH 已断开：$id，请用 ssh_connect 重新连接');
+    }
     final session = await client.execute(command);
     final out = await utf8.decoder.bind(session.stdout).join();
     await session.done;
