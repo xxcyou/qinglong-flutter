@@ -5668,6 +5668,7 @@ class _HistoryPanelState extends State<_HistoryPanel> {
     return '${two(t.month)}-${two(t.day)} $hm';
   }
 
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -6127,6 +6128,17 @@ class _ProfilePanelState extends State<_ProfilePanel> {
     await widget.engine.removeProfile(p.id);
   }
 
+  Future<void> _edit(BrowserProfile p) async {
+    await showBrowserDialog<void>(
+      context: context,
+      builder: (ctx, pop) => _ProfileDetailView(
+        engine: widget.engine,
+        profileId: p.id,
+        onClose: pop,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -6199,6 +6211,7 @@ class _ProfilePanelState extends State<_ProfilePanel> {
                       profile: p,
                       active: p.id == activeId,
                       onSwitch: () => _switch(p),
+                      onEdit: () => _edit(p),
                       onRename: () => _rename(p),
                       onDelete: () => _delete(p),
                     ),
@@ -6218,6 +6231,7 @@ class _ProfileTile extends StatelessWidget {
     required this.profile,
     required this.active,
     required this.onSwitch,
+    required this.onEdit,
     required this.onRename,
     required this.onDelete,
   });
@@ -6225,6 +6239,7 @@ class _ProfileTile extends StatelessWidget {
   final BrowserProfile profile;
   final bool active;
   final VoidCallback onSwitch;
+  final VoidCallback onEdit;
   final VoidCallback onRename;
   final VoidCallback onDelete;
 
@@ -6324,6 +6339,16 @@ class _ProfileTile extends StatelessWidget {
                     child: const Text('切换', style: TextStyle(fontSize: 10)),
                   ),
                 IconButton(
+                  tooltip: '数据可视化编辑',
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 14,
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.data_object_rounded),
+                  onPressed: onEdit,
+                ),
+                IconButton(
                   tooltip: '重命名',
                   visualDensity: VisualDensity.compact,
                   iconSize: 14,
@@ -6348,6 +6373,495 @@ class _ProfileTile extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ProfileDetailView extends StatefulWidget {
+  const _ProfileDetailView({
+    required this.engine,
+    required this.profileId,
+    required this.onClose,
+  });
+
+  final BrowserEngine engine;
+  final String profileId;
+  final VoidCallback onClose;
+
+  @override
+  State<_ProfileDetailView> createState() => _ProfileDetailViewState();
+}
+
+class _ProfileDetailViewState extends State<_ProfileDetailView> {
+  late TextEditingController _nameCtrl;
+  late TextEditingController _uaCtrl;
+  late TextEditingController _urlCtrl;
+  late String _proxyId;
+  late List<BrowserBookmark> _bookmarks;
+  late List<BrowserHistoryEntry> _history;
+  List<Map<String, dynamic>> _cookies = [];
+  Map<String, int> _cookieDomains = {};
+
+  BrowserProfile? _profile() {
+    for (final p in widget.engine.profilesNotifier.value) {
+      if (p.id == widget.profileId) return p;
+    }
+    return null;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final p = _profile();
+    _nameCtrl = TextEditingController(text: p?.name ?? '');
+    _uaCtrl = TextEditingController(text: p?.ua ?? '');
+    _urlCtrl = TextEditingController(text: p?.currentUrl ?? '');
+    _proxyId = p?.activeProxyId ?? '';
+    _bookmarks = List.of(p?.bookmarks ?? const []);
+    _history = List.of(p?.history ?? const []);
+    _cookies = List.of(p?.cookies ?? const []);
+    _cookieDomains = _summarizeCookies();
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _uaCtrl.dispose();
+    _urlCtrl.dispose();
+    super.dispose();
+  }
+
+  Map<String, int> _summarizeCookies() {
+    final map = <String, int>{};
+    for (final c in _cookies) {
+      final host = c['host']?.toString() ?? '';
+      if (host.isEmpty) continue;
+      map[host] = (map[host] ?? 0) + 1;
+    }
+    return map;
+  }
+
+  Future<void> _save() async {
+    final ok = await widget.engine.updateProfile(
+      widget.profileId,
+      name: _nameCtrl.text,
+      ua: _uaCtrl.text,
+      activeProxyId: _proxyId,
+      currentUrl: _urlCtrl.text,
+      bookmarks: _bookmarks,
+      history: _history,
+    );
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(ok ? '分身数据已保存' : '保存失败'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 180,
+      ),
+    );
+  }
+
+  Future<void> _switchHere() async {
+    await widget.engine.switchProfile(widget.profileId);
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text('已切换到「${_nameCtrl.text}」'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 200,
+      ),
+    );
+    widget.onClose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final p = _profile();
+    if (p == null) return const SizedBox.shrink();
+    final isActive = p.id == widget.engine.activeProfileIdNotifier.value;
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 360, maxHeight: 540),
+      child: Material(
+        color: scheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+              child: Row(
+                children: [
+                  Icon(
+                    p.isMain ? Icons.home_outlined : Icons.account_tree_outlined,
+                    size: 18,
+                    color: scheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '分身数据 · ${p.name}${isActive ? '（当前）' : ''}',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    iconSize: 18,
+                    tooltip: '关闭',
+                    icon: const Icon(Icons.close),
+                    onPressed: widget.onClose,
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                children: [
+                  _fieldLabel('名称', Icons.label_outline_rounded),
+                  TextField(
+                    controller: _nameCtrl,
+                    style: const TextStyle(fontSize: 11),
+                    decoration: _fieldDecoration('分身名称'),
+                  ),
+                  const SizedBox(height: 10),
+                  _fieldLabel('指纹 / UA', Icons.fingerprint_rounded),
+                  TextField(
+                    controller: _uaCtrl,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontFamily: kMonoFamily,
+                      fontFamilyFallback: kMonoFallback,
+                    ),
+                    maxLines: 2,
+                    minLines: 1,
+                    decoration: _fieldDecoration(
+                      '留空使用默认手机指纹',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  _fieldLabel('当前网址', Icons.link_rounded),
+                  TextField(
+                    controller: _urlCtrl,
+                    style: const TextStyle(fontSize: 10.5),
+                    decoration: _fieldDecoration('切换后自动打开这个页面'),
+                  ),
+                  const SizedBox(height: 10),
+                  _fieldLabel('代理', Icons.vpn_lock_outlined),
+                  ValueListenableBuilder<List<BrowserProxy>>(
+                    valueListenable: widget.engine.proxiesNotifier,
+                    builder: (context, proxies, _) => Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        ChoiceChip(
+                          label: const Text('直连', style: TextStyle(fontSize: 10)),
+                          selected: _proxyId.isEmpty,
+                          visualDensity: VisualDensity.compact,
+                          onSelected: (_) => setState(() => _proxyId = ''),
+                        ),
+                        for (final proxy in proxies)
+                          ChoiceChip(
+                            label: Text(
+                              proxy.name.length > 12
+                                  ? '${proxy.name.substring(0, 12)}…'
+                                  : proxy.name,
+                              style: const TextStyle(fontSize: 10),
+                            ),
+                            selected: _proxyId == proxy.id,
+                            visualDensity: VisualDensity.compact,
+                            onSelected: (_) =>
+                                setState(() => _proxyId = proxy.id),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _DataCard(
+                          icon: Icons.star_border_rounded,
+                          label: '收藏',
+                          value: '${_bookmarks.length}',
+                          color: scheme.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _DataCard(
+                          icon: Icons.history_outlined,
+                          label: '历史',
+                          value: '${_history.length}',
+                          color: scheme.tertiary,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _DataCard(
+                          icon: Icons.cookie_outlined,
+                          label: 'Cookie',
+                          value: '${_cookieDomains.length} 域',
+                          color: scheme.error,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  _fieldLabel('收藏列表', Icons.star_rounded),
+                  if (_bookmarks.isEmpty)
+                    const Text(
+                      '暂无收藏',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Color(0x88000000),
+                      ),
+                    )
+                  else ...[
+                    for (final b in List.of(_bookmarks))
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.star_rounded, size: 15),
+                        title: Text(
+                          b.title,
+                          style: const TextStyle(fontSize: 10.5),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          b.url,
+                          style: const TextStyle(fontSize: 9),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: IconButton(
+                          visualDensity: VisualDensity.compact,
+                          iconSize: 14,
+                          icon: const Icon(Icons.close),
+                          onPressed: () => setState(() {
+                            _bookmarks.removeWhere((x) => x.id == b.id);
+                          }),
+                        ),
+                      ),
+                  ],
+                  const SizedBox(height: 6),
+                  _fieldLabel('历史列表', Icons.history_rounded),
+                  if (_history.isEmpty)
+                    const Text(
+                      '暂无历史',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Color(0x88000000),
+                      ),
+                    )
+                  else ...[
+                    for (final h in List.of(_history))
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.public_rounded, size: 15),
+                        title: Text(
+                          h.title,
+                          style: const TextStyle(fontSize: 10.5),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          '${h.visitedAt.toLocal()} · ${h.url}',
+                          style: const TextStyle(fontSize: 9),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: IconButton(
+                          visualDensity: VisualDensity.compact,
+                          iconSize: 14,
+                          icon: const Icon(Icons.close),
+                          onPressed: () => setState(() {
+                            _history.removeWhere((x) => identical(x, h));
+                          }),
+                        ),
+                      ),
+                  ],
+                  const SizedBox(height: 6),
+                  _fieldLabel('Cookie 域分布', Icons.cookie_outlined),
+                  if (_cookieDomains.isEmpty)
+                    const Text(
+                      '暂无 Cookie 登录态',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Color(0x88000000),
+                      ),
+                    )
+                  else ...[
+                    for (final e in _cookieDomains.entries.toList()
+                      ..sort((a, b) => b.value.compareTo(a.value)))
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                e.key,
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  fontFamily: kMonoFamily,
+                                  fontFamilyFallback: kMonoFallback,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: scheme.surfaceContainerHighest,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                '${e.value} 条',
+                                style: const TextStyle(fontSize: 9),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+              child: Row(
+                children: [
+                  TextButton(
+                    onPressed: widget.onClose,
+                    child: const Text('关闭'),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: _save,
+                    icon: const Icon(Icons.save_outlined, size: 16),
+                    label: const Text('保存修改'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: scheme.primary,
+                    ),
+                  ),
+                  if (!isActive) ...[
+                    const SizedBox(width: 6),
+                    FilledButton.icon(
+                      onPressed: _switchHere,
+                      icon: const Icon(Icons.swap_horiz_rounded, size: 16),
+                      label: const Text('切换到此分身'),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _fieldLabel(String text, IconData icon) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 13, color: scheme.primary),
+          const SizedBox(width: 4),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  InputDecoration _fieldDecoration(String hint) {
+    final scheme = Theme.of(context).colorScheme;
+    return InputDecoration(
+      isDense: true,
+      filled: true,
+      fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+      hintText: hint,
+      hintStyle: const TextStyle(fontSize: 9.5),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide.none,
+      ),
+    );
+  }
+}
+
+class _DataCard extends StatelessWidget {
+  const _DataCard({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: color,
+            ),
+          ),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 9,
+              color: color.withValues(alpha: 0.8),
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -580,6 +580,52 @@ class BrowserEngine {
     return true;
   }
 
+  /// 更新分身数据（名称/指纹/代理/首页/收藏/历史）。如果是当前分身，
+  /// 会同步应用到正在运行的浏览器。
+  Future<bool> updateProfile(
+    String id, {
+    String? name,
+    String? ua,
+    String? activeProxyId,
+    String? currentUrl,
+    List<BrowserBookmark>? bookmarks,
+    List<BrowserHistoryEntry>? history,
+  }) async {
+    await loadProfiles();
+    final list = List.of(profilesNotifier.value);
+    final target = _findProfile(list, id);
+    if (target == null) return false;
+    final isActive = target.id == activeProfileIdNotifier.value;
+    if (name != null) target.name = name.trim().isEmpty ? target.name : name.trim();
+    if (ua != null) target.ua = ua.trim().isEmpty ? null : ua.trim();
+    if (activeProxyId != null) target.activeProxyId = activeProxyId;
+    if (currentUrl != null) target.currentUrl = currentUrl.trim().isEmpty ? null : currentUrl.trim();
+    if (bookmarks != null) target.bookmarks = List.of(bookmarks);
+    if (history != null) target.history = List.of(history);
+    target.updatedAt = DateTime.now();
+    profilesNotifier.value = list;
+
+    if (isActive) {
+      if (ua != null) {
+        await setUserAgent(target.ua ?? _defaultUserAgent);
+      }
+      if (activeProxyId != null) {
+        activeProxyIdNotifier.value = target.activeProxyId ?? '';
+        await _applyActiveProxy();
+      }
+      if (bookmarks != null) {
+        this.bookmarks.value = List.of(target.bookmarks);
+        await _saveBookmarks();
+      }
+      if (history != null) {
+        this.history.value = List.of(target.history);
+        await _saveHistory();
+      }
+    }
+    await _saveProfiles();
+    return true;
+  }
+
   /// 切换到另一个分身：保存当前状态，然后把真实浏览器的
   /// UA/代理/收藏/历史/Cookie/当前网址整份替换成目标镜像。
   Future<Map<String, dynamic>> switchProfile(String id) async {
