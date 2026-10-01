@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -18,6 +19,7 @@ import '../../core/local_shell/proot_bridge.dart';
 import '../../core/storage/secure_storage.dart';
 import '../../core/utils/logger.dart';
 import 'browser_window.dart';
+import 'models/browser_profile.dart';
 import 'intercept_js.dart';
 import 'models/intercept_script.dart';
 import 'models/browser_models.dart';
@@ -113,6 +115,25 @@ class BrowserEngine {
   final ValueNotifier<List<BrowserHistoryEntry>> history = ValueNotifier([]);
 
   static const _maxHistory = 800;
+
+  bool _profilesLoaded = false;
+
+  /// 浏览器分身列表（主浏览器 + 若干镜像）。
+  final ValueNotifier<List<BrowserProfile>> profilesNotifier = ValueNotifier([]);
+
+  /// 当前分身的 id；默认主浏览器是 `main`。
+  final ValueNotifier<String> activeProfileIdNotifier =
+      ValueNotifier('main');
+
+  BrowserProfile? get currentProfile {
+    final id = activeProfileIdNotifier.value;
+    for (final p in profilesNotifier.value) {
+      if (p.id == id) return p;
+    }
+    return profilesNotifier.value.isEmpty
+        ? null
+        : profilesNotifier.value.first;
+  }
 
   Future<void> _loadUserAgent() async {
     if (_uaLoaded) return;
@@ -397,6 +418,219 @@ class BrowserEngine {
     } catch (_) {}
   }
 
+  /// 加载/初始化浏览器分身。
+  ///
+  /// 第一次跑时用当前全局收藏/历史创建「主浏览器」，后续都从 profiles 里读。
+  Future<void> loadProfiles() async {
+    if (_profilesLoaded) return;
+    _profilesLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('browser_profiles_v1');
+      if (raw != null && raw.trim().isNotEmpty) {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) {
+          final list = [
+            for (final item in decoded)
+              if (item is Map)
+                BrowserProfile.fromJson(Map<String, dynamic>.from(item)),
+          ];
+          if (list.isNotEmpty) {
+            profilesNotifier.value = list;
+            final active = prefs.getString('browser_active_profile_v1');
+            if (list.any((p) => p.id == active)) {
+              activeProfileIdNotifier.value = active!;
+            } else {
+              activeProfileIdNotifier.value =
+                  list.firstWhere((p) => p.isMain, orElse: () => list.first).id;
+            }
+            return;
+          }
+        }
+      }
+      // 首次：当前全局收藏/历史就是主浏览器。
+      await loadBookmarksAndHistory();
+      final main = BrowserProfile(
+        id: 'main',
+        name: '主浏览器',
+        isMain: true,
+        ua: userAgentNotifier.value,
+        activeProxyId: activeProxyIdNotifier.value,
+        currentUrl: currentUrl.value.isEmpty ? null : currentUrl.value,
+        bookmarks: List.of(bookmarks.value),
+        history: List.of(history.value),
+      );
+      profilesNotifier.value = [main];
+      activeProfileIdNotifier.value = 'main';
+      await _saveProfiles();
+    } catch (_) {}
+  }
+
+  Future<void> _saveProfiles() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'browser_profiles_v1',
+        jsonEncode([
+          for (final p in profilesNotifier.value) p.toJson(),
+        ]),
+      );
+      await prefs.setString(
+        'browser_active_profile_v1',
+        activeProfileIdNotifier.value,
+      );
+    } catch (_) {}
+  }
+
+  BrowserProfile? _findProfile(List<BrowserProfile> list, String id) {
+    for (final p in list) {
+      if (p.id == id) return p;
+    }
+    return null;
+  }
+
+  Future<void> _captureCurrentToProfile(BrowserProfile profile) async {
+    await loadBookmarksAndHistory();
+    profile.currentUrl = currentUrl.value.isEmpty ? null : currentUrl.value;
+    profile.ua = userAgentNotifier.value;
+    profile.activeProxyId = activeProxyIdNotifier.value;
+    profile.bookmarks = List.of(bookmarks.value);
+    profile.history = List.of(history.value);
+    try {
+      profile.cookies = await WebBridge.dumpCookies();
+    } catch (_) {}
+    profile.updatedAt = DateTime.now();
+  }
+
+  Future<BrowserProfile> createProfile({
+    String? name,
+    bool cloneCurrent = false,
+  }) async {
+    await loadProfiles();
+    final trimmedName = name?.trim() ?? '';
+    final list = List.of(profilesNotifier.value);
+    final current = _findProfile(list, activeProfileIdNotifier.value);
+    if (cloneCurrent) {
+      if (current != null) await _captureCurrentToProfile(current);
+      profilesNotifier.value = list;
+    }
+    final profile = BrowserProfile(
+      id: _newProfileId(),
+      name: trimmedName.isEmpty ? '分身 ${list.length + 1}' : trimmedName,
+      isMain: false,
+      ua: cloneCurrent ? userAgentNotifier.value : _defaultUserAgent,
+      activeProxyId: cloneCurrent ? activeProxyIdNotifier.value : '',
+      currentUrl: cloneCurrent && currentUrl.value.isNotEmpty
+          ? currentUrl.value
+          : null,
+      bookmarks: cloneCurrent ? List.of(bookmarks.value) : [],
+      history: cloneCurrent ? List.of(history.value) : [],
+      cookies: cloneCurrent ? await WebBridge.dumpCookies() : [],
+    );
+    profilesNotifier.value = [...profilesNotifier.value, profile];
+    await _saveProfiles();
+    return profile;
+  }
+
+  String _newProfileId() {
+    final random = Random();
+    return 'p${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}'
+        '${random.nextInt(0xFFFF).toRadixString(36)}';
+  }
+
+  Future<bool> renameProfile(String id, String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return false;
+    await loadProfiles();
+    final list = List.of(profilesNotifier.value);
+    final target = _findProfile(list, id);
+    if (target == null) return false;
+    target.name = trimmed;
+    profilesNotifier.value = list;
+    await _saveProfiles();
+    return true;
+  }
+
+  Future<bool> removeProfile(String id) async {
+    await loadProfiles();
+    if (id == 'main') return false;
+    final list = List.of(profilesNotifier.value);
+    final target = _findProfile(list, id);
+    if (target == null) return false;
+    if (target.id == activeProfileIdNotifier.value) {
+      final main = list.firstWhere(
+        (p) => p.isMain,
+        orElse: () => list.first,
+      );
+      if (main.id != target.id) {
+        await switchProfile(main.id);
+        // switchProfile 内部会刷新 profilesNotifier，重新取列表再删。
+        final refreshed = List.of(profilesNotifier.value);
+        refreshed.removeWhere((p) => p.id == id);
+        profilesNotifier.value = refreshed;
+        await _saveProfiles();
+        return true;
+      }
+    }
+    profilesNotifier.value = [
+      for (final p in profilesNotifier.value)
+        if (p.id != id) p,
+    ];
+    await _saveProfiles();
+    return true;
+  }
+
+  /// 切换到另一个分身：保存当前状态，然后把真实浏览器的
+  /// UA/代理/收藏/历史/Cookie/当前网址整份替换成目标镜像。
+  Future<Map<String, dynamic>> switchProfile(String id) async {
+    await loadProfiles();
+    final list = List.of(profilesNotifier.value);
+    final current = _findProfile(list, activeProfileIdNotifier.value);
+    final target = _findProfile(list, id);
+    if (target == null) {
+      return {'ok': false, 'error': '分身不存在：$id'};
+    }
+    if (current?.id == id) {
+      return {'ok': true, 'already': true, 'profile': target.name};
+    }
+    if (current != null) {
+      await _captureCurrentToProfile(current);
+    }
+    activeProfileIdNotifier.value = target.id;
+    profilesNotifier.value = list;
+    await _applyProfileState(target);
+    await _saveProfiles();
+    return {'ok': true, 'profile': target.name};
+  }
+
+  Future<void> _applyProfileState(BrowserProfile profile) async {
+    await loadProxySettings();
+    final ua = profile.ua ?? _defaultUserAgent;
+    await setUserAgent(ua);
+    activeProxyIdNotifier.value = profile.activeProxyId ?? '';
+    bookmarks.value = List.of(profile.bookmarks);
+    history.value = List.of(profile.history);
+    await _saveBookmarks();
+    await _saveHistory();
+    try {
+      if (profile.cookies.isEmpty) {
+        await WebBridge.clearCookies();
+      } else {
+        await WebBridge.restoreCookies(profile.cookies);
+      }
+      await WebBridge.flush();
+    } catch (_) {}
+    await _applyActiveProxy();
+    if (isReady) {
+      final url = profile.currentUrl?.trim() ?? '';
+      if (url.isNotEmpty && !url.startsWith('about:blank')) {
+        await open(url);
+      } else {
+        await open('about:blank');
+      }
+    }
+  }
+
   /// 收藏当前页面；重复 URL 会被去重并更新标题。
   Future<void> addBookmark(String url, {String title = ''}) async {
     final target = url.trim();
@@ -677,6 +911,7 @@ class BrowserEngine {
     await _loadUserAgent();
     await loadProxySettings();
     await loadBookmarksAndHistory();
+    await loadProfiles();
     await c.setUserAgent(userAgentNotifier.value);
     _controller = c;
     controllerRevision.value++;

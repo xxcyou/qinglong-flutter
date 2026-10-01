@@ -178,6 +178,22 @@ class WebBridge {
         .toList();
   }
 
+  /// 整库替换 cookie：先清空全部，再把 [cookies]（dumpCookies 的完整 dump）
+  /// 原样写回。浏览器分身切换登录态时用。
+  static Future<Map<String, int>> restoreCookies(
+    List<Map<String, dynamic>> cookies,
+  ) async {
+    final raw = await _invoke<Map<Object?, Object?>>(
+      'restoreCookies',
+      {'cookies': cookies},
+    );
+    if (raw == null) return const {};
+    return {
+      for (final e in raw.entries)
+        e.key.toString(): (e.value as num?)?.toInt() ?? 0,
+    };
+  }
+
   /// 清所有站点的 localStorage / sessionStorage / IndexedDB / 缓存。
   static Future<void> clearStorage() => _invoke<void>('clearWebStorage');
 

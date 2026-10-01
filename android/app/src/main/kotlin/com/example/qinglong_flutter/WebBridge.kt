@@ -279,6 +279,19 @@ class WebBridge(private val context: Context) {
                         }
                     }
 
+                    // 整库替换 cookie：先清空，再把传入的 cookie dump 全部还原。
+                    //
+                    // 浏览器分身切换时用：每个分身保存一份 dumpCookies 出来的
+                    // 完整 cookie 库，切过去时整库换掉，登录态也跟着切。
+                    "restoreCookies" -> {
+                        try {
+                            val rows = call.argument<List<Map<String, Any?>>>("cookies") ?: emptyList()
+                            restoreCookies(rows, result)
+                        } catch (e: Throwable) {
+                            result.error("RESTORE_FAILED", e.message, null)
+                        }
+                    }
+
                     // 把 cookie 库整个读出来。
                     //
                     // 为什么不能只靠 CookieManager.getCookie(url)：它只给
@@ -502,6 +515,67 @@ class WebBridge(private val context: Context) {
             result.success(
                 mapOf("cleared" to cleared, "restored" to restored, "lost" to lost)
             )
+        }
+
+        cm.removeAllCookies { finish() }
+        // 少数内核不回调，兜个超时，否则 Dart 侧永远等不到。
+        android.os.Handler(android.os.Looper.getMainLooper())
+            .postDelayed({ finish() }, 2000)
+    }
+
+    /// 整库替换 cookie：先 removeAllCookies 清空，再把传入的完整 dump 写回。
+    ///
+    /// 返回 `{restored, lost}`：成功写回几条、因为值被内核加密写不回去几条。
+    /// 这是浏览器分身切换的“换登录态”底子。
+    private fun restoreCookies(all: List<Map<String, Any?>>, result: MethodChannel.Result) {
+        val cm = CookieManager.getInstance()
+        var replied = false
+        fun finish() {
+            if (replied) return
+            replied = true
+            var restored = 0
+            var lost = 0
+            for (row in all) {
+                val name = row["name"] as? String ?: continue
+                val value = row["value"] as? String ?: ""
+                val encrypted = row["encrypted"] as? Boolean ?: false
+                if (encrypted || (value.isEmpty() && name.isEmpty())) {
+                    lost++
+                    continue
+                }
+                val hostKey = (row["host"] as? String) ?: continue
+                val path = (row["path"] as? String)?.ifEmpty { "/" } ?: "/"
+                val secure = row["secure"] as? Boolean ?: false
+                val httpOnly = row["httpOnly"] as? Boolean ?: false
+                val expires = row["expires"] as? Long ?: 0L
+                val sb = StringBuilder("$name=$value; path=$path")
+                if (hostKey.startsWith(".")) sb.append("; domain=$hostKey")
+                if (secure) sb.append("; Secure")
+                if (httpOnly) sb.append("; HttpOnly")
+                if (expires > 0) {
+                    val ms = expires / 1000L - 11644473600000L
+                    if (ms > System.currentTimeMillis()) {
+                        val fmt = java.text.SimpleDateFormat(
+                            "EEE, dd MMM yyyy HH:mm:ss 'GMT'",
+                            java.util.Locale.US
+                        )
+                        fmt.timeZone = java.util.TimeZone.getTimeZone("GMT")
+                        sb.append("; expires=${fmt.format(java.util.Date(ms))}")
+                    }
+                }
+                val scheme = if (secure) "https" else "http"
+                try {
+                    cm.setCookie("$scheme://${hostKey.trimStart('.')}$path", sb.toString())
+                    restored++
+                } catch (_: Throwable) {
+                    lost++
+                }
+            }
+            try {
+                cm.flush()
+            } catch (_: Throwable) {
+            }
+            result.success(mapOf("restored" to restored, "lost" to lost))
         }
 
         cm.removeAllCookies { finish() }

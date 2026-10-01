@@ -137,6 +137,110 @@ class BrowserTools {
         },
       ),
       ExternalTool(
+        name: 'browser_profile',
+        description: '管理浏览器分身（虚拟浏览器镜像）。不是真多个浏览器，而是把同一个真实浏览器'
+            '的状态保存成多份镜像，切换时整份替换当前数据。action=list 列出全部分身，'
+            'current 查看当前分身，new 新建分身（clone_current=true 复制当前分身数据），'
+            'switch 切换到指定分身（按 id 或 name），rename 重命名，remove 删除（主浏览器不可删）。'
+            '每个分身独立保存：UA 指纹、当前代理、当前网址、收藏、历史、Cookie 登录态。',
+        parameters: obj([], {
+          'action': {
+            'type': 'string',
+            'enum': ['list', 'current', 'new', 'switch', 'rename', 'remove'],
+            'description': '默认 list',
+          },
+          'id': {
+            'type': 'string',
+            'description': '分身 id；switch/rename/remove 时可用 name 代替',
+          },
+          'name': {
+            'type': 'string',
+            'description': '分身名称；new 新建时指定，rename 时作为新名称',
+          },
+          'clone_current': {
+            'type': 'boolean',
+            'description': 'action=new 时 true=复制当前分身（含登录态/历史/收藏），false=空白分身',
+          },
+        }),
+        origin: origin,
+        isWrite: true,
+        invoke: (args) async {
+          await engine.loadProfiles();
+          final action = args['action']?.toString() ?? 'list';
+          if (action == 'list' || action == 'current') {
+            final list = engine.profilesNotifier.value;
+            final active = engine.activeProfileIdNotifier.value;
+            final parts = <String>[
+              if (action == 'current') '当前分身：${engine.currentProfile?.name ?? ''}'
+              else '全部分身（${list.length}）：',
+            ];
+            for (final p in list) {
+              final mark = p.id == active ? '▶ ' : '';
+              final main = p.isMain ? '（主）' : '';
+              final uaName = p.ua?.isEmpty == true ? '默认指纹' : (p.ua ?? '默认指纹');
+              final cookieN = p.cookies.isEmpty ? 0 : p.cookies.length;
+              final url = (p.currentUrl?.isNotEmpty ?? false) ? p.currentUrl : '（空）';
+              parts.add(
+                '$mark${p.name}$main\n'
+                '  id=${p.id}\n'
+                '  UA指纹=${uaName.length > 60 ? '${uaName.substring(0, 60)}…' : uaName}\n'
+                '  网址=$url\n'
+                '  收藏=${p.bookmarks.length} 历史=${p.history.length} Cookie=$cookieN 条',
+              );
+            }
+            return parts.join('\n');
+          }
+          if (action == 'new') {
+            final clone = args['clone_current'] == true;
+            final p = await engine.createProfile(
+              name: args['name']?.toString(),
+              cloneCurrent: clone,
+            );
+            return clone
+                ? '已新建分身「${p.name}」并复制了当前浏览器的数据。'
+                    '用 browser_profile switch id=${p.id} 切换过去。'
+                : '已新建空白分身「${p.name}」（id=${p.id}）。'
+                    '可先用 browser_ua set / browser_proxy set 配置它的指纹和代理，'
+                    '再用 browser_profile switch id=${p.id} 切换过去。';
+          }
+          final idOrName = args['id']?.toString() ?? '';
+          if (idOrName.trim().isEmpty) return 'id 或 name 不能为空。';
+          final matches = engine.profilesNotifier.value
+              .where((p) => p.id == idOrName || p.name == idOrName)
+              .toList();
+          if (matches.isEmpty) {
+            return '找不到分身「$idOrName」。先 browser_profile list 看可用 id。';
+          }
+          final target = matches.first;
+          if (action == 'switch') {
+            return await ShellLock.run(
+              ShellLock.browser,
+              () async {
+                final r = await engine.switchProfile(target.id);
+                return r['error'] != null
+                    ? '切换失败：${r['error']}'
+                    : '已切换到「${r['profile']}」。当前浏览器的指纹、登录态、收藏、历史、页面都已换成这个分身的数据。';
+              },
+              label: 'browser_profile:switch ${target.name}',
+              timeout: const Duration(minutes: 6),
+            );
+          }
+          if (action == 'rename') {
+            final ok = await engine.renameProfile(
+              target.id,
+              args['name']?.toString() ?? '',
+            );
+            return ok ? '已重命名为「${target.name}」。' : '重命名失败（名称不能为空）。';
+          }
+          if (action == 'remove') {
+            if (target.isMain) return '主浏览器不可删除。';
+            final ok = await engine.removeProfile(target.id);
+            return ok ? '已删除分身「${target.name}」。' : '删除失败。';
+          }
+          return '未知 action：$action';
+        },
+      ),
+      ExternalTool(
         name: 'browser_ua',
         description: '管理内置浏览器的 User-Agent。action=get 查看当前 UA，list 列出全部可选 UA（含备注），'
             'set/switch 切换 UA（可带 reload=true 自动刷新页面），add 往列表添加（可带 note 备注），'

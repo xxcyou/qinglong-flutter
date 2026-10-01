@@ -17,6 +17,7 @@ import 'browser_engine.dart';
 import 'browser_window.dart';
 import 'intercept_js.dart';
 import 'models/browser_models.dart';
+import 'models/browser_profile.dart';
 import 'models/intercept_script.dart';
 import '../../shared/mono_text.dart';
 
@@ -610,6 +611,7 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                       engine: _engine,
                       onOpenUrl: _openUrlFromPanel,
                     ),
+                    7 => _ProfilePanel(engine: _engine),
                     _ => _scriptList(),
                   },
                 ),
@@ -828,6 +830,8 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                         _tabChip('收藏', 5, Icons.star_border_outlined),
                         const SizedBox(width: 5),
                         _tabChip('历史', 6, Icons.history_outlined),
+                        const SizedBox(width: 5),
+                        _tabChip('分身', 7, Icons.account_tree_outlined),
                       ],
                     ),
                   ),
@@ -5967,5 +5971,384 @@ class _HistoryTile extends StatelessWidget {
     } catch (_) {
       return '';
     }
+  }
+}
+
+class _ProfilePanel extends StatefulWidget {
+  const _ProfilePanel({required this.engine});
+
+  final BrowserEngine engine;
+
+  @override
+  State<_ProfilePanel> createState() => _ProfilePanelState();
+}
+
+class _ProfilePanelState extends State<_ProfilePanel> {
+  Future<void> _newProfile() async {
+    _copyChoice = false;
+    final name = await showBrowserDialog<String>(
+      context: context,
+      builder: (ctx, pop) {
+        final controller = TextEditingController();
+        var copyCurrent = false;
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            title: const Text('新建浏览器分身', style: TextStyle(fontSize: 14)),
+            content: SizedBox(
+              width: 240,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: controller,
+                    autofocus: true,
+                    style: const TextStyle(fontSize: 12),
+                    decoration: const InputDecoration(
+                      labelText: '分身名称',
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Checkbox(
+                        value: copyCurrent,
+                        onChanged: (v) => setDialogState(
+                          () => copyCurrent = v ?? false,
+                        ),
+                      ),
+                      const Expanded(
+                        child: Text(
+                          '复制当前浏览器的指纹/登录态/收藏/历史',
+                          style: TextStyle(fontSize: 10.5),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => pop(null),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  _copyChoice = copyCurrent;
+                  pop(controller.text);
+                },
+                child: const Text('新建'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (name == null || !mounted) return;
+    await widget.engine.createProfile(
+      name: name.trim().isEmpty ? null : name.trim(),
+      cloneCurrent: _copyChoice ?? false,
+    );
+  }
+
+  bool? _copyChoice;
+
+  Future<void> _switch(BrowserProfile p) async {
+    final r = await widget.engine.switchProfile(p.id);
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          r['error'] != null ? '切换失败：${r['error']}' : '已切换到「${p.name}」',
+        ),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 200,
+      ),
+    );
+  }
+
+  Future<void> _rename(BrowserProfile p) async {
+    final name = await showBrowserDialog<String>(
+      context: context,
+      builder: (ctx, pop) {
+        final controller = TextEditingController(text: p.name);
+        return AlertDialog(
+          title: const Text('重命名分身', style: TextStyle(fontSize: 14)),
+          content: SizedBox(
+            width: 240,
+            child: TextField(
+              controller: controller,
+              autofocus: true,
+              style: const TextStyle(fontSize: 12),
+              decoration: const InputDecoration(labelText: '名称', isDense: true),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => pop(null),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => pop(controller.text),
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
+    if (name == null || !mounted) return;
+    await widget.engine.renameProfile(p.id, name);
+  }
+
+  Future<void> _delete(BrowserProfile p) async {
+    if (p.isMain) return;
+    final ok = await showBrowserDialog<bool>(
+      context: context,
+      builder: (ctx, pop) => AlertDialog(
+        title: const Text('删除分身？', style: TextStyle(fontSize: 14)),
+        content: Text(
+          '「${p.name}」的指纹、登录态、收藏、历史都会删除，无法恢复。',
+          style: const TextStyle(fontSize: 11),
+        ),
+        actions: [
+          TextButton(onPressed: () => pop(false), child: const Text('取消')),
+          FilledButton(
+            onPressed: () => pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await widget.engine.removeProfile(p.id);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 6, 10, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: ValueListenableBuilder<String>(
+                  valueListenable: widget.engine.activeProfileIdNotifier,
+                  builder: (context, activeId, _) {
+                    final name = widget.engine.currentProfile?.name ?? '主浏览器';
+                    return Text(
+                      '分身 · 当前：$name',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w700,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    );
+                  },
+                ),
+              ),
+              TextButton.icon(
+                onPressed: _newProfile,
+                icon: const Icon(Icons.add, size: 15),
+                label: const Text('新建'),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  foregroundColor: scheme.primary,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 10),
+          child: Text(
+            '不是多个浏览器，是同一个浏览器的多份数据镜像；切换时整份替换指纹/登录态/收藏/历史。',
+            style: TextStyle(fontSize: 9.5),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Expanded(
+          child: ValueListenableBuilder<List<BrowserProfile>>(
+            valueListenable: widget.engine.profilesNotifier,
+            builder: (context, list, _) {
+              if (list.isEmpty) {
+                return Center(
+                  child: Text(
+                    '还没有分身\n点右上角「新建」创建一个',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                );
+              }
+              return ListView.builder(
+                padding: const EdgeInsets.fromLTRB(10, 2, 10, 24),
+                itemCount: list.length,
+                itemBuilder: (context, index) {
+                  final p = list[index];
+                  return ValueListenableBuilder<String>(
+                    valueListenable: widget.engine.activeProfileIdNotifier,
+                    builder: (context, activeId, _) => _ProfileTile(
+                      profile: p,
+                      active: p.id == activeId,
+                      onSwitch: () => _switch(p),
+                      onRename: () => _rename(p),
+                      onDelete: () => _delete(p),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ProfileTile extends StatelessWidget {
+  const _ProfileTile({
+    required this.profile,
+    required this.active,
+    required this.onSwitch,
+    required this.onRename,
+    required this.onDelete,
+  });
+
+  final BrowserProfile profile;
+  final bool active;
+  final VoidCallback onSwitch;
+  final VoidCallback onRename;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final ua = profile.ua ?? '默认指纹';
+    final url = (profile.currentUrl?.isNotEmpty ?? false)
+        ? profile.currentUrl!
+        : '未打开页面';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Material(
+        color: active
+            ? scheme.primaryContainer.withValues(alpha: 0.35)
+            : scheme.surfaceContainerHighest.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: active ? null : onSwitch,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 16,
+                  backgroundColor: active
+                      ? scheme.primary
+                      : scheme.surfaceContainerHighest,
+                  child: Icon(
+                    profile.isMain
+                        ? Icons.home_outlined
+                        : Icons.account_tree_outlined,
+                    size: 15,
+                    color: active ? scheme.onPrimary : scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              '${profile.name}${profile.isMain ? '（主）' : ''}',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (active) ...[
+                            const SizedBox(width: 6),
+                            Icon(
+                              Icons.check_circle_rounded,
+                              size: 12,
+                              color: scheme.primary,
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '指纹：${ua.length > 42 ? '${ua.substring(0, 42)}…' : ua}',
+                        style: TextStyle(
+                          fontSize: 9,
+                          color: scheme.onSurfaceVariant,
+                          fontFamily: kMonoFamily,
+                          fontFamilyFallback: kMonoFallback,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        '$url · 收藏${profile.bookmarks.length} 历史${profile.history.length} 登录态${profile.cookies.isEmpty ? 0 : profile.cookies.length} 条',
+                        style: TextStyle(
+                          fontSize: 9,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                if (!active)
+                  TextButton(
+                    onPressed: onSwitch,
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: scheme.primary,
+                    ),
+                    child: const Text('切换', style: TextStyle(fontSize: 10)),
+                  ),
+                IconButton(
+                  tooltip: '重命名',
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 14,
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  icon: const Icon(Icons.edit_outlined),
+                  onPressed: onRename,
+                ),
+                if (!profile.isMain)
+                  IconButton(
+                    tooltip: '删除',
+                    visualDensity: VisualDensity.compact,
+                    iconSize: 14,
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 28, minHeight: 28),
+                    icon: Icon(Icons.delete_outline, color: scheme.error),
+                    onPressed: onDelete,
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
