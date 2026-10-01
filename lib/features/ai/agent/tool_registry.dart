@@ -1279,6 +1279,10 @@ class QlToolRegistry {
               'type': 'string',
               'description': '可选原始请求体字符串；填了它就不看 body',
             },
+            'timeoutSeconds': {
+              'type': 'integer',
+              'description': '可选请求超时秒数（默认 30；对大响应/慢面板可以调大，如 60/120）',
+            },
           }),
           isWrite: true,
           impact: '直接调用青龙面板 API，可能读取或修改面板数据',
@@ -2989,6 +2993,11 @@ else:
           final body = rawBody?.isNotEmpty == true
               ? rawBody
               : (bodyMap is Map ? jsonEncode(bodyMap) : null);
+          final rawTimeout = args['timeoutSeconds'];
+          final timeoutSec = rawTimeout is num
+              ? rawTimeout.toInt().clamp(1, 300)
+              : 30;
+          final timeout = Duration(seconds: timeoutSec);
           try {
             final response = await DioClient.dio.request<dynamic>(
               url,
@@ -2999,6 +3008,9 @@ else:
                 headers: {'Authorization': '$tokenType $token'},
                 contentType: body == null ? null : Headers.jsonContentType,
                 responseType: ResponseType.json,
+                connectTimeout: timeout,
+                sendTimeout: timeout,
+                receiveTimeout: timeout,
               ),
             );
             final data = response.data;
@@ -3017,14 +3029,21 @@ else:
                 : responseData is Map
                     ? jsonEncode(responseData)
                     : e.message;
+            final isTimeout = e.type == DioExceptionType.connectionTimeout ||
+                e.type == DioExceptionType.sendTimeout ||
+                e.type == DioExceptionType.receiveTimeout;
             return jsonEncode({
-              'error': '面板接口返回错误',
+              'error': isTimeout ? '面板接口请求超时' : '面板接口返回错误',
               'method': method,
               'url': e.requestOptions.uri.toString(),
               'status': e.response?.statusCode,
               'detail': detail,
-              'hint': '如果面板刚升级，很可能是版本不兼容。先调 panel_api_docs_status '
-                  '检查/同步该面板版本的 API 文档，再按文档修正 path 或参数。',
+              'timeout_seconds': timeoutSec,
+              'hint': isTimeout
+                  ? '连接/等待面板响应超过 $timeoutSec 秒。先确认面板服务在线、网络可达、'
+                      '面板地址正确；上传/拉大文件这类慢接口可以在参数里加大 timeoutSeconds（如 60/120）。'
+                  : '如果面板刚升级，很可能是版本不兼容。先调 panel_api_docs_status '
+                      '检查/同步该面板版本的 API 文档，再按文档修正 path 或参数。',
             });
           }
         }

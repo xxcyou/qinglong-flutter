@@ -397,6 +397,8 @@ class AgentLoop {
       'browser_fetch',
       'browser_script',
       'browser_wait',
+      'panel_api',
+      'panel_api_docs_status',
       'dependency_',
       'panel_update',
       'editor_run',

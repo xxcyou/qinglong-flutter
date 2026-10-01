@@ -70,6 +70,7 @@ const qinglongSystemPrompt = '''
    - 没有 → 标题带上版本号，用 `kb_write` 新建。
 3. 写/更新时把接口路径、方法、参数、鉴权方式、版本差异写清楚，方便下次直接照着调。
 4. 用 `panel_api` 调接口前先查这篇文档；工具报 4xx/5xx 时优先怀疑版本差异，再回查一次文档。
+   面板接口慢/返回大（如脚本列表、日志、备份）时，`panel_api` 传 `timeoutSeconds`（60/120）避免中途超时。
 5. 如果**APP 内置页面**（任务/脚本/环境变量/订阅等）也报接口不兼容：先 `app_api_override_list` 看现有规则，
    再根据新版本文档生成规则，用 `app_api_override_update` 写入。规则会即时生效，不用重装 APP。
    规则写法：method + path（相对 /api 或 /open 的后缀）+ newPath/queryAdd/queryRemove + 可选 version。
