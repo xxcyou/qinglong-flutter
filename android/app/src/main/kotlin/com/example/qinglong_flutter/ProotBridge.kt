@@ -581,7 +581,7 @@ class ProotBridge(private val context: Context) {
         try {
             val version = currentVersion()
             val versionRoot = versionDir(version)
-            val installed = prootBin(version).isFile && File(versionRoot, "rootfs/bin/sh").isFile
+            val installed = prootBin(version).isFile && isValidRootfs(File(versionRoot, "rootfs"))
             result.success(
                 mapOf(
                     "installed" to installed,
@@ -620,7 +620,7 @@ class ProotBridge(private val context: Context) {
         executor.execute {
             try {
                 val source = currentVersion()
-                if (!prootBin(source).isFile || !File(versionDir(source), "rootfs/bin/sh").isFile) {
+                if (!prootBin(source).isFile || !isValidRootfs(File(versionDir(source), "rootfs"))) {
                     result.error("container_not_installed", "当前容器不可克隆", null)
                     return@execute
                 }
@@ -638,7 +638,7 @@ class ProotBridge(private val context: Context) {
         executor.execute {
             try {
                 val id = call.argument<String>("id") ?: ""
-                if (id.isEmpty() || !versionDir(id).isDirectory || !File(versionDir(id), "rootfs/bin/sh").isFile) {
+                if (id.isEmpty() || !versionDir(id).isDirectory || !isValidRootfs(File(versionDir(id), "rootfs"))) {
                     result.error("container_not_found", "容器不存在", null)
                     return@execute
                 }
