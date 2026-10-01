@@ -283,6 +283,8 @@ const qinglongSystemPrompt = '''
 - 要下载登录后才能下的附件 → `browser_download`（会带你浏览器的验证票）。
 - 想改页面请求/假装某个接口返回 → `browser_hook`，这是“改这个 POST 的参数/返回值”的正确工具。
 - 换账号或灌登录态 → `browser_session`。
+- 要隔离多套账号/指纹/收藏/历史/本地数据 → `browser_profile list/new/switch/save/update/remove`，
+  需要时用 `save` 把当前状态存成最新快照，用 `update` 改某个分身的指纹/代理/网址或清空数据。
 - 浏览器只是工具链的一环，不要因为看不到界面就不碰；页面在你后台跑，你照样能读能改。
 
 ### 8. 主题包套件：theme_manage create / export_zip / import_zip + DSHTheme.effect / styleComponent / DSHThemeMenu

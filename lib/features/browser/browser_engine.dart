@@ -578,6 +578,9 @@ class BrowserEngine {
     await _saveProfiles();
   }
 
+  /// 手动把当前正在用的分身保存成一份最新快照（AI/UI 都能调）。
+  Future<void> saveCurrentSnapshot() => _autoSnapshotCurrentProfile();
+
   Future<BrowserProfile> createProfile({
     String? name,
     bool cloneCurrent = false,
@@ -674,6 +677,7 @@ class BrowserEngine {
     List<BrowserBookmark>? bookmarks,
     List<BrowserHistoryEntry>? history,
     Map<String, Map<String, String>>? localStorage,
+    List<Map<String, dynamic>>? cookies,
   }) async {
     await loadProfiles();
     final list = List.of(profilesNotifier.value);
@@ -689,6 +693,7 @@ class BrowserEngine {
     if (localStorage != null) target.localStorage = {
       for (final e in localStorage.entries) e.key: Map.of(e.value),
     };
+    if (cookies != null) target.cookies = List.of(cookies);
     target.updatedAt = DateTime.now();
     profilesNotifier.value = list;
 
@@ -707,6 +712,16 @@ class BrowserEngine {
       if (history != null) {
         this.history.value = List.of(target.history);
         await _saveHistory();
+      }
+      if (cookies != null) {
+        try {
+          if (cookies.isEmpty) {
+            await WebBridge.clearCookies();
+          } else {
+            await WebBridge.restoreCookies(cookies);
+          }
+          await WebBridge.flush();
+        } catch (_) {}
       }
     }
     await _saveProfiles();

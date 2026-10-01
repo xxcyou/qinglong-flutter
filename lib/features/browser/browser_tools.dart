@@ -138,15 +138,20 @@ class BrowserTools {
       ),
       ExternalTool(
         name: 'browser_profile',
-        description: '管理浏览器分身（虚拟浏览器镜像）。不是真多个浏览器，而是把同一个真实浏览器'
+        description: '管理浏览器分身/快照（虚拟浏览器镜像）。不是真多个浏览器，而是把同一个真实浏览器'
             '的状态保存成多份镜像，切换时整份替换当前数据。action=list 列出全部分身，'
             'current 查看当前分身，new 新建分身（clone_current=true 复制当前分身数据），'
-            'switch 切换到指定分身（按 id 或 name），rename 重命名，remove 删除（主浏览器不可删）。'
-            '每个分身独立保存：UA 指纹、当前代理、当前网址、收藏、历史、Cookie 登录态。',
+            'view 查看某个分身完整快照详情，switch 切换到指定分身（按 id 或 name），'
+            'save 把当前正在用的分身保存成最新快照，rename 重命名，remove 删除（主浏览器不可删），'
+            'update 更新分身数据（name/ua/proxy_id/current_url，可清空收藏/历史/Cookie/本地数据）。'
+            '每个分身独立保存：UA 指纹、当前代理、当前网址、收藏、历史、Cookie、localStorage。',
         parameters: obj([], {
           'action': {
             'type': 'string',
-            'enum': ['list', 'current', 'new', 'switch', 'rename', 'remove'],
+            'enum': [
+              'list', 'current', 'new', 'view', 'switch', 'save',
+              'update', 'rename', 'remove'
+            ],
             'description': '默认 list',
           },
           'id': {
@@ -160,6 +165,34 @@ class BrowserTools {
           'clone_current': {
             'type': 'boolean',
             'description': 'action=new 时 true=复制当前分身（含登录态/历史/收藏），false=空白分身',
+          },
+          'ua': {
+            'type': 'string',
+            'description': 'action=update 时的新 UA 指纹；留空字符串可恢复默认指纹',
+          },
+          'proxy_id': {
+            'type': 'string',
+            'description': 'action=update 时的代理 id；空字符串=直连',
+          },
+          'current_url': {
+            'type': 'string',
+            'description': 'action=update 时设置该分身切换后打开的网址',
+          },
+          'clear_bookmarks': {
+            'type': 'boolean',
+            'description': 'action=update 时 true=清空该分身的收藏',
+          },
+          'clear_history': {
+            'type': 'boolean',
+            'description': 'action=update 时 true=清空该分身的历史',
+          },
+          'clear_cookies': {
+            'type': 'boolean',
+            'description': 'action=update 时 true=清空该分身的 Cookie 登录态',
+          },
+          'clear_local_storage': {
+            'type': 'boolean',
+            'description': 'action=update 时 true=清空该分身的 localStorage 快照',
           },
         }),
         origin: origin,
@@ -203,6 +236,11 @@ class BrowserTools {
                     '可先用 browser_ua set / browser_proxy set 配置它的指纹和代理，'
                     '再用 browser_profile switch id=${p.id} 切换过去。';
           }
+          if (action == 'save') {
+            await engine.saveCurrentSnapshot();
+            final name = engine.currentProfile?.name ?? '';
+            return '已将当前分身「$name」保存为最新快照。';
+          }
           final idOrName = args['id']?.toString() ?? '';
           if (idOrName.trim().isEmpty) return 'id 或 name 不能为空。';
           final matches = engine.profilesNotifier.value
@@ -212,6 +250,59 @@ class BrowserTools {
             return '找不到分身「$idOrName」。先 browser_profile list 看可用 id。';
           }
           final target = matches.first;
+          if (action == 'view') {
+            final cookieDomains = <String, int>{};
+            for (final c in target.cookies) {
+              final host = c['host']?.toString() ?? '';
+              if (host.isNotEmpty) cookieDomains[host] = (cookieDomains[host] ?? 0) + 1;
+            }
+            final parts = <String>[
+              '「${target.name}」快照详情${target.isMain ? '（主浏览器）' : ''}'
+                  '${target.id == engine.activeProfileIdNotifier.value ? '（当前）' : ''}',
+              'id：${target.id}',
+              '指纹：${target.ua ?? '默认手机指纹'}',
+              '代理：${target.activeProxyId ?? '直连'}',
+              '网址：${target.currentUrl ?? '（空）'}',
+              '收藏（${target.bookmarks.length}）：',
+              if (target.bookmarks.isEmpty) '  无',
+              for (final b in target.bookmarks) '  • ${b.title} — ${b.url}',
+              '历史（${target.history.length}）：',
+              if (target.history.isEmpty) '  无',
+              for (final h in target.history) '  • ${h.title} — ${h.url}',
+              'Cookie 域（${cookieDomains.length}）：',
+              if (cookieDomains.isEmpty) '  无',
+              for (final e in cookieDomains.entries) '  • ${e.key} ${e.value} 条',
+              'localStorage 域（${target.localStorage.length}）：',
+              if (target.localStorage.isEmpty) '  无',
+              for (final e in target.localStorage.entries)
+                '  • ${e.key} ${e.value.length} 键',
+            ];
+            return parts.join('\n');
+          }
+          if (action == 'update') {
+            final clearBookmarks = args['clear_bookmarks'] == true;
+            final clearHistory = args['clear_history'] == true;
+            final newBookmarks = clearBookmarks
+                ? <BrowserBookmark>[]
+                : target.bookmarks;
+            final newHistory = clearHistory
+                ? <BrowserHistoryEntry>[]
+                : target.history;
+            final ok = await engine.updateProfile(
+              target.id,
+              name: args['name']?.toString(),
+              ua: args['ua']?.toString(),
+              activeProxyId: args['proxy_id']?.toString(),
+              currentUrl: args['current_url']?.toString(),
+              bookmarks: newBookmarks,
+              history: newHistory,
+              cookies: args['clear_cookies'] == true ? const [] : null,
+              localStorage: args['clear_local_storage'] == true
+                  ? const {}
+                  : null,
+            );
+            return ok ? '已更新快照「${target.name}」。' : '更新失败。';
+          }
           if (action == 'switch') {
             return await ShellLock.run(
               ShellLock.browser,

@@ -6251,129 +6251,277 @@ class _ProfileTile extends StatelessWidget {
     final url = (profile.currentUrl?.isNotEmpty ?? false)
         ? profile.currentUrl!
         : '未打开页面';
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Material(
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+      decoration: BoxDecoration(
         color: active
             ? scheme.primaryContainer.withValues(alpha: 0.35)
-            : scheme.surfaceContainerHighest.withValues(alpha: 0.3),
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: active ? null : onSwitch,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 16,
-                  backgroundColor: active
-                      ? scheme.primary
-                      : scheme.surfaceContainerHighest,
-                  child: Icon(
-                    profile.isMain
-                        ? Icons.home_outlined
-                        : Icons.account_tree_outlined,
-                    size: 15,
-                    color: active ? scheme.onPrimary : scheme.onSurfaceVariant,
-                  ),
+            : scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: active ? scheme.primary : Colors.transparent,
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 17,
+                backgroundColor: active
+                    ? scheme.primary
+                    : scheme.surfaceContainerHighest,
+                child: Icon(
+                  profile.isMain
+                      ? Icons.home_outlined
+                      : Icons.account_tree_outlined,
+                  size: 16,
+                  color: active ? scheme.onPrimary : scheme.onSurfaceVariant,
                 ),
-                const SizedBox(width: 9),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Flexible(
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            profile.name,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w800,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (profile.isMain) ...[
+                          const SizedBox(width: 5),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 5,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: scheme.secondaryContainer,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
                             child: Text(
-                              '${profile.name}${profile.isMain ? '（主）' : ''}',
-                              style: const TextStyle(
-                                fontSize: 11,
+                              '主',
+                              style: TextStyle(
+                                fontSize: 8,
                                 fontWeight: FontWeight.w700,
+                                color: scheme.onSecondaryContainer,
                               ),
-                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                          if (active) ...[
-                            const SizedBox(width: 6),
-                            Icon(
-                              Icons.check_circle_rounded,
-                              size: 12,
-                              color: scheme.primary,
-                            ),
-                          ],
                         ],
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '指纹：${ua.length > 42 ? '${ua.substring(0, 42)}…' : ua}',
-                        style: TextStyle(
-                          fontSize: 9,
-                          color: scheme.onSurfaceVariant,
-                          fontFamily: kMonoFamily,
-                          fontFamilyFallback: kMonoFallback,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 1),
-                      Text(
-                        '$url · 收藏${profile.bookmarks.length} 历史${profile.history.length} 登录态${profile.cookies.isEmpty ? 0 : profile.cookies.length} 条 · 本地${profile.localStorage.length}域',
-                        style: TextStyle(
-                          fontSize: 9,
-                          color: scheme.onSurfaceVariant,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
-                ),
-                if (!active)
-                  TextButton(
-                    onPressed: onSwitch,
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      foregroundColor: scheme.primary,
+                        if (active) ...[
+                          const SizedBox(width: 5),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 5,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: scheme.primary,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              '当前',
+                              style: TextStyle(
+                                fontSize: 8,
+                                fontWeight: FontWeight.w700,
+                                color: scheme.onPrimary,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
-                    child: const Text('切换', style: TextStyle(fontSize: 10)),
-                  ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '指纹 ${ua.length > 30 ? '${ua.substring(0, 30)}…' : ua}',
+                      style: TextStyle(
+                        fontSize: 8.5,
+                        color: scheme.onSurfaceVariant,
+                        fontFamily: kMonoFamily,
+                        fontFamilyFallback: kMonoFallback,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: '数据可视化编辑',
+                visualDensity: VisualDensity.compact,
+                iconSize: 15,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                icon: const Icon(Icons.data_object_rounded),
+                onPressed: onEdit,
+              ),
+              IconButton(
+                tooltip: '重命名',
+                visualDensity: VisualDensity.compact,
+                iconSize: 15,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                icon: const Icon(Icons.edit_outlined),
+                onPressed: onRename,
+              ),
+              if (!profile.isMain)
                 IconButton(
-                  tooltip: '数据可视化编辑',
+                  tooltip: '删除',
                   visualDensity: VisualDensity.compact,
-                  iconSize: 14,
+                  iconSize: 15,
                   padding: EdgeInsets.zero,
                   constraints:
                       const BoxConstraints(minWidth: 28, minHeight: 28),
-                  icon: const Icon(Icons.data_object_rounded),
-                  onPressed: onEdit,
+                  icon: Icon(Icons.delete_outline, color: scheme.error),
+                  onPressed: onDelete,
                 ),
-                IconButton(
-                  tooltip: '重命名',
-                  visualDensity: VisualDensity.compact,
-                  iconSize: 14,
-                  padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
-                  icon: const Icon(Icons.edit_outlined),
-                  onPressed: onRename,
+            ],
+          ),
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+            decoration: BoxDecoration(
+              color: scheme.surface.withValues(alpha: 0.5),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.link_rounded,
+                  size: 12,
+                  color: scheme.onSurfaceVariant,
                 ),
-                if (!profile.isMain)
-                  IconButton(
-                    tooltip: '删除',
-                    visualDensity: VisualDensity.compact,
-                    iconSize: 14,
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints(minWidth: 28, minHeight: 28),
-                    icon: Icon(Icons.delete_outline, color: scheme.error),
-                    onPressed: onDelete,
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    url,
+                    style: TextStyle(
+                      fontSize: 9.5,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
+                ),
               ],
             ),
           ),
-        ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _MiniStat(
+                  icon: Icons.star_border_rounded,
+                  label: '收藏',
+                  value: '${profile.bookmarks.length}',
+                  color: scheme.primary,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _MiniStat(
+                  icon: Icons.history_outlined,
+                  label: '历史',
+                  value: '${profile.history.length}',
+                  color: scheme.tertiary,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _MiniStat(
+                  icon: Icons.cookie_outlined,
+                  label: '登录态',
+                  value: '${profile.cookies.length}',
+                  color: scheme.error,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _MiniStat(
+                  icon: Icons.storage_outlined,
+                  label: '本地',
+                  value: '${profile.localStorage.length}',
+                  color: scheme.secondary,
+                ),
+              ),
+            ],
+          ),
+          if (!active) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.tonalIcon(
+                onPressed: onSwitch,
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(fontSize: 10),
+                ),
+                icon: const Icon(Icons.swap_horiz_rounded, size: 14),
+                label: const Text('切换到此分身'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _MiniStat extends StatelessWidget {
+  const _MiniStat({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, size: 13, color: color),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: color,
+            ),
+          ),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 8,
+              color: color.withValues(alpha: 0.9),
+            ),
+          ),
+        ],
       ),
     );
   }
