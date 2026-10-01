@@ -9,6 +9,7 @@ import '../../../core/utils/formatter.dart';
 import '../models/agent_event.dart';
 import '../models/agent_task_plan.dart';
 import 'tool_detail_sheet.dart';
+import 'file_diff_view.dart';
 import '../../../shared/mono_text.dart';
 
 /// Agent 运行过程卡片：默认折叠，展开后是一条时间线。
@@ -395,7 +396,9 @@ class _TimelineRowState extends State<_TimelineRow> {
   ///
   /// 思考/正文经常有好几百字，两行预览根本看不出它在说什么，而每次都要
   /// 弹详情页太重。点一下就地铺开、再点收起，是最省事的看法。
-  bool _expanded = false;
+  /// 文件写操作行默认展开：用户关心的就是“到底写了什么”，先看到 Diff。
+  late bool _expanded =
+      widget.event.kind == AgentEventKind.toolEnd && widget.event.isWrite;
 
   /// 图片字节缓存：同一个 data URI 只在 State 里解一次码，
   /// 避免每次 live 事件刷新都重新解码/重建 Image，造成闪烁。
@@ -633,23 +636,38 @@ class _TimelineRowState extends State<_TimelineRow> {
                       Padding(
                         padding: const EdgeInsets.only(top: 2),
                         child: _expanded
-                            ? Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withValues(alpha: 0.22),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: SelectableText(
-                                  _full(event),
-                                  style: TextStyle(
-                                    fontSize: 11.5,
-                                    height: 1.5,
-                                    fontFamily: kMonoFamily,
-                                    fontFamilyFallback: kMonoFallback,
-                                    color: scheme.onSurfaceVariant,
+                            ? Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (event.kind == AgentEventKind.toolEnd &&
+                                      event.isWrite &&
+                                      event.toolName != null &&
+                                      event.args != null)
+                                    FileDiffView(
+                                      toolName: event.toolName!,
+                                      args: event.args!,
+                                    ),
+                                  const SizedBox(height: 6),
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black
+                                          .withValues(alpha: 0.22),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: SelectableText(
+                                      _full(event),
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        height: 1.5,
+                                        fontFamily: kMonoFamily,
+                                        fontFamilyFallback: kMonoFallback,
+                                        color: scheme.onSurfaceVariant,
+                                      ),
+                                    ),
                                   ),
-                                ),
+                                ],
                               )
                             : Text(
                                 _preview(event),
