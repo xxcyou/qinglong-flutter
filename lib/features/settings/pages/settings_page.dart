@@ -8,6 +8,7 @@ import '../../ai/floating/ai_dock_provider.dart';
 import '../../ai/providers/chat_provider.dart';
 import '../providers/settings_provider.dart';
 import 'ai_settings_page.dart';
+import 'linux_container_page.dart' show LinuxContainerPage;
 import 'font_settings_page.dart';
 import 'theme_settings_page.dart';
 
@@ -249,6 +250,20 @@ class SettingsPage extends ConsumerWidget {
                       notifier.update(settings.copyWith(autoStartTerminal: v)),
                 ),
               ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          GlassCard(
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.dns_outlined),
+              title: const Text('Linux 容器',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('下载 / 克隆 / 删除 / 切换 Linux 环境'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const LinuxContainerPage()),
+              ),
             ),
           ),
           // 这条间距别删：GlassCard 不带外边距，少了它"启动 APP 自动启动终端"

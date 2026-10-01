@@ -28,6 +28,7 @@ import '../agent/web_search.dart';
 import '../agent/external_tool.dart';
 import '../agent/mcp_gateway.dart';
 import '../../browser/browser_tools.dart';
+import '../../terminal/linux_container_tools.dart';
 import '../../browser/browser_engine.dart';
 import '../../editor/editor_tools.dart';
 import '../../../shared/editor_bus.dart';
@@ -4807,6 +4808,9 @@ class ChatNotifier extends Notifier<ChatState> {
 
     // 浏览器内核：过 CF 验证 / 抓包 / 注入脚本都在这一组里。
     tools.addAll(BrowserTools.build());
+
+    // Linux 容器：下载/克隆/删除/切换环境，AI 也能直接操控。
+    tools.addAll(LinuxContainerTools.build());
 
     // 可视化代码编辑：**只有用户真开着编辑器才挂这组工具**。
     //

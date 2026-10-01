@@ -601,20 +601,31 @@ class ProotBridge {
     throw StateError('导入文件返回异常');
   }
 
-  Future<bool> spawnTerminal() async {
+  /// 启动一个新的本地终端（PTY），返回该终端的 id。
+  ///
+  /// 一个终端就是一个独立 bash/容器会话，可以同时开多个标签页。
+  Future<int> spawnTerminal() async {
     final result = await _channel.invokeMethod<dynamic>('spawnTerminal');
-    return result == true;
+    return result is num ? result.toInt() : 0;
   }
 
-  Future<bool> writeTerminal(String data) async {
+  Future<bool> writeTerminal(int id, String data) async {
     final result = await _channel.invokeMethod<dynamic>('writeTerminal', {
+      'id': id,
       'data': data,
     });
     return result == true;
   }
 
-  Future<bool> stopTerminal() async {
-    final result = await _channel.invokeMethod<dynamic>('stopTerminal');
+  Future<bool> stopTerminal(int id) async {
+    final result = await _channel.invokeMethod<dynamic>('stopTerminal', {
+      'id': id,
+    });
+    return result == true;
+  }
+
+  Future<bool> stopAllTerminals() async {
+    final result = await _channel.invokeMethod<dynamic>('terminalStopAll');
     return result == true;
   }
 
@@ -623,10 +634,11 @@ class ProotBridge {
   /// 必须做：pty 的 winsize 默认是 0x0，guest 里的 bash 会以为终端零宽——
   /// ls 不分列、top/less 画不出界面、长命令换行位置也是错的。
   /// 控件尺寸一变就调一次。
-  Future<bool> resizeTerminal(int cols, int rows) async {
+  Future<bool> resizeTerminal(int id, int cols, int rows) async {
     if (cols <= 0 || rows <= 0) return false;
     try {
       final result = await _channel.invokeMethod<dynamic>('resizeTerminal', {
+        'id': id,
         'cols': cols,
         'rows': rows,
       });
@@ -636,6 +648,51 @@ class ProotBridge {
     } on PlatformException {
       return false;
     }
+  }
+
+  /// 列出已安装的 Linux 容器（versions 目录里的每个实例）。
+  Future<List<Map<String, dynamic>>> containerList() async {
+    final result = await _channel.invokeMethod<dynamic>('containerList');
+    if (result is Map && result['containers'] is List) {
+      return [
+        for (final item in (result['containers'] as List))
+          if (item is Map)
+            item.map((k, v) => MapEntry(k.toString(), v)),
+      ];
+    }
+    return [];
+  }
+
+  /// 把当前容器克隆成一个新容器，返回新容器 id。
+  Future<Map<String, dynamic>> containerClone({String? name}) async {
+    final result = await _channel.invokeMethod<dynamic>('containerClone', {
+      'name': name ?? '',
+    });
+    if (result is Map) {
+      return result.map((k, v) => MapEntry(k.toString(), v));
+    }
+    throw StateError('容器克隆返回异常');
+  }
+
+  /// 切到另一个容器。切换会停掉所有旧容器的终端。
+  Future<Map<String, dynamic>> containerSwitch(String id) async {
+    final result = await _channel.invokeMethod<dynamic>('containerSwitch', {
+      'id': id,
+    });
+    if (result is Map) {
+      return result.map((k, v) => MapEntry(k.toString(), v));
+    }
+    throw StateError('容器切换返回异常');
+  }
+
+  Future<Map<String, dynamic>> containerDelete(String id) async {
+    final result = await _channel.invokeMethod<dynamic>('containerDelete', {
+      'id': id,
+    });
+    if (result is Map) {
+      return result.map((k, v) => MapEntry(k.toString(), v));
+    }
+    throw StateError('容器删除返回异常');
   }
 
   Stream<Map<String, dynamic>> terminalEvents() {

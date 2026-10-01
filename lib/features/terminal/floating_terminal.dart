@@ -64,13 +64,14 @@ class _FloatingTerminalWindowState
   bool _ready = false;
   String? _error;
   bool _closing = false;
+  int _terminalId = 0;
 
   @override
   void initState() {
     super.initState();
     _terminal.onOutput = _writeTerminal;
     _terminal.onResize = (w, h, pw, ph) {
-      unawaited(_bridge.resizeTerminal(w, h));
+      if (_terminalId > 0) unawaited(_bridge.resizeTerminal(_terminalId, w, h));
     };
     _eventsSubscription = _bridge.terminalEvents().listen(_onTerminalEvent);
     Future.microtask(_start);
@@ -79,7 +80,7 @@ class _FloatingTerminalWindowState
   @override
   void dispose() {
     _eventsSubscription?.cancel();
-    _bridge.stopTerminal();
+    if (_terminalId > 0) _bridge.stopTerminal(_terminalId);
     _focusNode.dispose();
     super.dispose();
   }
@@ -89,10 +90,12 @@ class _FloatingTerminalWindowState
       final notifier = ref.read(terminalSessionProvider.notifier);
       await notifier.load();
       final state = ref.read(terminalSessionProvider);
-      if (!state.running) {
-        await notifier.spawn();
+      int? id = state.spawnedId;
+      if (!state.running || id == null) {
+        id = await notifier.spawn();
       }
       if (!mounted) return;
+      _terminalId = id ?? 0;
       setState(() {
         _ready = true;
         _error = ref.read(terminalSessionProvider).error;
@@ -100,8 +103,8 @@ class _FloatingTerminalWindowState
       // 进入文件管理器当前目录。
       final dir = widget.cwd.trim();
       if (dir.isNotEmpty) {
-        await _bridge.writeTerminal('cd ${_shq(dir)}\n');
-        await _bridge.writeTerminal('pwd\n');
+        await _bridge.writeTerminal(_terminalId, 'cd ${_shq(dir)}\n');
+        await _bridge.writeTerminal(_terminalId, 'pwd\n');
       }
     } catch (e) {
       if (mounted) {
@@ -116,10 +119,12 @@ class _FloatingTerminalWindowState
   static String _shq(String s) => "'${s.replaceAll("'", "'\\''")}'";
 
   void _writeTerminal(String data) {
-    unawaited(_bridge.writeTerminal(data));
+    if (_terminalId > 0) unawaited(_bridge.writeTerminal(_terminalId, data));
   }
 
   void _onTerminalEvent(Map<String, dynamic> event) {
+    final id = (event['id'] is num) ? (event['id'] as num).toInt() : 0;
+    if (id != 0 && id != _terminalId) return;
     switch (event['type']) {
       case 'output':
         _terminal.write(event['data']?.toString() ?? '');

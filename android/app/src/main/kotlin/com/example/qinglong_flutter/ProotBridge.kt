@@ -34,6 +34,8 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 class ProotBridge(private val context: Context) {
@@ -91,8 +93,15 @@ class ProotBridge(private val context: Context) {
     private val sessionOutputs = ConcurrentHashMap<Long, StringBuilder>()
     private val execSessionSeq = AtomicLong(1)
 
-    private var terminalProcess: Process? = null
-    private var terminalHandle: Long = 0L
+    /** 一个独立的本地终端（PTY）会话。 */
+    private class TerminalSession(
+        val id: Int,
+        val handle: Long,
+        val running: AtomicBoolean,
+    )
+
+    private val terminalSessions = ConcurrentHashMap<Int, TerminalSession>()
+    private val terminalSeq = AtomicInteger(1)
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var terminalSink: EventChannel.EventSink? = null
@@ -100,7 +109,6 @@ class ProotBridge(private val context: Context) {
     /// 安装是长任务，UI 可能中途重建；最后一次进度留着，重连后立刻回放。
     private var lastInstallEvent: Map<String, Any?>? = null
     private val pendingTerminalEvents = ArrayBlockingQueue<Map<String, Any?>>(1024)
-    private val running = java.util.concurrent.atomic.AtomicBoolean(false)
 
     fun configure(engine: FlutterEngine) {
         MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
@@ -131,7 +139,12 @@ class ProotBridge(private val context: Context) {
                 "spawnTerminal" -> handleSpawnTerminal(result)
                 "writeTerminal" -> handleWriteTerminal(call, result)
                 "resizeTerminal" -> handleResizeTerminal(call, result)
-                "stopTerminal" -> handleStopTerminal(result)
+                "stopTerminal" -> handleStopTerminal(call, result)
+                "terminalStopAll" -> handleStopAllTerminals(result)
+                "containerList" -> handleContainerList(result)
+                "containerClone" -> handleContainerClone(call, result)
+                "containerSwitch" -> handleContainerSwitch(call, result)
+                "containerDelete" -> handleContainerDelete(call, result)
                 else -> result.notImplemented()
             }
         }
@@ -542,10 +555,21 @@ class ProotBridge(private val context: Context) {
         return JSONObject(input.bufferedReader(Charsets.UTF_8).use { it.readText() })
     }
 
+    private fun manifestVersion(): String = readManifest().getString("runtime_version")
+
+    /** 当前激活的容器版本；没切换过就回落到内置清单版本。 */
+    private fun currentVersion(): String {
+        val marker = File(runtimeRoot(), "active-version")
+        if (marker.isFile) {
+            val v = marker.readText().trim()
+            if (v.isNotEmpty() && versionDir(v).isDirectory) return v
+        }
+        return manifestVersion()
+    }
+
     private fun handleGetStatus(result: MethodChannel.Result) {
         try {
-            val manifest = readManifest()
-            val version = manifest.getString("runtime_version")
+            val version = currentVersion()
             val versionRoot = versionDir(version)
             val installed = prootBin(version).isFile && File(versionRoot, "rootfs/bin/sh").isFile
             result.success(
@@ -558,6 +582,86 @@ class ProotBridge(private val context: Context) {
             )
         } catch (e: Exception) {
             result.success(mapOf("installed" to false, "version" to "", "runtimeRoot" to runtimeRoot().absolutePath, "workspace" to workspaceDir().absolutePath))
+        }
+    }
+
+    private fun handleContainerList(result: MethodChannel.Result) {
+        try {
+            val versionsDir = File(runtimeRoot(), "versions").apply { mkdirs() }
+            val current = currentVersion()
+            val containers = versionsDir.listFiles()
+                ?.filter { it.isDirectory && !it.name.endsWith(".staging") }
+                ?.map { dir ->
+                    mapOf(
+                        "id" to dir.name,
+                        "name" to dir.name,
+                        "isActive" to (dir.name == current),
+                        "sizeBytes" to dir.length(),
+                    )
+                }
+                ?.toList() ?: emptyList()
+            result.success(mapOf("containers" to containers))
+        } catch (e: Exception) {
+            result.error("container_list_failed", e.message ?: e.toString(), null)
+        }
+    }
+
+    private fun handleContainerClone(call: MethodCall, result: MethodChannel.Result) {
+        executor.execute {
+            try {
+                val source = currentVersion()
+                if (!prootBin(source).isFile || !File(versionDir(source), "rootfs/bin/sh").isFile) {
+                    result.error("container_not_installed", "当前容器不可克隆", null)
+                    return@execute
+                }
+                val newId = "${source}-clone-${System.currentTimeMillis()}"
+                val target = versionDir(newId)
+                versionDir(source).copyRecursively(target, overwrite = false)
+                result.success(mapOf("id" to newId, "name" to newId))
+            } catch (e: Exception) {
+                result.error("container_clone_failed", e.message ?: e.toString(), null)
+            }
+        }
+    }
+
+    private fun handleContainerSwitch(call: MethodCall, result: MethodChannel.Result) {
+        executor.execute {
+            try {
+                val id = call.argument<String>("id") ?: ""
+                if (id.isEmpty() || !versionDir(id).isDirectory || !File(versionDir(id), "rootfs/bin/sh").isFile) {
+                    result.error("container_not_found", "容器不存在", null)
+                    return@execute
+                }
+                // 切容器前把旧容器的所有终端停掉，避免旧 rootfs 还被占用/串数据。
+                for (session in terminalSessions.values) {
+                    session.running.set(false)
+                    try { ptyKill(session.handle) } catch (e: Exception) {}
+                }
+                terminalSessions.clear()
+                File(runtimeRoot(), "active-version").writeText(id)
+                result.success(mapOf("ok" to true, "version" to id))
+            } catch (e: Exception) {
+                result.error("container_switch_failed", e.message ?: e.toString(), null)
+            }
+        }
+    }
+
+    private fun handleContainerDelete(call: MethodCall, result: MethodChannel.Result) {
+        executor.execute {
+            try {
+                val id = call.argument<String>("id") ?: ""
+                if (id.isEmpty()) throw IllegalArgumentException("缺少容器 id")
+                if (id == currentVersion()) {
+                    result.error("container_active", "不能删除当前正在使用的容器", null)
+                    return@execute
+                }
+                val dir = versionDir(id)
+                if (!dir.isDirectory) throw IllegalArgumentException("容器不存在")
+                deleteRecursive(dir)
+                result.success(mapOf("ok" to true))
+            } catch (e: Exception) {
+                result.error("container_delete_failed", e.message ?: e.toString(), null)
+            }
         }
     }
 
@@ -812,7 +916,7 @@ class ProotBridge(private val context: Context) {
 
     /// 当前已安装版本的 rootfs 目录；没装就抛，调用方会得到明确错误。
     private fun installedRootfs(): File {
-        val version = readManifest().getString("runtime_version")
+        val version = currentVersion()
         val dir = rootfsDir(version)
         if (!File(dir, "bin/sh").isFile) {
             throw IllegalStateException("Runtime 未安装，无法浏览根目录")
@@ -1471,8 +1575,7 @@ class ProotBridge(private val context: Context) {
     ) {
         execExecutor.execute {
             try {
-                val manifest = readManifest()
-                val version = manifest.getString("runtime_version")
+                val version = currentVersion()
                 if (!prootBin(version).isFile) {
                     result.error("runtime_not_installed", "请先安装 Runtime V2", null)
                     return@execute
@@ -1601,8 +1704,7 @@ class ProotBridge(private val context: Context) {
         execExecutor.execute {
             runningExecs.incrementAndGet()
             try {
-                val manifest = readManifest()
-                val version = manifest.getString("runtime_version")
+                val version = currentVersion()
                 if (!prootBin(version).isFile) {
                     result.error("runtime_not_installed", "请先安装 Runtime V2", null)
                     return@execute
@@ -1700,14 +1802,9 @@ class ProotBridge(private val context: Context) {
     private fun handleSpawnTerminal(result: MethodChannel.Result) {
         executor.execute {
             try {
-                val manifest = readManifest()
-                val version = manifest.getString("runtime_version")
+                val version = currentVersion()
                 if (!prootBin(version).isFile) {
                     result.error("runtime_not_installed", "请先安装 Runtime V2", null)
-                    return@execute
-                }
-                if (running.get()) {
-                    result.success(true)
                     return@execute
                 }
                 ensureProotExecutable(version)
@@ -1717,14 +1814,13 @@ class ProotBridge(private val context: Context) {
                 val env = pb.environment().entries.map { "${it.key}=${it.value}" }.toTypedArray()
                 val handle = ptySpawn(command.toTypedArray(), env, workspaceDir().absolutePath)
                 if (handle <= 0) throw IllegalStateException("PTY spawn failed: $handle")
-                terminalHandle = handle
-                running.set(true)
-                pendingTerminalEvents.clear()
+                val id = terminalSeq.getAndIncrement()
+                val session = TerminalSession(id, handle, AtomicBoolean(true))
+                terminalSessions[id] = session
 
-                val inputThread = Thread {
+                Thread {
                     val buffer = ByteArray(8192)
-                    while (running.get()) {
-                        // 循环体自己就 try 住了 ptyRead，这里不再包一层。
+                    while (session.running.get()) {
                         val n = try {
                             ptyRead(handle, buffer, 0, buffer.size)
                         } catch (e: Exception) {
@@ -1733,27 +1829,23 @@ class ProotBridge(private val context: Context) {
                         }
                         if (n <= 0) break
                         val data = String(buffer, 0, n, Charsets.UTF_8)
-                        emitTerminal("output", data)
+                        emitTerminal(id, "output", data)
                     }
-                }
-                inputThread.start()
+                }.start()
                 Thread {
-                    // 同理：这条线程里抛异常也会整个 APP 闪退，全兜住。
                     try {
                         val code = ptyWait(handle)
                         try { ptyClose(handle) } catch (e: Exception) {}
-                        running.set(false)
-                        terminalProcess = null
-                        terminalHandle = 0L
-                        emitTerminal("exit", code.toString())
+                        session.running.set(false)
+                        terminalSessions.remove(id)
+                        emitTerminal(id, "exit", code.toString())
                     } catch (t: Throwable) {
                         Log.e("qtermpty", "pty wait thread crashed", t)
-                        running.set(false)
-                        terminalProcess = null
-                        terminalHandle = 0L
+                        session.running.set(false)
+                        terminalSessions.remove(id)
                     }
                 }.start()
-                result.success(true)
+                result.success(id)
             } catch (e: Exception) {
                 result.error("spawn_failed", e.message ?: e.toString(), null)
             }
@@ -1761,15 +1853,16 @@ class ProotBridge(private val context: Context) {
     }
 
     private fun handleWriteTerminal(call: MethodCall, result: MethodChannel.Result) {
+        val id = call.argument<Number>("id")?.toInt() ?: 0
         val data = call.argument<String>("data") ?: ""
-        val handle = terminalHandle
-        if (handle <= 0L || !running.get()) {
+        val session = terminalSessions[id]
+        if (session == null || !session.running.get()) {
             result.success(false)
             return
         }
         try {
             val bytes = data.toByteArray(Charsets.UTF_8)
-            ptyWrite(handle, bytes, 0, bytes.size)
+            ptyWrite(session.handle, bytes, 0, bytes.size)
             result.success(true)
         } catch (e: Exception) {
             result.error("write_failed", e.message ?: e.toString(), null)
@@ -1781,26 +1874,38 @@ class ProotBridge(private val context: Context) {
     /// 不做这件事的话内核里的 winsize 一直是 0x0：bash 以为终端零宽，
     /// ls 不分列、top/less 画不出界面、长命令的换行位置也是错的。
     private fun handleResizeTerminal(call: MethodCall, result: MethodChannel.Result) {
+        val id = call.argument<Number>("id")?.toInt() ?: 0
         val cols = call.argument<Number>("cols")?.toInt() ?: 0
         val rows = call.argument<Number>("rows")?.toInt() ?: 0
-        val handle = terminalHandle
-        if (handle <= 0L || !running.get() || cols <= 0 || rows <= 0) {
+        val session = terminalSessions[id]
+        if (session == null || !session.running.get() || cols <= 0 || rows <= 0) {
             result.success(false)
             return
         }
         try {
-            result.success(ptyResize(handle, cols, rows) == 0)
+            result.success(ptyResize(session.handle, cols, rows) == 0)
         } catch (e: Exception) {
             result.success(false)
         }
     }
 
-    private fun handleStopTerminal(result: MethodChannel.Result) {
-        val handle = terminalHandle
-        if (handle > 0L) {
-            try { ptyKill(handle) } catch (e: Exception) {}
-            running.set(false)
+    private fun handleStopTerminal(call: MethodCall, result: MethodChannel.Result) {
+        val id = call.argument<Number>("id")?.toInt() ?: 0
+        val session = terminalSessions[id]
+        if (session != null) {
+            session.running.set(false)
+            try { ptyKill(session.handle) } catch (e: Exception) {}
+            terminalSessions.remove(id)
         }
+        result.success(true)
+    }
+
+    private fun handleStopAllTerminals(result: MethodChannel.Result) {
+        for (session in terminalSessions.values) {
+            session.running.set(false)
+            try { ptyKill(session.handle) } catch (e: Exception) {}
+        }
+        terminalSessions.clear()
         result.success(true)
     }
 
@@ -1829,8 +1934,8 @@ class ProotBridge(private val context: Context) {
         }
     }
 
-    private fun emitTerminal(type: String, data: String) {
-        val event = mapOf("type" to type, "data" to data)
+    private fun emitTerminal(id: Int, type: String, data: String) {
+        val event = mapOf("type" to type, "data" to data, "id" to id)
         // Flutter 的 EventSink 只能在主线程调用；PTY 读线程直接调用会被丢弃，导致终端一片空白。
         mainHandler.post {
             val sink = terminalSink

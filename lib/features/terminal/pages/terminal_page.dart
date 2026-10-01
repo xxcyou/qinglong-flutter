@@ -7,6 +7,7 @@ import 'package:xterm/xterm.dart';
 import '../../../core/local_shell/proot_bridge.dart';
 import '../../../shared/confirm_dialog.dart';
 import '../../../shared/glass_scaffold.dart';
+import '../../../shared/mono_text.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../providers/ssh_session_provider.dart';
 import '../providers/terminal_session_provider.dart';
@@ -18,8 +19,16 @@ import '../widgets/terminal_key_bar.dart';
 import '../widgets/terminal_selection_bar.dart';
 import '../widgets/terminal_theme_sheet.dart';
 import 'shell_files_page.dart';
-import '../../../shared/mono_text.dart';
-import '../../../core/theme/glass.dart';
+
+/// 一个独立的本地终端标签页：每个标签都有自己的 PTY / bash 会话。
+class _LocalTab {
+  _LocalTab(this.id, this.terminal, this.controller, this.focus);
+
+  final int id;
+  final Terminal terminal;
+  final TerminalController controller;
+  final FocusNode focus;
+}
 
 class TerminalPage extends ConsumerStatefulWidget {
   const TerminalPage({super.key});
@@ -29,38 +38,45 @@ class TerminalPage extends ConsumerStatefulWidget {
 }
 
 class _TerminalPageState extends ConsumerState<TerminalPage> {
-  final _terminal = Terminal(maxLines: 2000);
-  final _terminalController = TerminalController();
-  final _focusNode = FocusNode();
-  late final ProotBridge _bridge = ProotBridge();
+  final _bridge = ProotBridge();
+  final _localTabs = <_LocalTab>[];
   StreamSubscription<Map<String, dynamic>>? _eventsSubscription;
+  int? _activeLocalIndex;
 
   /// 当前高亮关键字，以及它当下铺出去的那批高亮对象。
-  /// 终端一直在滚，所以每次有新输出都要重算一遍。
   String _highlight = '';
   final _highlights = <TerminalHighlight>[];
   Timer? _highlightDebounce;
 
+  _LocalTab? get _activeLocalTab {
+    final i = _activeLocalIndex;
+    if (i == null || i < 0 || i >= _localTabs.length) return null;
+    return _localTabs[i];
+  }
+
   @override
   void initState() {
     super.initState();
-    _terminal.onOutput = _writeTerminal;
-    // 终端控件自己知道当前多少行列，把它同步给 pty。
-    // 不同步 guest 就认为终端是 0x0：ls 不分列、top 画不出来、换行位置全错。
-    _terminal.onResize = (w, h, pw, ph) {
-      unawaited(_bridge.resizeTerminal(w, h));
-    };
     _eventsSubscription = _bridge.terminalEvents().listen(_onTerminalEvent);
-    Future.microtask(() => ref.read(terminalSessionProvider.notifier).load());
+    Future.microtask(() async {
+      final notifier = ref.read(terminalSessionProvider.notifier);
+      await notifier.load();
+      final autoId = ref.read(terminalSessionProvider).spawnedId;
+      if (autoId != null && mounted && _localTabs.isEmpty) {
+        _adoptLocalTab(autoId);
+      }
+    });
   }
 
   @override
   void dispose() {
     _highlightDebounce?.cancel();
     _clearHighlights();
-    _focusNode.dispose();
     _eventsSubscription?.cancel();
-    _bridge.stopTerminal();
+    for (final t in _localTabs) {
+      t.focus.dispose();
+      unawaited(_bridge.stopTerminal(t.id));
+    }
     super.dispose();
   }
 
@@ -76,8 +92,6 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
     _scheduleHighlight();
   }
 
-  /// 输出流很密（apt 装包一秒能刷几百行），每来一段就全量重算高亮会卡。
-  /// 攒 220ms 再算一次，肉眼看不出延迟。
   void _scheduleHighlight() {
     if (_highlight.isEmpty) {
       _highlightDebounce?.cancel();
@@ -93,19 +107,20 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
     _clearHighlights();
     final keyword = _highlight;
     if (keyword.isEmpty) return;
+    final tab = _activeLocalTab;
+    if (tab == null) return;
     final needle = keyword.toLowerCase();
-    final buffer = _terminal.buffer;
+    final buffer = tab.terminal.buffer;
     final color = Theme.of(context).colorScheme.primary.withValues(alpha: 0.34);
-    // 只扫可见区往上一屏多一点：整个 2000 行回滚全扫没必要，也扫不动。
     final end = buffer.height;
-    final start = (end - _terminal.viewHeight * 3).clamp(0, end);
+    final start = (end - tab.terminal.viewHeight * 3).clamp(0, end);
     var made = 0;
     for (var y = start; y < end && made < 200; y++) {
       final line = buffer.lines[y].getText().toLowerCase();
       var from = line.indexOf(needle);
       while (from >= 0 && made < 200) {
         _highlights.add(
-          _terminalController.highlight(
+          tab.controller.highlight(
             p1: buffer.createAnchor(from, y),
             p2: buffer.createAnchor(from + needle.length, y),
             color: color,
@@ -117,28 +132,90 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
     }
   }
 
-  void _writeTerminal(String data) {
-    unawaited(_bridge.writeTerminal(data));
-  }
-
   void _onTerminalEvent(Map<String, dynamic> event) {
-    switch (event['type']) {
-      case 'output':
-        _terminal.write(event['data']?.toString() ?? '');
-        _scheduleHighlight();
-      case 'exit':
-        ref.read(terminalSessionProvider.notifier).markExited();
+    final type = event['type']?.toString();
+    final id = (event['id'] is num) ? (event['id'] as num).toInt() : 0;
+    final data = event['data']?.toString() ?? '';
+    if (type == 'output') {
+      for (final tab in _localTabs) {
+        if (tab.id == id) {
+          tab.terminal.write(data);
+          _scheduleHighlight();
+          break;
+        }
+      }
+      return;
+    }
+    if (type == 'exit') {
+      // 会话退出只留在原标签里，用户可看到退出状态然后手动关标签。
+      ref.read(terminalSessionProvider.notifier).markExited();
     }
   }
 
-  /// 把原始序列写进 pty。快捷键条与装包面板都走这里。
-  void _send(String data) => unawaited(_bridge.writeTerminal(data));
+  Future<void> _addLocalTab() async {
+    final state = ref.read(terminalSessionProvider);
+    if (state.status?.installed != true) {
+      return;
+    }
+    final id = await _bridge.spawnTerminal();
+    if (!mounted || id == 0) return;
+    final tab = _LocalTab(
+      id,
+      Terminal(maxLines: 2000),
+      TerminalController(),
+      FocusNode(),
+    );
+    tab.terminal.onOutput = (data) => unawaited(_bridge.writeTerminal(id, data));
+    tab.terminal.onResize = (w, h, pw, ph) {
+      unawaited(_bridge.resizeTerminal(id, w, h));
+    };
+    setState(() {
+      _localTabs.add(tab);
+      _activeLocalIndex = _localTabs.length - 1;
+    });
+  }
+
+  void _adoptLocalTab(int id) {
+    final tab = _LocalTab(
+      id,
+      Terminal(maxLines: 2000),
+      TerminalController(),
+      FocusNode(),
+    );
+    tab.terminal.onOutput = (data) => unawaited(_bridge.writeTerminal(id, data));
+    tab.terminal.onResize = (w, h, pw, ph) {
+      unawaited(_bridge.resizeTerminal(id, w, h));
+    };
+    setState(() {
+      _localTabs.add(tab);
+      _activeLocalIndex = _localTabs.length - 1;
+    });
+  }
+
+  Future<void> _closeLocalTab(int index) async {
+    final tab = _localTabs[index];
+    await _bridge.stopTerminal(tab.id);
+    if (!mounted) return;
+    setState(() {
+      _localTabs.removeAt(index);
+      _activeLocalIndex = _localTabs.isEmpty
+          ? null
+          : (index >= _localTabs.length ? _localTabs.length - 1 : index);
+    });
+  }
+
+  void _send(String data) {
+    final tab = _activeLocalTab;
+    if (tab != null) unawaited(_bridge.writeTerminal(tab.id, data));
+  }
 
   void _toggleKeyboard() {
-    if (_focusNode.hasFocus) {
-      _focusNode.unfocus();
+    final tab = _activeLocalTab;
+    if (tab == null) return;
+    if (tab.focus.hasFocus) {
+      tab.focus.unfocus();
     } else {
-      _focusNode.requestFocus();
+      tab.focus.requestFocus();
     }
   }
 
@@ -153,9 +230,12 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
         .sessions
         .where((s) => s.isConnected)
         .toList();
+    final localCount = _localTabs.length;
+    final tabCount = localCount + sshSessions.length + 1;
+
     return GlassScaffold(
-      title: 'Debian 终端',
-      subtitle: state.running ? '会话进行中' : null,
+      title: 'Linux 终端',
+      subtitle: localCount > 0 ? '$localCount 个本地终端' : null,
       bodyTopPadding: 0,
       actions: [
         IconButton(
@@ -173,16 +253,19 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
           onPressed: () => TerminalThemeSheet.show(context),
           icon: const Icon(Icons.palette_outlined),
         ),
-        if (state.running)
+        if (localCount > 0)
           IconButton(
             tooltip: '安装软件包',
             onPressed: () => PackageInstallSheet.show(context, _send),
             icon: const Icon(Icons.inventory_2_outlined),
           ),
-        if (state.running)
+        if (localCount > 0)
           IconButton(
-            tooltip: '停止',
-            onPressed: notifier.stop,
+            tooltip: '停止当前终端',
+            onPressed: () {
+              final i = _activeLocalIndex;
+              if (i != null && i < localCount) _closeLocalTab(i);
+            },
             icon: const Icon(Icons.stop_circle_outlined),
           ),
         IconButton(
@@ -200,8 +283,7 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
                 context,
                 title: clean ? '彻底重装 Runtime' : '重装 Runtime',
                 message: clean
-                    ? '会删掉已下载的安装包并重新下载约 150MB，然后重新解压。'
-                        '适合怀疑安装包损坏时用。\n'
+                    ? '会删掉已下载的安装包并重新下载约 150MB，然后重新解压。\n'
                         '/workspace、/home/coomi 里的文件不会动。'
                     : '用已下载的安装包重新解压一遍系统目录，通常一两分钟。\n'
                         '/workspace、/home/coomi 里的文件不会动。',
@@ -209,6 +291,10 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
                 destructive: true,
               );
               if (!ok) return;
+              for (final t in _localTabs) {
+                unawaited(_bridge.stopTerminal(t.id));
+              }
+              _localTabs.clear();
               await notifier.install(clean: clean);
             },
             itemBuilder: (context) => const [
@@ -236,7 +322,7 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
           ),
       ],
       body: DefaultTabController(
-        length: sshSessions.length + 1,
+        length: tabCount,
         child: Column(
           children: [
             Material(
@@ -248,51 +334,68 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
                     Theme.of(context).colorScheme.onSurfaceVariant,
                 dividerColor: Colors.transparent,
                 indicatorColor: Theme.of(context).colorScheme.primary,
+                onTap: (i) {
+                  if (i >= localCount + sshSessions.length) {
+                    _addLocalTab();
+                    return;
+                  }
+                  if (i < localCount) {
+                    setState(() => _activeLocalIndex = i);
+                  }
+                },
                 tabs: [
-                  const Tab(text: '本地终端'),
+                  for (var i = 0; i < localCount; i++)
+                    Tab(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text('终端 ${i + 1}'),
+                          if (localCount > 1)
+                            GestureDetector(
+                              onTap: () => _closeLocalTab(i),
+                              child: const Padding(
+                                padding: EdgeInsets.only(left: 4),
+                                child: Icon(Icons.close_rounded, size: 13),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                   for (final s in sshSessions) Tab(text: s.name),
+                  const Tab(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.add_rounded, size: 16),
+                        SizedBox(width: 2),
+                        Text('新建'),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
             Expanded(
               child: TabBarView(
                 children: [
-                  Column(
-                    children: [
-                      Expanded(
-                        child: _buildBody(state, notifier, settings, palette),
+                  if (localCount == 0)
+                    _buildEmptyLocalBody(
+                      state,
+                      notifier,
+                      settings,
+                      palette,
+                    )
+                  else
+                    for (final tab in _localTabs)
+                      _buildLocalTabBody(
+                        tab,
+                        state,
+                        notifier,
+                        settings,
+                        palette,
                       ),
-                      // 选择/复制条同理：没会话时没有内容可复制。
-                      if (state.running)
-                        TerminalSelectionBar(
-                          terminal: _terminal,
-                          controller: _terminalController,
-                          highlight: _highlight,
-                          onHighlightChanged: _setHighlight,
-                        ),
-                      // 快捷键条只在会话真的跑起来后出现，没会话时按了也没人收。
-                      if (state.running)
-                        TerminalKeyBar(
-                          onSend: _send,
-                          onToggleKeyboard: _toggleKeyboard,
-                          onInstallPackage: () =>
-                              PackageInstallSheet.show(context, _send),
-                          highlightCommands: settings.terminalCommandHighlight,
-                          fontSize: settings.terminalFontSize,
-                        ),
-                      // 贴边：只补系统手势条的一小截，剩下的高度还给终端。
-                      if (state.running)
-                        SizedBox(
-                            height: MediaQuery.paddingOf(context).bottom * 0.2)
-                      else
-                        // 没会话时给底部留出上拉把手的空间即可（菜单是浮层，默认收起）。
-                        SizedBox(
-                          height:
-                              12 + MediaQuery.paddingOf(context).bottom * 0.2,
-                        ),
-                    ],
-                  ),
                   for (final s in sshSessions) SshTerminalView(sessionId: s.id),
+                  const SizedBox.shrink(),
                 ],
               ),
             ),
@@ -302,68 +405,20 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
     );
   }
 
-  Widget _buildBody(
+  Widget _buildEmptyLocalBody(
     TerminalSessionState state,
     TerminalSessionNotifier notifier,
     AppSettings settings,
     TerminalPalette palette,
   ) {
     if (!state.isAndroidSupported) {
-      return const Center(child: Text('PRoot Debian 仅支持 Android'));
+      return const Center(child: Text('PRoot Linux 仅支持 Android'));
     }
     if (state.status == null) {
       return const Center(child: CircularProgressIndicator());
     }
     if (state.status!.installed) {
-      return Column(
-        children: [
-          Expanded(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: GlassPanel(
-                margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-                radius: 20,
-                blur: Glass.blur,
-                padding: EdgeInsets.zero,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(20),
-                  child: state.running
-                      ? TerminalView(
-                          _terminal,
-                          controller: _terminalController,
-                          focusNode: _focusNode,
-                          autofocus: true,
-                          keyboardType: TextInputType.multiline,
-                          // 半透明背景：让玻璃面板的模糊渐变从底下透出来，
-                          // 像嵌进 APP 的玻璃面板，而不是一块独立的黑匣子。
-                          backgroundOpacity: 0.86,
-                          theme: palette.theme,
-                          // 等宽字体 + 行高：Android 自带 monospace 字形窄、
-                          // 中英混排基线乱跳，换成 JetBrains Mono 才像正经终端。
-                          textStyle: TerminalStyle(
-                            fontSize: settings.terminalFontSize,
-                            height: settings.terminalLineHeight,
-                            fontFamily: kMonoFamily,
-                            fontFamilyFallback: kMonoFallback,
-                          ),
-                          padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
-                          cursorType: TerminalCursorType.block,
-                        )
-                      : _LaunchView(onTap: notifier.spawn, palette: palette),
-                ),
-              ),
-            ),
-          ),
-          if (state.error != null)
-            Padding(
-              padding: const EdgeInsets.all(8),
-              child: Text(
-                state.error!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
-            ),
-        ],
-      );
+      return _LaunchView(onTap: _addLocalTab, palette: palette);
     }
     if (state.installing) {
       final p = state.progress;
@@ -374,8 +429,6 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // 进度未知（服务器没给 Content-Length）时退化为不确定条，
-              // 但阶段文字始终在动，用户能确认没卡死。
               ClipRRect(
                 borderRadius: BorderRadius.circular(6),
                 child: LinearProgressIndicator(
@@ -385,11 +438,8 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
               ),
               const SizedBox(height: 14),
               Text(
-                p?.stage.isNotEmpty == true
-                    ? p!.stage
-                    : '正在安装 Debian Runtime V2',
-                style:
-                    const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                p?.stage.isNotEmpty == true ? p!.stage : '正在安装 Linux Runtime',
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 6),
@@ -432,7 +482,7 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
           children: [
             const Icon(Icons.terminal_outlined, size: 64),
             const SizedBox(height: 12),
-            const Text('PRoot Debian 尚未安装', style: TextStyle(fontSize: 16)),
+            const Text('Linux 尚未安装', style: TextStyle(fontSize: 16)),
             const SizedBox(height: 8),
             const Text(
                 '来自 Coomi Runtime V2 的 Debian Bookworm + Python/Node/Git',
@@ -457,6 +507,65 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
       ),
     );
   }
+
+  Widget _buildLocalTabBody(
+    _LocalTab tab,
+    TerminalSessionState state,
+    TerminalSessionNotifier notifier,
+    AppSettings settings,
+    TerminalPalette palette,
+  ) {
+    return Column(
+      children: [
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: Container(
+              margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF10141A),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: TerminalView(
+                  tab.terminal,
+                  controller: tab.controller,
+                  focusNode: tab.focus,
+                  autofocus: true,
+                  keyboardType: TextInputType.multiline,
+                  backgroundOpacity: 0.92,
+                  theme: palette.theme,
+                  textStyle: TerminalStyle(
+                    fontSize: settings.terminalFontSize,
+                    height: settings.terminalLineHeight,
+                    fontFamily: kMonoFamily,
+                    fontFamilyFallback: kMonoFallback,
+                  ),
+                  padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+                  cursorType: TerminalCursorType.block,
+                ),
+              ),
+            ),
+          ),
+        ),
+        TerminalSelectionBar(
+          terminal: tab.terminal,
+          controller: tab.controller,
+          highlight: _highlight,
+          onHighlightChanged: _setHighlight,
+        ),
+        TerminalKeyBar(
+          onSend: _send,
+          onToggleKeyboard: _toggleKeyboard,
+          onInstallPackage: () => PackageInstallSheet.show(context, _send),
+          highlightCommands: settings.terminalCommandHighlight,
+          fontSize: settings.terminalFontSize,
+        ),
+        SizedBox(height: MediaQuery.paddingOf(context).bottom * 0.2),
+      ],
+    );
+  }
 }
 
 class _LaunchView extends StatelessWidget {
@@ -478,12 +587,12 @@ class _LaunchView extends StatelessWidget {
             color: fg.withValues(alpha: 0.7),
           ),
           const SizedBox(height: 12),
-          Text('已安装 Runtime V2', style: TextStyle(color: fg)),
+          Text('已安装 Linux Runtime', style: TextStyle(color: fg)),
           const SizedBox(height: 12),
           FilledButton.icon(
             onPressed: onTap,
             icon: const Icon(Icons.play_arrow),
-            label: const Text('启动 Debian Shell'),
+            label: const Text('新建终端标签'),
           ),
         ],
       ),

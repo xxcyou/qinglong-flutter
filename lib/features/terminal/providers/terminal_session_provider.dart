@@ -13,6 +13,7 @@ class TerminalSessionState {
     this.running = false,
     this.progress,
     this.error,
+    this.spawnedId,
   });
 
   final PreruntimeStatus? status;
@@ -22,6 +23,9 @@ class TerminalSessionState {
   /// 安装进度（仅 installing 期间有值）。
   final InstallProgress? progress;
   final String? error;
+
+  /// 最近一次自动/手动 spawn 出来的本地终端 id（供页面把它接成标签）。
+  final int? spawnedId;
 
   bool get isAndroidSupported => const ShellDetector().isAndroid;
 
@@ -33,6 +37,8 @@ class TerminalSessionState {
     bool clearProgress = false,
     String? error,
     bool clearError = false,
+    int? spawnedId,
+    bool clearSpawnedId = false,
   }) {
     return TerminalSessionState(
       status: status ?? this.status,
@@ -40,6 +46,7 @@ class TerminalSessionState {
       running: running ?? this.running,
       progress: clearProgress ? null : progress ?? this.progress,
       error: clearError ? null : error ?? this.error,
+      spawnedId: clearSpawnedId ? null : spawnedId ?? this.spawnedId,
     );
   }
 }
@@ -59,6 +66,7 @@ class TerminalSessionNotifier extends Notifier<TerminalSessionState> {
       status: result.status,
       running: false,
       clearError: true,
+      clearSpawnedId: true,
     );
     await _maybeAutoStart();
   }
@@ -115,13 +123,19 @@ class TerminalSessionNotifier extends Notifier<TerminalSessionState> {
     }
   }
 
-  Future<void> spawn() async {
-    if (state.running) return;
+  Future<int?> spawn() async {
+    if (state.running) return state.spawnedId;
     try {
-      final ok = await ProotBridge().spawnTerminal();
-      state = state.copyWith(running: ok, clearError: true);
+      final id = await ProotBridge().spawnTerminal();
+      state = state.copyWith(
+        running: id != 0,
+        spawnedId: id != 0 ? id : null,
+        clearError: true,
+      );
+      return id != 0 ? id : null;
     } catch (e) {
       state = state.copyWith(error: e.toString());
+      return null;
     }
   }
 
@@ -130,8 +144,9 @@ class TerminalSessionNotifier extends Notifier<TerminalSessionState> {
   }
 
   void stop() async {
-    await ProotBridge().stopTerminal();
+    await ProotBridge().stopAllTerminals();
     markExited();
+    state = state.copyWith(clearSpawnedId: true);
   }
 }
 
