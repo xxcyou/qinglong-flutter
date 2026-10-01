@@ -650,6 +650,52 @@ class ProotBridge {
     }
   }
 
+  /// 列出在线可下载的 Linux 容器（Debian / Alpine / Ubuntu 等）。
+  Future<List<Map<String, dynamic>>> containerCatalog() async {
+    final result = await _channel.invokeMethod<dynamic>('containerCatalog');
+    if (result is Map && result['containers'] is List) {
+      return [
+        for (final item in (result['containers'] as List))
+          if (item is Map)
+            item.map((k, v) => MapEntry(k.toString(), v)),
+      ];
+    }
+    return [];
+  }
+
+  /// 下载一个在线容器（不自动切换，装完可 list/switch）。
+  Future<Map<String, dynamic>> containerDownload(String id) async {
+    final result = await _channel.invokeMethod<dynamic>('containerDownload', {
+      'id': id,
+    });
+    if (result is Map) {
+      return result.map((k, v) => MapEntry(k.toString(), v));
+    }
+    throw StateError('容器下载返回异常');
+  }
+
+  /// 导出容器到系统下载目录 Download/qinglong_linux/*.tar.gz。
+  Future<Map<String, dynamic>> containerExport(String id) async {
+    final result = await _channel.invokeMethod<dynamic>('containerExport', {
+      'id': id,
+    });
+    if (result is Map) {
+      return result.map((k, v) => MapEntry(k.toString(), v));
+    }
+    throw StateError('容器导出返回异常');
+  }
+
+  /// 从本地 tar.gz 文件导入容器。[path] 是 FilePicker 给出的宿主路径。
+  Future<Map<String, dynamic>> containerImport(String path) async {
+    final result = await _channel.invokeMethod<dynamic>('containerImport', {
+      'path': path,
+    });
+    if (result is Map) {
+      return result.map((k, v) => MapEntry(k.toString(), v));
+    }
+    throw StateError('容器导入返回异常');
+  }
+
   /// 列出已安装的 Linux 容器（versions 目录里的每个实例）。
   Future<List<Map<String, dynamic>>> containerList() async {
     final result = await _channel.invokeMethod<dynamic>('containerList');

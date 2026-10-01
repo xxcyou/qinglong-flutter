@@ -17,17 +17,22 @@ class LinuxContainerTools {
               'action': {
                 'type': 'string',
                 'enum': [
-                  'list', 'current', 'clone', 'switch', 'delete', 'install'
+                  'catalog', 'list', 'current', 'download', 'install',
+                  'clone', 'switch', 'delete', 'export', 'import'
                 ],
                 'description': '默认 list',
               },
               'id': {
                 'type': 'string',
-                'description': '容器 id；switch/delete 时必填',
+                'description': '容器 id；switch/delete/download/export 时必填',
               },
               'name': {
                 'type': 'string',
                 'description': 'clone 时的新容器名称提示（可空）',
+              },
+              'path': {
+                'type': 'string',
+                'description': 'import 时的本地 tar.gz 容器文件路径',
               },
             },
             'required': [],
@@ -51,7 +56,37 @@ class LinuxContainerTools {
                 timeout: const Duration(minutes: 15),
               );
             }
+            if (action == 'catalog') {
+              final online = await bridge.containerCatalog();
+              if (online.isEmpty) return '暂无可下载的在线容器。';
+              final sb = StringBuffer('在线容器：\n');
+              for (final c in online) {
+                sb.writeln('• ${c['name']}（${c['id']}）：${c['description']}');
+              }
+              sb.write('用 linux_container download id=<id> 下载。');
+              return sb.toString();
+            }
             final list = await bridge.containerList();
+            if (action == 'download') {
+              final id = args['id']?.toString() ?? '';
+              if (id.isEmpty) return 'download 需要在线容器 id。先 linux_container catalog 看有哪些。';
+              final r = await bridge.containerDownload(id);
+              return '已下载容器：${r['name'] ?? id}（id=${r['id']}）\n用 linux_container switch id=${r['id']} 切换过去。';
+            }
+            if (action == 'export') {
+              final id = args['id']?.toString() ?? '';
+              if (id.isEmpty) return 'export 需要已安装容器 id。先 linux_container list 看有哪些。';
+              final r = await bridge.containerExport(id);
+              return '已导出容器：${r['filename']}';
+            }
+            if (action == 'import') {
+              final path = args['path']?.toString() ?? '';
+              if (path.isEmpty || !path.endsWith('.tar.gz') && !path.endsWith('.tgz') && !path.endsWith('.gz')) {
+                return 'import 需要本地 tar.gz 容器文件路径，例如 /sdcard/Download/container.tar.gz';
+              }
+              final r = await bridge.containerImport(path);
+              return '已导入容器：${r['name']}';
+            }
             if (list.isEmpty) {
               return '还没有任何 Linux 容器。用 linux_container install 先装一个。';
             }

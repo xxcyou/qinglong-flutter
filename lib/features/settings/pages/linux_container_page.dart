@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -15,6 +16,7 @@ class LinuxContainerPage extends ConsumerStatefulWidget {
 class _LinuxContainerPageState extends ConsumerState<LinuxContainerPage> {
   late final ProotBridge _bridge = ProotBridge();
   List<Map<String, dynamic>> _containers = [];
+  List<Map<String, dynamic>> _online = [];
   bool _loading = true;
   String? _error;
   bool _busy = false;
@@ -29,9 +31,11 @@ class _LinuxContainerPageState extends ConsumerState<LinuxContainerPage> {
     try {
       final status = await _bridge.status();
       final list = await _bridge.containerList();
+      final online = await _bridge.containerCatalog();
       if (!mounted) return;
       setState(() {
         _containers = list;
+        _online = online;
         _error = status.installed ? null : 'Linux Runtime 尚未安装';
         _loading = false;
       });
@@ -94,6 +98,74 @@ class _LinuxContainerPageState extends ConsumerState<LinuxContainerPage> {
     }
   }
 
+  Future<void> _download(Map<String, dynamic> online) async {
+    final id = online['id']?.toString() ?? '';
+    final name = online['name']?.toString() ?? id;
+    final ok = await showConfirmDialog(
+      context,
+      title: '下载容器',
+      message: '下载「$name」，完成后不会自动切换。\n下载体积较大请保持网络稳定。',
+      confirmText: '开始下载',
+    );
+    if (!ok) return;
+    setState(() { _busy = true; _error = null; });
+    try {
+      final r = await _bridge.containerDownload(id);
+      if (!mounted) return;
+      setState(() { _busy = false; });
+      await _reload();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('「${r['name'] ?? name}」下载完成')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _busy = false; _error = e.toString(); });
+    }
+  }
+
+  Future<void> _export(String id) async {
+    setState(() { _busy = true; _error = null; });
+    try {
+      final r = await _bridge.containerExport(id);
+      if (!mounted) return;
+      setState(() { _busy = false; });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已导出：${r['filename'] ?? 'linux-container-$id.tar.gz'}（下载/Download/qinglong_linux）')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _busy = false; _error = e.toString(); });
+    }
+  }
+
+  Future<void> _import() async {
+    final result = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['tar', 'gz', 'tgz'],
+    );
+    final path = result?.files.single.path;
+    if (path == null) return;
+    setState(() { _busy = true; _error = null; });
+    try {
+      final r = await _bridge.containerImport(path);
+      if (!mounted) return;
+      setState(() { _busy = false; });
+      await _reload();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已导入容器：${r['name']}')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _busy = false; _error = e.toString(); });
+    }
+  }
+
   Future<void> _switch(String id) async {
     final ok = await showConfirmDialog(
       context,
@@ -139,7 +211,16 @@ class _LinuxContainerPageState extends ConsumerState<LinuxContainerPage> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('Linux 容器')),
+      appBar: AppBar(
+        title: const Text('Linux 容器'),
+        actions: [
+          IconButton(
+            tooltip: '导入容器',
+            onPressed: _busy ? null : _import,
+            icon: const Icon(Icons.file_download_outlined),
+          ),
+        ],
+      ),
       body: RefreshIndicator(
         onRefresh: _reload,
         child: ListView(
@@ -160,6 +241,84 @@ class _LinuxContainerPageState extends ConsumerState<LinuxContainerPage> {
                   style: TextStyle(fontSize: 12, color: scheme.error),
                 ),
               ),
+            if (_online.isNotEmpty && !_loading) ...[
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(
+                  '在线下载',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: scheme.primary,
+                  ),
+                ),
+              ),
+              for (final online in _online)
+                GlassCard(
+                  child: Row(
+                    children: [
+                      Icon(Icons.cloud_download_outlined,
+                          color: scheme.primary),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              online['name']?.toString() ?? '',
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              online['description']?.toString() ?? '',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                            if ((online['sizeBytes'] is num) &&
+                                (online['sizeBytes'] as num) > 0)
+                              Text(
+                                '大小约 ${((online['sizeBytes'] as num) / 1048576).toStringAsFixed(1)} MB',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: scheme.onSurfaceVariant,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton.tonal(
+                        onPressed: _busy
+                            ? null
+                            : () => _download(online),
+                        child: Text(
+                          _busy ? '…' : '下载',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 4),
+            ],
+            if (_containers.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(
+                  '已安装容器',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: scheme.tertiary,
+                  ),
+                ),
+              ),
+            ],
             if (_containers.isEmpty && !_loading)
               GlassCard(
                 child: Column(
@@ -261,6 +420,17 @@ class _LinuxContainerPageState extends ConsumerState<LinuxContainerPage> {
                         ),
                       ],
                     ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _busy
+                            ? null
+                            : () => _export(c['id']!.toString()),
+                        icon: const Icon(Icons.upload_file_outlined, size: 16),
+                        label: const Text('导出容器'),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -271,7 +441,7 @@ class _LinuxContainerPageState extends ConsumerState<LinuxContainerPage> {
                 leading: const Icon(Icons.science_outlined),
                 title: const Text('说明'),
                 subtitle: const Text(
-                  '“下载”会安装内置 Debian Runtime；\n“克隆”会把当前容器复制一份新的；\n切换后终端里的所有会话都会重开。',
+                  '“在线下载”：Debian / Alpine / Ubuntu 等；\n“导入/导出”：tar.gz 容器镜像；\n“克隆”：复制当前容器；\n切换后终端里的所有会话都会重开。',
                   style: TextStyle(fontSize: 12),
                 ),
               ),

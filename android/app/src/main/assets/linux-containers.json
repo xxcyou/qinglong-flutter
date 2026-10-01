@@ -1,0 +1,40 @@
+{
+  "containers": [
+    {
+      "id": "debian-bookworm",
+      "name": "Debian Bookworm",
+      "description": "Debian 12 稳定版，内置 Python/Node/Git，兼容性最好",
+      "distro": "debian",
+      "sizeBytes": 158184265,
+      "rootfs": {
+        "url": "https://github.com/TensorHub-ORG/Coomi/releases/download/runtime-v2-debian-bookworm-20260824/debian-bookworm-arm64.tar.gz",
+        "sha256": "43ebcee7855f4c15e90514ddb111bd0830acbf9602a7d0e19594aa299bbe8105",
+        "size": 158184265
+      }
+    },
+    {
+      "id": "alpine-3.20",
+      "name": "Alpine Linux 3.20",
+      "description": "轻量 (~4MB)，适合跑静态服务和脚本",
+      "distro": "alpine",
+      "sizeBytes": 3947906,
+      "rootfs": {
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-minirootfs-3.20.3-aarch64.tar.gz",
+        "sha256": "041fa34a81788242df9e78fa69b97ab45b8ec47ddbf88864755610414a7bf3de",
+        "size": 3947906
+      }
+    },
+    {
+      "id": "ubuntu-24.04",
+      "name": "Ubuntu 24.04",
+      "description": "Ubuntu Noble 基础系统，软件包更全",
+      "distro": "ubuntu",
+      "sizeBytes": 29936675,
+      "rootfs": {
+        "url": "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-arm64.tar.gz",
+        "sha256": "a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2",
+        "size": 29936675
+      }
+    }
+  ]
+}

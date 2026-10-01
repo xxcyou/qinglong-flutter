@@ -8,14 +8,19 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.content.ContentValues
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
+import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
@@ -145,6 +150,10 @@ class ProotBridge(private val context: Context) {
                 "containerClone" -> handleContainerClone(call, result)
                 "containerSwitch" -> handleContainerSwitch(call, result)
                 "containerDelete" -> handleContainerDelete(call, result)
+                "containerCatalog" -> handleContainerCatalog(result)
+                "containerDownload" -> handleContainerDownload(call, result)
+                "containerExport" -> handleContainerExport(call, result)
+                "containerImport" -> handleContainerImport(call, result)
                 else -> result.notImplemented()
             }
         }
@@ -661,6 +670,173 @@ class ProotBridge(private val context: Context) {
                 result.success(mapOf("ok" to true))
             } catch (e: Exception) {
                 result.error("container_delete_failed", e.message ?: e.toString(), null)
+            }
+        }
+    }
+
+    private fun readContainerCatalog(): JSONObject {
+        val input = context.assets.open("linux-containers.json")
+        return JSONObject(input.bufferedReader(Charsets.UTF_8).use { it.readText() })
+    }
+
+    private fun handleContainerCatalog(result: MethodChannel.Result) {
+        try {
+            val catalog = readContainerCatalog()
+            result.success(mapOf("containers" to catalog.getJSONArray("containers")))
+        } catch (e: Exception) {
+            result.error("container_catalog_failed", e.message ?: e.toString(), null)
+        }
+    }
+
+    private fun handleContainerDownload(call: MethodCall, result: MethodChannel.Result) {
+        executor.execute {
+            try {
+                val id = call.argument<String>("id") ?: ""
+                val catalog = readContainerCatalog()
+                val array = catalog.getJSONArray("containers")
+                var chosen: JSONObject? = null
+                for (i in 0 until array.length()) {
+                    val item = array.getJSONObject(i)
+                    if (item.getString("id") == id) { chosen = item; break }
+                }
+                if (chosen == null) throw IllegalArgumentException("在线容器不存在：$id")
+                val manifest = readManifest()
+                val hostArtifact = manifest.getJSONObject("host")
+                val downloads = File(runtimeRoot(), "downloads").apply { mkdirs() }
+                val hostFile = downloadArtifact(
+                    hostArtifact,
+                    File(downloads, "proot-host-arm64.tar.gz"),
+                    "下载 PRoot 主机组件",
+                )
+                val rootfsArtifact = chosen.getJSONObject("rootfs")
+                val safeTag = id.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                val rootfsFile = downloadArtifact(
+                    rootfsArtifact,
+                    File(downloads, "$safeTag-rootfs.tar.gz"),
+                    "下载 ${chosen.getString("name")} 根文件系统",
+                )
+                val newId = "$safeTag-${System.currentTimeMillis()}"
+                val staging = File(File(runtimeRoot(), "versions"), "$newId.staging")
+                deleteRecursive(staging)
+                staging.mkdirs()
+                emitInstall("解压 PRoot 主机组件")
+                extractTarGz(hostFile, staging)
+                emitInstall("解压 ${chosen.getString("name")} 根文件系统")
+                extractTarGz(rootfsFile, File(staging, "rootfs"))
+                val proot = File(staging, "bin/proot")
+                if (!proot.isFile) throw IllegalStateException("PRoot host archive has no bin/proot")
+                proot.setExecutable(true, false)
+                if (!File(staging, "rootfs/bin/sh").isFile) throw IllegalStateException("rootfs extraction incomplete")
+                val target = File(File(runtimeRoot(), "versions"), newId)
+                if (target.exists()) deleteRecursive(target)
+                if (!staging.renameTo(target)) throw IllegalStateException("cannot activate container")
+                emitInstall("安装完成", done = true)
+                result.success(mapOf("id" to newId, "name" to chosen.getString("name")))
+            } catch (e: Exception) {
+                emitInstall("安装失败", done = true, error = e.message ?: e.toString())
+                result.error("container_download_failed", e.message ?: e.toString(), null)
+            }
+        }
+    }
+
+    private fun tarGzDirectory(source: File, target: File): Boolean {
+        target.parentFile?.mkdirs()
+        GzipCompressorOutputStream(FileOutputStream(target)).use { gz ->
+            TarArchiveOutputStream(gz).use { tar ->
+                tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX)
+                fun addDir(dir: File, parent: String) {
+                    val entries = dir.listFiles() ?: return
+                    for (f in entries) {
+                        val name = if (parent.isEmpty()) f.name else "$parent/${f.name}"
+                        val entry = TarArchiveEntry(f, name)
+                        entry.size = if (f.isFile) f.length() else 0
+                        entry.mode = if (f.isFile) 0x81A4 else 0x41ED
+                        tar.putArchiveEntry(entry)
+                        if (f.isFile) {
+                            FileInputStream(f).use { input -> input.copyTo(tar, 64 * 1024) }
+                        }
+                        tar.closeArchiveEntry()
+                        if (f.isDirectory) addDir(f, name)
+                    }
+                }
+                addDir(source, "")
+            }
+        }
+        return target.isFile && target.length() > 0
+    }
+
+    private fun handleContainerExport(call: MethodCall, result: MethodChannel.Result) {
+        executor.execute {
+            try {
+                val id = call.argument<String>("id") ?: ""
+                val dir = versionDir(id)
+                if (!dir.isDirectory) throw IllegalArgumentException("容器不存在：$id")
+                val cacheFile = File(File(context.cacheDir, "containers"), "$id.tar.gz")
+                deleteRecursive(cacheFile)
+                if (!tarGzDirectory(dir, cacheFile)) throw IllegalStateException("打包失败")
+                val filename = "linux-container-$id.tar.gz"
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, filename)
+                    put(MediaStore.Downloads.MIME_TYPE, "application/gzip")
+                    put(MediaStore.Downloads.RELATIVE_PATH, "Download/qinglong_linux")
+                }
+                val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IllegalStateException("无法写入下载目录")
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    FileInputStream(cacheFile).use { input -> input.copyTo(out) }
+                } ?: throw IllegalStateException("无法打开下载目录输出流")
+                result.success(mapOf("ok" to true, "filename" to filename, "uri" to uri.toString()))
+            } catch (e: Exception) {
+                result.error("container_export_failed", e.message ?: e.toString(), null)
+            }
+        }
+    }
+
+    private fun handleContainerImport(call: MethodCall, result: MethodChannel.Result) {
+        executor.execute {
+            try {
+                val path = call.argument<String>("path") ?: ""
+                val src = File(path)
+                if (!src.isFile) throw IllegalArgumentException("导入文件不存在：$path")
+                val base = src.name.substringBeforeLast('.').replace(Regex("[^A-Za-z0-9._-]"), "_")
+                    .take(32).ifEmpty { "import" }
+                val newId = "$base-${System.currentTimeMillis()}"
+                val staging = File(File(runtimeRoot(), "versions"), "$newId.staging")
+                deleteRecursive(staging)
+                staging.mkdirs()
+                extractTarGz(src, staging)
+
+                // 规整 rootfs：自导出容器带 rootfs/；裸 rootfs 直接把内容当作 rootfs/。
+                val rootfs = File(staging, "rootfs")
+                if (!File(rootfs, "bin/sh").isFile && File(staging, "bin/sh").isFile) {
+                    val newRoot = File(staging, "rootfs")
+                    deleteRecursive(newRoot)
+                    if (!staging.renameTo(newRoot)) {
+                        newRoot.mkdirs()
+                        staging.copyRecursively(newRoot)
+                        deleteRecursive(staging)
+                    }
+                }
+
+                // 如果导入包只有 rootfs 没有 PRoot 主机件，从当前容器补齐 bin/lib。
+                val current = currentVersion()
+                val currentDir = versionDir(current)
+                if (currentDir.isDirectory) {
+                    if (!File(staging, "bin/proot").isFile) {
+                        File(currentDir, "bin").copyRecursively(File(staging, "bin"), overwrite = true)
+                        File(currentDir, "lib").copyRecursively(File(staging, "lib"), overwrite = true)
+                    }
+                }
+                if (!File(staging, "bin/proot").isFile) throw IllegalStateException("导入包缺少 PRoot 主机组件")
+                if (!File(File(staging, "rootfs"), "bin/sh").isFile && !File(staging, "bin/sh").isFile) {
+                    throw IllegalStateException("导入包不是有效的 Linux 根文件系统")
+                }
+                val target = File(File(runtimeRoot(), "versions"), newId)
+                deleteRecursive(target)
+                if (!staging.renameTo(target)) throw IllegalStateException("导入包激活失败")
+                result.success(mapOf("id" to newId, "name" to newId))
+            } catch (e: Exception) {
+                result.error("container_import_failed", e.message ?: e.toString(), null)
             }
         }
     }
