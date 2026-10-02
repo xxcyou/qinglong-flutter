@@ -40,18 +40,16 @@ class FileDiffView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final label = _label();
 
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.only(top: 6),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerLowest.withValues(alpha: 0.6),
+        // GitHub 深色代码块风格：浅色主题下 + / - 也能一眼看清。
+        color: const Color(0xFF0D1117),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: scheme.outlineVariant.withValues(alpha: 0.6),
-        ),
+        border: Border.all(color: const Color(0xFF30363D)),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -66,7 +64,7 @@ class FileDiffView extends StatelessWidget {
                       ? Icons.insert_drive_file_outlined
                       : Icons.difference_outlined,
                   size: 14,
-                  color: scheme.primary,
+                  color: Colors.lightGreenAccent,
                 ),
                 const SizedBox(width: 6),
                 Expanded(
@@ -74,25 +72,23 @@ class FileDiffView extends StatelessWidget {
                     '$_path  ·  $label',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w700,
-                      color: scheme.onSurfaceVariant,
+                      color: Colors.white70,
                     ),
                   ),
                 ),
                 const SizedBox(width: 6),
-                Icon(
-                  _isBinary
-                      ? Icons.data_object_rounded
-                      : Icons.code_rounded,
+                const Icon(
+                  Icons.code_rounded,
                   size: 14,
-                  color: scheme.onSurfaceVariant,
+                  color: Colors.white38,
                 ),
               ],
             ),
           ),
-          Divider(height: 1, color: scheme.outlineVariant.withValues(alpha: 0.4)),
+          const Divider(height: 1, color: Color(0xFF30363D)),
           ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: 240),
             child: SingleChildScrollView(
@@ -130,26 +126,25 @@ class FileDiffView extends StatelessWidget {
   }
 
   Widget _buildBody(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     if (_isBinary) {
       final len = args['base64'].toString().length;
       return Text(
         'base64 内容共 $len 字符，不在此展开。需要时可点右侧详情查看原始参数。',
-        style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+        style: const TextStyle(fontSize: 11, color: Colors.white60),
       );
     }
     if (toolName == 'shell_write_binary') {
-      return Text(
+      return const Text(
         '二进制文件已写入，不展示内容。',
-        style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+        style: TextStyle(fontSize: 11, color: Colors.white60),
       );
     }
 
     final lines = _diffLines();
     if (lines.isEmpty) {
-      return Text(
+      return const Text(
         '（没有可展示的文件内容）',
-        style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+        style: TextStyle(fontSize: 11, color: Colors.white60),
       );
     }
 
@@ -158,12 +153,12 @@ class FileDiffView extends StatelessWidget {
       final text = lines.map((l) => l.text).join('\n');
       return SelectableText(
         text,
-        style: TextStyle(
+        style: const TextStyle(
           fontSize: 11.5,
           height: 1.45,
           fontFamily: kMonoFamily,
           fontFamilyFallback: kMonoFallback,
-          color: scheme.onSurface,
+          color: Colors.white,
         ),
       );
     }
@@ -179,7 +174,6 @@ class FileDiffView extends StatelessWidget {
                   text: '${line.prefix} ',
                   style: const TextStyle(
                     fontWeight: FontWeight.w800,
-                    color: Colors.white70,
                   ),
                 ),
                 TextSpan(text: line.text),
@@ -194,7 +188,7 @@ class FileDiffView extends StatelessWidget {
                   ? const Color(0xFF7EE787)
                   : line.type == _DiffLineType.remove
                       ? const Color(0xFFFF7B72)
-                      : scheme.onSurface,
+                      : Colors.white70,
             ),
           ),
       ],
