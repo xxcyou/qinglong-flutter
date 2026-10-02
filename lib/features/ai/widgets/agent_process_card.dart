@@ -293,11 +293,17 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-          if (_expanded)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-              child: _timeline(events),
-            ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: _expanded
+                ? Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+                    child: _timeline(events),
+                  )
+                : const SizedBox(width: double.infinity),
+          ),
         ],
       ),
     );
@@ -556,6 +562,16 @@ class _TimelineRowState extends State<_TimelineRow> {
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
+                        if (event.isWrite &&
+                            event.kind == AgentEventKind.toolEnd)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 4),
+                            child: Icon(
+                              Icons.create_new_folder_outlined,
+                              size: 14,
+                              color: Colors.orange.shade700,
+                            ),
+                          ),
                         if ((event.durationMs ?? 0) > 0)
                           Padding(
                             padding: const EdgeInsets.only(left: 4),
@@ -641,19 +657,15 @@ class _TimelineRowState extends State<_TimelineRow> {
                       Padding(
                         padding: const EdgeInsets.only(top: 2),
                         child: _expanded
-                            ? Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (event.kind == AgentEventKind.toolEnd &&
-                                      event.isWrite &&
-                                      event.toolName != null &&
-                                      event.args != null)
-                                    FileDiffView(
-                                      toolName: event.toolName!,
-                                      args: event.args!,
-                                    ),
-                                  const SizedBox(height: 6),
-                                  Container(
+                            ? (event.kind == AgentEventKind.toolEnd &&
+                                    event.isWrite &&
+                                    event.toolName != null &&
+                                    event.args != null)
+                                ? FileDiffView(
+                                    toolName: event.toolName!,
+                                    args: event.args!,
+                                  )
+                                : Container(
                                     width: double.infinity,
                                     padding: const EdgeInsets.all(8),
                                     decoration: BoxDecoration(
@@ -671,9 +683,7 @@ class _TimelineRowState extends State<_TimelineRow> {
                                         color: scheme.onSurfaceVariant,
                                       ),
                                     ),
-                                  ),
-                                ],
-                              )
+                                  )
                             : Text(
                                 _preview(event),
                                 style: TextStyle(
