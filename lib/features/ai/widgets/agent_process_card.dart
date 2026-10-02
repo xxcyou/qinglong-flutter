@@ -664,6 +664,7 @@ class _TimelineRowState extends State<_TimelineRow> {
                                 ? FileDiffView(
                                     toolName: event.toolName!,
                                     args: event.args!,
+                                    result: event.displayResult,
                                   )
                                 : Container(
                                     width: double.infinity,

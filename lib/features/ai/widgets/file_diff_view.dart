@@ -16,10 +16,15 @@ class FileDiffView extends StatelessWidget {
     super.key,
     required this.toolName,
     required this.args,
+    this.result,
   });
 
   final String toolName;
   final Map<String, dynamic> args;
+  final String? result;
+
+  static final RegExp _diffFence =
+      RegExp(r'```diff\s*\n(.*?)\n```', dotAll: true);
 
   String get _path => args['path']?.toString() ?? '未知路径';
 
@@ -196,6 +201,8 @@ class FileDiffView extends StatelessWidget {
   }
 
   List<_DiffLine> _diffLines() {
+    final fromResult = _diffLinesFromResult();
+    if (fromResult.isNotEmpty) return fromResult;
     final action = _action;
     final contentLines = _split(_content);
     final findLines = _split(_find);
@@ -275,6 +282,29 @@ class FileDiffView extends StatelessWidget {
       ];
     }
     return [];
+  }
+
+  List<_DiffLine> _diffLinesFromResult() {
+    final raw = result;
+    if (raw == null || raw.isEmpty) return const [];
+    final match = _diffFence.firstMatch(raw);
+    if (match == null) return const [];
+    final lines = match.group(1)?.split('\n') ?? const [];
+    return [
+      for (final line in lines)
+        if (line.startsWith('+ '))
+          _DiffLine.add(line.substring(2))
+        else if (line.startsWith('- '))
+          _DiffLine.remove(line.substring(2))
+        else if (line.startsWith('+'))
+          _DiffLine.add(line.substring(1))
+        else if (line.startsWith('-'))
+          _DiffLine.remove(line.substring(1))
+        else if (line.startsWith('@@'))
+          _DiffLine.context(line)
+        else
+          _DiffLine.context(line),
+    ];
   }
 
   String _rangeHint() {

@@ -1806,7 +1806,27 @@ class QlToolRegistry {
           var result = updated.join('\n');
           if (hasTrailing) result = '$result\n';
           await ScriptApi.save(apiBaseUrl: base, path: path, content: result);
-          return '已定点修改并保存脚本 $path（$action 第 $s${e == s ? '' : '~$e'} 行）。';
+          final oldSegment = lines.sublist(
+            s - 1,
+            e > lines.length ? lines.length : e,
+          );
+          final newSegment = switch (action) {
+            'overwrite' || 'insert' => contentLines,
+            _ => const <String>[],
+          };
+          final diff = StringBuffer('已定点修改并保存脚本 $path（$action 第 $s${e == s ? '' : '~$e'} 行）。');
+          diff.writeln();
+          diff.writeln();
+          diff.writeln('```diff');
+          diff.writeln('@@ $path $s..$e @@');
+          for (final line in oldSegment) {
+            diff.writeln('- $line');
+          }
+          for (final line in newSegment) {
+            diff.writeln('+ $line');
+          }
+          diff.write('```');
+          return diff.toString();
         }
 
       case 'script_read':
@@ -1881,7 +1901,25 @@ class QlToolRegistry {
             path: path,
             content: updated.toString(),
           );
-          return '已定点修改并保存脚本 $path（${action == 'replace' ? '替换' : action == 'delete' ? '删除' : '插入'} ${limited.length} 处）。';
+          final diff = StringBuffer('已定点修改并保存脚本 $path（${action == 'replace' ? '替换' : action == 'delete' ? '删除' : '插入'} ${limited.length} 处）。');
+          diff.writeln();
+          diff.writeln();
+          diff.writeln('```diff');
+          diff.writeln('@@ $path @@');
+          if (action != 'insert_before' && action != 'insert_after') {
+            for (final line in find.split('\n')) {
+              diff.writeln('- $line');
+            }
+          }
+          if (action != 'delete') {
+            for (final line in content.split('\n')) {
+              diff.writeln('+ $line');
+            }
+          } else {
+            diff.writeln('+ （已删除）');
+          }
+          diff.write('```');
+          return diff.toString();
         }
 
       case 'script_delete':
@@ -2663,43 +2701,65 @@ p, act, s, e, content, by = (
     sys.argv[5], sys.argv[6] == '1',
 )
 if s < 1: s = 1
+
+
+def emit_diff(old_lines, new_lines):
+    out = []
+    out.append('```diff')
+    out.append('@@ %s @@' % p)
+    for line in old_lines:
+        out.append('- ' + line.rstrip('\n'))
+    for line in new_lines:
+        out.append('+ ' + line.rstrip('\n'))
+    out.append('```')
+    sys.stdout.write('\n' + '\n'.join(out) + '\n')
+
 if by:
     with open(p, 'rb') as f:
         data = f.read()
     if e <= 0: e = len(data)
     if e > len(data): e = len(data)
     if e < s: e = s
-    head = data[:s - 1]
-    tail = data[e:]
+    old = data[s - 1:e]
     if act == 'delete':
-        new = head + tail
+        newdata = data[:s - 1] + data[e:]
     elif act == 'overwrite':
-        new = head + content.encode('utf-8') + tail
+        newdata = data[:s - 1] + content.encode('utf-8') + data[e:]
     elif act == 'insert':
-        new = head + content.encode('utf-8') + data[s - 1:]
+        newdata = data[:s - 1] + content.encode('utf-8') + data[s - 1:]
     else:
         raise SystemExit('bad action')
     with open(p, 'wb') as f:
-        f.write(new)
-    sys.stdout.write('bytes %d -> %d' % (len(data), len(new)))
+        f.write(newdata)
+    sys.stdout.write('bytes %d -> %d' % (len(data), len(newdata)))
+    emit_diff(
+        [old.decode('utf-8', errors='replace')] if old else [],
+        content.split('\n') if act != 'delete' else [],
+    )
 else:
     with open(p, encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
     if e <= 0: e = len(lines)
     if e > len(lines): e = len(lines)
     if e < s: e = s
+    old_lines = lines[s - 1:e]
     if act == 'delete':
-        new = lines[:s - 1] + lines[e:]
+        newlines = lines[:s - 1] + lines[e:]
+        new_lines = []
     elif act == 'overwrite':
-        new = lines[:s - 1] + [content] + lines[e:]
+        newlines = lines[:s - 1] + [content] + lines[e:]
+        new_lines = content.split('\n')
     elif act == 'insert':
-        new = lines[:s - 1] + [content] + lines[s - 1:]
+        newlines = lines[:s - 1] + [content] + lines[s - 1:]
+        new_lines = content.split('\n')
     else:
         raise SystemExit('bad action')
     with open(p, 'w', encoding='utf-8') as f:
-        f.write(''.join(new))
-    sys.stdout.write('lines %d -> %d' % (len(lines), len(new)))
+        f.write(''.join(newlines))
+    sys.stdout.write('lines %d -> %d' % (len(lines), len(newlines)))
+    emit_diff(old_lines, new_lines)
 ''';
+
         final mRes = await ShellLock.run(
           ShellLock.file(mPath),
           () => _exec(
