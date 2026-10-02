@@ -210,7 +210,9 @@ class FileDiffView extends StatelessWidget {
             ] else if (rangeHint.isNotEmpty)
               _DiffLine.remove(rangeHint),
             if (contentLines.isNotEmpty)
-              for (final line in contentLines) _DiffLine.add(line),
+              for (final line in contentLines) _DiffLine.add(line)
+            else
+              _DiffLine.add('（新内容为空 / 未提供）'),
           ];
         case 'delete':
           return [
@@ -225,12 +227,18 @@ class FileDiffView extends StatelessWidget {
           return [
             if (rangeHint.isNotEmpty)
               _DiffLine.context('$rangeHint 前插入'),
-            for (final line in contentLines) _DiffLine.add(line),
+            if (contentLines.isNotEmpty)
+              for (final line in contentLines) _DiffLine.add(line)
+            else
+              _DiffLine.add('（插入内容为空 / 未提供）'),
           ];
         case 'overwrite':
           return [
             if (rangeHint.isNotEmpty) _DiffLine.remove(rangeHint),
-            for (final line in contentLines) _DiffLine.add(line),
+            if (contentLines.isNotEmpty)
+              for (final line in contentLines) _DiffLine.add(line)
+            else
+              _DiffLine.add('（新内容为空 / 未提供）'),
           ];
         case 'insert_before':
           return [
