@@ -57,7 +57,12 @@ class AgentProcessCard extends StatefulWidget {
 }
 
 class _AgentProcessCardState extends State<AgentProcessCard> {
-  late bool _expanded = widget.initiallyExpanded;
+  // 有文件写操作时自动展开执行过程，让用户第一时间看到 Diff；
+  // 否则保持调用方给的初始状态（运行时/图片通常也是展开）。
+  late bool _expanded = widget.initiallyExpanded ||
+      widget.events.any(
+        (e) => e.kind == AgentEventKind.toolEnd && e.isWrite,
+      );
 
   /// 时间线上真正要画的事件。
   ///
