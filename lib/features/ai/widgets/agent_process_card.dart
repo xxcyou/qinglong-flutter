@@ -875,7 +875,19 @@ class _SubagentGroup extends StatefulWidget {
 }
 
 class _SubagentGroupState extends State<_SubagentGroup> {
-  bool _expanded = false;
+  late bool _expanded;
+
+  static bool _hasWriteEventOf(List<AgentEvent> events) => events.any(
+        (e) => e.kind == AgentEventKind.toolEnd && e.isWrite,
+      );
+
+  bool get _hasWriteEvent => _hasWriteEventOf(widget.events);
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = _hasWriteEvent;
+  }
 
   @override
   void didUpdateWidget(covariant _SubagentGroup oldWidget) {
@@ -889,6 +901,12 @@ class _SubagentGroupState extends State<_SubagentGroup> {
     // 子代理第一次显示图片时自动展开，让图立刻出现在流程里，
     // 而不是等整轮跑完/用户手动展开才看到。
     if (newHasImage && !oldHasImage && !_expanded) {
+      _expanded = true;
+    }
+    // 子代理出现文件写操作时也自动展开，否则 Diff 会被折叠在子代理里。
+    if (!_hasWriteEventOf(oldWidget.events) &&
+        _hasWriteEvent &&
+        !_expanded) {
       _expanded = true;
     }
   }

@@ -264,10 +264,12 @@ class FileDiffView extends StatelessWidget {
       ];
     }
 
-    // 新建/整体覆盖：直接展示完整代码片段，不是“纯新增”符号形式。
+    // 新建/整体覆盖：因为参数里没有旧内容，所以整段按“新增行”展示，
+    // 用户至少能一眼看出这是这次写进去的内容。
     if (contentLines.isNotEmpty) {
       return [
-        for (final line in contentLines) _DiffLine.plain(line),
+        _DiffLine.context('（全新写入 / 覆盖写入）'),
+        for (final line in contentLines) _DiffLine.add(line),
       ];
     }
     return [];
@@ -298,6 +300,4 @@ class _DiffLine {
       _DiffLine(_DiffLineType.remove, text, '-');
   factory _DiffLine.context(String text) =>
       _DiffLine(_DiffLineType.context, text, ' ');
-  factory _DiffLine.plain(String text) =>
-      _DiffLine(_DiffLineType.plain, text, '');
 }
