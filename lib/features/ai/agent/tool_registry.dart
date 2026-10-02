@@ -1762,6 +1762,11 @@ class QlToolRegistry {
           final start = (args['start'] as num?)?.toInt() ?? 1;
           final end = (args['end'] as num?)?.toInt() ?? start;
           final content = args['content']?.toString() ?? '';
+          if ((action == 'overwrite' || action == 'insert') &&
+              content.trim().isEmpty) {
+            return '${action == 'overwrite' ? 'overwrite' : 'insert'} 必须提供非空 content；'
+                '想清空/删除内容请用 delete，不要传空 content。';
+          }
           final original = await ScriptApi.read(apiBaseUrl: base, file: path);
           var lines = original.split('\n');
           final hasTrailing = original.endsWith('\n') && lines.isNotEmpty;
@@ -1826,6 +1831,9 @@ class QlToolRegistry {
           final content = args['content']?.toString() ?? '';
           final count = (args['count'] as num?)?.toInt() ?? 1;
           if (find.isEmpty) return 'find 不能为空，先找准要改的那段原脚本内容。';
+          if (action != 'delete' && content.trim().isEmpty) {
+            return '${action == 'replace' ? 'replace' : 'insert_before/insert_after'} 必须提供非空 content；要删除内容请用 delete。';
+          }
           final original = await ScriptApi.read(apiBaseUrl: base, file: path);
 
           final occurrences = <int>[];
@@ -2640,6 +2648,12 @@ else:
         final mStart = (args['start'] as num?)?.toInt() ?? 1;
         final mEnd = (args['end'] as num?)?.toInt() ?? mStart;
         final mContent = args['content']?.toString() ?? '';
+        if ((mAction == 'overwrite' || mAction == 'insert') &&
+            mContent.trim().isEmpty) {
+          return jsonEncode({
+            'error': 'overwrite/insert 必须提供非空 content；想删除请用 delete，不要传空 content。',
+          });
+        }
         final mByBytes = args['byBytes'] == true || args['byBytes'] == 'true';
         const mScript = r'''
 import sys
