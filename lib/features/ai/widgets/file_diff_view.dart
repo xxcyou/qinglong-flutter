@@ -26,12 +26,53 @@ class FileDiffView extends StatelessWidget {
   static final RegExp _diffFence =
       RegExp(r'```diff\s*\n(.*?)\n```', dotAll: true);
 
-  String get _path => args['path']?.toString() ?? '未知路径';
+  String get _path {
+    final p = args['path']?.toString() ?? '';
+    if (p.trim().isNotEmpty) return p;
+    final fromCommand = _pathFromCommand;
+    if (fromCommand != null && fromCommand.isNotEmpty) return fromCommand;
+    if (toolName == 'shell_exec' || toolName == 'shell_script') {
+      return '本机命令';
+    }
+    return '未知路径';
+  }
+
+  String? get _pathFromCommand {
+    final cmd = args['command']?.toString() ?? '';
+    if (cmd.isEmpty) return null;
+    final patterns = [
+      RegExp(r'(?:>>|>)\s*([^\s;|&]+)'),
+      RegExp(r'sed\s+-i[^;|&]*?\s+([^\s;|&]+)'),
+      RegExp(r'perl\s+-pi[^;|&]*?\s+([^\s;|&]+)'),
+      RegExp(r'(?:^|\s)(?:cat|tee)\s+([^\s;|&]+)'),
+      RegExp(r'python3?\s+([^\s;|&]+\.py)'),
+      RegExp(r'(?:^|\s)(?:nano|vim|vi|touch)\s+([^\s;|&]+)'),
+    ];
+    for (final re in patterns) {
+      final m = re.firstMatch(cmd);
+      if (m != null) return m.group(1);
+    }
+    return null;
+  }
 
   bool get _isBinary =>
       args['base64'] != null && args['base64'].toString().trim().isNotEmpty;
 
-  String get _content => args['content']?.toString() ?? '';
+  String get _content {
+    for (final key in const [
+      'content',
+      'code',
+      'new_content',
+      'newText',
+      'new_text',
+      'text',
+      'script',
+    ]) {
+      final v = args[key];
+      if (v != null && v.toString().isNotEmpty) return v.toString();
+    }
+    return '';
+  }
 
   String? get _action => args['action']?.toString();
 
@@ -273,6 +314,13 @@ class FileDiffView extends StatelessWidget {
       ];
     }
 
+    // shell_exec / shell_script 没有结构化 diff 时，至少把命令/输出亮出来，
+    // 不要再出现“没有可展示的文件内容”的白卡。
+    if (toolName == 'shell_exec' || toolName == 'shell_script') {
+      final shell = _shellFallbackLines();
+      if (shell.isNotEmpty) return shell;
+    }
+
     // 新建/整体覆盖：因为参数里没有旧内容，所以整段按“新增行”展示，
     // 用户至少能一眼看出这是这次写进去的内容。
     if (contentLines.isNotEmpty) {
@@ -305,6 +353,60 @@ class FileDiffView extends StatelessWidget {
         else
           _DiffLine.context(line),
     ];
+  }
+
+  List<_DiffLine> _shellFallbackLines() {
+    if (toolName == 'shell_script') {
+      final code = args['code']?.toString() ?? '';
+      if (code.trim().isNotEmpty) {
+        return [
+          _DiffLine.context('（脚本源码）'),
+          for (final line in _split(code)) _DiffLine.add(line),
+        ];
+      }
+      final out = result?.trim() ?? '';
+      if (out.isNotEmpty) {
+        return [
+          _DiffLine.context('（命令输出）'),
+          for (final line in _split(out)) _DiffLine.context(line),
+        ];
+      }
+      return const [];
+    }
+
+    final cmd = args['command']?.toString() ?? '';
+    // 尽量把 heredoc 写入的正文抽出来，直接显示成新增绿行。
+    final heredoc = RegExp(
+      r'''<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?\s*
+?
+([\s\S]*?)
+?
+\s*\s*$''',
+    ).firstMatch(cmd);
+    if (heredoc != null) {
+      final body = heredoc.group(2) ?? '';
+      if (body.trim().isNotEmpty) {
+        return [
+          _DiffLine.context('（heredoc 写入内容）'),
+          for (final line in _split(body)) _DiffLine.add(line),
+        ];
+      }
+    }
+
+    final out = result?.trim() ?? '';
+    if (out.isNotEmpty) {
+      return [
+        _DiffLine.context('（命令输出）'),
+        for (final line in _split(out)) _DiffLine.context(line),
+      ];
+    }
+    if (cmd.trim().isNotEmpty) {
+      return [
+        _DiffLine.context('（命令）'),
+        for (final line in _split(cmd)) _DiffLine.context(line),
+      ];
+    }
+    return const [];
   }
 
   String _rangeHint() {
