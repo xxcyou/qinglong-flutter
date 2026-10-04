@@ -552,19 +552,17 @@ class FileDiffView extends StatelessWidget {
     }
 
     final out = result?.trim() ?? '';
-    if (out.isNotEmpty) {
-      return [
-        _DiffLine.context('（命令输出）'),
-        for (final line in _split(out)) _DiffLine.context(line),
-      ];
-    }
-    if (cmd.trim().isNotEmpty) {
-      return [
+    final lines = <_DiffLine>[
+      if (cmd.trim().isNotEmpty) ...[
         _DiffLine.context('（命令）'),
         for (final line in _split(cmd)) _DiffLine.command(line),
-      ];
-    }
-    return const [];
+      ],
+      if (out.isNotEmpty) ...[
+        if (cmd.trim().isNotEmpty) _DiffLine.context('（命令输出）'),
+        for (final line in _split(out)) _DiffLine.context(line),
+      ],
+    ];
+    return lines;
   }
 
   String _rangeHint() {
