@@ -428,6 +428,16 @@ class _TimelineRowState extends State<_TimelineRow> {
     }
   }
 
+  static const Set<String> _nonFileDiffTools = {
+    'shell_session_start',
+    'shell_session_stop',
+    'shell_session_list',
+    'shell_session_status',
+  };
+
+  static bool _isNonFileDiffTool(String toolName) =>
+      _nonFileDiffTools.contains(toolName);
+
   AgentEvent get event => widget.event;
 
   bool get isLast => widget.isLast;
@@ -668,7 +678,8 @@ class _TimelineRowState extends State<_TimelineRow> {
                             ? (event.kind == AgentEventKind.toolEnd &&
                                     event.isWrite &&
                                     event.toolName != null &&
-                                    event.args != null)
+                                    event.args != null &&
+                                    !_isNonFileDiffTool(event.toolName!))
                                 ? FileDiffView(
                                     toolName: event.toolName!,
                                     args: event.args!,
