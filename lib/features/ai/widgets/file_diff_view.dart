@@ -280,7 +280,19 @@ class FileDiffView extends StatelessWidget {
     var oldLine = 1;
     var newLine = 1;
     final rows = <Widget>[];
-    for (final line in lines) {
+    var i = 0;
+    while (i < lines.length) {
+      final line = lines[i];
+
+      if (line.type == _DiffLineType.command) {
+        final start = i;
+        while (i < lines.length && lines[i].type == _DiffLineType.command) {
+          i++;
+        }
+        rows.add(_buildTerminalBlock(lines.sublist(start, i)));
+        continue;
+      }
+
       // 从 hunk 头里尽量恢复起始行号：@@ path 10..10 @@
       if (line.text.startsWith('@@')) {
         final m = RegExp(r'(-?\d+)\s*\.\.\s*(-?\d+)').firstMatch(line.text);
@@ -305,8 +317,116 @@ class FileDiffView extends StatelessWidget {
         case _DiffLineType.command:
           break;
       }
+      i++;
     }
     return rows;
+  }
+
+  Widget _buildTerminalBlock(List<_DiffLine> commands) {
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF0A1220), Color(0xFF101D30)],
+        ),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF1F3A5F)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x33000000),
+            blurRadius: 8,
+            offset: Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 7, 10, 5),
+            child: Row(
+              children: [
+                for (final color in const [
+                  Color(0xFFFF5F56),
+                  Color(0xFFFFBD2E),
+                  Color(0xFF27C93F),
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                const SizedBox(width: 8),
+                const Icon(
+                  Icons.terminal_rounded,
+                  size: 13,
+                  color: Color(0xFF79B8FF),
+                ),
+                const SizedBox(width: 6),
+                const Text(
+                  'SHELL',
+                  style: TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1,
+                    color: Color(0xFF8B949E),
+                  ),
+                ),
+                const Spacer(),
+                const Text(
+                  'bash',
+                  style: TextStyle(
+                    fontSize: 9,
+                    fontFamily: kMonoFamily,
+                    fontFamilyFallback: kMonoFallback,
+                    color: Color(0xFF6E7681),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: Color(0xFF1F3A5F)),
+          for (final cmd in commands)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 3, 10, 3),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '❯',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF7EE787),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: SelectableText.rich(
+                      TextSpan(children: _highlightShell(cmd.text)),
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        height: 1.45,
+                        fontFamily: kMonoFamily,
+                        fontFamilyFallback: kMonoFallback,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 5),
+        ],
+      ),
+    );
   }
 
 static const Set<String> _shellCommands = {
