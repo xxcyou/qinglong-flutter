@@ -302,6 +302,8 @@ class FileDiffView extends StatelessWidget {
         case _DiffLineType.context:
           oldLine++;
           newLine++;
+        case _DiffLineType.command:
+          break;
       }
     }
     return rows;
@@ -314,6 +316,7 @@ class FileDiffView extends StatelessWidget {
   }) {
     final isAdd = line.type == _DiffLineType.add;
     final isRemove = line.type == _DiffLineType.remove;
+    final isCommand = line.type == _DiffLineType.command;
     final isHunk = line.text.startsWith('@@') ||
         line.text.startsWith('（') ||
         line.text.startsWith('文件末尾追加') ||
@@ -324,27 +327,29 @@ class FileDiffView extends StatelessWidget {
         ? const Color(0xFF12261E)
         : isRemove
             ? const Color(0xFF2D1517)
-            : isHunk
-                ? const Color(0xFF161B22)
-                : Colors.transparent;
+            : isCommand
+                ? const Color(0xFF0F1B2D)
+                : isHunk
+                    ? const Color(0xFF161B22)
+                    : Colors.transparent;
     final accent = isAdd
         ? const Color(0xFF238636)
         : isRemove
             ? const Color(0xFFDA3633)
-            : isHunk
+            : isCommand
                 ? const Color(0xFF58A6FF)
-                : Colors.transparent;
+                : isHunk
+                    ? const Color(0xFF58A6FF)
+                    : Colors.transparent;
     final textColor = isAdd
         ? const Color(0xFF7EE787)
         : isRemove
             ? const Color(0xFFFF7B72)
-            : isHunk
-                ? const Color(0xFF8B949E)
-                : Colors.white38;
-    final showOld = !isAdd && !isHunk;
-    final showNew = !isRemove && !isHunk;
-    final oldText = showOld ? '$oldLine' : '';
-    final newText = showNew ? '$newLine' : '';
+            : isCommand
+                ? const Color(0xFF79B8FF)
+                : isHunk
+                    ? const Color(0xFF8B949E)
+                    : Colors.white54;
 
     return Container(
       width: double.infinity,
@@ -357,51 +362,14 @@ class FileDiffView extends StatelessWidget {
           ),
         ),
       ),
-      padding: const EdgeInsets.symmetric(vertical: 1),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 36,
-            child: Text(
-              oldText,
-              textAlign: TextAlign.right,
-              style: TextStyle(
-                fontSize: 10,
-                height: 1.5,
-                fontFamily: kMonoFamily,
-                fontFamilyFallback: kMonoFallback,
-                color: isAdd
-                    ? Colors.transparent
-                    : isRemove
-                        ? const Color(0xFFFF7B72).withValues(alpha: 0.6)
-                        : Colors.white24,
-              ),
-            ),
-          ),
-          const SizedBox(width: 6),
-          SizedBox(
-            width: 36,
-            child: Text(
-              newText,
-              textAlign: TextAlign.right,
-              style: TextStyle(
-                fontSize: 10,
-                height: 1.5,
-                fontFamily: kMonoFamily,
-                fontFamilyFallback: kMonoFallback,
-                color: isRemove
-                    ? Colors.transparent
-                    : isAdd
-                        ? const Color(0xFF7EE787).withValues(alpha: 0.6)
-                        : Colors.white24,
-              ),
-            ),
-          ),
-          SizedBox(
             width: 20,
             child: Text(
-              line.prefix,
+              isCommand ? '\$' : line.prefix,
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontWeight: FontWeight.w800,
@@ -593,7 +561,7 @@ class FileDiffView extends StatelessWidget {
     if (cmd.trim().isNotEmpty) {
       return [
         _DiffLine.context('（命令）'),
-        for (final line in _split(cmd)) _DiffLine.context(line),
+        for (final line in _split(cmd)) _DiffLine.command(line),
       ];
     }
     return const [];
@@ -610,7 +578,7 @@ class FileDiffView extends StatelessWidget {
   }
 }
 
-enum _DiffLineType { add, remove, context }
+enum _DiffLineType { add, remove, context, command }
 
 class _DiffLine {
   const _DiffLine(this.type, this.text, this.prefix);
@@ -624,4 +592,6 @@ class _DiffLine {
       _DiffLine(_DiffLineType.remove, text, '-');
   factory _DiffLine.context(String text) =>
       _DiffLine(_DiffLineType.context, text, ' ');
+  factory _DiffLine.command(String text) =>
+      _DiffLine(_DiffLineType.command, text, '>');
 }
