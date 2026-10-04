@@ -21,8 +21,9 @@ class HighlightingCodeController extends CodeController {
   /// 注释：Monokai 自带的灰偏暗，在深色/半透明背景上看不清，
   /// 统一换亮一点的灰蓝。
   static const TextStyle _commentStyle = TextStyle(
-    color: Color(0xFF9DA5B4),
+    color: Color(0xFFC4CBD5),
     fontStyle: FontStyle.italic,
+    fontWeight: FontWeight.w500,
   );
 
   HighlightingCodeController({

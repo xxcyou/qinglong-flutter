@@ -8,8 +8,9 @@ import 'mono_text.dart';
 final Map<String, TextStyle> _codeEditorTheme = {
   ...monokaiSublimeTheme,
   'comment': const TextStyle(
-    color: Color(0xFF9DA5B4),
+    color: Color(0xFFC4CBD5),
     fontStyle: FontStyle.italic,
+    fontWeight: FontWeight.w500,
   ),
 };
 
