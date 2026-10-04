@@ -102,34 +102,75 @@ class FileDiffView extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(10, 7, 8, 5),
+            padding: const EdgeInsets.fromLTRB(10, 8, 8, 6),
             child: Row(
               children: [
-                Icon(
-                  _isBinary
-                      ? Icons.insert_drive_file_outlined
-                      : Icons.difference_outlined,
-                  size: 14,
-                  color: Colors.lightGreenAccent,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    '$_path  ·  $label',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white70,
-                    ),
+                Container(
+                  padding: const EdgeInsets.all(5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF161B22),
+                    borderRadius: BorderRadius.circular(9),
+                    border: Border.all(color: const Color(0xFF30363D)),
+                  ),
+                  child: Icon(
+                    _isBinary
+                        ? Icons.insert_drive_file_outlined
+                        : Icons.difference_rounded,
+                    size: 14,
+                    color: _isBinary
+                        ? const Color(0xFF58A6FF)
+                        : const Color(0xFF7EE787),
                   ),
                 ),
-                const SizedBox(width: 6),
-                const Icon(
-                  Icons.code_rounded,
-                  size: 14,
-                  color: Colors.white38,
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _path,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white,
+                          fontFamily: kMonoFamily,
+                          fontFamilyFallback: kMonoFallback,
+                        ),
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        label,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white54,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C2128),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: const Color(0xFF30363D)),
+                  ),
+                  child: const Text(
+                    'DIFF',
+                    style: TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.8,
+                      color: Color(0xFF8B949E),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -138,7 +179,7 @@ class FileDiffView extends StatelessWidget {
           ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: 240),
             child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              padding: const EdgeInsets.only(top: 6, bottom: 6),
               scrollDirection: Axis.vertical,
               child: _buildBody(context),
             ),
@@ -197,24 +238,72 @@ class FileDiffView extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        for (final line in lines)
-          Container(
-            width: double.infinity,
-            color: line.type == _DiffLineType.add
-                ? const Color(0xFF12261E)
-                : line.type == _DiffLineType.remove
-                    ? const Color(0xFF2D1517)
-                    : Colors.transparent,
-            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+        for (final line in lines) _buildDiffLine(line),
+      ],
+    );
+  }
+
+  Widget _buildDiffLine(_DiffLine line) {
+    final isAdd = line.type == _DiffLineType.add;
+    final isRemove = line.type == _DiffLineType.remove;
+    final isHunk = line.text.startsWith('@@') ||
+        line.text.startsWith('（') ||
+        line.text.startsWith('文件末尾追加') ||
+        line.text.startsWith('heredoc') ||
+        line.text.startsWith('command') ||
+        line.text.startsWith('命令');
+    final bg = isAdd
+        ? const Color(0xFF12261E)
+        : isRemove
+            ? const Color(0xFF2D1517)
+            : isHunk
+                ? const Color(0xFF161B22)
+                : Colors.transparent;
+    final accent = isAdd
+        ? const Color(0xFF238636)
+        : isRemove
+            ? const Color(0xFFDA3633)
+            : isHunk
+                ? const Color(0xFF58A6FF)
+                : Colors.transparent;
+    final textColor = isAdd
+        ? const Color(0xFF7EE787)
+        : isRemove
+            ? const Color(0xFFFF7B72)
+            : isHunk
+                ? const Color(0xFF8B949E)
+                : Colors.white38;
+
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: bg,
+        border: Border(
+          left: BorderSide(
+            color: accent,
+            width: isHunk ? 0 : 3,
+          ),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 22,
+            child: Text(
+              line.prefix,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                color: accent,
+              ),
+            ),
+          ),
+          Expanded(
             child: SelectableText.rich(
               TextSpan(
                 children: [
-                  TextSpan(
-                    text: '${line.prefix} ',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
                   TextSpan(text: line.text),
                 ],
               ),
@@ -223,15 +312,12 @@ class FileDiffView extends StatelessWidget {
                 height: 1.45,
                 fontFamily: kMonoFamily,
                 fontFamilyFallback: kMonoFallback,
-                color: line.type == _DiffLineType.add
-                    ? const Color(0xFF7EE787)
-                    : line.type == _DiffLineType.remove
-                        ? const Color(0xFFFF7B72)
-                        : Colors.white70,
+                color: textColor,
               ),
             ),
           ),
-      ],
+        ],
+      ),
     );
   }
 
