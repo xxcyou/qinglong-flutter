@@ -27,8 +27,18 @@ class FileDiffView extends StatelessWidget {
       RegExp(r'```diff\s*\n(.*?)\n```', dotAll: true);
 
   String get _path {
-    final p = args['path']?.toString() ?? '';
-    if (p.trim().isNotEmpty) return p;
+    for (final key in const [
+      'path',
+      'file',
+      'filename',
+      'dest',
+      'destination',
+      'target',
+      'targetPath',
+    ]) {
+      final v = args[key]?.toString();
+      if (v != null && v.trim().isNotEmpty) return v;
+    }
     final fromCommand = _pathFromCommand;
     if (fromCommand != null && fromCommand.isNotEmpty) return fromCommand;
     if (toolName == 'shell_exec' || toolName == 'shell_script') {
@@ -244,6 +254,30 @@ class FileDiffView extends StatelessWidget {
       }
     }
     if (_append) return '追加';
+
+    if (toolName == 'shell_write_file') return '覆盖';
+    if (toolName == 'script_write') return '保存/覆盖';
+    if (toolName == 'config_save') return '覆盖配置';
+    if (toolName == 'editor_write') return '全量覆盖';
+    if (toolName == 'shell_write_binary') return '二进制覆盖';
+    if (toolName == 'shell_archive_extract') return '解压';
+    if (toolName == 'shell_exec' || toolName == 'shell_script') {
+      final cmd = args['command']?.toString().trimLeft() ?? '';
+      if (cmd.startsWith('rm ') ||
+          cmd.startsWith('rmdir ') ||
+          cmd.startsWith('unlink ') ||
+          cmd.startsWith('rm -rf')) {
+        return '命令删除';
+      }
+      if (cmd.startsWith('mv ') ||
+          cmd.startsWith('cp ') ||
+          cmd.startsWith('cat >') ||
+          cmd.startsWith('tee ') ||
+          cmd.startsWith('sed ')) {
+        return '命令写入';
+      }
+      return '命令执行';
+    }
     return '写入';
   }
 
