@@ -166,9 +166,28 @@ class FileDiffView extends StatelessWidget {
     return '';
   }
 
-  String? get _action => args['action']?.toString();
+  String? get _action {
+    final raw = args['action']?.toString();
+    if (raw != null && raw.isNotEmpty) return raw;
+    final hasOld = args.containsKey('old_text') ||
+        args.containsKey('oldText') ||
+        args.containsKey('find');
+    if (toolName == 'editor_patch' || hasOld) {
+      if (_content.isEmpty) return 'delete';
+      return 'replace';
+    }
+    if (toolName == 'editor_insert') return 'insert';
+    if (toolName == 'editor_delete') return 'delete';
+    return null;
+  }
 
-  String get _find => args['find']?.toString() ?? '';
+  String get _find {
+    for (final key in const ['find', 'old_text', 'oldText', 'text']) {
+      final v = args[key]?.toString();
+      if (v != null && v.isNotEmpty) return v;
+    }
+    return '';
+  }
 
   num? get _start => args['start'] is num ? args['start'] as num : null;
 
