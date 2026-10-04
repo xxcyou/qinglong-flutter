@@ -1638,17 +1638,12 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
             Expanded(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: ColoredBox(
-                  // Monokai 的底色。代码域必须有自己的深底，
-                  // 玻璃背景透出来的花纹会让高亮完全看不清。
-                  color: const Color(0xFF23241F),
-                  child: CodeEditorField(
-                    key: _codeEditorKey,
-                    controller: _codeController,
-                    path: 'hook.js',
-                    initialFontSize: 12,
-                    padding: const EdgeInsets.all(8),
-                  ),
+                child: CodeEditorField(
+                  key: _codeEditorKey,
+                  controller: _codeController,
+                  path: 'hook.js',
+                  initialFontSize: 12,
+                  padding: const EdgeInsets.all(8),
                 ),
               ),
             ),

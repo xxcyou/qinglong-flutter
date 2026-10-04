@@ -18,6 +18,13 @@ class HighlightingCodeController extends CodeController {
   static const Color _htmlTagColor = Color(0xFFFF7B72);
   static const Color _htmlAttrColor = Color(0xFF79C0FF);
 
+  /// 注释：Monokai 自带的灰偏暗，在深色/半透明背景上看不清，
+  /// 统一换亮一点的灰蓝。
+  static const TextStyle _commentStyle = TextStyle(
+    color: Color(0xFF9DA5B4),
+    fontStyle: FontStyle.italic,
+  );
+
   HighlightingCodeController({
     super.language,
     super.text,
@@ -142,7 +149,9 @@ class HighlightingCodeController extends CodeController {
   }
 
   TextSpan _buildNode(Node node) {
-    final nodeStyle = monokaiSublimeTheme[node.className];
+    final nodeStyle = node.className == 'comment'
+        ? _commentStyle
+        : monokaiSublimeTheme[node.className];
     final value = node.value;
     final nodeChildren = node.children;
 
@@ -159,7 +168,9 @@ class HighlightingCodeController extends CodeController {
 
   /// HTML 专用节点构建：把标签/属性名从“白色 tag”换成肉眼可见的颜色。
   TextSpan _buildHtmlNode(Node node) {
-    TextStyle? nodeStyle = monokaiSublimeTheme[node.className];
+    TextStyle? nodeStyle = node.className == 'comment'
+        ? _commentStyle
+        : monokaiSublimeTheme[node.className];
     if (node.className == 'tag' || node.className == 'name') {
       nodeStyle = const TextStyle(color: _htmlTagColor);
     } else if (node.className == 'attr' ||
@@ -271,7 +282,7 @@ class HighlightingCodeController extends CodeController {
       if (token.startsWith('<!--')) {
         children.add(TextSpan(
           text: token,
-          style: monokaiSublimeTheme['comment'],
+          style: _commentStyle,
         ));
       } else if (RegExp(r'^<!DOCTYPE', caseSensitive: false).hasMatch(token)) {
         children.add(TextSpan(
@@ -315,7 +326,7 @@ class HighlightingCodeController extends CodeController {
           token.startsWith('#')) {
         children.add(TextSpan(
           text: token,
-          style: monokaiSublimeTheme['comment'],
+          style: _commentStyle,
         ));
       } else if (token.startsWith("'") ||
           token.startsWith('"') ||

@@ -4,6 +4,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_highlight/themes/monokai-sublime.dart';
 import 'mono_text.dart';
 
+/// 编辑器主题：Monokai 配色基础上把注释调亮，深色/半透明背景里也能看清。
+final Map<String, TextStyle> _codeEditorTheme = {
+  ...monokaiSublimeTheme,
+  'comment': const TextStyle(
+    color: Color(0xFF9DA5B4),
+    fontStyle: FontStyle.italic,
+  ),
+};
+
 /// 支持双指缩放、撤销/重做、查找跳转和换行开关的代码编辑器。
 ///
 /// 缩放通过调整字体大小实现，保持 CodeField 自身的滚动/编辑能力；
@@ -567,10 +576,12 @@ class CodeEditorFieldState extends State<CodeEditorField> {
         children: [
           Positioned.fill(
             child: CodeTheme(
-              data: CodeThemeData(styles: monokaiSublimeTheme),
+              data: CodeThemeData(styles: _codeEditorTheme),
               child: CodeField(
                 controller: widget.controller,
                 expands: true,
+                // 半透明黑：既能看清语法高亮，又透出底层玻璃主题。
+                background: Colors.black.withValues(alpha: 0.35),
                 gutterStyle: GutterStyle(
                   width: widget.showLineNumbers
                       ? _lineNumberWidth + 16
