@@ -592,8 +592,10 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
       return;
     }
     await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => CodeEditorPage(
+      PageRouteBuilder<void>(
+        opaque: false,
+        barrierColor: Colors.transparent,
+        pageBuilder: (_, __, ___) => CodeEditorPage(
           path: entry.path,
           initial: content,
           aiSource: 'file_manager',
@@ -601,6 +603,10 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
           onSave: (text) => _notifier.saveFile(entry.path, text),
           onDelete: () => _notifier.delete(entry.path),
         ),
+        transitionsBuilder: (_, animation, __, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+        transitionDuration: const Duration(milliseconds: 180),
       ),
     );
   }

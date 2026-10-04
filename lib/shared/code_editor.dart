@@ -580,8 +580,8 @@ class CodeEditorFieldState extends State<CodeEditorField> {
               child: CodeField(
                 controller: widget.controller,
                 expands: true,
-                // 半透明黑：既能看清语法高亮，又透出底层玻璃主题。
-                background: Colors.black.withValues(alpha: 0.35),
+                // 完全透明：底层玻璃/主题背景直接透出来。
+                background: Colors.transparent,
                 gutterStyle: GutterStyle(
                   width: widget.showLineNumbers
                       ? _lineNumberWidth + 16

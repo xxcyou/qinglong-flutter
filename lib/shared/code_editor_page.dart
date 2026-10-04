@@ -235,8 +235,8 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
       child: Material(
         type: MaterialType.transparency,
         child: ColoredBox(
-          // 半透明深底，保留底层主题/玻璃质感，不再一块死黑。
-          color: const Color(0x8C0B0D10),
+          // 透明到底，让主 APP 背景在透明路由下直接透进来。
+          color: Colors.transparent,
           child: SafeArea(
             top: !widget.floatingMode,
             bottom: !widget.floatingMode,
