@@ -194,47 +194,41 @@ class FileDiffView extends StatelessWidget {
       );
     }
 
-    final isPlainWrite = lines.every((l) => l.type == _DiffLineType.plain);
-    if (isPlainWrite) {
-      final text = lines.map((l) => l.text).join('\n');
-      return SelectableText(
-        text,
-        style: const TextStyle(
-          fontSize: 11.5,
-          height: 1.45,
-          fontFamily: kMonoFamily,
-          fontFamilyFallback: kMonoFallback,
-          color: Colors.white,
-        ),
-      );
-    }
-
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         for (final line in lines)
-          SelectableText.rich(
-            TextSpan(
-              children: [
-                TextSpan(
-                  text: '${line.prefix} ',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w800,
+          Container(
+            width: double.infinity,
+            color: line.type == _DiffLineType.add
+                ? const Color(0xFF12261E)
+                : line.type == _DiffLineType.remove
+                    ? const Color(0xFF2D1517)
+                    : Colors.transparent,
+            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+            child: SelectableText.rich(
+              TextSpan(
+                children: [
+                  TextSpan(
+                    text: '${line.prefix} ',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
-                ),
-                TextSpan(text: line.text),
-              ],
-            ),
-            style: TextStyle(
-              fontSize: 11.5,
-              height: 1.45,
-              fontFamily: kMonoFamily,
-              fontFamilyFallback: kMonoFallback,
-              color: line.type == _DiffLineType.add
-                  ? const Color(0xFF7EE787)
-                  : line.type == _DiffLineType.remove
-                      ? const Color(0xFFFF7B72)
-                      : Colors.white70,
+                  TextSpan(text: line.text),
+                ],
+              ),
+              style: TextStyle(
+                fontSize: 11.5,
+                height: 1.45,
+                fontFamily: kMonoFamily,
+                fontFamilyFallback: kMonoFallback,
+                color: line.type == _DiffLineType.add
+                    ? const Color(0xFF7EE787)
+                    : line.type == _DiffLineType.remove
+                        ? const Color(0xFFFF7B72)
+                        : Colors.white70,
+              ),
             ),
           ),
       ],
@@ -420,7 +414,7 @@ class FileDiffView extends StatelessWidget {
   }
 }
 
-enum _DiffLineType { add, remove, context, plain }
+enum _DiffLineType { add, remove, context }
 
 class _DiffLine {
   const _DiffLine(this.type, this.text, this.prefix);
