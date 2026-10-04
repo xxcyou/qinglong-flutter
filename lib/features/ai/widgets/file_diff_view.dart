@@ -697,7 +697,11 @@ static const Set<String> _shellCommands = {
 
   static List<String> _split(String text) {
     if (text.isEmpty) return const [];
-    return const LineSplitter().convert(text);
+    final normalized = text
+        .replaceAll(r'\r\n', '\n')
+        .replaceAll(r'\n', '\n')
+        .replaceAll(r'\r', '\n');
+    return const LineSplitter().convert(normalized);
   }
 }
 
