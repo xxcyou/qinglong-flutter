@@ -258,9 +258,13 @@ class _ContextSheetState extends ConsumerState<_ContextSheet> {
                       '上下文占用 ${Formatter.tokens(used)} / '
                           '${Formatter.tokens(limit)} tokens'
                           '${state.lastPromptTokens > 0 ? '（服务端实测）' : '（估算）'}',
-                      '本会话累计 '
-                          '${Formatter.tokens(state.sessionTokens)} tokens、'
-                          '${state.sessionRequests} 次请求',
+                      if (state.sessionTokens > 0)
+                        '本会话累计 '
+                            '${Formatter.tokens(state.sessionTokens)} tokens、'
+                            '${state.sessionRequests} 次请求'
+                      else
+                        '本会话累计 ${state.sessionRequests} 次请求'
+                            '（接口未回传 token 用量）',
                       if (state.lastTokens > 0)
                         '上一次任务累计计费 '
                             '${Formatter.tokens(state.lastTokens)} tokens'

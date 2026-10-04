@@ -33,6 +33,9 @@ class SessionUsageChip extends ConsumerWidget {
     // 一次都还没跑过就不显示，避免新会话刚打开就顶着 0 tok · 0 次。
     if (tokens == 0 && totalRequests == 0) return const SizedBox.shrink();
 
+    // 有些接口不回传 usage，token 一直是 0：不显示 0，只显示次数更诚实。
+    final showTokens = tokens > 0;
+
     final strong = TextStyle(
       fontSize: 12,
       height: 1.15,
@@ -49,9 +52,14 @@ class SessionUsageChip extends ConsumerWidget {
 
     // 一行字放不下解释，长按给全文。
     return Tooltip(
-      message: '本会话累计 $tokens tokens、$totalRequests 次请求'
-          '${running ? '（含正在跑的第 $liveTurn 轮）' : ''}\n'
-          '点一下看上下文占用与上限',
+      message: showTokens
+          ? '本会话累计 ${Formatter.tokens(tokens)} tokens、$totalRequests 次请求'
+              '${running ? '（含正在跑的第 $liveTurn 轮）' : ''}\n'
+              '点一下看上下文占用与上限'
+          : '本会话累计 $totalRequests 次请求'
+              '（接口未回传 token 用量）'
+              '${running ? '，含正在跑的第 $liveTurn 轮' : ''}\n'
+              '点一下看上下文占用与上限',
       child: GlassPanel(
         radius: 14,
         blur: 10,
@@ -73,9 +81,11 @@ class SessionUsageChip extends ConsumerWidget {
               textAlign: TextAlign.right,
               text: TextSpan(
                 children: [
-                  TextSpan(text: Formatter.tokens(tokens), style: strong),
-                  TextSpan(text: ' tok', style: weak),
-                  TextSpan(text: '  ·  ', style: weak),
+                  if (showTokens) ...[
+                    TextSpan(text: Formatter.tokens(tokens), style: strong),
+                    TextSpan(text: ' tok', style: weak),
+                    TextSpan(text: '  ·  ', style: weak),
+                  ],
                   TextSpan(
                     text: Formatter.count(totalRequests),
                     style: strong,
