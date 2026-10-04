@@ -18,42 +18,6 @@ class HighlightingCodeController extends CodeController {
   static const Color _htmlTagColor = Color(0xFFFF7B72);
   static const Color _htmlAttrColor = Color(0xFF79C0FF);
 
-  /// VS Code 深色主题风格：关键字蓝、字符串橙、变量/属性浅蓝、
-  /// 函数黄、类型青、注释绿，整体比 monokai 更接近现代编辑器。
-  static const Color _keywordColor = Color(0xFF569CD6);
-  static const Color _stringColor = Color(0xFFCE9178);
-  static const Color _numberColor = Color(0xFFB5CEA8);
-  static const Color _commentColor = Color(0xFF6A9955);
-  static const Color _functionColor = Color(0xFFDCDCAA);
-  static const Color _variableColor = Color(0xFF9CDCFE);
-  static const Color _propertyColor = Color(0xFF9CDCFE);
-  static const Color _typeColor = Color(0xFF4EC9B0);
-  static const Color _builtInColor = Color(0xFF4EC9B0);
-  static const Color _operatorColor = Color(0xFFD4D4D4);
-  static const Color _punctuationColor = Color(0xFF808080);
-
-  static const Map<String, TextStyle> _vsTheme = {
-    'comment': TextStyle(color: _commentColor, fontStyle: FontStyle.italic),
-    'string': TextStyle(color: _stringColor),
-    'number': TextStyle(color: _numberColor),
-    'keyword': TextStyle(color: _keywordColor),
-    'literal': TextStyle(color: _keywordColor),
-    'built_in': TextStyle(color: _builtInColor),
-    'title': TextStyle(color: _functionColor, fontWeight: FontWeight.w600),
-    'function': TextStyle(color: _functionColor),
-    'params': TextStyle(color: _variableColor),
-    'variable': TextStyle(color: _variableColor),
-    'attribute': TextStyle(color: _htmlAttrColor),
-    'type': TextStyle(color: _typeColor),
-    'meta': TextStyle(color: _keywordColor),
-    'tag': TextStyle(color: _htmlTagColor),
-    'attr': TextStyle(color: _htmlAttrColor),
-    'operator': TextStyle(color: _operatorColor),
-    'punctuation': TextStyle(color: _punctuationColor),
-    'template': TextStyle(color: _stringColor),
-    'template-string': TextStyle(color: _stringColor),
-  };
-
   HighlightingCodeController({
     super.language,
     super.text,
@@ -171,98 +135,14 @@ class HighlightingCodeController extends CodeController {
 
     if (_countColored(TextSpan(children: children)) == 0 &&
         code.trim().isNotEmpty) {
-      return TextSpan(
-        style: style,
-        children: _enrichSpans(_buildFallback(name)),
-      );
+      return TextSpan(style: style, children: _buildFallback(name));
     }
 
-    return TextSpan(style: style, children: _enrichSpans(children));
-  }
-
-  /// 对高亮结果里“没有指定样式的纯文本叶子”再做一层 VS Code 式处理：
-  /// 普通变量/对象属性/函数调用都补上颜色，让代码不是大片白字。
-  List<InlineSpan> _enrichSpans(List<InlineSpan> spans) {
-    return [
-      for (final span in spans)
-        if (span is TextSpan) _enrich(span) else span,
-    ];
-  }
-
-  TextSpan _enrich(TextSpan span) {
-    if (span.text != null) {
-      if (span.style == null) {
-        final enriched = _splitPlainText(span.text!);
-        if (enriched.isNotEmpty) {
-          return TextSpan(children: enriched);
-        }
-      }
-      return span;
-    }
-    final children = span.children;
-    if (children == null || children.isEmpty) return span;
-    return TextSpan(style: span.style, children: _enrichSpans(children));
-  }
-
-  /// 把纯文本叶子按标识符/数字/空白/符号拆开并上色。
-  ///
-  /// 函数调用 `foo(` -> 黄色；对象键 `foo:` / `.foo` -> 浅蓝；
-  /// 其余普通标识符 -> 浅蓝；数字/符号也分别上色。
-  static final RegExp _plainTokenPattern = RegExp(
-    r'''([A-Za-z_$][A-Za-z0-9_$]*)|(\d+(?:\.\d+)?)|(\s+)|([^\sA-Za-z0-9_$]+)''',
-  );
-
-  List<TextSpan> _splitPlainText(String text) {
-    final result = <TextSpan>[];
-    var last = 0;
-    for (final match in _plainTokenPattern.allMatches(text)) {
-      if (match.start > last) {
-        result.add(TextSpan(text: text.substring(last, match.start)));
-      }
-      final token = match[0]!;
-      if (match.group(1) != null) {
-        final after = _nextNonSpace(text, match.end);
-        final before = _prevNonSpace(text, match.start);
-        final isFunction = after == '(';
-        final isProperty = after == ':' || before == '.';
-        result.add(TextSpan(
-          text: token,
-          style: TextStyle(
-            color: isFunction
-                ? _functionColor
-                : isProperty
-                    ? _propertyColor
-                    : _variableColor,
-          ),
-        ));
-      } else if (match.group(2) != null) {
-        result.add(TextSpan(text: token, style: _vsTheme['number']));
-      } else if (match.group(3) != null) {
-        result.add(TextSpan(text: token));
-      } else {
-        result.add(TextSpan(text: token, style: _vsTheme['punctuation']));
-      }
-      last = match.end;
-    }
-    return result;
-  }
-
-  String? _nextNonSpace(String text, int index) {
-    for (var i = index; i < text.length; i++) {
-      if (!RegExp(r'\s').hasMatch(text[i])) return text[i];
-    }
-    return null;
-  }
-
-  String? _prevNonSpace(String text, int index) {
-    for (var i = index - 1; i >= 0; i--) {
-      if (!RegExp(r'\s').hasMatch(text[i])) return text[i];
-    }
-    return null;
+    return TextSpan(style: style, children: children);
   }
 
   TextSpan _buildNode(Node node) {
-    final nodeStyle = _styleForNode(node.className);
+    final nodeStyle = monokaiSublimeTheme[node.className];
     final value = node.value;
     final nodeChildren = node.children;
 
@@ -277,14 +157,9 @@ class HighlightingCodeController extends CodeController {
     return TextSpan(style: nodeStyle, children: children);
   }
 
-  TextStyle? _styleForNode(String? className) {
-    if (className == null) return null;
-    return _vsTheme[className] ?? monokaiSublimeTheme[className];
-  }
-
   /// HTML 专用节点构建：把标签/属性名从“白色 tag”换成肉眼可见的颜色。
   TextSpan _buildHtmlNode(Node node) {
-    TextStyle? nodeStyle = _styleForNode(node.className);
+    TextStyle? nodeStyle = monokaiSublimeTheme[node.className];
     if (node.className == 'tag' || node.className == 'name') {
       nodeStyle = const TextStyle(color: _htmlTagColor);
     } else if (node.className == 'attr' ||
@@ -396,12 +271,12 @@ class HighlightingCodeController extends CodeController {
       if (token.startsWith('<!--')) {
         children.add(TextSpan(
           text: token,
-          style: _styleForNode('comment'),
+          style: monokaiSublimeTheme['comment'],
         ));
       } else if (RegExp(r'^<!DOCTYPE', caseSensitive: false).hasMatch(token)) {
         children.add(TextSpan(
           text: token,
-          style: _styleForNode('meta'),
+          style: monokaiSublimeTheme['meta'],
         ));
       } else if (token.startsWith('<')) {
         children.add(TextSpan(
@@ -411,7 +286,7 @@ class HighlightingCodeController extends CodeController {
       } else {
         children.add(TextSpan(
           text: token,
-          style: _styleForNode('string'),
+          style: monokaiSublimeTheme['string'],
         ));
       }
       last = match.end;
@@ -440,24 +315,24 @@ class HighlightingCodeController extends CodeController {
           token.startsWith('#')) {
         children.add(TextSpan(
           text: token,
-          style: _styleForNode('comment'),
+          style: monokaiSublimeTheme['comment'],
         ));
       } else if (token.startsWith("'") ||
           token.startsWith('"') ||
           token.startsWith('`')) {
         children.add(TextSpan(
           text: token,
-          style: _styleForNode('string'),
+          style: monokaiSublimeTheme['string'],
         ));
       } else if (RegExp(r'^\d').hasMatch(token)) {
         children.add(TextSpan(
           text: token,
-          style: _styleForNode('number'),
+          style: monokaiSublimeTheme['number'],
         ));
       } else {
         children.add(TextSpan(
           text: token,
-          style: _styleForNode('keyword'),
+          style: monokaiSublimeTheme['keyword'],
         ));
       }
       last = match.end;
