@@ -87,6 +87,10 @@ class FileDiffView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final label = _label();
+    final stats = _diffLines();
+    final addCount = stats.where((l) => l.type == _DiffLineType.add).length;
+    final removeCount =
+        stats.where((l) => l.type == _DiffLineType.remove).length;
 
     return Container(
       width: double.infinity,
@@ -146,6 +150,37 @@ class FileDiffView extends StatelessWidget {
                           fontSize: 10,
                           fontWeight: FontWeight.w600,
                           color: Colors.white54,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: '+$addCount',
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF7EE787),
+                          fontFamily: kMonoFamily,
+                          fontFamilyFallback: kMonoFallback,
+                        ),
+                      ),
+                      const TextSpan(
+                        text: '  ',
+                        style: TextStyle(fontSize: 10),
+                      ),
+                      TextSpan(
+                        text: '-$removeCount',
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFFFF7B72),
+                          fontFamily: kMonoFamily,
+                          fontFamilyFallback: kMonoFallback,
                         ),
                       ),
                     ],
@@ -237,13 +272,46 @@ class FileDiffView extends StatelessWidget {
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        for (final line in lines) _buildDiffLine(line),
-      ],
+      children: _buildDiffRows(lines),
     );
   }
 
-  Widget _buildDiffLine(_DiffLine line) {
+  List<Widget> _buildDiffRows(List<_DiffLine> lines) {
+    var oldLine = 1;
+    var newLine = 1;
+    final rows = <Widget>[];
+    for (final line in lines) {
+      // 从 hunk 头里尽量恢复起始行号：@@ path 10..10 @@
+      if (line.text.startsWith('@@')) {
+        final m = RegExp(r'(-?\d+)\s*\.\.\s*(-?\d+)').firstMatch(line.text);
+        if (m != null) {
+          oldLine = int.tryParse(m.group(1) ?? '') ?? oldLine;
+          newLine = int.tryParse(m.group(2) ?? '') ?? newLine;
+        }
+      }
+      rows.add(_buildDiffLine(
+        line,
+        oldLine: oldLine,
+        newLine: newLine,
+      ));
+      switch (line.type) {
+        case _DiffLineType.add:
+          newLine++;
+        case _DiffLineType.remove:
+          oldLine++;
+        case _DiffLineType.context:
+          oldLine++;
+          newLine++;
+      }
+    }
+    return rows;
+  }
+
+  Widget _buildDiffLine(
+    _DiffLine line, {
+    int oldLine = 1,
+    int newLine = 1,
+  }) {
     final isAdd = line.type == _DiffLineType.add;
     final isRemove = line.type == _DiffLineType.remove;
     final isHunk = line.text.startsWith('@@') ||
@@ -273,6 +341,10 @@ class FileDiffView extends StatelessWidget {
             : isHunk
                 ? const Color(0xFF8B949E)
                 : Colors.white38;
+    final showOld = !isAdd && !isHunk;
+    final showNew = !isRemove && !isHunk;
+    final oldText = showOld ? '$oldLine' : '';
+    final newText = showNew ? '$newLine' : '';
 
     return Container(
       width: double.infinity,
@@ -285,12 +357,49 @@ class FileDiffView extends StatelessWidget {
           ),
         ),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      padding: const EdgeInsets.symmetric(vertical: 1),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 22,
+            width: 36,
+            child: Text(
+              oldText,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 10,
+                height: 1.5,
+                fontFamily: kMonoFamily,
+                fontFamilyFallback: kMonoFallback,
+                color: isAdd
+                    ? Colors.transparent
+                    : isRemove
+                        ? const Color(0xFFFF7B72).withValues(alpha: 0.6)
+                        : Colors.white24,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          SizedBox(
+            width: 36,
+            child: Text(
+              newText,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 10,
+                height: 1.5,
+                fontFamily: kMonoFamily,
+                fontFamilyFallback: kMonoFallback,
+                color: isRemove
+                    ? Colors.transparent
+                    : isAdd
+                        ? const Color(0xFF7EE787).withValues(alpha: 0.6)
+                        : Colors.white24,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 20,
             child: Text(
               line.prefix,
               textAlign: TextAlign.center,
@@ -300,6 +409,7 @@ class FileDiffView extends StatelessWidget {
               ),
             ),
           ),
+          const SizedBox(width: 2),
           Expanded(
             child: SelectableText.rich(
               TextSpan(
