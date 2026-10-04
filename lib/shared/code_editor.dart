@@ -572,10 +572,14 @@ class CodeEditorFieldState extends State<CodeEditorField> {
                 controller: widget.controller,
                 expands: true,
                 gutterStyle: GutterStyle(
-                  width: widget.showLineNumbers ? _lineNumberWidth : 34,
+                  width: widget.showLineNumbers
+                      ? _lineNumberWidth + 16
+                      : 24,
                   showLineNumbers: widget.showLineNumbers,
+                  // 关掉错误图标列，不然它占 16px，折叠三角左边会很空。
+                  showErrors: false,
                   showFoldingHandles: true,
-                  margin: 10,
+                  margin: widget.showLineNumbers ? 10 : 4,
                   background: Colors.black.withValues(alpha: 0.18),
                   textStyle: TextStyle(
                     fontFamily: kMonoFamily,
