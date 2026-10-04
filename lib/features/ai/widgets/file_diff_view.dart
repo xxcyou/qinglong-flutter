@@ -35,16 +35,98 @@ class FileDiffView extends StatelessWidget {
       'destination',
       'target',
       'targetPath',
+      'scriptPath',
+      'script_path',
+      'scriptName',
+      'script_name',
     ]) {
       final v = args[key]?.toString();
       if (v != null && v.trim().isNotEmpty) return v;
     }
+    final fromArgs = _pathFromArgs();
+    if (fromArgs != null && fromArgs.isNotEmpty) return fromArgs;
     final fromCommand = _pathFromCommand;
     if (fromCommand != null && fromCommand.isNotEmpty) return fromCommand;
     if (toolName == 'shell_exec' || toolName == 'shell_script') {
       return '本机命令';
     }
+    if (toolName.toLowerCase().contains('script') ||
+        toolName.toLowerCase().contains('browser') ||
+        toolName.toLowerCase().contains('scr')) {
+      return '脚本文件';
+    }
     return '未知路径';
+  }
+
+  static const Set<String> _nonPathArgKeys = {
+    'content',
+    'code',
+    'text',
+    'new_text',
+    'newText',
+    'old_text',
+    'oldText',
+    'html',
+    'command',
+    'description',
+    'result',
+    'message',
+    'stdin',
+    'arguments',
+    'args',
+  };
+
+  String? _pathFromArgs() {
+    String? best;
+    void walk(Map<String, dynamic> map) {
+      for (final entry in map.entries) {
+        final key = entry.key.toLowerCase();
+        final value = entry.value;
+        if (value is Map) {
+          walk(value.cast<String, dynamic>());
+          continue;
+        }
+        if (value is! String) continue;
+        final v = value.trim();
+        if (v.isEmpty || v.length > 200 || v.contains('\n')) continue;
+        if (_nonPathArgKeys.contains(entry.key) ||
+            key == 'code' ||
+            key == 'text' ||
+            key == 'html') {
+          continue;
+        }
+        final looksPath = v.contains('/') ||
+            v.contains('\\') ||
+            v.endsWith('.dart') ||
+            v.endsWith('.js') ||
+            v.endsWith('.ts') ||
+            v.endsWith('.py') ||
+            v.endsWith('.sh') ||
+            v.endsWith('.json') ||
+            v.endsWith('.yaml') ||
+            v.endsWith('.yml') ||
+            v.endsWith('.txt') ||
+            v.endsWith('.html') ||
+            v.endsWith('.css') ||
+            v.startsWith('script') ||
+            v.startsWith('scripts/') ||
+            v.startsWith('/') ||
+            v.startsWith('./') ||
+            v.startsWith('../');
+        if (looksPath) {
+          best ??= v;
+          if (key.contains('path') ||
+              key.contains('file') ||
+              key.contains('name') ||
+              key == 'scr') {
+            return;
+          }
+        }
+      }
+    }
+
+    walk(args);
+    return best;
   }
 
   String? get _pathFromCommand {
