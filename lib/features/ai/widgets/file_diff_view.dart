@@ -309,6 +309,128 @@ class FileDiffView extends StatelessWidget {
     return rows;
   }
 
+static const Set<String> _shellCommands = {
+    'cd', 'rm', 'cp', 'mv', 'mkdir', 'touch', 'chmod', 'chown', 'cat', 'echo',
+    'printf', 'sed', 'awk', 'grep', 'ls', 'pwd', 'find', 'head', 'tail', 'tar',
+    'unzip', 'zip', 'curl', 'wget', 'git', 'python', 'python3', 'node', 'bash',
+    'sh', 'source', 'export', 'env', 'sudo', 'apt', 'apt-get', 'yum', 'pnpm',
+    'npm', 'yarn', 'docker', 'ps', 'kill', 'pkill', 'pgrep', 'systemctl',
+    'which', 'whereis', 'date', 'sleep', 'timeout', 'tee', 'tr', 'sort',
+    'uniq', 'wc', 'xargs', 'jq', 'nohup',
+  };
+
+  static List<TextSpan> _highlightShell(String text) {
+    final spans = <TextSpan>[];
+    final whitespace = RegExp(r'\s+');
+    final patterns = <(RegExp, Color)>[
+      (RegExp(r'#[^\n]*'), const Color(0xFF8B949E)),
+      (RegExp(r"'[^'\\\n]*'"), const Color(0xFFDBAB79)),
+      (RegExp(r'"(?:[^"\\\n]|\\.)*"'), const Color(0xFFDBAB79)),
+      (RegExp(r'\$\{[^}]*\}'), const Color(0xFF79B8FF)),
+      (RegExp(r'\$[A-Za-z_][A-Za-z0-9_]*'), const Color(0xFF79B8FF)),
+      (RegExp(r'--?[A-Za-z0-9][A-Za-z0-9_-]*'), const Color(0xFFF97583)),
+      (RegExp(r'&&|\|\||>>|<<|>|<|;|\(|\)|\|'), const Color(0xFFFFA657)),
+      (RegExp(r'\b\d+\b'), const Color(0xFFFFA657)),
+    ];
+    var cursor = 0;
+    while (cursor < text.length) {
+      final ws = whitespace.matchAsPrefix(text, cursor);
+      if (ws != null) {
+        spans.add(TextSpan(text: ws.group(0)));
+        cursor = ws.end;
+        continue;
+      }
+      var matched = false;
+      for (final (re, color) in patterns) {
+        final m = re.matchAsPrefix(text, cursor);
+        if (m != null) {
+          spans.add(TextSpan(text: m.group(0), style: TextStyle(color: color)));
+          cursor = m.end;
+          matched = true;
+          break;
+        }
+      }
+      if (matched) continue;
+
+      final word = RegExp(r'[A-Za-z_][A-Za-z0-9_./-]*')
+          .matchAsPrefix(text, cursor);
+      if (word != null) {
+        final prev = cursor == 0 ? ' ' : text[cursor - 1];
+        final isCmd = [' ', '\t', '|', '&', ';', '(', '\n'].contains(prev) &&
+            _shellCommands.contains(word.group(0));
+        spans.add(TextSpan(
+          text: word.group(0),
+          style: TextStyle(
+            color: isCmd ? const Color(0xFF79B8FF) : const Color(0xFFE6EDF3),
+            fontWeight: isCmd ? FontWeight.w700 : FontWeight.w400,
+          ),
+        ));
+        cursor = word.end;
+        continue;
+      }
+
+      final ch = text[cursor];
+      spans.add(TextSpan(
+        text: ch,
+        style: const TextStyle(color: Color(0xFFE6EDF3)),
+      ));
+      cursor++;
+    }
+    return spans;
+  }
+
+  static List<TextSpan> _highlightOutput(String text) {
+    final spans = <TextSpan>[];
+    final patterns = <(RegExp, Color)>[
+      (RegExp(r'https?://[^\s]+'), const Color(0xFF79B8FF)),
+      (RegExp(r'\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\b'), const Color(0xFF8B949E)),
+      (RegExp(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'), const Color(0xFF79B8FF)),
+      (RegExp(r'"[^"\n]*"'), const Color(0xFFDBAB79)),
+      (RegExp(r"'[^'\n]*'"), const Color(0xFFDBAB79)),
+      (RegExp(r'\b\d+(?:\.\d+)?\b'), const Color(0xFFFFA657)),
+      (RegExp(r'\b(?:true|false|null|undefined|NaN)\b'), const Color(0xFF79B8FF)),
+      (RegExp(r'\b(?:ERROR|FAILED?|Exception|错误|失败)\b', caseSensitive: false), const Color(0xFFFF7B72)),
+      (RegExp(r'\b(?:SUCCESS|OK|DONE|PASS|成功|完成)\b', caseSensitive: false), const Color(0xFF7EE787)),
+      (RegExp(r'[{}[\]]'), const Color(0xFF79B8FF)),
+    ];
+    final quoted = RegExp(r'"[^"\n]*"');
+    var cursor = 0;
+    while (cursor < text.length) {
+      var matched = false;
+      for (final (re, color) in patterns) {
+        final m = re.matchAsPrefix(text, cursor);
+        if (m != null) {
+          spans.add(TextSpan(
+            text: m.group(0),
+            style: TextStyle(color: color, fontWeight: FontWeight.w600),
+          ));
+          cursor = m.end;
+          matched = true;
+          break;
+        }
+      }
+      if (matched) continue;
+      final m = quoted.matchAsPrefix(text, cursor);
+      if (m != null) {
+        final after = text.substring(cursor + m.end).replaceFirst(RegExp(r'^\s*'), '');
+        if (after.startsWith(':')) {
+          spans.add(TextSpan(
+            text: m.group(0),
+            style: const TextStyle(color: Color(0xFF7EE787)),
+          ));
+          cursor = m.end;
+          continue;
+        }
+      }
+      spans.add(TextSpan(
+        text: text[cursor],
+        style: const TextStyle(color: Color(0xFFC9D1D9)),
+      ));
+      cursor++;
+    }
+    return spans;
+  }
+
   Widget _buildDiffLine(
     _DiffLine line, {
     int oldLine = 1,
@@ -381,9 +503,12 @@ class FileDiffView extends StatelessWidget {
           Expanded(
             child: SelectableText.rich(
               TextSpan(
-                children: [
-                  TextSpan(text: line.text),
-                ],
+                children: isCommand
+                    ? _highlightShell(line.text)
+                    : toolName == 'shell_exec' &&
+                            line.type == _DiffLineType.context
+                        ? _highlightOutput(line.text)
+                        : [TextSpan(text: line.text)],
               ),
               style: TextStyle(
                 fontSize: 11.5,
