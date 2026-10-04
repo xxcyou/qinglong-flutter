@@ -151,7 +151,8 @@ class _FloatingEditorWindowState extends State<_FloatingEditorWindow> {
             child: Container(
               clipBehavior: Clip.antiAlias,
               decoration: BoxDecoration(
-                color: const Color(0xFF0B0D10), // 纯黑底
+                // 半透明深底：不挡主 APP 背景，也让文字保持可读。
+                color: Colors.black.withValues(alpha: 0.62),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: Colors.white24, width: 1),
                 boxShadow: const [
@@ -176,7 +177,7 @@ class _FloatingEditorWindowState extends State<_FloatingEditorWindow> {
                     },
                     child: Container(
                       height: 34,
-                      color: const Color(0xFF15181D),
+                      color: Colors.black.withValues(alpha: 0.62),
                       padding: const EdgeInsets.only(left: 12, right: 4),
                       child: Row(
                         children: [
