@@ -1699,6 +1699,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                                         ),
                                                     totalTokens:
                                                         state.lastTokens,
+                                                    onOpenCanvas: (canvas) =>
+                                                        AiCanvasSheet.show(
+                                                            context,
+                                                            canvas),
                                                     liveSubagentReasoning: state
                                                         .liveSubagentReasoning,
                                                     liveSubagentContent: state
@@ -1729,6 +1733,9 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                                               null,
                                                     ),
                                                 totalTokens: state.lastTokens,
+                                                onOpenCanvas: (canvas) =>
+                                                    AiCanvasSheet.show(
+                                                        context, canvas),
                                                 liveSubagentReasoning:
                                                     state.liveSubagentReasoning,
                                                 liveSubagentContent:
@@ -2727,6 +2734,8 @@ class _MessageBubble extends StatelessWidget {
               turns: message.turns,
               totalTokens: message.totalTokens,
               modeLabels: message.modeLabels,
+              onOpenCanvas: (canvas) =>
+                  AiCanvasSheet.show(context, canvas),
             ),
         ],
       );
@@ -2758,6 +2767,8 @@ class _MessageBubble extends StatelessWidget {
             turns: message.turns,
             totalTokens: message.totalTokens,
             modeLabels: message.modeLabels,
+            onOpenCanvas: (canvas) =>
+                AiCanvasSheet.show(context, canvas),
           ),
         if (message.taskPlan.isNotEmpty)
           TaskPlanCard(

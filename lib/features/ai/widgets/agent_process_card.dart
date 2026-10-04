@@ -521,8 +521,16 @@ class _TimelineRowState extends State<_TimelineRow> {
             child: InkWell(
               // 点一行 = 就地展开全文（思考/正文常有几百字，两行看不出内容）。
               // 想看参数/返回/原始 JSON 点右边那个 > 进详情页。
+              // ui_canvas 直接点开互动卡片，不再只是空展开。
               onTap: () {
                 HapticFeedback.selectionClick();
+                final canvas = event.kind == AgentEventKind.canvas
+                    ? _canvasFromEvent()
+                    : null;
+                if (canvas != null && widget.onOpenCanvas != null) {
+                  widget.onOpenCanvas!(canvas);
+                  return;
+                }
                 setState(() => _expanded = !_expanded);
               },
               borderRadius: BorderRadius.circular(10),
