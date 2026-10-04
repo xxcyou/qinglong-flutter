@@ -3157,7 +3157,7 @@ class _HeadersTab extends StatelessWidget {
   }
 }
 
-enum _BodyViewMode { formatted, raw, hex }
+enum _BodyViewMode { tree, formatted, raw, hex }
 
 class _BodyTab extends StatefulWidget {
   const _BodyTab({
@@ -3176,7 +3176,7 @@ class _BodyTab extends StatefulWidget {
 
 class _BodyTabState extends State<_BodyTab> {
   late final bool _isJson = _isJsonText(widget.body);
-  late _BodyViewMode _mode = _isJson ? _BodyViewMode.formatted : _BodyViewMode.raw;
+  late _BodyViewMode _mode = _isJson ? _BodyViewMode.tree : _BodyViewMode.raw;
 
   static bool _isJsonText(String raw) {
     final text = raw.trim();
@@ -3231,6 +3231,7 @@ class _BodyTabState extends State<_BodyTab> {
         ? const JsonEncoder.withIndent('  ').convert(jsonDecode(body.trim()))
         : body;
     final shown = switch (_mode) {
+      _BodyViewMode.tree => pretty,
       _BodyViewMode.formatted => pretty,
       _BodyViewMode.raw => body,
       _BodyViewMode.hex => _hexDump(body),
@@ -3276,19 +3277,36 @@ class _BodyTabState extends State<_BodyTab> {
           child: Align(
             alignment: Alignment.centerLeft,
             child: ToggleButtons(
-              isSelected: [
-                _mode == _BodyViewMode.formatted,
-                _mode == _BodyViewMode.raw,
-                _mode == _BodyViewMode.hex,
-              ],
-              onPressed: (i) =>
-                  setState(() => _mode = _BodyViewMode.values[i]),
+              isSelected: _isJson
+                  ? [
+                      _mode == _BodyViewMode.tree,
+                      _mode == _BodyViewMode.formatted,
+                      _mode == _BodyViewMode.raw,
+                      _mode == _BodyViewMode.hex,
+                    ]
+                  : [
+                      _mode == _BodyViewMode.formatted,
+                      _mode == _BodyViewMode.raw,
+                      _mode == _BodyViewMode.hex,
+                    ],
+              onPressed: (i) => setState(() {
+                _mode = _isJson
+                    ? _BodyViewMode.values[i]
+                    : _BodyViewMode.values[i + 1];
+              }),
               constraints: const BoxConstraints(minHeight: 26, minWidth: 52),
-              children: const [
-                Text('格式化'),
-                Text('原始'),
-                Text('HEX'),
-              ],
+              children: _isJson
+                  ? const [
+                      Text('树形'),
+                      Text('格式化'),
+                      Text('原始'),
+                      Text('HEX'),
+                    ]
+                  : const [
+                      Text('格式化'),
+                      Text('原始'),
+                      Text('HEX'),
+                    ],
             ),
           ),
         ),
@@ -3296,27 +3314,31 @@ class _BodyTabState extends State<_BodyTab> {
         Expanded(
           child: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
-            child: _mode == _BodyViewMode.hex
-                ? SelectableText(
-                    shown,
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      height: 1.35,
-                      fontFamily: kMonoFamily,
-                      fontFamilyFallback: kMonoFallback,
-                      color: scheme.onSurface,
-                    ),
-                  )
-                : SelectableText.rich(
-                    _isJson ? _jsonSpan(shown, scheme) : TextSpan(text: shown),
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      height: 1.35,
-                      fontFamily: kMonoFamily,
-                      fontFamilyFallback: kMonoFallback,
-                      color: scheme.onSurface,
-                    ),
-                  ),
+            child: _mode == _BodyViewMode.tree
+                ? _JsonTreeView(root: jsonDecode(body.trim()))
+                : _mode == _BodyViewMode.hex
+                    ? SelectableText(
+                        shown,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          height: 1.35,
+                          fontFamily: kMonoFamily,
+                          fontFamilyFallback: kMonoFallback,
+                          color: scheme.onSurface,
+                        ),
+                      )
+                    : SelectableText.rich(
+                        _isJson
+                            ? _jsonSpan(shown, scheme)
+                            : TextSpan(text: shown),
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          height: 1.35,
+                          fontFamily: kMonoFamily,
+                          fontFamilyFallback: kMonoFallback,
+                          color: scheme.onSurface,
+                        ),
+                      ),
           ),
         ),
       ],
@@ -3408,6 +3430,171 @@ class _BodyTabState extends State<_BodyTab> {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
     return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+  }
+}
+
+
+/// 可折叠的 JSON 树：长属性、深层嵌套都能收起来，只留一条摘要。
+class _JsonTreeView extends StatefulWidget {
+  const _JsonTreeView({required this.root});
+
+  final dynamic root;
+
+  @override
+  State<_JsonTreeView> createState() => _JsonTreeViewState();
+}
+
+class _JsonTreeViewState extends State<_JsonTreeView> {
+  late final _JsonNode _root = _JsonNode(
+    key: null,
+    value: widget.root,
+    expanded: true,
+  );
+
+  void _toggle(_JsonNode node) {
+    setState(() => node.expanded = !node.expanded);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildNode(_root, 0, scheme),
+      ],
+    );
+  }
+
+  Widget _buildNode(_JsonNode node, int depth, ColorScheme scheme) {
+    final indent = depth * 16.0;
+    final container = node.value is Map || node.value is List;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: container ? () => _toggle(node) : null,
+          borderRadius: BorderRadius.circular(6),
+          child: Padding(
+            padding: EdgeInsets.only(left: 4 + indent, top: 1.5, bottom: 1.5, right: 4),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 20,
+                  child: container
+                      ? Icon(
+                          node.expanded
+                              ? Icons.expand_more_rounded
+                              : Icons.chevron_right_rounded,
+                          size: 17,
+                          color: scheme.onSurfaceVariant,
+                        )
+                      : null,
+                ),
+                if (node.key != null) ...[
+                  Flexible(
+                    child: Builder(
+                      builder: (context) {
+                        final key = node.key!;
+                        return Text(
+                          key.endsWith(']') ? key : '$key:',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontFamily: kMonoFamily,
+                            fontFamilyFallback: kMonoFallback,
+                            color: scheme.primary,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+                Expanded(
+                  child: Text(
+                    _preview(node),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      height: 1.35,
+                      fontFamily: kMonoFamily,
+                      fontFamilyFallback: kMonoFallback,
+                      color: _valueColor(node.value, scheme),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (container && node.expanded)
+          for (final child in node.children) _buildNode(child, depth + 1, scheme),
+      ],
+    );
+  }
+
+  String _preview(_JsonNode node) {
+    final v = node.value;
+    if (v is Map) {
+      final count = v.length;
+      return node.expanded ? '{...}' : '{ $count 项 }';
+    }
+    if (v is List) {
+      final count = v.length;
+      return node.expanded ? '[...]' : '[ $count 项 ]';
+    }
+    final text = v.toString();
+    if (text.length <= 80) return text;
+    return '${text.substring(0, 77)}…';
+  }
+
+  Color _valueColor(dynamic value, ColorScheme scheme) {
+    if (value is String) return Colors.green.shade600;
+    if (value is num) return Colors.orange.shade700;
+    if (value is bool) return Colors.redAccent;
+    if (value == null) return scheme.outline;
+    return scheme.onSurface;
+  }
+}
+
+class _JsonNode {
+  _JsonNode({
+    required this.key,
+    required this.value,
+    required this.expanded,
+  });
+
+  final String? key;
+  final dynamic value;
+  bool expanded;
+
+  late final List<_JsonNode> children = _buildChildren();
+
+  List<_JsonNode> _buildChildren() {
+    if (value is Map) {
+      final map = value as Map;
+      return [
+        for (final entry in map.entries)
+          _JsonNode(
+            key: entry.key.toString(),
+            value: entry.value,
+            expanded: false,
+          ),
+      ];
+    }
+    if (value is List) {
+      final list = value as List;
+      return [
+        for (var i = 0; i < list.length; i++)
+          _JsonNode(key: '[$i]', value: list[i], expanded: false),
+      ];
+    }
+    return const [];
   }
 }
 

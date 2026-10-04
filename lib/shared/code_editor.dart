@@ -1,4 +1,4 @@
-import 'package:code_text_field/code_text_field.dart';
+import 'package:flutter_code_editor/flutter_code_editor.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_highlight/themes/monokai-sublime.dart';
@@ -270,6 +270,35 @@ class CodeEditorFieldState extends State<CodeEditorField> {
     setState(() => _wrap = value);
   }
 
+  /// 折叠所有可折叠代码块（函数/类/if/for 等）。
+  void foldAll() {
+    final controller = widget.controller;
+    for (final block in List.of(controller.code.foldableBlocks)) {
+      controller.foldAt(block.firstLine);
+    }
+  }
+
+  /// 展开所有已折叠的代码块。
+  void unfoldAll() {
+    final controller = widget.controller;
+    for (final block in List.of(controller.code.foldableBlocks)) {
+      controller.unfoldAt(block.firstLine);
+    }
+  }
+
+  /// 折叠/展开某个行号处的代码块。
+  void toggleFoldAtLine(int line) {
+    final controller = widget.controller;
+    final isFolded = controller.code.foldedBlocks.any(
+      (block) => block.firstLine == line,
+    );
+    if (isFolded) {
+      controller.unfoldAt(line);
+    } else {
+      controller.foldAt(line);
+    }
+  }
+
   /// 当前选中的文本；没有有效选区时返回空字符串。
   String get selectedText {
     final sel = widget.controller.selection;
@@ -538,13 +567,14 @@ class CodeEditorFieldState extends State<CodeEditorField> {
         children: [
           Positioned.fill(
             child: CodeTheme(
-              data: const CodeThemeData(styles: monokaiSublimeTheme),
+              data: CodeThemeData(styles: monokaiSublimeTheme),
               child: CodeField(
                 controller: widget.controller,
                 expands: true,
-                lineNumbers: widget.showLineNumbers,
-                lineNumberStyle: LineNumberStyle(
-                  width: _lineNumberWidth,
+                gutterStyle: GutterStyle(
+                  width: widget.showLineNumbers ? _lineNumberWidth : 34,
+                  showLineNumbers: widget.showLineNumbers,
+                  showFoldingHandles: true,
                   margin: 10,
                   background: Colors.black.withValues(alpha: 0.18),
                   textStyle: TextStyle(

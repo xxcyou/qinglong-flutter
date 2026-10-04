@@ -563,6 +563,20 @@ class _CodeEditorPageState extends ConsumerState<CodeEditorPage> {
             ),
             const SizedBox(width: 6),
             GlassPill(
+              icon: Icons.unfold_less,
+              tooltip: '全部折叠',
+              dense: true,
+              onTap: () => _editorKey.currentState?.foldAll(),
+            ),
+            const SizedBox(width: 6),
+            GlassPill(
+              icon: Icons.unfold_more,
+              tooltip: '全部展开',
+              dense: true,
+              onTap: () => _editorKey.currentState?.unfoldAll(),
+            ),
+            const SizedBox(width: 6),
+            GlassPill(
               icon: Icons.auto_awesome,
               tooltip: '发给 AI',
               dense: true,
