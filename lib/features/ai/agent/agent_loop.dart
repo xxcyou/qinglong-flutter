@@ -444,6 +444,15 @@ class AgentLoop {
     return Duration(seconds: seconds.clamp(1, 7200).toInt() + 120);
   }
 
+  /// 服务端是否因为输出长度上限而截断。
+  ///
+  /// 不同厂商的 finish_reason 不一样：OpenAI 兼容是 length，
+  /// Anthropic 映射成 length，Google 可能回 MAX_TOKENS。
+  static bool _isLengthTruncated(String reason) {
+    final r = reason.trim().toLowerCase();
+    return r == 'length' || r.contains('max_token') || r.contains('max token');
+  }
+
   /// 天生一直在变的工具：结果**永不复用**。
   ///
   /// 日志在长、任务在跑、磁盘在写、页面在刷新，复用等于给用户看旧照片。
@@ -1239,6 +1248,9 @@ class AgentLoop {
     final repeatNudged = <String>{};
     // 工具调用标记坏掉后的重发次数（见 brokenToolMarkup）。
     var brokenRetries = 0;
+    // 回复被服务端 max_tokens 截断后的自动续写次数与已累积正文。
+    var lengthRetries = 0;
+    var carriedContent = '';
     // "正文里假装调用过工具"的打回次数（见 fakeToolClaim）。
     var fakeClaimRetries = 0;
     // 本轮生成的“下一步”快捷建议（suggest_next 工具写入，UI 渲染成可点 chips）。
@@ -1580,8 +1592,43 @@ class AgentLoop {
             ),
           );
         }
-        if (response.content.trim().isNotEmpty) {
-          content = response.content.trim();
+        final responseText = response.content.trim();
+        if (responseText.isNotEmpty) {
+          content = carriedContent.isEmpty
+              ? responseText
+              : '$carriedContent$responseText';
+        }
+
+        // 服务端因为 max_tokens 截断：不要把它当“答完了”，自动接着写。
+        // 否则用户看到的就是“答案没答完，卡片却显示已回答/完成”。
+        if (response.toolCalls.isEmpty &&
+            _isLengthTruncated(response.finishReason) &&
+            lengthRetries < 3 &&
+            maxTurns - turnsUsed > 1) {
+          lengthRetries++;
+          carriedContent = content;
+          if (responseText.isNotEmpty) {
+            messages.add(LlmMessage(role: 'assistant', content: responseText));
+          }
+          messages.add(
+            const LlmMessage(
+              role: 'user',
+              content: '上一条回复因为长度上限被截断了。'
+                  '请紧接着断点继续写完，不要重复已经写过的内容，也不要重新开头。',
+            ),
+          );
+          emit(
+            AgentEvent(
+              kind: AgentEventKind.thinking,
+              message: '回复被长度上限截断，自动接着写（第 $lengthRetries 次）',
+              result: '回复被长度上限截断，自动接着写（第 $lengthRetries 次）',
+              turn: turnsUsed,
+            ),
+          );
+          continue;
+        }
+        if (response.toolCalls.isNotEmpty) {
+          carriedContent = '';
         }
 
         if (response.toolCalls.isEmpty) {
@@ -3033,7 +3080,7 @@ class AgentLoop {
           AgentOutcome.awaitingConfirm => '等待用户确认写操作',
           AgentOutcome.exhausted => '达到 $maxTurns 轮上限，任务未确认完成',
           // 没动过工具就是一次普通对话，别把它说成"任务完成"。
-          _ => records.isEmpty ? '已回答' : '已完成',
+          _ => records.isEmpty ? '回答完成' : '已完成',
         },
         result: content,
         ok: outcome != AgentOutcome.exhausted,

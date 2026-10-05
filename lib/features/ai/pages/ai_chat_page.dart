@@ -49,6 +49,26 @@ import '../../../shared/mono_text.dart';
 import '../../../shared/image_preview_overlay.dart';
 import '../../terminal/pages/shell_files_page.dart';
 
+/// 纯聊天（没有工具调用、没有思考/计划/画布）不该渲染“执行过程”卡：
+/// 否则每条普通问答都会在气泡上方多一行“回答完成/已回答”，
+/// 看起来像状态卡卡住了。只有真的执行过什么，才值得展开过程。
+bool _hasAgentProcess(AiChatMessage message) {
+  for (final e in message.agentEvents) {
+    if ((e.toolName ?? '').isNotEmpty) return true;
+    switch (e.kind) {
+      case AgentEventKind.thinking:
+      case AgentEventKind.workflowStep:
+      case AgentEventKind.error:
+      case AgentEventKind.canvas:
+      case AgentEventKind.planPending:
+        return true;
+      default:
+        break;
+    }
+  }
+  return false;
+}
+
 class AiChatPage extends ConsumerStatefulWidget {
   const AiChatPage({super.key});
 
@@ -2740,7 +2760,8 @@ class _MessageBubble extends StatelessWidget {
         ],
       );
     }
-    final hasExtras = message.agentEvents.isNotEmpty ||
+    final hasProcess = _hasAgentProcess(message);
+    final hasExtras = hasProcess ||
         message.taskPlan.isNotEmpty ||
         message.canvases.isNotEmpty;
     if (!hasExtras) {
@@ -2761,7 +2782,7 @@ class _MessageBubble extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (message.agentEvents.isNotEmpty)
+        if (hasProcess)
           AgentProcessCard(
             events: message.agentEvents,
             turns: message.turns,
