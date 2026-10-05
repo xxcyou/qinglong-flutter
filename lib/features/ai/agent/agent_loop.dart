@@ -1220,7 +1220,7 @@ class AgentLoop {
     var usage = const LlmUsage();
     var outcome = AgentOutcome.exhausted;
     var turnsUsed = 0;
-    var nudged = false;
+    var unfinishedNudges = 0;
     // "该拆任务了"按工具数间隔提醒：第一次 3 次，之后每再涨 4 次催一次，
     // 直到模型真的建出清单。不能只推一次——模型无视一次就永远没清单了。
     var lastPlanNudgeToolCalls = 0;
@@ -1248,6 +1248,8 @@ class AgentLoop {
     final repeatNudged = <String>{};
     // 工具调用标记坏掉后的重发次数（见 brokenToolMarkup）。
     var brokenRetries = 0;
+    // task_complete 在清单还有未完成步骤时被打回的次数。
+    var finishRejections = 0;
     // 回复被服务端 max_tokens 截断后的自动续写次数与已累积正文。
     var lengthRetries = 0;
     var carriedContent = '';
@@ -1746,7 +1748,7 @@ class AgentLoop {
                     i.status == SubtaskStatus.pending ||
                     i.status == SubtaskStatus.running,
               );
-          if (nudged ||
+          if (unfinishedNudges >= 3 ||
               turn >= maxTurns - 1 ||
               records.isEmpty ||
               !unfinished) {
@@ -1761,7 +1763,7 @@ class AgentLoop {
             outcome = AgentOutcome.completed;
             break;
           }
-          nudged = true;
+          unfinishedNudges++;
           messages.add(LlmMessage(role: 'assistant', content: content));
           messages.add(
             const LlmMessage(
@@ -1781,7 +1783,8 @@ class AgentLoop {
           continue;
         }
 
-        nudged = false;
+        unfinishedNudges = 0;
+        finishRejections = 0;
         // 只要这一轮拿到了工具调用，坏格式的连败就算断了。
         brokenRetries = 0;
 
@@ -1880,13 +1883,88 @@ class AgentLoop {
             continue;
           }
 
+          // 清单里还有 running/pending，不能直接收尾。
+          //
+          // 现场：模型在第 41 轮直接 task_complete，summary 只说“收尾”，
+          // 但 taskPlan 里 step3 还是 running、step4 还是 pending。用户看到
+          // “任务完成”却不知道剩下的步骤去哪了。这里把收尾打回，让它要么
+          // 继续做，要么先用 task_step 把清单状态改对再收尾。
+          final finishUnfinished = <AgentSubtask>[];
+          if (status != 'failed') {
+            for (final item in plan.items) {
+              if (item.status == SubtaskStatus.pending ||
+                  item.status == SubtaskStatus.running) {
+                finishUnfinished.add(item);
+              }
+            }
+          }
+          if (finishUnfinished.isNotEmpty && finishRejections < 2) {
+            finishRejections++;
+            if (finishText.isNotEmpty) {
+              messages.add(LlmMessage(role: 'assistant', content: finishText));
+            }
+            final lines = [
+              for (final item in finishUnfinished)
+                '- ${item.title}（${item.status.label}）',
+            ].join('\n');
+            messages.add(
+              LlmMessage(
+                role: 'user',
+                content: '停。你刚请求 task_complete 要收尾，但任务清单里还有未完成步骤：\n'
+                    '$lines\n'
+                    '不能带着 pending/running 的清单宣布任务完成。两个选择：\n'
+                    '1. 如果确实还没做完：继续调用工具，把剩余步骤真正做完；\n'
+                    '2. 如果实际已经做完/确实做不下去：先调用 ${_taskStepSpec.name} '
+                    '把剩余步骤标成 done / failed / skipped，并写清原因，然后再收尾。\n'
+                    '不要在清单没更新对之前再次 task_complete。',
+              ),
+            );
+            emit(
+              AgentEvent(
+                kind: AgentEventKind.thinking,
+                message: '任务清单还有 ${finishUnfinished.length} 步未完成，已打回收尾（第 $finishRejections 次）',
+                result: lines,
+                turn: turnsUsed,
+              ),
+            );
+            continue;
+          }
+
+          // 收尾可以，但不能一句话都不留。用户看到“任务完成”却没有任何结论/
+          // 原因，就是所谓的“收尾得不明不白”。
+          if (finishText.trim().isEmpty && finishRejections < 2) {
+            finishRejections++;
+            messages.add(
+              const LlmMessage(
+                role: 'user',
+                content: 'task_complete 已经触发，但 summary 和正文都是空的，'
+                    '用户看不到任何结论或原因。请用一句话写清：'
+                    '这次做成了什么、没做成什么、卡在哪里；'
+                    '然后再调用 task_complete 收尾。',
+              ),
+            );
+            emit(
+              AgentEvent(
+                kind: AgentEventKind.thinking,
+                message: 'task_complete 没有结论，已打回补写（第 $finishRejections 次）',
+                turn: turnsUsed,
+              ),
+            );
+            continue;
+          }
+
           if (summary.trim().isNotEmpty) content = summary.trim();
           outcome =
               status == 'failed' ? AgentOutcome.failed : AgentOutcome.completed;
+          final finishNote = finishUnfinished.isEmpty
+              ? ''
+              : '（注意：清单里还有 ${finishUnfinished.length} 步未完成，模型没有更新状态）';
           emit(
             AgentEvent(
               kind: AgentEventKind.done,
-              message: outcome == AgentOutcome.failed ? '任务失败' : '任务完成',
+              message: outcome == AgentOutcome.failed
+                  ? '任务失败'
+                  : '任务完成$finishNote',
               result: content,
               ok: outcome != AgentOutcome.failed,
               turn: turnsUsed,
@@ -3088,8 +3166,22 @@ class AgentLoop {
       ),
     );
 
-    if (outcome == AgentOutcome.exhausted && content.isEmpty) {
-      content = '任务未能在 $maxTurns 轮内完成，请补充信息或缩小范围后重试。';
+    if (outcome == AgentOutcome.exhausted) {
+      // 到轮次上限不是“任务完成”，但也不能只丢一句笼统的话。把清单里
+      // 卡住的步骤列出来，用户一眼知道停在哪、回“继续”可以接着跑。
+      final remaining = [
+        for (final item in plan.items)
+          if (item.status == SubtaskStatus.pending ||
+              item.status == SubtaskStatus.running)
+            '- ${item.title}（${item.status.label}）',
+      ];
+      final head = content.trim();
+      final tail = remaining.isEmpty
+          ? ''
+          : '\n\n还没做完的步骤：\n${remaining.join('\n')}\n\n回复“继续”我就接着做。';
+      content = head.isEmpty
+          ? '任务未能在 $maxTurns 轮内完成，请补充信息或缩小范围后重试。$tail'
+          : '$head$tail';
     }
 
     return AgentResult(
