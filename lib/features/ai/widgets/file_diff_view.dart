@@ -399,9 +399,32 @@ class FileDiffView extends StatelessWidget {
 
     final lines = _diffLines();
     if (lines.isEmpty) {
-      return const Text(
-        '（没有可展示的文件内容）',
-        style: TextStyle(fontSize: 11, color: Colors.white60),
+      // 兜底：即使某个工具漏进了 Diff 卡，也不要出现一张空白的
+      // “没有可展示的文件内容”。直接把参数/返回摊开，信息至少不丢。
+      final buffer = StringBuffer();
+      if (args.isNotEmpty) {
+        buffer.writeln('参数：');
+        try {
+          buffer.writeln(const JsonEncoder.withIndent('  ').convert(args));
+        } catch (_) {
+          buffer.writeln(args);
+        }
+      }
+      final out = result?.trim() ?? '';
+      if (out.isNotEmpty) {
+        if (buffer.isNotEmpty) buffer.writeln();
+        buffer.writeln('返回：');
+        buffer.writeln(out);
+      }
+      return SelectableText(
+        buffer.isEmpty ? '（这一步没有更多内容）' : buffer.toString().trim(),
+        style: const TextStyle(
+          fontSize: 11,
+          height: 1.45,
+          color: Colors.white70,
+          fontFamily: kMonoFamily,
+          fontFamilyFallback: kMonoFallback,
+        ),
       );
     }
 

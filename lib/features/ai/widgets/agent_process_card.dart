@@ -428,15 +428,29 @@ class _TimelineRowState extends State<_TimelineRow> {
     }
   }
 
-  static const Set<String> _nonFileDiffTools = {
-    'shell_session_start',
-    'shell_session_stop',
-    'shell_session_list',
-    'shell_session_status',
+  /// 只有这些工具的参数里真的带“文件旧内容/新内容”，才用 Diff 卡渲染。
+  ///
+  /// 其它写操作（cron_create、editor_save、script_delete、dep_install…）
+  /// 虽然 isWrite=true，但参数里没有文件正文。以前它们被当成文件 Diff，
+  /// 于是卡片显示“没有可展示的文件内容”。这类工具现在走通用参数/返回块。
+  static const Set<String> _fileDiffTools = {
+    'script_write',
+    'script_patch',
+    'script_modify_range',
+    'shell_write_file',
+    'shell_modify_range',
+    'shell_write_binary',
+    'shell_exec',
+    'shell_script',
+    'editor_patch',
+    'editor_insert',
+    'editor_delete',
+    'editor_write',
+    'config_save',
   };
 
-  static bool _isNonFileDiffTool(String toolName) =>
-      _nonFileDiffTools.contains(toolName);
+  static bool _isFileDiffTool(String toolName) =>
+      _fileDiffTools.contains(toolName);
 
   AgentEvent get event => widget.event;
 
@@ -679,7 +693,7 @@ class _TimelineRowState extends State<_TimelineRow> {
                                     event.isWrite &&
                                     event.toolName != null &&
                                     event.args != null &&
-                                    !_isNonFileDiffTool(event.toolName!))
+                                    _isFileDiffTool(event.toolName!))
                                 ? FileDiffView(
                                     toolName: event.toolName!,
                                     args: event.args!,
