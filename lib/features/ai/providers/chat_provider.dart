@@ -1522,6 +1522,35 @@ class ChatNotifier extends Notifier<ChatState> {
     ];
   }
 
+  /// 图片附件除了发给模型看图，还要把本地路径写进文本上下文。
+  ///
+  /// 有些场景只发图片：模型知道"有张图"，但问它"图在哪个文件"就答不上来，
+  /// 后续想用 shell 工具处理原文件也没有路径可依。这里把非空路径带进 prompt，
+  /// 但调用方会用 displayContent 把它藏起来，界面气泡不显示这段内部块。
+  String _withImagePaths(String text, List<AiImageAttachment> images) {
+    final withPath = [
+      for (final img in images)
+        if (img.path.trim().isNotEmpty) img,
+    ];
+    if (withPath.isEmpty) return text;
+    final head = text.trim();
+    final buffer = StringBuffer();
+    if (head.isNotEmpty) {
+      buffer
+        ..writeln(head)
+        ..writeln();
+    }
+    buffer.writeln('（系统补充 · 本次图片附件的本地路径）');
+    for (final img in withPath) {
+      buffer.writeln(
+        '- ${img.name}: ${img.path}'
+        '${img.scope == 'app' ? '（APP 沙箱，shell 工具可能读不到）' : ''}',
+      );
+    }
+    buffer.write('（图片内容已随消息发给模型；后续要用工具处理原文件时，请使用上面的路径。）');
+    return buffer.toString();
+  }
+
   Future<void> send(String text) async {
     final value = text.trim();
     final modeText = _composeModePrompt();
@@ -1537,15 +1566,25 @@ class ChatNotifier extends Notifier<ChatState> {
     final images = state.pendingImages;
     // 只带附件/模式、没有文字也可以发：AI 会直接看附件/模式指令来干活。
     if (finalText.isEmpty && images.isEmpty) return;
+
+    final promptText = _withImagePaths(finalText, images);
+    // 图片路径块只给模型看，气泡里继续显示用户原话；只有图没字时用零宽字符
+    // 让 UI 认为"有显示文字"，不去回退显示 content 里的路径块。
+    final visibleDisplay = images.any((img) => img.path.trim().isNotEmpty)
+        ? (displayText.isNotEmpty
+            ? displayText
+            : (value.isNotEmpty ? value : '\u200B'))
+        : displayText;
+
     if (_runs.containsKey(sid)) {
       // AI 还在跑：不再像以前那样只压进队尾等整轮跑完；把这条同时挂到
       // 当前运行的 inbox，AgentLoop 在下一轮之间的安全点就把它插进去。
       final run = _runs[sid]!;
       final queued = QueuedMessage.create(
-        finalText,
+        promptText,
         sessionId: sid,
         images: images,
-        displayText: displayText,
+        displayText: visibleDisplay,
       );
       state = state.copyWith(
         queue: [...state.queue, queued],
@@ -1553,9 +1592,9 @@ class ChatNotifier extends Notifier<ChatState> {
       run.inbox.add(
         AgentInboxMessage(
           id: queued.id,
-          text: finalText,
+          text: promptText,
           images: images,
-          displayText: displayText,
+          displayText: visibleDisplay,
           modeLabels: modeLabels,
         ),
       );
@@ -1566,10 +1605,10 @@ class ChatNotifier extends Notifier<ChatState> {
     clearPendingImages();
     // 上一次是被打断的：把中断前已执行的工具链直接带过去续轮，而不是开全新一轮。
     await _sendNow(
-      finalText,
+      promptText,
       sessionId: sid,
       images: images,
-      displayText: displayText,
+      displayText: visibleDisplay,
       modeLabels: modeLabels,
       resumeEvents: _resumeEventsFromCancelled(sid),
       resumeRoundId: _roundIdFromCancelled(sid),
@@ -1605,15 +1644,19 @@ class ChatNotifier extends Notifier<ChatState> {
     final modeText = _composeModePrompt();
     final finalText = modeText.isEmpty ? value : '$modeText\n\n${value.trim()}';
     if (finalText.isEmpty && images.isEmpty) return;
+    final promptText = _withImagePaths(finalText, images);
+    final hasPaths = images.any((img) => img.path.trim().isNotEmpty);
+    final display = modeText.isEmpty && hasPaths
+        ? (value.isNotEmpty ? value : '\u200B')
+        : (modeText.isEmpty ? '' : (value.isEmpty ? '（仅挂载模式，未输入文字）' : value));
     state = state.copyWith(
       queue: [
         ...state.queue,
         QueuedMessage.create(
-          finalText,
+          promptText,
           sessionId: state.currentSessionId,
           images: images,
-          displayText:
-              modeText.isEmpty ? '' : (value.isEmpty ? '（仅挂载模式，未输入文字）' : value),
+          displayText: display,
         ),
       ],
     );
