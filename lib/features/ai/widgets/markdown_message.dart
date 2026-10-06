@@ -330,13 +330,33 @@ class _HighlightBuilder extends MarkdownElementBuilder {
 
 class _CodeBlockBuilder extends MarkdownElementBuilder {
   bool _inPre = false;
+  String? _pendingLanguage;
 
   @override
   bool isBlockElement() => false;
 
   @override
   void visitElementBefore(md.Element element) {
-    if (element.tag == 'pre') _inPre = true;
+    if (element.tag == 'pre') {
+      _inPre = true;
+      _pendingLanguage = null;
+    } else if (element.tag == 'code' && _inPre) {
+      final cls = element.attributes['class'] ?? '';
+      String? language;
+      if (cls.startsWith('language-') && cls.length > 'language-'.length) {
+        language = cls.substring('language-'.length);
+      }
+      _pendingLanguage = language;
+    }
+  }
+
+  @override
+  Widget? visitText(md.Text text, TextStyle? preferredStyle) {
+    if (!_inPre) return null;
+    final language = _pendingLanguage;
+    _inPre = false;
+    _pendingLanguage = null;
+    return _CodeBlock(code: text.text, language: language);
   }
 
   @override
@@ -346,14 +366,8 @@ class _CodeBlockBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
-    if (element.tag != 'code' || !_inPre) return null;
-    _inPre = false;
-    final cls = element.attributes['class'] ?? '';
-    String? language;
-    if (cls.startsWith('language-') && cls.length > 'language-'.length) {
-      language = cls.substring('language-'.length);
-    }
-    return _CodeBlock(code: element.textContent, language: language);
+    // 代码块在 visitText 里整体渲染，这里不再追加。
+    return null;
   }
 }
 
@@ -390,7 +404,7 @@ class _CodeBlockState extends State<_CodeBlock> {
     if (rootStyle != null) {
       theme['root'] = rootStyle.copyWith(
         color: const Color(0xFFE6EDF7),
-        backgroundColor: Colors.transparent,
+        backgroundColor: const Color(0xFF121826),
       );
     }
     return Column(
