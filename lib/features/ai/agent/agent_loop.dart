@@ -1605,7 +1605,7 @@ class AgentLoop {
         // 否则用户看到的就是“答案没答完，卡片却显示已回答/完成”。
         if (response.toolCalls.isEmpty &&
             _isLengthTruncated(response.finishReason) &&
-            lengthRetries < 3 &&
+            lengthRetries < 6 &&
             maxTurns - turnsUsed > 1) {
           lengthRetries++;
           carriedContent = content;
@@ -1619,14 +1619,8 @@ class AgentLoop {
                   '请紧接着断点继续写完，不要重复已经写过的内容，也不要重新开头。',
             ),
           );
-          emit(
-            AgentEvent(
-              kind: AgentEventKind.thinking,
-              message: '回复被长度上限截断，自动接着写（第 $lengthRetries 次）',
-              result: '回复被长度上限截断，自动接着写（第 $lengthRetries 次）',
-              turn: turnsUsed,
-            ),
-          );
+          // 不把“接写”当思考事件展示：正文会自然继续，
+          // 避免用户看到一堆“自动接着写（第 N 次）”噪音。
           continue;
         }
         if (response.toolCalls.isNotEmpty) {

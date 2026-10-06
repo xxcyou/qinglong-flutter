@@ -1084,7 +1084,8 @@ class LlmClient {
     }
     return {
       'model': config.model,
-      'max_tokens': config.maxTokens ?? 4096,
+      // 默认给 8192：长思考/长回答不容易被 4096 截断，续写次数会明显变少。
+      'max_tokens': config.maxTokens ?? 8192,
       if (config.temperature != null) 'temperature': config.temperature,
       if (config.topP != null) 'top_p': config.topP,
       ...config.extraBody,
