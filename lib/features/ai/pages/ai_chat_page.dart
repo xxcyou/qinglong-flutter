@@ -49,6 +49,7 @@ import '../widgets/pending_image_bar.dart';
 import '../../../shared/mono_text.dart';
 import '../../../shared/image_preview_overlay.dart';
 import '../../terminal/pages/shell_files_page.dart';
+import '../../terminal/widgets/ssh_manager_sheet.dart';
 
 /// 纯聊天（没有工具调用、没有思考/计划/画布）不该渲染“执行过程”卡：
 /// 否则每条普通问答都会在气泡上方多一行“回答完成/已回答”，
@@ -121,6 +122,9 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   /// AI 页左侧半屏文件面板。
   bool _filePanelOpen = false;
 
+  /// AI 页右侧半屏 SSH 管理面板。
+  bool _sshPanelOpen = false;
+
   /// 输入框打 `/` 后正在选模式的关键字；空 = 不显示模式选择条。
   String _modePickerKeyword = '';
 
@@ -130,11 +134,31 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   /// 调好后会记住，下次滑出来还是这个大小。
   double _filePanelFraction = 0.66;
 
+  static const _sshPanelFractionKey = 'ai_ssh_panel_fraction_v1';
+
+  /// SSH 管理面板宽度占屏幕比例，默认 2/3；可拖动左侧小白条调整。
+  double _sshPanelFraction = 0.66;
+
   /// 开始滑动的位置：从屏幕最左边缘滑会留给系统返回手势，避免误触。
   double _fileDragStartDx = -1;
 
-  void _openFilePanel() => setState(() => _filePanelOpen = true);
+  void _openFilePanel() {
+    setState(() {
+      _filePanelOpen = true;
+      _sshPanelOpen = false;
+    });
+  }
+
   void _closeFilePanel() => setState(() => _filePanelOpen = false);
+
+  void _openSshPanel() {
+    setState(() {
+      _sshPanelOpen = true;
+      _filePanelOpen = false;
+    });
+  }
+
+  void _closeSshPanel() => setState(() => _sshPanelOpen = false);
 
   void _onInputChanged(String text) {
     final trimmed = text.trimLeft();
@@ -176,6 +200,27 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     }
   }
 
+  Future<void> _loadSshPanelFraction() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getDouble(_sshPanelFractionKey);
+      if (saved != null && saved >= 0.4 && saved <= 0.95 && mounted) {
+        setState(() => _sshPanelFraction = saved);
+      }
+    } catch (_) {
+      // 记不住宽度不影响功能。
+    }
+  }
+
+  Future<void> _saveSshPanelFraction() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_sshPanelFractionKey, _sshPanelFraction);
+    } catch (_) {
+      // 忽略写入失败。
+    }
+  }
+
   /// 每条消息一个 RepaintBoundary key：撤回时按它抓图做消散。
   /// 用列表而不是 Map<int,GlobalKey>，因为索引就是消息在会话里的位置，
   /// 撤回只会从尾部截断，前面的 key 保持不变正好复用。
@@ -195,6 +240,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     super.initState();
     _scrollController.addListener(_onScroll);
     _loadFilePanelFraction();
+    _loadSshPanelFraction();
     Future.microtask(() async {
       await ref.read(chatProvider.notifier).loadSessions();
       // 会话读完再看有没有被打断的运行：恢复要切到原会话，顺序反了会切错。
@@ -1564,18 +1610,33 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     return Stack(
       children: [
         GestureDetector(
-          // 半屏文件面板：右滑打开，再左滑收起；面板打开时不挡右侧聊天区。
+          // 半屏面板：右侧区域左滑开 SSH 管理，左侧区域右滑开文件管理；
+          // 两个面板互斥，一个滑出时另一个自动收起。
           behavior: HitTestBehavior.translucent,
           onHorizontalDragStart: (details) {
             _fileDragStartDx = details.globalPosition.dx;
           },
           onHorizontalDragEnd: (details) {
             final velocity = details.primaryVelocity ?? 0;
-            // 从屏幕最左边沿开始的手势让给系统返回；离边稍远再右滑才开面板。
-            if (!_filePanelOpen && velocity > 300 && _fileDragStartDx > 60) {
+            final width = MediaQuery.sizeOf(context).width;
+            final fromRight = _fileDragStartDx > width - 60;
+            // 从屏幕最左边沿开始的手势让给系统返回；离边稍远再右滑才开文件面板。
+            if (!_filePanelOpen &&
+                !_sshPanelOpen &&
+                velocity > 300 &&
+                _fileDragStartDx > 60 &&
+                !fromRight) {
               _openFilePanel();
             }
+            // 从屏幕最右边沿左滑，滑出右侧 SSH 管理面板。
+            if (!_filePanelOpen &&
+                !_sshPanelOpen &&
+                velocity < -300 &&
+                fromRight) {
+              _openSshPanel();
+            }
             if (_filePanelOpen && velocity < -300) _closeFilePanel();
+            if (_sshPanelOpen && velocity > 300) _closeSshPanel();
           },
           child: GlassScaffold(
             title: 'AI 助手',
@@ -1647,6 +1708,8 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                         MaterialPageRoute(
                             builder: (_) => const McpServerPage()),
                       );
+                    case 'ssh':
+                      _openSshPanel();
                     case 'new':
                       if (_editMode) _cancelEdit();
                       notifier.createSession();
@@ -1693,6 +1756,16 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                       leading: const Icon(Icons.extension_outlined),
                       title: const Text('MCP 扩展'),
                       subtitle: Text(mcpCount == 0 ? '未接入' : '$mcpCount 个工具'),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'ssh',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.dns_outlined),
+                      title: const Text('SSH 管理'),
+                      subtitle: const Text('连接 / 断开 / 删除远程会话'),
                     ),
                   ),
                   const PopupMenuItem(
@@ -2204,6 +2277,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
           ),
         ),
         _buildFilePanel(),
+        _buildSshPanel(),
       ],
     );
   }
@@ -2367,6 +2441,93 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                         onHorizontalDragEnd: (_) {
                           HapticFeedback.selectionClick();
                           _saveFilePanelFraction();
+                        },
+                        child: Container(
+                          width: 5,
+                          height: 76,
+                          decoration: BoxDecoration(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant
+                                .withValues(alpha: 0.5),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 右侧半屏 SSH 管理面板：左滑出来、右滑/右上角收起。
+  /// 与左侧文件管理互斥，保证同一时间只有一个半屏面板。
+  Widget _buildSshPanel() {
+    final size = MediaQuery.sizeOf(context);
+    final scheme = Theme.of(context).colorScheme;
+    final panelWidth = size.width * _sshPanelFraction;
+    return AnimatedPositioned(
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+      right: _sshPanelOpen ? 0 : -panelWidth - 12,
+      top: 0,
+      bottom: 0,
+      width: panelWidth,
+      child: Material(
+        color: Colors.transparent,
+        child: ClipRRect(
+          borderRadius: const BorderRadius.horizontal(
+            left: Radius.circular(20),
+          ),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(
+              sigmaX: Glass.blurStrong,
+              sigmaY: Glass.blurStrong,
+            ),
+            child: Container(
+              color: scheme.surface.withValues(alpha: 0.96),
+              child: Stack(
+                children: [
+                  // 右滑收回的范围包含整个已展开半屏。
+                  GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onHorizontalDragEnd: (details) {
+                      if ((details.primaryVelocity ?? 0) > 300) {
+                        _closeSshPanel();
+                      }
+                    },
+                    child: SshManagerSheet(
+                      asSheet: true,
+                      onClose: _closeSshPanel,
+                    ),
+                  ),
+                  // 左缘中间的小白条：按住左右拉可改面板宽度，松开固定。
+                  Positioned(
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    child: Align(
+                      alignment: Alignment.center,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onHorizontalDragStart: (_) {
+                          HapticFeedback.lightImpact();
+                        },
+                        onHorizontalDragUpdate: (details) {
+                          final delta = details.delta.dx / size.width;
+                          setState(() {
+                            _sshPanelFraction =
+                                (_sshPanelFraction - delta).clamp(0.4, 0.95);
+                          });
+                        },
+                        onHorizontalDragEnd: (_) {
+                          HapticFeedback.selectionClick();
+                          _saveSshPanelFraction();
                         },
                         child: Container(
                           width: 5,

@@ -8,7 +8,14 @@ import '../providers/ssh_session_provider.dart';
 import 'ssh_connect_dialog.dart';
 
 class SshManagerSheet extends ConsumerWidget {
-  const SshManagerSheet({super.key});
+  const SshManagerSheet({super.key, this.asSheet = false, this.onClose});
+
+  /// 作为 AI 页半屏侧滑面板嵌入时置 true：关闭按钮走 [onClose]，
+  /// 不再 Navigator.pop。
+  final bool asSheet;
+
+  /// 半屏模式下的关闭回调。
+  final VoidCallback? onClose;
 
   static Future<void> show(BuildContext context) {
     return showModalBottomSheet<void>(
@@ -94,7 +101,8 @@ class SshManagerSheet extends ConsumerWidget {
               ),
               IconButton(
                 tooltip: '关闭',
-                onPressed: () => Navigator.pop(context),
+                onPressed:
+                    onClose ?? (asSheet ? () {} : () => Navigator.pop(context)),
                 icon: const Icon(Icons.close),
               ),
             ],
