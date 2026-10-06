@@ -1791,7 +1791,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
             ],
             body: DragTarget<ShellFileDragData>(
               onAcceptWithDetails: (details) =>
-                  _attachDraggedFile(details.data),
+                  _attachDraggedFiles(details.data),
               builder: (context, candidate, rejected) => Column(
                 children: [
                   Expanded(
@@ -2282,99 +2282,102 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     );
   }
 
-  /// 从左侧文件管理面板拖进来的文件/文件夹，按附件处理。
-  Future<void> _attachDraggedFile(ShellFileDragData data) async {
-    final entry = data.entry;
+  /// 从左侧文件管理面板拖进来的一个/多个文件、文件夹，按附件处理。
+  Future<void> _attachDraggedFiles(ShellFileDragData data) async {
+    final entries = data.allEntries;
+    if (entries.isEmpty) return;
     final scope = data.scope;
-    try {
-      if (entry.isDirectory) {
-        ref.read(aiDockProvider.notifier).pushFile(
-              path: entry.path,
-              name: entry.name,
-              content: '文件夹路径：${entry.path}\n',
-              language: null,
-              truncated: false,
-              open: false,
-            );
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('已附上文件夹引用 ${entry.name}'),
-            duration: const Duration(seconds: 1),
-          ),
-        );
-        return;
+    var ok = 0;
+    var failed = 0;
+    final errors = <String>[];
+    for (final entry in entries) {
+      try {
+        await _attachOneDraggedFile(entry, scope);
+        ok++;
+      } catch (e) {
+        failed++;
+        errors.add('${entry.name}: $e');
       }
-      final kind = FileKinds.of(entry.name);
-      if (kind.category == FileCategory.image) {
-        final bridge = ProotBridge();
-        final host = await bridge.hostPath(path: entry.path, scope: scope);
-        final bytes = await File(host).readAsBytes();
-        if (bytes.isEmpty) {
-          throw Exception('图片内容为空');
-        }
-        final image = AiImageAttachment(
-          name: entry.name,
-          mime: FileKinds.mimeOf(entry.name),
-          dataUri:
-              'data:${FileKinds.mimeOf(entry.name)};base64,${base64Encode(bytes)}',
-          path: entry.path,
-          scope: scope,
-        );
-        ref.read(chatProvider.notifier).addPendingImage(image);
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('已附上图片 ${entry.name}'),
-            duration: const Duration(seconds: 1),
-          ),
-        );
-        return;
-      }
-      if (!kind.isTextLike) {
-        // 二进制文件（ZIP/APK/可执行等）不能当正文喂给 AI，附路径引用。
-        ref.read(aiDockProvider.notifier).pushFile(
-              path: entry.path,
-              name: entry.name,
-              content: '文件路径：${entry.path}\n'
-                  '（二进制文件，未读取内容）',
-              language: null,
-              truncated: false,
-              open: false,
-            );
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('已附上文件引用 ${entry.name}'),
-            duration: const Duration(seconds: 1),
-          ),
-        );
-        return;
-      }
-      final bridge = ProotBridge();
-      final raw = await bridge.readFile(path: entry.path, scope: scope);
-      final truncated = raw.length > 20000;
-      ref.read(aiDockProvider.notifier).pushFile(
-            path: entry.path,
-            name: entry.name,
-            content: truncated ? raw.substring(0, 20000) : raw,
-            language: kind.language,
-            truncated: truncated,
-            open: false,
-          );
-      if (!mounted) return;
+    }
+    if (!mounted) return;
+    if (ok > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('已附上 ${entry.name}'),
+          content: Text(
+            failed == 0
+                ? '已附上 $ok 个${entries.length > 1 ? '附件' : '附件'}'
+                : '已附上 $ok 个，$failed 个失败',
+          ),
           duration: const Duration(seconds: 1),
         ),
       );
-    } catch (e) {
-      if (!mounted) return;
+    } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('附件添加失败：$e')),
+        SnackBar(
+          content: Text('附件添加失败：${errors.join('；')}'),
+          duration: const Duration(seconds: 2),
+        ),
       );
     }
+  }
+
+  Future<void> _attachOneDraggedFile(
+    ShellFileEntry entry,
+    String scope,
+  ) async {
+    if (entry.isDirectory) {
+      ref.read(aiDockProvider.notifier).pushFile(
+            path: entry.path,
+            name: entry.name,
+            content: '文件夹路径：${entry.path}\n',
+            language: null,
+            truncated: false,
+            open: false,
+          );
+      return;
+    }
+    final kind = FileKinds.of(entry.name);
+    if (kind.category == FileCategory.image) {
+      final bridge = ProotBridge();
+      final host = await bridge.hostPath(path: entry.path, scope: scope);
+      final bytes = await File(host).readAsBytes();
+      if (bytes.isEmpty) throw Exception('图片内容为空');
+      ref.read(chatProvider.notifier).addPendingImage(
+            AiImageAttachment(
+              name: entry.name,
+              mime: FileKinds.mimeOf(entry.name),
+              dataUri:
+                  'data:${FileKinds.mimeOf(entry.name)};base64,${base64Encode(bytes)}',
+              path: entry.path,
+              scope: scope,
+            ),
+          );
+      return;
+    }
+    if (!kind.isTextLike) {
+      // 二进制文件（ZIP/APK/可执行等）不能当正文喂给 AI，附路径引用。
+      ref.read(aiDockProvider.notifier).pushFile(
+            path: entry.path,
+            name: entry.name,
+            content: '文件路径：${entry.path}\n'
+                '（二进制文件，未读取内容）',
+            language: null,
+            truncated: false,
+            open: false,
+          );
+      return;
+    }
+    final bridge = ProotBridge();
+    final raw = await bridge.readFile(path: entry.path, scope: scope);
+    final truncated = raw.length > 20000;
+    ref.read(aiDockProvider.notifier).pushFile(
+          path: entry.path,
+          name: entry.name,
+          content: truncated ? raw.substring(0, 20000) : raw,
+          language: kind.language,
+          truncated: truncated,
+          open: false,
+        );
   }
 
   /// 左侧半屏文件管理面板：右滑出来、左滑/右上角收起。

@@ -24,10 +24,19 @@ import '../../../shared/mono_text.dart';
 
 /// 长按文件/文件夹后拖拽到 AI 正文区附件的载荷。
 class ShellFileDragData {
-  const ShellFileDragData({required this.entry, required this.scope});
+  const ShellFileDragData({
+    required this.entry,
+    required this.scope,
+    this.entries,
+  });
 
   final ShellFileEntry entry;
   final String scope;
+
+  /// 多选拖拽：选中状态下长按任一选中项，把整组选中项一起交给 AI 页。
+  final List<ShellFileEntry>? entries;
+
+  List<ShellFileEntry> get allEntries => entries ?? [entry];
 }
 
 /// 完整文件管理器：终端（PRoot guest，含 rootfs 根目录）与 APP 沙箱两套根，
@@ -97,6 +106,10 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
   final _searchController = TextEditingController();
   bool _searchVisible = false;
 
+  /// 拖拽附件模式下的“多选”开关：开启后点条目直接勾选，
+  /// 勾选多个后长按任一选中项，把整组一起拖到 AI 页。
+  bool _attachMultiSelectMode = false;
+
   @override
   void initState() {
     super.initState();
@@ -140,6 +153,26 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
         },
         icon: Icon(_searchVisible ? Icons.search_off : Icons.search),
       ),
+      if (widget.dragToAttachEnabled)
+        IconButton(
+          tooltip: _attachMultiSelectMode
+              ? '退出多选，已选中的项仍然保留'
+              : '多选：勾选多个后长按任一选中项拖到 AI 页',
+          onPressed: () {
+            setState(() {
+              _attachMultiSelectMode = !_attachMultiSelectMode;
+            });
+            if (!_attachMultiSelectMode) _notifier.clearSelection();
+          },
+          icon: Icon(
+            _attachMultiSelectMode
+                ? Icons.checklist
+                : Icons.checklist_outlined,
+            color: _attachMultiSelectMode
+                ? Theme.of(context).colorScheme.primary
+                : null,
+          ),
+        ),
       PopupMenuButton<String>(
         tooltip: '视图',
         icon: const Icon(Icons.tune),
@@ -458,11 +491,11 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
           final tile = _FileTile(
             entry: entry,
             selected: state.selected.contains(entry.path),
-            selecting: state.isSelecting,
+            selecting: _attachMultiSelectMode || state.isSelecting,
             showPath: state.isSearchMode,
             compact: compact,
             onTap: () {
-              if (state.isSelecting) {
+              if (_attachMultiSelectMode || state.isSelecting) {
                 _notifier.toggleSelect(entry.path);
               } else {
                 _open(entry);
@@ -475,10 +508,17 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
             bytesResolver: (path) => _notifier.readImageBytes(path),
           );
           if (!widget.dragToAttachEnabled) return tile;
+          final multi = state.selected.isNotEmpty &&
+              state.selected.contains(entry.path)
+              ? entries
+                    .where((e) => state.selected.contains(e.path))
+                    .toList(growable: false)
+              : null;
           return _DraggableFileTile(
             data: ShellFileDragData(
               entry: entry,
               scope: state.scope.name,
+              entries: multi != null && multi.length > 1 ? multi : null,
             ),
             child: tile,
           );
@@ -504,9 +544,9 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
           final tile = _FileGridTile(
             entry: entry,
             selected: state.selected.contains(entry.path),
-            selecting: state.isSelecting,
+            selecting: _attachMultiSelectMode || state.isSelecting,
             onTap: () {
-              if (state.isSelecting) {
+              if (_attachMultiSelectMode || state.isSelecting) {
                 _notifier.toggleSelect(entry.path);
               } else {
                 _open(entry);
@@ -517,10 +557,17 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
             bytesResolver: (path) => _notifier.readImageBytes(path),
           );
           if (!widget.dragToAttachEnabled) return tile;
+          final multi = state.selected.isNotEmpty &&
+              state.selected.contains(entry.path)
+              ? entries
+                    .where((e) => state.selected.contains(e.path))
+                    .toList(growable: false)
+              : null;
           return _DraggableFileTile(
             data: ShellFileDragData(
               entry: entry,
               scope: state.scope.name,
+              entries: multi != null && multi.length > 1 ? multi : null,
             ),
             child: tile,
           );
@@ -1276,18 +1323,30 @@ class _DraggableFileTile extends StatelessWidget {
                 color: scheme.primary,
               ),
               const SizedBox(width: 8),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 180),
-                child: Text(
-                  data.entry.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
+              if (data.allEntries.length > 1) ...[
+                Text(
+                  '${data.allEntries.length}',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: scheme.primary,
                   ),
                 ),
-              ),
+                const SizedBox(width: 4),
+                const Text('个', style: TextStyle(fontSize: 12)),
+              ] else
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 180),
+                  child: Text(
+                    data.entry.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
