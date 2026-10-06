@@ -1784,7 +1784,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                                             index,
                                                             () => {},
                                                           )
-                                                    : const {},
+                                                    : null,
                                             selectable:
                                                 _selectableIndex == index,
                                             onResend: state.isLoading
@@ -2708,7 +2708,7 @@ class _MessageBubble extends StatelessWidget {
     this.anchorIndex,
     this.selectable = false,
     this.highlightEventIndex,
-    this.eventRowKeys = const {},
+    this.eventRowKeys,
   });
 
   final AiChatMessage message;
@@ -2718,7 +2718,7 @@ class _MessageBubble extends StatelessWidget {
   final int? highlightEventIndex;
 
   /// 过程行 GlobalKey，审计跳转时用于精准滚动。
-  final Map<int, GlobalKey> eventRowKeys;
+  final Map<int, GlobalKey>? eventRowKeys;
 
   /// 是否开启文本选取。默认关闭，避免长按选取抢占长按菜单。
   final bool selectable;

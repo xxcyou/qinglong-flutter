@@ -33,7 +33,7 @@ class AgentProcessCard extends StatefulWidget {
     this.liveSubagentContentChars = const {},
     this.modeLabels = const [],
     this.highlightEventIndex,
-    this.eventRowKeys = const {},
+    this.eventRowKeys,
   });
 
   final void Function(AiCanvas canvas)? onOpenCanvas;
@@ -48,7 +48,8 @@ class AgentProcessCard extends StatefulWidget {
   final int? highlightEventIndex;
 
   /// 终末事件下标 → GlobalKey，用于审计跳转时精准滚动到该工具行。
-  final Map<int, GlobalKey> eventRowKeys;
+  /// 传 null 时内部自己生成一份，但外部拿不到，所以审计跳转要传可变的 Map。
+  final Map<int, GlobalKey>? eventRowKeys;
 
   /// 子代理实时流：group → 思考/正文尾部、工具名、真实字数。
   final Map<String, String> liveSubagentReasoning;
@@ -65,6 +66,9 @@ class AgentProcessCard extends StatefulWidget {
 }
 
 class _AgentProcessCardState extends State<AgentProcessCard> {
+  /// 未提供外部 rowKey Map 时内部兜底，保证每行都能绑定 key。
+  final Map<int, GlobalKey> _localRowKeys = {};
+
   // 有文件写操作时自动展开执行过程，让用户第一时间看到 Diff；
   // 否则保持调用方给的初始状态（运行时/图片通常也是展开）。
   late bool _expanded = widget.initiallyExpanded ||
@@ -361,6 +365,10 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
         }
       } else {
         final originalIndex = _originalIndexOf(e);
+        final GlobalKey? rowKey = originalIndex < 0
+            ? null
+            : (widget.eventRowKeys ?? _localRowKeys)
+                .putIfAbsent(originalIndex, () => GlobalKey());
         children.add(
           _TimelineRow(
             event: e,
@@ -368,9 +376,7 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
             onOpenCanvas: widget.onOpenCanvas,
             highlighted: widget.highlightEventIndex != null &&
                 originalIndex == widget.highlightEventIndex,
-            rowKey: originalIndex >= 0
-                ? widget.eventRowKeys[originalIndex]
-                : null,
+            rowKey: rowKey,
           ),
         );
       }
