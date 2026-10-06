@@ -20,6 +20,7 @@ import '../models/agent_event.dart';
 import '../models/ai_message.dart';
 import '../models/ai_plan.dart';
 import '../providers/chat_provider.dart';
+import '../models/audit_log.dart';
 import '../providers/audit_provider.dart';
 import '../knowledge/knowledge_provider.dart';
 import '../../../shared/file_kinds.dart';
@@ -1297,6 +1298,41 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     return path.split('/').last;
   }
 
+  /// 审计记录没有直接存消息下标时，用时间就近匹配消息气泡：
+  /// - agent_run 记录带在消息生成之后，取最近一条不晚于它时间的回复；
+  /// - 工具调用记录发生在回复生成之前，取最早不早于它时间的回复。
+  int? _resolveAuditMessageIndex(
+    AuditLog log,
+    List<AiChatMessage> messages,
+  ) {
+    if (log.messageIndex != null) {
+      final idx = log.messageIndex!;
+      return idx >= 0 && idx < messages.length ? idx : null;
+    }
+    if (messages.isEmpty) return null;
+    if (log.action == 'agent_run') {
+      for (var i = messages.length - 1; i >= 0; i--) {
+        final m = messages[i];
+        final t = m.createdAt;
+        if (m.role == 'assistant' && t != null && !t.isAfter(log.time)) {
+          return i;
+        }
+      }
+    } else {
+      for (var i = 0; i < messages.length; i++) {
+        final m = messages[i];
+        final t = m.createdAt;
+        if (m.role == 'assistant' && t != null && !t.isBefore(log.time)) {
+          return i;
+        }
+      }
+    }
+    for (var i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role == 'assistant') return i;
+    }
+    return null;
+  }
+
   void _showAudit() {
     final sessionId = ref.read(chatProvider).currentSessionId;
     ref.read(auditProvider.notifier).load(sessionId);
@@ -1339,7 +1375,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                           padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
                           itemBuilder: (context, index) {
                             final log = logs[index];
-                            final jumpIndex = log.messageIndex;
+                            final jumpIndex = _resolveAuditMessageIndex(
+                              log,
+                              ref.read(chatProvider).messages,
+                            );
                             return Card(
                               child: ListTile(
                                 onTap: jumpIndex == null
