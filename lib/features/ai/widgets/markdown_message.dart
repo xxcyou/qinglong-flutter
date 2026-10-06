@@ -872,15 +872,55 @@ class _FunctionPlotBuilder extends MarkdownElementBuilder {
   }
 }
 
-class _FunctionPlotCard extends StatelessWidget {
+class _FunctionPlotCard extends StatefulWidget {
   const _FunctionPlotCard({required this.source});
 
   final String source;
 
   @override
+  State<_FunctionPlotCard> createState() => _FunctionPlotCardState();
+}
+
+class _FunctionPlotCardState extends State<_FunctionPlotCard>
+    with SingleTickerProviderStateMixin {
+  _ParsePlot? _parsed;
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _parsed = _parsePlot(widget.source);
+    final parsed = _parsed;
+    if (parsed == null) {
+      _controller = AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 1200),
+      );
+      return;
+    }
+    if (parsed.usesT) {
+      _controller = AnimationController(
+        vsync: this,
+        duration: const Duration(seconds: 4),
+      )..repeat();
+    } else {
+      _controller = AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 1400),
+      )..forward();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final parsed = _parsePlot(source);
+    final parsed = _parsed;
     if (parsed == null) {
       return Container(
         width: double.infinity,
@@ -890,7 +930,8 @@ class _FunctionPlotCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(10),
         ),
         child: Text(
-          '函数图格式示例：\n```plot\ny = x^2\nx: -10, 10\n```',
+          '函数图格式示例：\n```plot\ny = x^2\nx: -10, 10\n```\n'
+          '动态函数用 t：\n```plot\ny = sin(x + t)\n```',
           style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
         ),
       );
@@ -921,6 +962,34 @@ class _FunctionPlotCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              if (parsed.usesT)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1D4ED8).withValues(alpha: 0.35),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: const Color(0xFF3B82F6).withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.animation, size: 12, color: Color(0xFF93C5FD)),
+                      SizedBox(width: 4),
+                      Text(
+                        '动态',
+                        style: TextStyle(
+                          color: Color(0xFF93C5FD),
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 8),
@@ -929,18 +998,37 @@ class _FunctionPlotCard extends StatelessWidget {
             child: SizedBox(
               height: 180,
               width: double.infinity,
-              child: CustomPaint(
-                painter: _FunctionPainter(
-                  fn: parsed.fn,
-                  xMin: parsed.xMin,
-                  xMax: parsed.xMax,
-                  gridColor: const Color(0xFF243044),
-                  axisColor: const Color(0xFF6B7A90),
-                  curveColor: const Color(0xFF64B5F6),
-                ),
+              child: AnimatedBuilder(
+                animation: _controller,
+                builder: (context, _) {
+                  final progress = parsed.usesT ? 1.0 : _controller.value;
+                  final t = parsed.usesT
+                      ? _controller.value * 2 * math.pi
+                      : 0.0;
+                  return CustomPaint(
+                    painter: _FunctionPainter(
+                      fn: parsed.fn,
+                      xMin: parsed.xMin,
+                      xMax: parsed.xMax,
+                      t: t,
+                      progress: progress,
+                      gridColor: const Color(0xFF243044),
+                      axisColor: const Color(0xFF6B7A90),
+                      curveColor: const Color(0xFF64B5F6),
+                    ),
+                  );
+                },
               ),
             ),
           ),
+          if (parsed.usesT)
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text(
+                't 为动态参数，自动 0~2π 循环',
+                style: TextStyle(color: Color(0xFF73839A), fontSize: 10),
+              ),
+            ),
         ],
       ),
     );
@@ -971,7 +1059,14 @@ _ParsePlot? _parsePlot(String source) {
   try {
     final fn = _ExprParser(expr).parse();
     if (xMin == null || xMax == null || xMax <= xMin) return null;
-    return _ParsePlot(fn: fn, expr: expr.trim(), xMin: xMin, xMax: xMax);
+    final usesT = RegExp(r'(^|[^a-zA-Z_])t([^a-zA-Z_]|$)').hasMatch(expr);
+    return _ParsePlot(
+      fn: fn,
+      expr: expr.trim(),
+      xMin: xMin,
+      xMax: xMax,
+      usesT: usesT,
+    );
   } catch (_) {
     return null;
   }
@@ -983,29 +1078,37 @@ class _ParsePlot {
     required this.expr,
     required this.xMin,
     required this.xMax,
+    required this.usesT,
   });
 
   final _ExprNode fn;
   final String expr;
   final double xMin;
   final double xMax;
+  final bool usesT;
 }
 
-/// 简易表达式求值：支持 + - * / ^ ( ) 数字、x、pi/e，以及常见函数。
+/// 简易表达式求值：支持 + - * / ^ ( ) 数字、x、t、pi/e，以及常见函数。
+/// `t` 是动态时间变量，函数图会把它当作动画参数（0~2π 循环）。
 abstract class _ExprNode {
-  double eval(double x);
+  double eval(double x, double t);
 }
 
 class _NumberNode implements _ExprNode {
   _NumberNode(this.value);
   final double value;
   @override
-  double eval(double x) => value;
+  double eval(double x, double t) => value;
 }
 
 class _VarNode implements _ExprNode {
   @override
-  double eval(double x) => x;
+  double eval(double x, double t) => x;
+}
+
+class _TVarNode implements _ExprNode {
+  @override
+  double eval(double x, double t) => t;
 }
 
 class _BinaryNode implements _ExprNode {
@@ -1014,9 +1117,9 @@ class _BinaryNode implements _ExprNode {
   final _ExprNode left;
   final _ExprNode right;
   @override
-  double eval(double x) {
-    final l = left.eval(x);
-    final r = right.eval(x);
+  double eval(double x, double t) {
+    final l = left.eval(x, t);
+    final r = right.eval(x, t);
     switch (op) {
       case '+':
         return l + r;
@@ -1041,7 +1144,7 @@ class _NegNode implements _ExprNode {
   _NegNode(this.child);
   final _ExprNode child;
   @override
-  double eval(double x) => -child.eval(x);
+  double eval(double x, double t) => -child.eval(x, t);
 }
 
 class _FuncNode implements _ExprNode {
@@ -1049,8 +1152,8 @@ class _FuncNode implements _ExprNode {
   final String name;
   final _ExprNode arg;
   @override
-  double eval(double x) {
-    final v = arg.eval(x);
+  double eval(double x, double t) {
+    final v = arg.eval(x, t);
     try {
       switch (name) {
         case 'sin':
@@ -1207,6 +1310,7 @@ class _ExprParser {
     if (_id.hasMatch(token)) {
       _pos++;
       if (token == 'x') return _VarNode();
+      if (token == 't') return _TVarNode();
       if ((token == 'pi')) return _NumberNode(3.141592653589793);
       if (token == 'e') return _NumberNode(2.718281828459045);
       if (_functions.contains(token)) {
@@ -1232,6 +1336,8 @@ class _FunctionPainter extends CustomPainter {
     required this.fn,
     required this.xMin,
     required this.xMax,
+    this.t = 0,
+    this.progress = 1,
     required this.gridColor,
     required this.axisColor,
     required this.curveColor,
@@ -1240,6 +1346,8 @@ class _FunctionPainter extends CustomPainter {
   final _ExprNode fn;
   final double xMin;
   final double xMax;
+  final double t;
+  final double progress;
   final Color gridColor;
   final Color axisColor;
   final Color curveColor;
@@ -1255,7 +1363,7 @@ class _FunctionPainter extends CustomPainter {
     final ys = <double>[];
     final step = (xMax - xMin) / sampleCount;
     for (var i = 0; i <= sampleCount; i++) {
-      final v = fn.eval(xMin + step * i);
+      final v = fn.eval(xMin + step * i, t);
       if (v.isFinite && v.abs() < 1e9) ys.add(v);
     }
     if (ys.isEmpty) {
@@ -1308,7 +1416,7 @@ class _FunctionPainter extends CustomPainter {
       canvas.drawLine(Offset(x0px, pad), Offset(x0px, size.height - pad), axisPaint);
     }
 
-    // 函数曲线
+    // 函数曲线（progress 控制静态图的绘制动画）
     final curve = Paint()
       ..color = curveColor
       ..style = PaintingStyle.stroke
@@ -1317,9 +1425,10 @@ class _FunctionPainter extends CustomPainter {
     final path = Path();
     var started = false;
     var lastFinite = false;
-    for (var i = 0; i <= sampleCount; i++) {
+    final drawLimit = (sampleCount * progress).round();
+    for (var i = 0; i <= drawLimit; i++) {
       final x = xMin + step * i;
-      final y = fn.eval(x);
+      final y = fn.eval(x, t);
       final ok = y.isFinite && y.abs() < 1e9;
       if (!ok) {
         lastFinite = false;
@@ -1351,6 +1460,8 @@ class _FunctionPainter extends CustomPainter {
       oldDelegate.fn != fn ||
       oldDelegate.xMin != xMin ||
       oldDelegate.xMax != xMax ||
+      oldDelegate.t != t ||
+      oldDelegate.progress != progress ||
       oldDelegate.curveColor != curveColor;
 }
 
