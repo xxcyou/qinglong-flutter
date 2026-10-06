@@ -374,15 +374,30 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   }
 
   /// 审计跳转工具行：对消息内过程卡的具体行做精确滚动。
-  void _ensureAuditEventVisible(int messageIndex, int eventIndex) {
+  Future<void> _ensureAuditEventVisible(
+    int messageIndex,
+    int eventIndex, {
+    int attempt = 0,
+  }) async {
     final key = _auditProcessRowKeys[messageIndex]?[eventIndex];
     final ctx = key?.currentContext;
-    if (ctx == null) return;
-    Scrollable.ensureVisible(
-      ctx,
-      duration: const Duration(milliseconds: 280),
-      curve: Curves.easeOut,
-      alignment: 0.35,
+    if (ctx != null) {
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeOut,
+        alignment: 0.35,
+      );
+      return;
+    }
+    // ListView 是懒加载的，目标消息离得远时可能还没构建出来；重试几帧。
+    if (attempt >= 6) return;
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    if (!mounted) return;
+    await _ensureAuditEventVisible(
+      messageIndex,
+      eventIndex,
+      attempt: attempt + 1,
     );
   }
 
@@ -398,13 +413,31 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     if (log.eventIndex != null &&
         log.eventIndex! >= 0 &&
         log.eventIndex! < events.length) {
-      return log.eventIndex;
+      final idx = log.eventIndex!;
+      final e = events[idx];
+      // 时间线会隐藏已有结果的 toolStart，只画 toolEnd；指到 toolStart 时
+      // 自动改指向同工具的 toolEnd，保证那块真的在时间线上。
+      if (e.kind == AgentEventKind.toolStart) {
+        for (var j = idx + 1; j < events.length; j++) {
+          if (events[j].kind == AgentEventKind.toolEnd &&
+              events[j].toolName == e.toolName) {
+            return j;
+          }
+        }
+      }
+      return idx;
     }
     final tool = log.action;
     if (tool.isEmpty) return null;
+    // 优先找 toolEnd：这是时间线上实际保留的行；找不到再退回 toolStart。
+    for (var i = events.length - 1; i >= 0; i--) {
+      if (events[i].kind == AgentEventKind.toolEnd &&
+          events[i].toolName == tool) {
+        return i;
+      }
+    }
     for (var i = 0; i < events.length; i++) {
-      final e = events[i];
-      if (e.toolName == tool) return i;
+      if (events[i].toolName == tool) return i;
     }
     return null;
   }
