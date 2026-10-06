@@ -953,7 +953,9 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  parsed.expr,
+                  parsed.series.length > 1
+                      ? '${parsed.series.length} 条函数'
+                      : parsed.series.first.expr,
                   style: const TextStyle(
                     color: Color(0xFFE6EDF7),
                     fontSize: 13,
@@ -992,6 +994,38 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                 ),
             ],
           ),
+          if (parsed.series.length > 1) ...[
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 10,
+              runSpacing: 4,
+              children: [
+                for (final s in parsed.series)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: s.color,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        s.label,
+                        style: const TextStyle(
+                          color: Color(0xFFB6C2D4),
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+          ],
           const SizedBox(height: 8),
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
@@ -1007,14 +1041,13 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                       : 0.0;
                   return CustomPaint(
                     painter: _FunctionPainter(
-                      fn: parsed.fn,
+                      series: parsed.series,
                       xMin: parsed.xMin,
                       xMax: parsed.xMax,
                       t: t,
                       progress: progress,
                       gridColor: const Color(0xFF243044),
                       axisColor: const Color(0xFF6B7A90),
-                      curveColor: const Color(0xFF64B5F6),
                     ),
                   );
                 },
@@ -1042,50 +1075,98 @@ _ParsePlot? _parsePlot(String source) {
       .where((e) => e.isNotEmpty && !e.startsWith('#'))
       .toList();
   if (lines.isEmpty) return null;
-  final exprLine = lines.first;
-  final expr = exprLine.contains('=') ? exprLine.split('=').sublist(1).join('=') : exprLine;
   double? xMin = -10, xMax = 10;
-  for (final line in lines.skip(1)) {
-    final m = RegExp(r'^\s*x\s*[:：]\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$').firstMatch(line);
-    if (m != null) {
-      final a = double.tryParse(m.group(1)!);
-      final b = double.tryParse(m.group(2)!);
-      if (a != null && b != null) {
-        xMin = a;
-        xMax = b;
+  final exprLines = <String>[];
+  for (final line in lines) {
+    if (RegExp(r'^x\s*[:：]\s*').hasMatch(line)) {
+      final m = RegExp(r'^x\s*[:：]\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$').firstMatch(line);
+      if (m != null) {
+        final a = double.tryParse(m.group(1)!);
+        final b = double.tryParse(m.group(2)!);
+        if (a != null && b != null) {
+          xMin = a;
+          xMax = b;
+        }
       }
+    } else {
+      exprLines.add(line);
     }
   }
+  if (exprLines.isEmpty || xMin == null || xMax == null || xMax <= xMin) {
+    return null;
+  }
+  const colors = [
+    Color(0xFF64B5F6),
+    Color(0xFFF48FB1),
+    Color(0xFF81C784),
+    Color(0xFFFFD54F),
+    Color(0xFFBA68C8),
+    Color(0xFF4DD0E1),
+    Color(0xFFFF8A65),
+    Color(0xFF9CCC65),
+  ];
   try {
-    final fn = _ExprParser(expr).parse();
-    if (xMin == null || xMax == null || xMax <= xMin) return null;
-    final usesT = RegExp(r'(^|[^a-zA-Z_])t([^a-zA-Z_]|$)').hasMatch(expr);
+    final series = <_FunctionSeries>[];
+    for (var i = 0; i < exprLines.length; i++) {
+      final raw = exprLines[i];
+      var label = '';
+      var expr = raw;
+      if (raw.contains('=')) {
+        final idx = raw.indexOf('=');
+        label = raw.substring(0, idx).trim();
+        expr = raw.substring(idx + 1).trim();
+      }
+      if (expr.isEmpty) continue;
+      final fn = _ExprParser(expr).parse();
+      final usesT = RegExp(r'(^|[^a-zA-Z_])t([^a-zA-Z_]|$)').hasMatch(expr);
+      series.add(_FunctionSeries(
+        label: label.isEmpty ? (series.length == 0 ? 'y' : 'y${series.length + 1}') : label,
+        expr: expr,
+        fn: fn,
+        usesT: usesT,
+        color: colors[series.length % colors.length],
+      ));
+    }
+    if (series.isEmpty) return null;
     return _ParsePlot(
-      fn: fn,
-      expr: expr.trim(),
+      series: series,
       xMin: xMin,
       xMax: xMax,
-      usesT: usesT,
     );
   } catch (_) {
     return null;
   }
 }
 
-class _ParsePlot {
-  const _ParsePlot({
-    required this.fn,
+class _FunctionSeries {
+  const _FunctionSeries({
+    required this.label,
     required this.expr,
-    required this.xMin,
-    required this.xMax,
+    required this.fn,
     required this.usesT,
+    required this.color,
   });
 
-  final _ExprNode fn;
+  final String label;
   final String expr;
+  final _ExprNode fn;
+  final bool usesT;
+  final Color color;
+}
+
+class _ParsePlot {
+  const _ParsePlot({
+    required this.series,
+    required this.xMin,
+    required this.xMax,
+  });
+
+  final List<_FunctionSeries> series;
+
+  bool get usesT => series.any((s) => s.usesT);
+
   final double xMin;
   final double xMax;
-  final bool usesT;
 }
 
 /// 简易表达式求值：支持 + - * / ^ ( ) 数字、x、t、pi/e，以及常见函数。
@@ -1333,24 +1414,22 @@ class _ExprParser {
 
 class _FunctionPainter extends CustomPainter {
   _FunctionPainter({
-    required this.fn,
+    required this.series,
     required this.xMin,
     required this.xMax,
     this.t = 0,
     this.progress = 1,
     required this.gridColor,
     required this.axisColor,
-    required this.curveColor,
   });
 
-  final _ExprNode fn;
+  final List<_FunctionSeries> series;
   final double xMin;
   final double xMax;
   final double t;
   final double progress;
   final Color gridColor;
   final Color axisColor;
-  final Color curveColor;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1358,13 +1437,16 @@ class _FunctionPainter extends CustomPainter {
     final bg = Paint()..color = const Color(0xFF0B1220);
     canvas.drawRect(rect, bg);
 
-    // 动态 y 范围：采样前 256 个点求中位数区间，避免被无穷大带飞。
+    // 动态 y 范围：所有函数一起采样，避免被无穷大带飞。
     const sampleCount = 512;
     final ys = <double>[];
     final step = (xMax - xMin) / sampleCount;
     for (var i = 0; i <= sampleCount; i++) {
-      final v = fn.eval(xMin + step * i, t);
-      if (v.isFinite && v.abs() < 1e9) ys.add(v);
+      final x = xMin + step * i;
+      for (final s in series) {
+        final v = s.fn.eval(x, t);
+        if (v.isFinite && v.abs() < 1e9) ys.add(v);
+      }
     }
     if (ys.isEmpty) {
       final noData = Paint()
@@ -1416,33 +1498,35 @@ class _FunctionPainter extends CustomPainter {
       canvas.drawLine(Offset(x0px, pad), Offset(x0px, size.height - pad), axisPaint);
     }
 
-    // 函数曲线（progress 控制静态图的绘制动画）
-    final curve = Paint()
-      ..color = curveColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2
-      ..strokeCap = StrokeCap.round;
-    final path = Path();
-    var started = false;
-    var lastFinite = false;
+    // 绘制所有函数曲线（progress 控制静态图的绘制动画）
     final drawLimit = (sampleCount * progress).round();
-    for (var i = 0; i <= drawLimit; i++) {
-      final x = xMin + step * i;
-      final y = fn.eval(x, t);
-      final ok = y.isFinite && y.abs() < 1e9;
-      if (!ok) {
-        lastFinite = false;
-        continue;
+    for (final s in series) {
+      final curve = Paint()
+        ..color = s.color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round;
+      final path = Path();
+      var started = false;
+      var lastFinite = false;
+      for (var i = 0; i <= drawLimit; i++) {
+        final x = xMin + step * i;
+        final y = s.fn.eval(x, t);
+        final ok = y.isFinite && y.abs() < 1e9;
+        if (!ok) {
+          lastFinite = false;
+          continue;
+        }
+        if (!lastFinite || i == 0) {
+          path.moveTo(tx(x), ty(y.clamp(yMin, yMax)));
+          started = true;
+        } else {
+          path.lineTo(tx(x), ty(y.clamp(yMin, yMax)));
+        }
+        lastFinite = true;
       }
-      if (!lastFinite || i == 0) {
-        path.moveTo(tx(x), ty(y.clamp(yMin, yMax)));
-        started = true;
-      } else {
-        path.lineTo(tx(x), ty(y.clamp(yMin, yMax)));
-      }
-      lastFinite = true;
+      if (started) canvas.drawPath(path, curve);
     }
-    if (started) canvas.drawPath(path, curve);
 
     // 标签
     final labelPainter = TextPainter(
@@ -1457,12 +1541,12 @@ class _FunctionPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _FunctionPainter oldDelegate) =>
-      oldDelegate.fn != fn ||
+      oldDelegate.series != series ||
       oldDelegate.xMin != xMin ||
       oldDelegate.xMax != xMax ||
       oldDelegate.t != t ||
       oldDelegate.progress != progress ||
-      oldDelegate.curveColor != curveColor;
+      oldDelegate.axisColor != axisColor;
 }
 
 class _MarkdownImage extends StatefulWidget {
