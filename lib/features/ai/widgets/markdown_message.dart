@@ -893,6 +893,7 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
     with SingleTickerProviderStateMixin {
   _ParsePlot? _parsed;
   late final AnimationController _controller;
+  final TransformationController _transform = TransformationController();
 
   @override
   void initState() {
@@ -922,6 +923,7 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
   @override
   void dispose() {
     _controller.dispose();
+    _transform.dispose();
     super.dispose();
   }
 
@@ -977,6 +979,15 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
+              ),
+              IconButton(
+                onPressed: () => _transform.value = Matrix4.identity(),
+                icon: const Icon(Icons.center_focus_weak, size: 15),
+                color: const Color(0xFF73839A),
+                padding: EdgeInsets.zero,
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                tooltip: '重置缩放',
               ),
               if (parsed.usesT)
                 Container(
@@ -1101,31 +1112,46 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                   final t = parsed.usesT
                       ? _controller.value * 2 * math.pi
                       : 0.0;
-                  return CustomPaint(
-                    painter: _FunctionPainter(
-                      series: parsed.series,
-                      xMin: parsed.xMin,
-                      xMax: parsed.xMax,
-                      t: t,
-                      progress: progress,
-                      connect: parsed.connect,
-                      pair: parsed.pair,
-                      parametric: parsed.parametric,
-                      paramX: parsed.paramX,
-                      paramY: parsed.paramY,
-                      tMin: parsed.tMin,
-                      tMax: parsed.tMax,
-                      gridColor: const Color(0xFF243044),
-                      axisColor: const Color(0xFF6B7A90),
+                  return InteractiveViewer(
+                    transformationController: _transform,
+                    minScale: 0.6,
+                    maxScale: 8,
+                    boundaryMargin: const EdgeInsets.all(80),
+                    clipBehavior: Clip.hardEdge,
+                    child: CustomPaint(
+                      painter: _FunctionPainter(
+                        series: parsed.series,
+                        xMin: parsed.xMin,
+                        xMax: parsed.xMax,
+                        t: t,
+                        progress: progress,
+                        connect: parsed.connect,
+                        pair: parsed.pair,
+                        parametric: parsed.parametric,
+                        paramX: parsed.paramX,
+                        paramY: parsed.paramY,
+                        tMin: parsed.tMin,
+                        tMax: parsed.tMax,
+                        gridColor: const Color(0xFF243044),
+                        axisColor: const Color(0xFF6B7A90),
+                      ),
+                      child: const SizedBox.expand(),
                     ),
                   );
                 },
               ),
             ),
           ),
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: Text(
+              '双指缩放 · 拖动平移 · 右上角重置',
+              style: TextStyle(color: Color(0xFF73839A), fontSize: 10),
+            ),
+          ),
           if (parsed.usesT)
             const Padding(
-              padding: EdgeInsets.only(top: 6),
+              padding: EdgeInsets.only(top: 2),
               child: Text(
                 't 为动态参数，自动 0~2π 循环',
                 style: TextStyle(color: Color(0xFF73839A), fontSize: 10),
@@ -1773,15 +1799,23 @@ class _FunctionPainter extends CustomPainter {
         return;
       }
       ys.sort();
-      final y0 = ys[ys.length ~/ 20];
-      final y1 = ys[ys.length * 19 ~/ 20];
-      axisYMin = y0;
-      axisYMax = y1;
+      if (dynamicMode) {
+        // 动态图用完整包络，保证跳动到最大/最小时也不被裁掉
+        axisYMin = ys.first;
+        axisYMax = ys.last;
+      } else {
+        axisYMin = ys[ys.length ~/ 20];
+        axisYMax = ys[ys.length * 19 ~/ 20];
+      }
       if ((axisYMax - axisYMin).abs() < 0.5) {
         final c = (axisYMax + axisYMin) / 2;
         axisYMin = c - 1;
         axisYMax = c + 1;
       }
+      // 上下留一点边距，曲线不会贴着边
+      final ySpan = axisYMax - axisYMin;
+      axisYMin -= ySpan * 0.08;
+      axisYMax += ySpan * 0.08;
     }
 
     double tx(double x) =>
@@ -1814,6 +1848,11 @@ class _FunctionPainter extends CustomPainter {
       canvas.drawLine(Offset(x0px, pad), Offset(x0px, size.height - pad), axisPaint);
     }
 
+    // 曲线裁剪在绘图区内，越界部分直接裁掉而不是压成平线
+    canvas.save();
+    canvas.clipRect(
+      Rect.fromLTWH(pad, pad, size.width - pad * 2, size.height - pad * 2),
+    );
     if (parametric) {
       final curve = Paint()
         ..color = const Color(0xFF64B5F6)
@@ -1863,7 +1902,7 @@ class _FunctionPainter extends CustomPainter {
               continue;
             }
             final px = tx(x);
-            final py = ty(y.clamp(axisYMin, axisYMax));
+            final py = ty(y);
             if (!started) {
               path.moveTo(px, py);
               started = true;
@@ -1883,7 +1922,7 @@ class _FunctionPainter extends CustomPainter {
               continue;
             }
             final px = tx(x);
-            final py = ty(y.clamp(axisYMin, axisYMax));
+            final py = ty(y);
             if (!started) {
               path.moveTo(px, py);
               started = true;
@@ -1923,7 +1962,7 @@ class _FunctionPainter extends CustomPainter {
               continue;
             }
             final px = tx(x);
-            final py = ty(y.clamp(axisYMin, axisYMax));
+            final py = ty(y);
             if (!started || !lastFinite) {
               path.moveTo(px, py);
               started = true;
@@ -1953,10 +1992,10 @@ class _FunctionPainter extends CustomPainter {
               continue;
             }
             if (!lastFinite || i == 0) {
-              path.moveTo(tx(x), ty(y.clamp(axisYMin, axisYMax)));
+              path.moveTo(tx(x), ty(y));
               started = true;
             } else {
-              path.lineTo(tx(x), ty(y.clamp(axisYMin, axisYMax)));
+              path.lineTo(tx(x), ty(y));
             }
             lastFinite = true;
           }
@@ -1964,6 +2003,8 @@ class _FunctionPainter extends CustomPainter {
         }
       }
     }
+
+    canvas.restore();
 
     final labelPainter = TextPainter(
       text: TextSpan(
