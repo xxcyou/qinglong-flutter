@@ -1305,6 +1305,9 @@ class _DraggableFileTile extends StatelessWidget {
     return LongPressDraggable<ShellFileDragData>(
       data: data,
       dragAnchorStrategy: pointerDragAnchorStrategy,
+      onDragStarted: () => HapticFeedback.mediumImpact(),
+      onDragCompleted: () => HapticFeedback.selectionClick(),
+      onDraggableCanceled: (_, __) => HapticFeedback.selectionClick(),
       feedback: Material(
         color: Colors.transparent,
         child: GlassPanel(
