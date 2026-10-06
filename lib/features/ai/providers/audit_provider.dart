@@ -52,10 +52,11 @@ class AuditNotifier extends Notifier<AuditState> {
     await _clearLegacyPrefsOnce();
     if (state.logs.isNotEmpty && _loadedSessionId == sessionId) return;
     _loadedSessionId = sessionId;
+    // 切会话时先立刻清掉旧审计，避免异步读文件期间显示上一个会话的记录。
+    state = const AuditState();
     try {
       final file = await _file(sessionId);
       if (!await file.exists()) {
-        state = const AuditState();
         return;
       }
       final raw = await file.readAsString();

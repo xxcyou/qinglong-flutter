@@ -116,8 +116,8 @@ class _AnimatedCountText extends StatelessWidget {
   Widget build(BuildContext context) {
     return TweenAnimationBuilder<double>(
       tween: Tween<double>(end: value.toDouble()),
-      duration: const Duration(milliseconds: 420),
-      curve: Curves.easeOutCubic,
+      duration: const Duration(milliseconds: 950),
+      curve: Curves.easeOutBack,
       builder: (context, animated, _) => Text(
         format(animated.round()),
         style: style,
