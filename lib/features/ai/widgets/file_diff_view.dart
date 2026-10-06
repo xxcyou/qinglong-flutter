@@ -928,7 +928,7 @@ static const Set<String> _shellCommands = {
       }
       if (out.isNotEmpty) {
         lines.add(_DiffLine.context('（运行输出）'));
-        lines.addAll(_split(out).map((l) => _DiffLine.context(l)));
+        lines.addAll(_split(out).map((l) => _DiffLine.command(l)));
       }
       if (lines.isEmpty) return const [];
       return lines;
@@ -961,7 +961,7 @@ static const Set<String> _shellCommands = {
       ],
       if (out.isNotEmpty) ...[
         if (cmd.trim().isNotEmpty) _DiffLine.context('（命令输出）'),
-        for (final line in _split(out)) _DiffLine.context(line),
+        for (final line in _split(out)) _DiffLine.command(line),
       ],
     ];
     return lines;
