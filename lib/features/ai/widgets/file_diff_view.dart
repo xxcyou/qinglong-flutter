@@ -919,20 +919,19 @@ static const Set<String> _shellCommands = {
   List<_DiffLine> _shellFallbackLines() {
     if (toolName == 'shell_script') {
       final code = args['code']?.toString() ?? '';
-      if (code.trim().isNotEmpty) {
-        return [
-          _DiffLine.context('（脚本源码）'),
-          for (final line in _split(code)) _DiffLine.add(line),
-        ];
-      }
       final out = result?.trim() ?? '';
-      if (out.isNotEmpty) {
-        return [
-          _DiffLine.context('（命令输出）'),
-          for (final line in _split(out)) _DiffLine.context(line),
-        ];
+      final lines = <_DiffLine>[];
+      if (code.trim().isNotEmpty) {
+        lines.add(_DiffLine.context('（脚本源码）'));
+        lines.addAll(_split(code).map((l) => _DiffLine.add(l)));
+        if (out.isNotEmpty) lines.add(_DiffLine.context(''));
       }
-      return const [];
+      if (out.isNotEmpty) {
+        lines.add(_DiffLine.context('（运行输出）'));
+        lines.addAll(_split(out).map((l) => _DiffLine.context(l)));
+      }
+      if (lines.isEmpty) return const [];
+      return lines;
     }
 
     final cmd = args['command']?.toString() ?? '';
