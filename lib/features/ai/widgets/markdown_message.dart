@@ -49,6 +49,7 @@ class MarkdownMessage extends StatelessWidget {
           color: textColor,
           height: 1.45,
         );
+    final codeBlockBuilder = _CodeBlockBuilder();
     return MarkdownBody(
       data: text,
       selectable: selectable,
@@ -59,8 +60,8 @@ class MarkdownMessage extends StatelessWidget {
         'mark': _GlowBuilder(),
         'span': _ColorSpanBuilder(),
         'highlight': _HighlightBuilder(),
-        'pre': _CodeBlockBuilder(),
-        'code': _CodeBlockBuilder(),
+        'pre': codeBlockBuilder,
+        'code': codeBlockBuilder,
         'functionPlot': _FunctionPlotBuilder(),
       },
       imageBuilder: (uri, title, alt) => _MarkdownImage(uri: uri, alt: alt),
