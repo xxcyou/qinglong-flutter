@@ -1872,7 +1872,11 @@ class _FunctionPainter extends CustomPainter {
               path.lineTo(px, py);
             }
           }
-          if (started) canvas.drawPath(path, curve);
+          // 显式闭合左侧，避免出现“右边合上、左边留空”
+          if (started) {
+            path.close();
+            canvas.drawPath(path, curve);
+          }
         }
       } else if (connect) {
         final curve = Paint()
