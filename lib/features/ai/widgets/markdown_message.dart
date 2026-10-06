@@ -1733,12 +1733,31 @@ class _FunctionPainter extends CustomPainter {
       axisXMin = xMin;
       axisXMax = xMax;
       final ys = <double>[];
-      final step = (xMax - xMin) / sampleCount;
-      for (var i = 0; i <= sampleCount; i++) {
-        final x = xMin + step * i;
-        for (final s in series) {
-          final v = s.fn.eval(x, t);
-          if (v.isFinite && v.abs() < 1e9) ys.add(v);
+      final dynamicMode = series.any((s) => s.usesT);
+      if (dynamicMode) {
+        // 动态模式下用整个 0~2π 的包络算固定 y 轴范围，
+        // 避免坐标轴跟着曲线缩放导致“外层看起来不动”。
+        const rangeSampleCount = 256;
+        const tSteps = 16;
+        final rangeStep = (xMax - xMin) / rangeSampleCount;
+        for (var ti = 0; ti <= tSteps; ti++) {
+          final tt = 2 * math.pi * ti / tSteps;
+          for (var i = 0; i <= rangeSampleCount; i++) {
+            final x = xMin + rangeStep * i;
+            for (final s in series) {
+              final v = s.fn.eval(x, tt);
+              if (v.isFinite && v.abs() < 1e9) ys.add(v);
+            }
+          }
+        }
+      } else {
+        final step = (xMax - xMin) / sampleCount;
+        for (var i = 0; i <= sampleCount; i++) {
+          final x = xMin + step * i;
+          for (final s in series) {
+            final v = s.fn.eval(x, t);
+            if (v.isFinite && v.abs() < 1e9) ys.add(v);
+          }
         }
       }
       if (ys.isEmpty) {
