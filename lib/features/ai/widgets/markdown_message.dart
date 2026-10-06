@@ -384,21 +384,42 @@ class _CodeBlock extends StatefulWidget {
 class _CodeBlockState extends State<_CodeBlock> {
   bool _copied = false;
   Object? _json;
+  String? _formatKind;
   bool _formatted = false;
   bool _treeMode = false;
 
   @override
   void initState() {
     super.initState();
+    final trimmed = widget.code.trim();
     try {
-      _json = jsonDecode(widget.code.trim());
-      _formatted = _json != null;
+      _json = jsonDecode(trimmed);
+      _formatKind = 'json';
+      _formatted = true;
+      return;
     } catch (_) {}
+    final lang = (widget.language ?? '').toLowerCase();
+    if (lang == 'html' || lang == 'xml' || lang == 'svg' ||
+        (trimmed.startsWith('<') && trimmed.contains('>'))) {
+      _formatKind = 'html';
+    } else if (lang == 'css' ||
+        (lang.isEmpty && trimmed.contains('{') && trimmed.contains(';'))) {
+      _formatKind = 'css';
+    }
   }
 
   String get _displayCode {
-    if (_json != null && _formatted) {
-      return const JsonEncoder.withIndent('  ').convert(_json);
+    if (!_formatted) return widget.code;
+    switch (_formatKind) {
+      case 'json':
+        if (_json != null) {
+          return const JsonEncoder.withIndent('  ').convert(_json);
+        }
+        break;
+      case 'html':
+        return _formatHtml(widget.code);
+      case 'css':
+        return _formatCss(widget.code);
     }
     return widget.code;
   }
@@ -413,26 +434,79 @@ class _CodeBlockState extends State<_CodeBlock> {
   }
 
   void _toggleFormat() {
-    if (_json == null) {
-      ScaffoldMessenger.of(context)
-        ..removeCurrentSnackBar()
-        ..showSnackBar(
-          const SnackBar(
-            content: Text('仅 JSON 支持格式化'),
-            duration: Duration(seconds: 1),
-          ),
-        );
-      return;
-    }
+    if (_formatKind == null) return;
     setState(() {
       _formatted = !_formatted;
-      _treeMode = false;
+      if (_formatKind == 'json') _treeMode = false;
     });
   }
 
   void _toggleTree() {
     if (_json == null) return;
     setState(() => _treeMode = !_treeMode);
+  }
+
+  String _formatHtml(String source) {
+    final buffer = StringBuffer();
+    var indent = 0;
+    final tagReg = RegExp(r'(<[^>]+>)|([^<]+)');
+    const voidTags = {
+      'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+      'link', 'meta', 'param', 'source', 'track', 'wbr',
+    };
+    for (final m in tagReg.allMatches(source)) {
+      final tag = m.group(1);
+      if (tag != null) {
+        final isClosing = tag.startsWith('</');
+        final isSelfClose = tag.endsWith('/>');
+        final tagName = RegExp(r'<[/]?([a-zA-Z0-9-]+)').firstMatch(tag)?.group(1) ?? '';
+        if (isClosing) {
+          indent = indent > 0 ? indent - 1 : 0;
+          buffer.writeln('${'  ' * indent}$tag');
+        } else if (isSelfClose || voidTags.contains(tagName.toLowerCase())) {
+          buffer.writeln('${'  ' * indent}$tag');
+        } else {
+          buffer.writeln('${'  ' * indent}$tag');
+          indent++;
+        }
+      } else {
+        final text = (m.group(2) ?? '').trim();
+        if (text.isNotEmpty) buffer.writeln('${'  ' * indent}$text');
+      }
+    }
+    var result = buffer.toString().trimRight();
+    return result.isEmpty ? source : result;
+  }
+
+  String _formatCss(String source) {
+    final buffer = StringBuffer();
+    var indent = 0;
+    for (var i = 0; i < source.length; i++) {
+      final c = source[i];
+      if (c == '{') {
+        final current = buffer.toString().trimRight();
+        buffer.clear();
+        buffer
+          ..write('$current {\n')
+          ..write('  ' * indent);
+        indent++;
+        buffer.write('  ' * indent);
+      } else if (c == '}') {
+        buffer
+          ..write('\n')
+          ..write('  ' * (indent > 0 ? indent - 1 : 0))
+          ..write('}');
+        indent = indent > 0 ? indent - 1 : 0;
+      } else if (c == ';') {
+        buffer
+          ..write(';\n')
+          ..write('  ' * indent);
+      } else {
+        buffer.write(c);
+      }
+    }
+    var result = buffer.toString().trimRight();
+    return result.isEmpty ? source : result;
   }
 
   Widget _actionButton({
@@ -503,25 +577,20 @@ class _CodeBlockState extends State<_CodeBlock> {
                 ),
               ),
               const Spacer(),
-              if (_json == null)
-                _actionButton(
-                  icon: Icons.format_align_left,
-                  label: '格式化',
-                  onTap: _toggleFormat,
-                )
-              else ...[
+              if (_formatKind != null) ...[
                 _actionButton(
                   icon: _formatted ? Icons.undo : Icons.format_align_left,
                   label: _formatted ? '原文' : '格式化',
                   onTap: _toggleFormat,
                   active: _formatted,
                 ),
-                _actionButton(
-                  icon: _treeMode ? Icons.article_outlined : Icons.account_tree_outlined,
-                  label: _treeMode ? '文本' : '树',
-                  onTap: _toggleTree,
-                  active: _treeMode,
-                ),
+                if (_formatKind == 'json')
+                  _actionButton(
+                    icon: _treeMode ? Icons.article_outlined : Icons.account_tree_outlined,
+                    label: _treeMode ? '文本' : '树',
+                    onTap: _toggleTree,
+                    active: _treeMode,
+                  ),
               ],
               Material(
                 color: Colors.transparent,
@@ -618,6 +687,7 @@ class _JsonTreeNode extends StatefulWidget {
 
 class _JsonTreeNodeState extends State<_JsonTreeNode> {
   late bool _expanded = widget.initiallyExpanded;
+  bool _valueExpanded = false;
 
   bool get _isMap => widget.value is Map;
   bool get _isList => widget.value is List;
@@ -647,10 +717,15 @@ class _JsonTreeNodeState extends State<_JsonTreeNode> {
     return result;
   }
 
-  TextSpan _valueSpan(Object? value) {
+  TextSpan _valueSpan(Object? value, {bool expanded = false}) {
     if (value is String) {
+      const maxLength = 80;
+      final text = value;
+      final shown = expanded || text.length <= maxLength
+          ? text
+          : '${text.substring(0, maxLength)}…';
       return TextSpan(
-        text: '"$value"',
+        text: '"$shown"',
         style: const TextStyle(color: Color(0xFF98C379)),
       );
     }
@@ -683,20 +758,37 @@ class _JsonTreeNodeState extends State<_JsonTreeNode> {
     const keyStyle = TextStyle(color: Color(0xFF8AB4FF));
     final indent = widget.depth * 16.0;
     if (!_isContainer) {
-      return Padding(
-        padding: EdgeInsets.only(left: indent, right: 12, top: 2, bottom: 2),
-        child: Text.rich(
-          TextSpan(
+      final bool isLongString = widget.value is String && (widget.value as String).length > 80;
+      return InkWell(
+        onTap: isLongString ? () => setState(() => _valueExpanded = !_valueExpanded) : null,
+        child: Padding(
+          padding: EdgeInsets.only(left: indent, right: 12, top: 2, bottom: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              if (widget.keyName != null) TextSpan(text: '${widget.keyName}: ', style: keyStyle),
-              _valueSpan(widget.value),
+              if (isLongString)
+                Icon(
+                  _valueExpanded ? Icons.arrow_drop_down : Icons.arrow_right,
+                  size: 16,
+                  color: const Color(0xFF98C379),
+                ),
+              Flexible(
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      if (widget.keyName != null) TextSpan(text: '${widget.keyName}: ', style: keyStyle),
+                      _valueSpan(widget.value, expanded: _valueExpanded),
+                    ],
+                  ),
+                  style: const TextStyle(
+                    fontFamily: kMonoFamily,
+                    fontFamilyFallback: kMonoFallback,
+                    fontSize: 12.5,
+                    height: 1.4,
+                  ),
+                ),
+              ),
             ],
-          ),
-          style: const TextStyle(
-            fontFamily: kMonoFamily,
-            fontFamilyFallback: kMonoFallback,
-            fontSize: 12.5,
-            height: 1.4,
           ),
         ),
       );
