@@ -298,6 +298,7 @@ class AgentLoop {
     this.inbox,
     this.onInboxMessage,
     this.subagentSink,
+    this.defaultToolTimeout = const Duration(seconds: 75),
   });
 
   final LlmConfig config;
@@ -327,6 +328,10 @@ class AgentLoop {
 
   /// 运行期注入的扩展工具（MCP / 技能）。与内置工具同等参与确认策略。
   final List<ExternalTool> externalTools;
+
+  /// 工具看门狗默认超时。AI 参数里带 timeoutSeconds 时优先用参数值；
+  /// 这里只当“没传”时的兜底，由全局设置注入。
+  final Duration defaultToolTimeout;
 
   /// 确认策略：严格 / 仅危险 / 全部放行。
   final AiApprovalMode approvalMode;
@@ -365,8 +370,6 @@ class AgentLoop {
   /// 整个 Agent 就停在那儿——界面上是一个转不完的圈，用户等半天没有任何进度，
   /// 只能自己点停止。工具那层各有各的超时（甚至没有），这里再兜一层统一的死线：
   /// 到点就把这一次调用判成失败，把"超时了"当成工具结果交给模型，让它换路走。
-  static const _toolTimeout = Duration(seconds: 75);
-
   /// 天生慢的工具给更长的死线：跑脚本、执行命令、开网页、装依赖本来就慢，
   /// 用 75 秒去卡它们只会把正常任务打断。
   static const _slowToolTimeout = Duration(seconds: 300);
@@ -377,7 +380,7 @@ class AgentLoop {
   /// “长时间零进展”来判断。这里只给一个很大的兜底，防程序错误导致永久挂死。
   static const _subagentWaitTimeout = Duration(days: 1);
 
-  static Duration _timeoutFor(String name, [Map<String, dynamic>? args]) {
+  Duration _timeoutFor(String name, [Map<String, dynamic>? args]) {
     final custom = _customTimeoutFromArgs(args);
     if (custom != null) return custom;
     if (name == 'task_worker' || name == 'parallel_agents') {
@@ -411,7 +414,12 @@ class AgentLoop {
       'shell_read_binary',
       'shell_archive_extract',
     ];
-    return slow.any(name.startsWith) ? _slowToolTimeout : _toolTimeout;
+    if (slow.any(name.startsWith)) {
+      return defaultToolTimeout > _slowToolTimeout
+          ? defaultToolTimeout
+          : _slowToolTimeout;
+    }
+    return defaultToolTimeout;
   }
 
   /// 从工具参数里读 AI 预估的自定义超时（秒）。

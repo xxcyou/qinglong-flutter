@@ -3525,6 +3525,8 @@ class ChatNotifier extends Notifier<ChatState> {
     _toolScreenshotsBySession.remove(run?.sessionId ?? state.currentSessionId);
     _lastToolScreenshot = null;
     final config = await ref.read(llmConfigProvider.future);
+    final toolTimeout =
+        ref.read(settingsProvider).toolExecutionTimeoutSeconds;
     final activeProviderId = ref.read(llmRegistryProvider).active.id;
     final mainProvider = ref.read(llmRegistryProvider).active;
     // 能力判断必须用“界面上真正选中的主模型”，不能用提供商默认模型。
@@ -3733,6 +3735,7 @@ class ChatNotifier extends Notifier<ChatState> {
             responseTransformer: _responseTransformerFor(
               plan.overridesModel ? plan.providerId : activeProviderId,
             ),
+            defaultToolTimeout: Duration(seconds: toolTimeout),
           );
       return await AgentLoop(
         config: llmConfig,
@@ -3769,6 +3772,7 @@ class ChatNotifier extends Notifier<ChatState> {
         subagentSink: subagentSink,
         requestTransformer: _requestTransformerFor(activeProviderId),
         responseTransformer: _responseTransformerFor(activeProviderId),
+        defaultToolTimeout: Duration(seconds: toolTimeout),
         // 每轮 LLM 请求一回来就刷新顶部上下文/token，不用等整轮跑完。
         onUsage: (total, prompt, cache) {
           if (_cancelToken != token) return;

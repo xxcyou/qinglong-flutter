@@ -213,6 +213,22 @@ class _AiSettingsPageState extends ConsumerState<AiSettingsPage> {
                 '${chat.approvalMode.label} · ${chat.approvalMode.description}',
             onTap: _pickApproval,
           ),
+          _Row(
+            icon: Icons.timer_outlined,
+            title: '工具默认执行超时',
+            value: '${settings.toolExecutionTimeoutSeconds} 秒',
+            onTap: () => _editNumber(
+              title: '工具默认执行超时',
+              initial: '${settings.toolExecutionTimeoutSeconds}',
+              helper: 'AI 没在工具参数里传 timeoutSeconds 时的兜底值。'
+                  '慢命令（编译、下载、装包）建议给大一点，比如 300/600。',
+              onSave: (v) {
+                final n = int.tryParse(v);
+                if (n == null || n < 10 || n > 7200) return;
+                _update(settings.copyWith(toolExecutionTimeoutSeconds: n));
+              },
+            ),
+          ),
           const SectionLabel('扩展'),
           _Row(
             icon: Icons.auto_stories_outlined,

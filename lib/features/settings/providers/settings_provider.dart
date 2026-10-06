@@ -24,6 +24,7 @@ class AppSettings {
     this.llmFrequencyPenalty,
     this.llmPresencePenalty,
     this.llmTimeoutSeconds = 180,
+    this.toolExecutionTimeoutSeconds = 300,
     this.llmExtraBody = '',
     this.llmExtraHeaders = '',
     this.llmDefaultContextLimit = 8000,
@@ -92,6 +93,10 @@ class AppSettings {
 
   /// 单次请求接收超时（秒）。Agent 里一轮可能思考很久，默认放宽到 180。
   final int llmTimeoutSeconds;
+
+  /// 工具执行看门狗默认超时（秒）。AI 在参数里传 timeoutSeconds 时仍优先用
+  /// 参数值；这里只决定“没传”时的兜底，默认 75 秒。
+  final int toolExecutionTimeoutSeconds;
 
   /// 透传给接口的额外 body / headers，JSON 文本形式保存，方便对接私有网关。
   final String llmExtraBody;
@@ -197,6 +202,7 @@ class AppSettings {
     double? llmFrequencyPenalty,
     double? llmPresencePenalty,
     int? llmTimeoutSeconds,
+    int? toolExecutionTimeoutSeconds,
     String? llmExtraBody,
     String? llmExtraHeaders,
     int? llmDefaultContextLimit,
@@ -273,6 +279,8 @@ class AppSettings {
           ? null
           : (llmPresencePenalty ?? this.llmPresencePenalty),
       llmTimeoutSeconds: llmTimeoutSeconds ?? this.llmTimeoutSeconds,
+      toolExecutionTimeoutSeconds:
+          toolExecutionTimeoutSeconds ?? this.toolExecutionTimeoutSeconds,
       llmExtraBody: llmExtraBody ?? this.llmExtraBody,
       llmExtraHeaders: llmExtraHeaders ?? this.llmExtraHeaders,
       llmDefaultContextLimit:
@@ -313,6 +321,7 @@ class AppSettings {
         'allowSelfSigned': allowSelfSigned,
         'debugLogEnabled': debugLogEnabled,
         'llmTimeoutSeconds': llmTimeoutSeconds,
+        'toolExecutionTimeoutSeconds': toolExecutionTimeoutSeconds,
         'llmExtraBody': llmExtraBody,
         'llmExtraHeaders': llmExtraHeaders,
         'llmDefaultContextLimit': llmDefaultContextLimit,
@@ -372,6 +381,8 @@ class SettingsNotifier extends Notifier<AppSettings> {
       llmFrequencyPenalty: prefs.getDouble('llmFrequencyPenalty'),
       llmPresencePenalty: prefs.getDouble('llmPresencePenalty'),
       llmTimeoutSeconds: prefs.getInt('llmTimeoutSeconds') ?? 180,
+      toolExecutionTimeoutSeconds:
+          prefs.getInt('toolExecutionTimeoutSeconds') ?? 300,
       llmExtraBody: prefs.getString('llmExtraBody') ?? '',
       llmExtraHeaders: prefs.getString('llmExtraHeaders') ?? '',
       llmDefaultContextLimit: prefs.getInt('llmDefaultContextLimit') ?? 8000,
@@ -434,6 +445,10 @@ class SettingsNotifier extends Notifier<AppSettings> {
     await prefs.setBool('allowSelfSigned', next.allowSelfSigned);
     await prefs.setBool('debugLogEnabled', next.debugLogEnabled);
     await prefs.setInt('llmTimeoutSeconds', next.llmTimeoutSeconds);
+    await prefs.setInt(
+      'toolExecutionTimeoutSeconds',
+      next.toolExecutionTimeoutSeconds,
+    );
     await prefs.setString('llmExtraBody', next.llmExtraBody);
     await prefs.setString('llmExtraHeaders', next.llmExtraHeaders);
     await prefs.setInt(
