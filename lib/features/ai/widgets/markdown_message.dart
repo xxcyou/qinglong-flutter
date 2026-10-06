@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -31,6 +32,7 @@ class MarkdownMessage extends StatelessWidget {
       _UnderlineSyntax(),
       _GlowSyntax(),
       _ColorSyntax(),
+      _HighlightSyntax(),
     ],
   );
 
@@ -49,10 +51,13 @@ class MarkdownMessage extends StatelessWidget {
       data: text,
       selectable: selectable,
       extensionSet: enhancedExtensionSet,
+      blockSyntaxes: [_FunctionPlotSyntax()],
       builders: {
         'u': _UnderlineBuilder(),
         'mark': _GlowBuilder(),
         'span': _ColorSpanBuilder(),
+        'highlight': _HighlightBuilder(),
+        'functionPlot': _FunctionPlotBuilder(),
       },
       imageBuilder: (uri, title, alt) => _MarkdownImage(uri: uri, alt: alt),
       onTapLink: (_, href, __) {
@@ -79,13 +84,33 @@ class MarkdownMessage extends StatelessWidget {
         codeblockDecoration: BoxDecoration(
           // 代码块也透一点，聊天流里才不是一块块黑砖。
           color: scheme.surfaceContainerHighest.withValues(alpha: 0.62),
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(10),
           border: Border.all(color: scheme.outlineVariant),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.05),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
         codeblockPadding: const EdgeInsets.all(10),
         blockquoteDecoration: BoxDecoration(
           color: scheme.surfaceContainerHigh.withValues(alpha: 0.55),
-          border: Border(left: BorderSide(color: scheme.primary, width: 3)),
+          borderRadius: BorderRadius.circular(8),
+          border: Border(
+            left: BorderSide(color: scheme.primary, width: 3),
+            right: BorderSide(color: Colors.transparent, width: 0),
+            top: BorderSide(color: Colors.transparent, width: 0),
+            bottom: BorderSide(color: Colors.transparent, width: 0),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: scheme.primary.withValues(alpha: 0.07),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
         blockquotePadding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
         tableBorder: TableBorder.all(color: scheme.outlineVariant),
@@ -133,6 +158,19 @@ class _ColorSyntax extends md.InlineSyntax {
   bool onMatch(md.InlineParser parser, Match match) {
     final node = md.Element.text('span', match.group(2) ?? '')
       ..attributes['color'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// `{bg:yellow}文字{/bg}` → 背景高亮（荧光笔）。
+class _HighlightSyntax extends md.InlineSyntax {
+    _HighlightSyntax() : super(r'\{bg:([^}\n]+)\}([^{]+?)\{/bg\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element.text('highlight', match.group(2) ?? '')
+      ..attributes['bg'] = match.group(1) ?? '';
     parser.addNode(node);
     return true;
   }
@@ -249,6 +287,559 @@ class _ColorSpanBuilder extends MarkdownElementBuilder {
       ),
     );
   }
+}
+
+class _HighlightBuilder extends MarkdownElementBuilder {
+  _HighlightBuilder();
+
+  static Color? _parseColor(String raw) => _ColorSpanBuilder()._parse(raw);
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final text = element.textContent;
+    if (text.isEmpty) return null;
+    final bg = _parseColor(element.attributes['bg'] ?? '');
+    final base = parentStyle ?? const TextStyle();
+    return Text.rich(
+      TextSpan(
+        text: text,
+        style: base.copyWith(
+          backgroundColor: bg,
+          color: bg != null ? _readableOn(bg) : base.color,
+        ),
+      ),
+    );
+  }
+
+  Color _readableOn(Color bg) {
+    // 简单的亮度判断：深底用浅字，浅底用深字。
+    final luminance = 0.299 * bg.red + 0.587 * bg.green + 0.114 * bg.blue;
+    return luminance > 150 ? const Color(0xFF1A1A1A) : Colors.white;
+  }
+}
+
+/// ` ```plot` 代码块 → 函数图。
+class _FunctionPlotSyntax extends md.BlockSyntax {
+  @override
+  RegExp get pattern => RegExp(r'^```(?:plot|func)\s*$');
+
+  @override
+  md.Node? parse(md.BlockParser parser) {
+    parser.advance();
+    final lines = <String>[];
+    while (!parser.isDone) {
+      final line = parser.current;
+      if (line.content.trimLeft().startsWith('```')) {
+        parser.advance();
+        break;
+      }
+      lines.add(line.content);
+      parser.advance();
+    }
+    return md.Element('functionPlot', <md.Node>[md.Text(lines.join('\n'))]);
+  }
+}
+
+class _FunctionPlotBuilder extends MarkdownElementBuilder {
+  @override
+  bool isBlockElement() => true;
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    return _FunctionPlotCard(source: element.textContent);
+  }
+}
+
+class _FunctionPlotCard extends StatelessWidget {
+  const _FunctionPlotCard({required this.source});
+
+  final String source;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final parsed = _parsePlot(source);
+    if (parsed == null) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text(
+          '函数图格式示例：\n```plot\ny = x^2\nx: -10, 10\n```',
+          style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+        ),
+      );
+    }
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111827),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF273246)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.insights, size: 15, color: const Color(0xFF8AB4FF)),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  parsed.expr,
+                  style: const TextStyle(
+                    color: Color(0xFFE6EDF7),
+                    fontSize: 13,
+                    fontFamily: 'monospace',
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: SizedBox(
+              height: 180,
+              width: double.infinity,
+              child: CustomPaint(
+                painter: _FunctionPainter(
+                  fn: parsed.fn,
+                  xMin: parsed.xMin,
+                  xMax: parsed.xMax,
+                  gridColor: const Color(0xFF243044),
+                  axisColor: const Color(0xFF6B7A90),
+                  curveColor: const Color(0xFF64B5F6),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+_ParsePlot? _parsePlot(String source) {
+  final lines = source
+      .split('\n')
+      .map((e) => e.trim())
+      .where((e) => e.isNotEmpty && !e.startsWith('#'))
+      .toList();
+  if (lines.isEmpty) return null;
+  final exprLine = lines.first;
+  final expr = exprLine.contains('=') ? exprLine.split('=').sublist(1).join('=') : exprLine;
+  double? xMin = -10, xMax = 10;
+  for (final line in lines.skip(1)) {
+    final m = RegExp(r'^\s*x\s*[:：]\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$').firstMatch(line);
+    if (m != null) {
+      final a = double.tryParse(m.group(1)!);
+      final b = double.tryParse(m.group(2)!);
+      if (a != null && b != null) {
+        xMin = a;
+        xMax = b;
+      }
+    }
+  }
+  try {
+    final fn = _ExprParser(expr).parse();
+    if (xMin == null || xMax == null || xMax <= xMin) return null;
+    return _ParsePlot(fn: fn, expr: expr.trim(), xMin: xMin, xMax: xMax);
+  } catch (_) {
+    return null;
+  }
+}
+
+class _ParsePlot {
+  const _ParsePlot({
+    required this.fn,
+    required this.expr,
+    required this.xMin,
+    required this.xMax,
+  });
+
+  final _ExprNode fn;
+  final String expr;
+  final double xMin;
+  final double xMax;
+}
+
+/// 简易表达式求值：支持 + - * / ^ ( ) 数字、x、pi/e，以及常见函数。
+abstract class _ExprNode {
+  double eval(double x);
+}
+
+class _NumberNode implements _ExprNode {
+  _NumberNode(this.value);
+  final double value;
+  @override
+  double eval(double x) => value;
+}
+
+class _VarNode implements _ExprNode {
+  @override
+  double eval(double x) => x;
+}
+
+class _BinaryNode implements _ExprNode {
+  _BinaryNode(this.op, this.left, this.right);
+  final String op;
+  final _ExprNode left;
+  final _ExprNode right;
+  @override
+  double eval(double x) {
+    final l = left.eval(x);
+    final r = right.eval(x);
+    switch (op) {
+      case '+':
+        return l + r;
+      case '-':
+        return l - r;
+      case '*':
+        return l * r;
+      case '/':
+        return r == 0 ? double.nan : l / r;
+      case '^':
+        var v = double.nan;
+        try {
+          v = l < 0 && r % 1 != 0 ? double.nan : math.pow(l, r).toDouble();
+        } catch (_) {}
+        return v;
+    }
+    return double.nan;
+  }
+}
+
+class _NegNode implements _ExprNode {
+  _NegNode(this.child);
+  final _ExprNode child;
+  @override
+  double eval(double x) => -child.eval(x);
+}
+
+class _FuncNode implements _ExprNode {
+  _FuncNode(this.name, this.arg);
+  final String name;
+  final _ExprNode arg;
+  @override
+  double eval(double x) {
+    final v = arg.eval(x);
+    try {
+      switch (name) {
+        case 'sin':
+          return math.sin(v);
+        case 'cos':
+          return math.cos(v);
+        case 'tan':
+          return math.tan(v);
+        case 'asin':
+          return math.asin(v);
+        case 'acos':
+          return math.acos(v);
+        case 'atan':
+          return math.atan(v);
+        case 'sqrt':
+          return v < 0 ? double.nan : math.sqrt(v);
+        case 'abs':
+          return v.abs();
+        case 'exp':
+          return math.exp(v);
+        case 'ln':
+          return v <= 0 ? double.nan : math.log(v);
+        case 'log':
+        case 'log10':
+          return v <= 0 ? double.nan : math.log(v) / math.ln10;
+        case 'floor':
+          return v.floorToDouble();
+        case 'ceil':
+          return v.ceilToDouble();
+        case 'round':
+          return v.roundToDouble();
+      }
+    } catch (_) {
+      return double.nan;
+    }
+    return double.nan;
+  }
+}
+
+class _ExprParser {
+  _ExprParser(String input)
+      : _tokens = _tokenize(input),
+        _pos = 0;
+
+  final List<String> _tokens;
+  int _pos;
+
+  static final RegExp _num = RegExp(r'^-?\d+(\.\d+)?([eE][+-]?\d+)?$');
+  static final RegExp _id = RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$');
+  static final Set<String> _functions = {
+    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sqrt', 'abs',
+    'exp', 'ln', 'log', 'log10', 'floor', 'ceil', 'round',
+  };
+
+  static List<String> _tokenize(String input) {
+    final result = <String>[];
+    final chars = input.replaceAll(' ', '').split('');
+    for (var i = 0; i < chars.length; i++) {
+      final c = chars[i];
+      if ('+-*/^(),'.contains(c)) {
+        result.add(c);
+      } else if (RegExp(r'[0-9.]').hasMatch(c)) {
+        var buf = c;
+        while (i + 1 < chars.length &&
+            RegExp(r'[0-9.eE+-]').hasMatch(chars[i + 1]) &&
+            !'*/^(),'.contains(chars[i + 1])) {
+          // 科学计数法里的 +/- 允许跟在 e/E 后
+          final next = chars[i + 1];
+          final prev = chars[i];
+          if ((next == '+' || next == '-') &&
+              prev != 'e' && prev != 'E') break;
+          i++;
+          buf += next;
+        }
+        result.add(buf);
+      } else if (RegExp(r'[a-zA-Z_]').hasMatch(c)) {
+        var buf = c;
+        while (i + 1 < chars.length && RegExp(r'[a-zA-Z0-9_]').hasMatch(chars[i + 1])) {
+          i++;
+          buf += chars[i];
+        }
+        result.add(buf);
+      } else {
+        throw FormatException('unknown char $c');
+      }
+    }
+    return result;
+  }
+
+  _ExprNode parse() {
+    final node = _parseExpr();
+    if (_pos < _tokens.length) throw FormatException('trailing');
+    return node;
+  }
+
+  _ExprNode _parseExpr() {
+    var left = _parseTerm();
+    while (_pos < _tokens.length && (_tokens[_pos] == '+' || _tokens[_pos] == '-')) {
+      final op = _tokens[_pos++];
+      final right = _parseTerm();
+      left = _BinaryNode(op, left, right);
+    }
+    return left;
+  }
+
+  _ExprNode _parseTerm() {
+    var left = _parseFactor();
+    while (_pos < _tokens.length && (_tokens[_pos] == '*' || _tokens[_pos] == '/')) {
+      final op = _tokens[_pos++];
+      final right = _parseFactor();
+      left = _BinaryNode(op, left, right);
+    }
+    return left;
+  }
+
+  _ExprNode _parseFactor() {
+    if (_pos < _tokens.length && _tokens[_pos] == '-') {
+      _pos++;
+      return _NegNode(_parseFactor());
+    }
+    if (_pos < _tokens.length && _tokens[_pos] == '+') {
+      _pos++;
+      return _parseFactor();
+    }
+    return _parsePower();
+  }
+
+  _ExprNode _parsePower() {
+    final base = _parsePrimary();
+    if (_pos < _tokens.length && _tokens[_pos] == '^') {
+      _pos++;
+      final exponent = _parseFactor();
+      return _BinaryNode('^', base, exponent);
+    }
+    return base;
+  }
+
+  _ExprNode _parsePrimary() {
+    if (_pos >= _tokens.length) throw FormatException('expected token');
+    final token = _tokens[_pos];
+    if (token == '(') {
+      _pos++;
+      final node = _parseExpr();
+      if (_pos >= _tokens.length || _tokens[_pos] != ')') {
+        throw FormatException('missing )');
+      }
+      _pos++;
+      return node;
+    }
+    if (_num.hasMatch(token)) {
+      _pos++;
+      return _NumberNode(double.parse(token));
+    }
+    if (_id.hasMatch(token)) {
+      _pos++;
+      if (token == 'x') return _VarNode();
+      if ((token == 'pi')) return _NumberNode(3.141592653589793);
+      if (token == 'e') return _NumberNode(2.718281828459045);
+      if (_functions.contains(token)) {
+        if (_pos >= _tokens.length || _tokens[_pos] != '(') {
+          throw FormatException('function needs (');
+        }
+        _pos++;
+        final arg = _parseExpr();
+        if (_pos >= _tokens.length || _tokens[_pos] != ')') {
+          throw FormatException('missing )');
+        }
+        _pos++;
+        return _FuncNode(token, arg);
+      }
+      throw FormatException('unknown $token');
+    }
+    throw FormatException('bad token $token');
+  }
+}
+
+class _FunctionPainter extends CustomPainter {
+  _FunctionPainter({
+    required this.fn,
+    required this.xMin,
+    required this.xMax,
+    required this.gridColor,
+    required this.axisColor,
+    required this.curveColor,
+  });
+
+  final _ExprNode fn;
+  final double xMin;
+  final double xMax;
+  final Color gridColor;
+  final Color axisColor;
+  final Color curveColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final bg = Paint()..color = const Color(0xFF0B1220);
+    canvas.drawRect(rect, bg);
+
+    // 动态 y 范围：采样前 256 个点求中位数区间，避免被无穷大带飞。
+    const sampleCount = 512;
+    final ys = <double>[];
+    final step = (xMax - xMin) / sampleCount;
+    for (var i = 0; i <= sampleCount; i++) {
+      final v = fn.eval(xMin + step * i);
+      if (v.isFinite && v.abs() < 1e9) ys.add(v);
+    }
+    if (ys.isEmpty) {
+      final noData = Paint()
+        ..color = const Color(0xFF5B6B82)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1;
+      canvas.drawLine(Offset(0, size.height / 2), Offset(size.width, size.height / 2), noData);
+      return;
+    }
+    ys.sort();
+    final y0 = ys[ys.length ~/ 20];
+    final y1 = ys[ys.length * 19 ~/ 20];
+    var yMin = y0;
+    var yMax = y1;
+    if ((yMax - yMin).abs() < 0.5) {
+      final c = (yMax + yMin) / 2;
+      yMin = c - 1;
+      yMax = c + 1;
+    }
+    final pad = 8.0;
+
+    double tx(double x) => pad + (x - xMin) / (xMax - xMin) * (size.width - pad * 2);
+    double ty(double y) => pad + (yMax - y) / (yMax - yMin) * (size.height - pad * 2);
+
+    final gridPaint = Paint()
+      ..color = gridColor
+      ..strokeWidth = 0.6;
+    // 垂直网格
+    const gridCount = 8;
+    for (var i = 0; i <= gridCount; i++) {
+      final x = xMin + (xMax - xMin) * i / gridCount;
+      canvas.drawLine(Offset(tx(x), pad), Offset(tx(x), size.height - pad), gridPaint);
+    }
+    for (var i = 0; i <= 6; i++) {
+      final y = yMin + (yMax - yMin) * i / 6;
+      canvas.drawLine(Offset(pad, ty(y)), Offset(size.width - pad, ty(y)), gridPaint);
+    }
+
+    // 坐标轴
+    final axisPaint = Paint()
+      ..color = axisColor
+      ..strokeWidth = 1.1;
+    if (yMin <= 0 && yMax >= 0) {
+      final y0px = ty(0);
+      canvas.drawLine(Offset(pad, y0px), Offset(size.width - pad, y0px), axisPaint);
+    }
+    if (xMin <= 0 && xMax >= 0) {
+      final x0px = tx(0);
+      canvas.drawLine(Offset(x0px, pad), Offset(x0px, size.height - pad), axisPaint);
+    }
+
+    // 函数曲线
+    final curve = Paint()
+      ..color = curveColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    final path = Path();
+    var started = false;
+    var lastFinite = false;
+    for (var i = 0; i <= sampleCount; i++) {
+      final x = xMin + step * i;
+      final y = fn.eval(x);
+      final ok = y.isFinite && y.abs() < 1e9;
+      if (!ok) {
+        lastFinite = false;
+        continue;
+      }
+      if (!lastFinite || i == 0) {
+        path.moveTo(tx(x), ty(y.clamp(yMin, yMax)));
+        started = true;
+      } else {
+        path.lineTo(tx(x), ty(y.clamp(yMin, yMax)));
+      }
+      lastFinite = true;
+    }
+    if (started) canvas.drawPath(path, curve);
+
+    // 标签
+    final labelPainter = TextPainter(
+      text: TextSpan(
+        text: '${yMin.toStringAsFixed(1)} ~ ${yMax.toStringAsFixed(1)}',
+        style: const TextStyle(color: Color(0xFF73839A), fontSize: 10),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    labelPainter.paint(canvas, Offset(6, 2));
+  }
+
+  @override
+  bool shouldRepaint(covariant _FunctionPainter oldDelegate) =>
+      oldDelegate.fn != fn ||
+      oldDelegate.xMin != xMin ||
+      oldDelegate.xMax != xMax ||
+      oldDelegate.curveColor != curveColor;
 }
 
 class _MarkdownImage extends StatefulWidget {
