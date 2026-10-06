@@ -501,8 +501,9 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                 _open(entry);
               }
             },
-            onLongPress:
-                widget.dragToAttachEnabled ? () {} : () => _showActions(entry),
+            onLongPress: widget.dragToAttachEnabled
+                ? null
+                : () => _showActions(entry),
             onAction: (action) => _handleAction(action, entry),
             onMore: () => _showActions(entry),
             bytesResolver: (path) => _notifier.readImageBytes(path),
@@ -552,8 +553,9 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                 _open(entry);
               }
             },
-            onLongPress:
-                widget.dragToAttachEnabled ? () {} : () => _showActions(entry),
+            onLongPress: widget.dragToAttachEnabled
+                ? null
+                : () => _showActions(entry),
             bytesResolver: (path) => _notifier.readImageBytes(path),
           );
           if (!widget.dragToAttachEnabled) return tile;
@@ -1375,7 +1377,7 @@ class _FileGridTile extends StatelessWidget {
   final bool selected;
   final bool selecting;
   final VoidCallback onTap;
-  final VoidCallback onLongPress;
+  final VoidCallback? onLongPress;
   final Future<Uint8List?> Function(String path) bytesResolver;
 
   @override
@@ -1458,7 +1460,7 @@ class _FileTile extends StatelessWidget {
   /// 搜索结果里需要显示完整路径，否则同名文件分不清。
   final bool showPath;
   final VoidCallback onTap;
-  final VoidCallback onLongPress;
+  final VoidCallback? onLongPress;
   final ValueChanged<String> onAction;
 
   /// 列表右侧“更多”按钮；不传时复用 [onLongPress]（拖拽模式下长按被占用）。
