@@ -3,6 +3,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_highlight/flutter_highlight.dart';
+import 'package:flutter_highlight/themes/atom-one-dark.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:markdown/markdown.dart' as md;
 
@@ -57,6 +59,8 @@ class MarkdownMessage extends StatelessWidget {
         'mark': _GlowBuilder(),
         'span': _ColorSpanBuilder(),
         'highlight': _HighlightBuilder(),
+        'pre': _CodeBlockBuilder(),
+        'code': _CodeBlockBuilder(),
         'functionPlot': _FunctionPlotBuilder(),
       },
       imageBuilder: (uri, title, alt) => _MarkdownImage(uri: uri, alt: alt),
@@ -323,6 +327,147 @@ class _HighlightBuilder extends MarkdownElementBuilder {
   }
 }
 
+class _CodeBlockBuilder extends MarkdownElementBuilder {
+  bool _inPre = false;
+
+  @override
+  bool isBlockElement() => false;
+
+  @override
+  void visitElementBefore(md.Element element) {
+    if (element.tag == 'pre') _inPre = true;
+  }
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    if (element.tag != 'code' || !_inPre) return null;
+    _inPre = false;
+    final cls = element.attributes['class'] ?? '';
+    String? language;
+    if (cls.startsWith('language-') && cls.length > 'language-'.length) {
+      language = cls.substring('language-'.length);
+    }
+    return _CodeBlock(code: element.textContent, language: language);
+  }
+}
+
+class _CodeBlock extends StatefulWidget {
+  const _CodeBlock({required this.code, this.language});
+
+  final String code;
+  final String? language;
+
+  @override
+  State<_CodeBlock> createState() => _CodeBlockState();
+}
+
+class _CodeBlockState extends State<_CodeBlock> {
+  bool _copied = false;
+
+  Future<void> _copy() async {
+    await Clipboard.setData(ClipboardData(text: widget.code));
+    if (!mounted) return;
+    setState(() => _copied = true);
+    await Future<void>.delayed(const Duration(milliseconds: 1500));
+    if (mounted) setState(() => _copied = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final language = widget.language;
+    final label = language == null
+        ? 'CODE'
+        : language.toUpperCase();
+    final theme = Map<String, TextStyle>.from(atomOneDarkTheme);
+    final rootStyle = theme['root'];
+    if (rootStyle != null) {
+      theme['root'] = rootStyle.copyWith(
+        color: const Color(0xFFE6EDF7),
+        backgroundColor: Colors.transparent,
+      );
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
+          decoration: const BoxDecoration(
+            color: Color(0xFF1D2635),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
+          ),
+          child: Row(
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  color: Color(0xFF8AB4FF),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const Spacer(),
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: _copy,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _copied ? Icons.check : Icons.copy_rounded,
+                          size: 13,
+                          color: _copied
+                              ? const Color(0xFF69F0AE)
+                              : scheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          _copied ? '已复制' : '复制',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: _copied
+                                ? const Color(0xFF69F0AE)
+                                : scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        HighlightView(
+          widget.code,
+          language: widget.language,
+          theme: theme,
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+          textStyle: const TextStyle(
+            fontFamily: kMonoFamily,
+            fontFamilyFallback: kMonoFallback,
+            fontSize: 12.5,
+            height: 1.5,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// ` ```plot` 代码块 → 函数图。
 class _FunctionPlotSyntax extends md.BlockSyntax {
   @override
@@ -350,13 +495,8 @@ class _FunctionPlotBuilder extends MarkdownElementBuilder {
   bool isBlockElement() => true;
 
   @override
-  Widget? visitElementAfterWithContext(
-    BuildContext context,
-    md.Element element,
-    TextStyle? preferredStyle,
-    TextStyle? parentStyle,
-  ) {
-    return _FunctionPlotCard(source: element.textContent);
+  Widget? visitText(md.Text text, TextStyle? preferredStyle) {
+    return _FunctionPlotCard(source: text.text);
   }
 }
 
