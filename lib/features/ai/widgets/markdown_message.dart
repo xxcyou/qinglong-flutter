@@ -961,11 +961,13 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  parsed.connect
-                      ? '组合曲线 · ${parsed.series.length} 段'
-                      : parsed.series.length > 1
-                          ? '${parsed.series.length} 条函数'
-                          : parsed.series.first.expr,
+                  parsed.parametric
+                      ? '参数曲线'
+                      : parsed.connect
+                          ? '组合曲线 · ${parsed.series.length} 段'
+                          : parsed.series.length > 1
+                              ? '${parsed.series.length} 条函数'
+                              : parsed.series.first.expr,
                   style: const TextStyle(
                     color: Color(0xFFE6EDF7),
                     fontSize: 13,
@@ -1081,6 +1083,11 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                       t: t,
                       progress: progress,
                       connect: parsed.connect,
+                      parametric: parsed.parametric,
+                      paramX: parsed.paramX,
+                      paramY: parsed.paramY,
+                      tMin: parsed.tMin,
+                      tMax: parsed.tMax,
                       gridColor: const Color(0xFF243044),
                       axisColor: const Color(0xFF6B7A90),
                     ),
@@ -1110,14 +1117,33 @@ _ParsePlot? _parsePlot(String source) {
       .where((e) => e.isNotEmpty && !e.startsWith('#'))
       .toList();
   if (lines.isEmpty) return null;
-  double? xMin = -10, xMax = 10;
+  double xMin = -10, xMax = 10;
+  double tMin = 0, tMax = 6.283185307179586;
   var connect = false;
+  var paramFlag = false;
   final exprLines = <String>[];
   for (final line in lines) {
     final connectM = RegExp(r'^connect\s*[:：]\s*(true|false)\s*$', caseSensitive: false).firstMatch(line);
     if (connectM != null) {
       connect = connectM.group(1)!.toLowerCase() == 'true';
-    } else if (RegExp(r'^x\s*[:：]\s*').hasMatch(line)) {
+      continue;
+    }
+    final paramM = RegExp(r'^(?:param|parametric)\s*[:：]\s*(true|false)\s*$', caseSensitive: false).firstMatch(line);
+    if (paramM != null) {
+      paramFlag = paramM.group(1)!.toLowerCase() == 'true';
+      continue;
+    }
+    final tM = RegExp(r'^t\s*[:：]\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$').firstMatch(line);
+    if (tM != null) {
+      final a = double.tryParse(tM.group(1)!);
+      final b = double.tryParse(tM.group(2)!);
+      if (a != null && b != null && b > a) {
+        tMin = a;
+        tMax = b;
+      }
+      continue;
+    }
+    if (RegExp(r'^x\s*[:：]\s*').hasMatch(line)) {
       final m = RegExp(r'^x\s*[:：]\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$').firstMatch(line);
       if (m != null) {
         final a = double.tryParse(m.group(1)!);
@@ -1127,13 +1153,48 @@ _ParsePlot? _parsePlot(String source) {
           xMax = b;
         }
       }
-    } else {
-      exprLines.add(line);
+      continue;
+    }
+    exprLines.add(line);
+  }
+  if (exprLines.isEmpty) return null;
+
+  final parametric = paramFlag ||
+      (exprLines.any((l) => RegExp(r'^x\s*=').hasMatch(l)) &&
+          exprLines.any((l) => RegExp(r'^y\s*=').hasMatch(l)));
+  if (parametric) {
+    String? xExpr;
+    String? yExpr;
+    for (final line in exprLines) {
+      if (RegExp(r'^x\s*=').hasMatch(line)) {
+        xExpr = line.substring(line.indexOf('=') + 1).trim();
+      } else if (RegExp(r'^y\s*=').hasMatch(line)) {
+        yExpr = line.substring(line.indexOf('=') + 1).trim();
+      }
+    }
+    if (xExpr == null || yExpr == null || xExpr.isEmpty || yExpr.isEmpty) {
+      return null;
+    }
+    try {
+      final px = _ExprParser(xExpr).parse();
+      final py = _ExprParser(yExpr).parse();
+      return _ParsePlot(
+        series: const [],
+        xMin: xMin,
+        xMax: xMax,
+        connect: false,
+        parametric: true,
+        paramX: px,
+        paramY: py,
+        tMin: tMin,
+        tMax: tMax,
+      );
+    } catch (_) {
+      return null;
     }
   }
-  if (exprLines.isEmpty || xMin == null || xMax == null || xMax <= xMin) {
-    return null;
-  }
+
+  if (xMax <= xMin) return null;
   const colors = [
     Color(0xFF64B5F6),
     Color(0xFFF48FB1),
@@ -1223,15 +1284,27 @@ class _ParsePlot {
     required this.xMin,
     required this.xMax,
     required this.connect,
+    this.parametric = false,
+    this.paramX,
+    this.paramY,
+    this.tMin = 0,
+    this.tMax = 6.283185307179586,
   });
 
   final List<_FunctionSeries> series;
 
-  bool get usesT => series.any((s) => s.usesT);
+  bool get usesT => parametric
+      ? false
+      : series.any((s) => s.usesT);
 
   final double xMin;
   final double xMax;
   final bool connect;
+  final bool parametric;
+  final _ExprNode? paramX;
+  final _ExprNode? paramY;
+  final double tMin;
+  final double tMax;
 }
 /// 简易表达式求值：支持 + - * / ^ ( ) 数字、x、t、pi/e，以及常见函数。
 /// `t` 是动态时间变量，函数图会把它当作动画参数（0~2π 循环）。
@@ -1531,6 +1604,11 @@ class _FunctionPainter extends CustomPainter {
     this.t = 0,
     this.progress = 1,
     this.connect = false,
+    this.parametric = false,
+    this.paramX,
+    this.paramY,
+    this.tMin = 0,
+    this.tMax = 6.283185307179586,
     required this.gridColor,
     required this.axisColor,
   });
@@ -1541,8 +1619,31 @@ class _FunctionPainter extends CustomPainter {
   final double t;
   final double progress;
   final bool connect;
+  final bool parametric;
+  final _ExprNode? paramX;
+  final _ExprNode? paramY;
+  final double tMin;
+  final double tMax;
   final Color gridColor;
   final Color axisColor;
+
+  List<Offset> _sampleParametric() {
+    final pts = <Offset>[];
+    const n = 800;
+    final step = (tMax - tMin) / n;
+    final px = paramX;
+    final py = paramY;
+    if (px == null || py == null) return pts;
+    for (var i = 0; i <= n; i++) {
+      final tt = tMin + step * i;
+      final x = px.eval(0, tt);
+      final y = py.eval(0, tt);
+      if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
+        pts.add(Offset(x, y));
+      }
+    }
+    return pts;
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1550,144 +1651,206 @@ class _FunctionPainter extends CustomPainter {
     final bg = Paint()..color = const Color(0xFF0B1220);
     canvas.drawRect(rect, bg);
 
-    // 动态 y 范围：所有函数一起采样，避免被无穷大带飞。
     const sampleCount = 512;
-    final ys = <double>[];
-    final step = (xMax - xMin) / sampleCount;
-    for (var i = 0; i <= sampleCount; i++) {
-      final x = xMin + step * i;
-      for (final s in series) {
-        final v = s.fn.eval(x, t);
-        if (v.isFinite && v.abs() < 1e9) ys.add(v);
+    final pad = 8.0;
+    late double axisXMin;
+    late double axisXMax;
+    late double axisYMin;
+    late double axisYMax;
+    List<Offset>? paramPoints;
+
+    if (parametric) {
+      paramPoints = _sampleParametric();
+      if (paramPoints.isEmpty) {
+        final noData = Paint()
+          ..color = const Color(0xFF5B6B82)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1;
+        canvas.drawLine(
+          Offset(0, size.height / 2),
+          Offset(size.width, size.height / 2),
+          noData,
+        );
+        return;
+      }
+      final xs = paramPoints.map((p) => p.dx).toList()..sort();
+      final ys = paramPoints.map((p) => p.dy).toList()..sort();
+      axisXMin = xs.first;
+      axisXMax = xs.last;
+      axisYMin = ys.first;
+      axisYMax = ys.last;
+      if ((axisXMax - axisXMin).abs() < 0.5) {
+        final c = (axisXMax + axisXMin) / 2;
+        axisXMin = c - 1;
+        axisXMax = c + 1;
+      }
+      if ((axisYMax - axisYMin).abs() < 0.5) {
+        final c = (axisYMax + axisYMin) / 2;
+        axisYMin = c - 1;
+        axisYMax = c + 1;
+      }
+    } else {
+      axisXMin = xMin;
+      axisXMax = xMax;
+      final ys = <double>[];
+      final step = (xMax - xMin) / sampleCount;
+      for (var i = 0; i <= sampleCount; i++) {
+        final x = xMin + step * i;
+        for (final s in series) {
+          final v = s.fn.eval(x, t);
+          if (v.isFinite && v.abs() < 1e9) ys.add(v);
+        }
+      }
+      if (ys.isEmpty) {
+        final noData = Paint()
+          ..color = const Color(0xFF5B6B82)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1;
+        canvas.drawLine(
+          Offset(0, size.height / 2),
+          Offset(size.width, size.height / 2),
+          noData,
+        );
+        return;
+      }
+      ys.sort();
+      final y0 = ys[ys.length ~/ 20];
+      final y1 = ys[ys.length * 19 ~/ 20];
+      axisYMin = y0;
+      axisYMax = y1;
+      if ((axisYMax - axisYMin).abs() < 0.5) {
+        final c = (axisYMax + axisYMin) / 2;
+        axisYMin = c - 1;
+        axisYMax = c + 1;
       }
     }
-    if (ys.isEmpty) {
-      final noData = Paint()
-        ..color = const Color(0xFF5B6B82)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1;
-      canvas.drawLine(Offset(0, size.height / 2), Offset(size.width, size.height / 2), noData);
-      return;
-    }
-    ys.sort();
-    final y0 = ys[ys.length ~/ 20];
-    final y1 = ys[ys.length * 19 ~/ 20];
-    var yMin = y0;
-    var yMax = y1;
-    if ((yMax - yMin).abs() < 0.5) {
-      final c = (yMax + yMin) / 2;
-      yMin = c - 1;
-      yMax = c + 1;
-    }
-    final pad = 8.0;
 
-    double tx(double x) => pad + (x - xMin) / (xMax - xMin) * (size.width - pad * 2);
-    double ty(double y) => pad + (yMax - y) / (yMax - yMin) * (size.height - pad * 2);
+    double tx(double x) =>
+        pad + (x - axisXMin) / (axisXMax - axisXMin) * (size.width - pad * 2);
+    double ty(double y) =>
+        pad + (axisYMax - y) / (axisYMax - axisYMin) * (size.height - pad * 2);
 
     final gridPaint = Paint()
       ..color = gridColor
       ..strokeWidth = 0.6;
-    // 垂直网格
     const gridCount = 8;
     for (var i = 0; i <= gridCount; i++) {
-      final x = xMin + (xMax - xMin) * i / gridCount;
+      final x = axisXMin + (axisXMax - axisXMin) * i / gridCount;
       canvas.drawLine(Offset(tx(x), pad), Offset(tx(x), size.height - pad), gridPaint);
     }
     for (var i = 0; i <= 6; i++) {
-      final y = yMin + (yMax - yMin) * i / 6;
+      final y = axisYMin + (axisYMax - axisYMin) * i / 6;
       canvas.drawLine(Offset(pad, ty(y)), Offset(size.width - pad, ty(y)), gridPaint);
     }
 
-    // 坐标轴
     final axisPaint = Paint()
       ..color = axisColor
       ..strokeWidth = 1.1;
-    if (yMin <= 0 && yMax >= 0) {
+    if (axisYMin <= 0 && axisYMax >= 0) {
       final y0px = ty(0);
       canvas.drawLine(Offset(pad, y0px), Offset(size.width - pad, y0px), axisPaint);
     }
-    if (xMin <= 0 && xMax >= 0) {
+    if (axisXMin <= 0 && axisXMax >= 0) {
       final x0px = tx(0);
       canvas.drawLine(Offset(x0px, pad), Offset(x0px, size.height - pad), axisPaint);
     }
 
-    // 绘制所有函数曲线（progress 控制静态图的绘制动画）
-    final totalConnectSamples = connect
-        ? series.fold<int>(0, (sum, s) => sum + 257)
-        : sampleCount;
-    final drawLimit = (totalConnectSamples * progress).round();
-    if (connect) {
-      // 组合模式：所有段按顺序连成一条同色曲线
+    if (parametric) {
       final curve = Paint()
         ..color = const Color(0xFF64B5F6)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2
         ..strokeCap = StrokeCap.round;
       final path = Path();
-      var started = false;
-      var lastFinite = false;
-      var drawn = 0;
-      const perSegmentSamples = 256;
-      for (final s in series) {
-        final segMin = s.segmentXMin ?? xMin;
-        final segMax = s.segmentXMax ?? xMax;
-        final segStep = (segMax - segMin) / perSegmentSamples;
-        for (var i = 0; i <= perSegmentSamples; i++) {
-          if (drawn > drawLimit) break;
-          final x = segMin + segStep * i;
-          final y = s.fn.eval(x, t);
-          drawn++;
-          final ok = y.isFinite && y.abs() < 1e9;
-          if (!ok) {
-            lastFinite = false;
-            continue;
-          }
-          final px = tx(x);
-          final py = ty(y.clamp(yMin, yMax));
-          if (!started || !lastFinite) {
-            path.moveTo(px, py);
-            started = true;
-          } else {
-            path.lineTo(px, py);
-          }
-          lastFinite = true;
+      final drawCount = (paramPoints!.length * progress).round();
+      for (var i = 0; i <= drawCount && i < paramPoints.length; i++) {
+        final p = paramPoints[i];
+        final px = tx(p.dx);
+        final py = ty(p.dy);
+        if (i == 0) {
+          path.moveTo(px, py);
+        } else {
+          path.lineTo(px, py);
         }
       }
-      if (started) canvas.drawPath(path, curve);
+      canvas.drawPath(path, curve);
     } else {
-      for (final s in series) {
+      final step = (xMax - xMin) / sampleCount;
+      final totalConnectSamples = connect
+          ? series.fold<int>(0, (sum, s) => sum + 257)
+          : sampleCount;
+      final drawLimit = (totalConnectSamples * progress).round();
+      if (connect) {
         final curve = Paint()
-          ..color = s.color
+          ..color = const Color(0xFF64B5F6)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2
           ..strokeCap = StrokeCap.round;
         final path = Path();
         var started = false;
         var lastFinite = false;
-        for (var i = 0; i <= drawLimit; i++) {
-          final x = xMin + step * i;
-          final y = s.fn.eval(x, t);
-          final ok = y.isFinite && y.abs() < 1e9;
-          if (!ok) {
-            lastFinite = false;
-            continue;
+        var drawn = 0;
+        const perSegmentSamples = 256;
+        for (final s in series) {
+          final segMin = s.segmentXMin ?? xMin;
+          final segMax = s.segmentXMax ?? xMax;
+          final segStep = (segMax - segMin) / perSegmentSamples;
+          for (var i = 0; i <= perSegmentSamples; i++) {
+            if (drawn > drawLimit) break;
+            final x = segMin + segStep * i;
+            final y = s.fn.eval(x, t);
+            drawn++;
+            final ok = y.isFinite && y.abs() < 1e9;
+            if (!ok) {
+              lastFinite = false;
+              continue;
+            }
+            final px = tx(x);
+            final py = ty(y.clamp(axisYMin, axisYMax));
+            if (!started || !lastFinite) {
+              path.moveTo(px, py);
+              started = true;
+            } else {
+              path.lineTo(px, py);
+            }
+            lastFinite = true;
           }
-          if (!lastFinite || i == 0) {
-            path.moveTo(tx(x), ty(y.clamp(yMin, yMax)));
-            started = true;
-          } else {
-            path.lineTo(tx(x), ty(y.clamp(yMin, yMax)));
-          }
-          lastFinite = true;
         }
         if (started) canvas.drawPath(path, curve);
+      } else {
+        for (final s in series) {
+          final curve = Paint()
+            ..color = s.color
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2
+            ..strokeCap = StrokeCap.round;
+          final path = Path();
+          var started = false;
+          var lastFinite = false;
+          for (var i = 0; i <= drawLimit; i++) {
+            final x = xMin + step * i;
+            final y = s.fn.eval(x, t);
+            final ok = y.isFinite && y.abs() < 1e9;
+            if (!ok) {
+              lastFinite = false;
+              continue;
+            }
+            if (!lastFinite || i == 0) {
+              path.moveTo(tx(x), ty(y.clamp(axisYMin, axisYMax)));
+              started = true;
+            } else {
+              path.lineTo(tx(x), ty(y.clamp(axisYMin, axisYMax)));
+            }
+            lastFinite = true;
+          }
+          if (started) canvas.drawPath(path, curve);
+        }
       }
     }
 
-    // 标签
     final labelPainter = TextPainter(
       text: TextSpan(
-        text: '${yMin.toStringAsFixed(1)} ~ ${yMax.toStringAsFixed(1)}',
+        text: '${axisYMin.toStringAsFixed(1)} ~ ${axisYMax.toStringAsFixed(1)}',
         style: const TextStyle(color: Color(0xFF73839A), fontSize: 10),
       ),
       textDirection: TextDirection.ltr,
@@ -1703,6 +1866,11 @@ class _FunctionPainter extends CustomPainter {
       oldDelegate.t != t ||
       oldDelegate.progress != progress ||
       oldDelegate.connect != connect ||
+      oldDelegate.parametric != parametric ||
+      oldDelegate.paramX != paramX ||
+      oldDelegate.paramY != paramY ||
+      oldDelegate.tMin != tMin ||
+      oldDelegate.tMax != tMax ||
       oldDelegate.axisColor != axisColor;
 }
 
