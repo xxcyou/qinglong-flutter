@@ -93,6 +93,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   int? _followUpFlashIndex;
   Timer? _followUpFlashTimer;
 
+  /// 审计记录跳转过来的闪烁目标。
+  int? _auditFlashIndex;
+  Timer? _auditFlashTimer;
+
   /// 修改模式：长按“修改”后进入，不立刻撤回，等用户发送修改或取消。
   bool _editMode = false;
 
@@ -198,6 +202,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   @override
   void dispose() {
     _followUpFlashTimer?.cancel();
+    _auditFlashTimer?.cancel();
     _controller.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
@@ -337,6 +342,16 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     _scrollToIndex(index);
     _followUpFlashTimer = Timer(const Duration(milliseconds: 1600), () {
       if (mounted) setState(() => _followUpFlashIndex = null);
+    });
+  }
+
+  /// 审计记录点击后跳转到消息位置并闪烁提醒。
+  void _flashAuditTarget(int index) {
+    _auditFlashTimer?.cancel();
+    setState(() => _auditFlashIndex = index);
+    _scrollToIndex(index);
+    _auditFlashTimer = Timer(const Duration(milliseconds: 1600), () {
+      if (mounted) setState(() => _auditFlashIndex = null);
     });
   }
 
@@ -1324,8 +1339,20 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                           padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
                           itemBuilder: (context, index) {
                             final log = logs[index];
+                            final jumpIndex = log.messageIndex;
                             return Card(
                               child: ListTile(
+                                onTap: jumpIndex == null
+                                    ? null
+                                    : () {
+                                        Navigator.of(context).pop();
+                                        WidgetsBinding.instance
+                                            .addPostFrameCallback((_) {
+                                          if (mounted) {
+                                            _flashAuditTarget(jumpIndex);
+                                          }
+                                        });
+                                      },
                                 title: Text(
                                   '${log.action} · ${log.result}',
                                   style: TextStyle(color: scheme.onSurface),
@@ -1335,12 +1362,25 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                   style:
                                       TextStyle(color: scheme.onSurfaceVariant),
                                 ),
-                                trailing: Text(
-                                  '${log.time.hour.toString().padLeft(2, '0')}:${log.time.minute.toString().padLeft(2, '0')}',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: scheme.onSurfaceVariant,
-                                  ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      '${log.time.hour.toString().padLeft(2, '0')}:${log.time.minute.toString().padLeft(2, '0')}',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: scheme.onSurfaceVariant,
+                                      ),
+                                    ),
+                                    if (jumpIndex != null) ...[
+                                      const SizedBox(width: 4),
+                                      Icon(
+                                        Icons.open_in_new,
+                                        size: 15,
+                                        color: scheme.primary,
+                                      ),
+                                    ],
+                                  ],
                                 ),
                               ),
                             );
@@ -1580,8 +1620,9 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                         index > _editIndex!;
                                     final isQuoteTarget =
                                         _followUpIndex == index;
-                                    final isQuoteFlash =
-                                        _followUpFlashIndex == index;
+                                    final isFlash =
+                                        _followUpFlashIndex == index ||
+                                            _auditFlashIndex == index;
                                     final bubbleChild = GestureDetector(
                                       behavior: HitTestBehavior.opaque,
                                       onLongPress: state.isLoading
@@ -1617,7 +1658,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                           const Duration(milliseconds: 320),
                                       curve: Curves.easeOut,
                                       decoration: BoxDecoration(
-                                        color: isQuoteFlash
+                                        color: isFlash
                                             ? scheme.primary
                                                 .withValues(alpha: 0.28)
                                             : isQuoteTarget
@@ -1626,13 +1667,13 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                                 : Colors.transparent,
                                         borderRadius: BorderRadius.circular(18),
                                         border: Border.all(
-                                          color: isQuoteFlash
+                                          color: isFlash
                                               ? scheme.primary
                                               : isQuoteTarget
                                                   ? scheme.primary
                                                       .withValues(alpha: 0.55)
                                                   : Colors.transparent,
-                                          width: isQuoteFlash ? 2 : 1.2,
+                                          width: isFlash ? 2 : 1.2,
                                         ),
                                       ),
                                       child: bubbleChild,

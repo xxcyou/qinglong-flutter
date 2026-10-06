@@ -2119,7 +2119,7 @@ class ChatNotifier extends Notifier<ChatState> {
           runningSessionIds: {..._runs.keys},
         );
       }
-      _auditRun(result);
+      _auditRun(result, messageIndex: current.messages.length);
       // 正常收尾：清掉"未完成运行"标记，重开 APP 不该再提示继续。
       unawaited(_clearActiveRun());
       unawaited(BrowserEngine.instance.settleAfterRun());
@@ -2474,7 +2474,7 @@ class ChatNotifier extends Notifier<ChatState> {
       } else {
         state = state.copyWith(runningSessionIds: {..._runs.keys});
       }
-      _auditRun(result);
+      _auditRun(result, messageIndex: current.messages.length);
       unawaited(BrowserEngine.instance.settleAfterRun());
       _pumpQueue(session.id);
     } catch (e) {
@@ -5198,7 +5198,7 @@ class ChatNotifier extends Notifier<ChatState> {
   /// 之前审计只记"计划挂起/确认/拒绝"三种事件，于是在"全部放行"策略下永远
   /// 是空的——用户看到的就是"不管执行什么都显示空"。真正该记的是每一次
   /// 工具调用本身。
-  void _auditRun(AgentResult result) {
+  void _auditRun(AgentResult result, {int? messageIndex}) {
     final entries = <AuditLog>[];
     for (final r in result.toolRecords) {
       final target = _auditTarget(r.args);
