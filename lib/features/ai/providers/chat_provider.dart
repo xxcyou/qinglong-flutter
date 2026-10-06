@@ -5207,6 +5207,7 @@ class ChatNotifier extends Notifier<ChatState> {
           time: r.createdAt ?? DateTime.now(),
           module: _auditModule(r.toolName),
           action: r.toolName,
+          eventIndex: r.eventIndex,
           detail: [
             if (target.isNotEmpty) target,
             if (r.durationMs != null && r.durationMs! > 0) '${r.durationMs}ms',

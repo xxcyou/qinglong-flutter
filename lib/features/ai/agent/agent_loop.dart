@@ -1280,7 +1280,11 @@ class AgentLoop {
     var plan = const AgentTaskPlan();
     final canvases = <AiCanvas>[];
 
-    void emit(AgentEvent event) => onEvent?.call(event);
+    var nextEventIndex = 0;
+    void emit(AgentEvent event) {
+      onEvent?.call(event);
+      nextEventIndex++;
+    }
 
     // 流式增量转发。turn 由这里补上：LlmClient 不知道自己是第几轮。
     var streamTurn = 0;
@@ -2475,6 +2479,7 @@ class AgentLoop {
               records.add(
                 ToolCallRecord(
                   toolName: call.name,
+                  eventIndex: nextEventIndex,
                   args: {'id': canvas.id, 'title': canvas.title},
                   status: payload == null ? 'error' : 'ok',
                   result: payload ?? '用户未提交',
@@ -2555,6 +2560,7 @@ class AgentLoop {
                 records.add(
                   ToolCallRecord(
                     toolName: call.name,
+                    eventIndex: nextEventIndex,
                     args: call.arguments,
                     status: 'error',
                     result: msg,
@@ -2593,6 +2599,7 @@ class AgentLoop {
                 records.add(
                   ToolCallRecord(
                     toolName: call.name,
+                    eventIndex: nextEventIndex,
                     args: call.arguments,
                     status: 'cached',
                     result: cached,
@@ -2623,6 +2630,7 @@ class AgentLoop {
                 records.add(
                   ToolCallRecord(
                     toolName: call.name,
+                    eventIndex: nextEventIndex,
                     args: call.arguments,
                     status: 'blocked',
                     result: msg,
@@ -2679,6 +2687,7 @@ class AgentLoop {
                 records.add(
                   ToolCallRecord(
                     toolName: call.name,
+                    eventIndex: nextEventIndex,
                     args: call.arguments,
                     status: 'pending_confirm',
                     result: '等待用户确认',
@@ -2737,6 +2746,7 @@ class AgentLoop {
                 records.add(
                   ToolCallRecord(
                     toolName: call.name,
+                    eventIndex: nextEventIndex,
                     args: call.arguments,
                     status: 'ok',
                     // UI/历史记录保留完整原始输出；只有喂给模型的上下文用截断版。
@@ -2772,6 +2782,7 @@ class AgentLoop {
                 records.add(
                   ToolCallRecord(
                     toolName: call.name,
+                    eventIndex: nextEventIndex,
                     args: call.arguments,
                     status: 'timeout',
                     result: msg,
@@ -2803,6 +2814,7 @@ class AgentLoop {
                 records.add(
                   ToolCallRecord(
                     toolName: call.name,
+                    eventIndex: nextEventIndex,
                     args: call.arguments,
                     status: 'error',
                     result: message,
@@ -2848,6 +2860,7 @@ class AgentLoop {
             records.add(
               ToolCallRecord(
                 toolName: askedCall.name,
+                eventIndex: nextEventIndex,
                 args: askedCall.arguments,
                 status: 'awaiting_input',
                 result: askedQuestion.question,

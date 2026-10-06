@@ -96,7 +96,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
 
   /// 审计记录跳转过来的闪烁目标。
   int? _auditFlashIndex;
+  int? _auditFlashEventIndex;
   Timer? _auditFlashTimer;
+
+  /// 审计跳转到具体工具行时使用的行 GlobalKey：消息下标 → 事件下标 → key。
+  final Map<int, Map<int, GlobalKey>> _auditProcessRowKeys = {};
 
   /// 修改模式：长按“修改”后进入，不立刻撤回，等用户发送修改或取消。
   bool _editMode = false;
@@ -346,14 +350,63 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     });
   }
 
-  /// 审计记录点击后跳转到消息位置并闪烁提醒。
-  void _flashAuditTarget(int index) {
+  /// 审计记录点击后跳转到消息里的具体工具行并闪烁提醒。
+  void _flashAuditTarget(int index, {int? eventIndex}) {
     _auditFlashTimer?.cancel();
-    setState(() => _auditFlashIndex = index);
-    _scrollToIndex(index);
-    _auditFlashTimer = Timer(const Duration(milliseconds: 1600), () {
-      if (mounted) setState(() => _auditFlashIndex = null);
+    setState(() {
+      _auditFlashIndex = index;
+      _auditFlashEventIndex = eventIndex;
     });
+    _scrollToIndex(index);
+    if (eventIndex != null) {
+      Future<void>.delayed(const Duration(milliseconds: 260), () {
+        if (mounted) _ensureAuditEventVisible(index, eventIndex);
+      });
+    }
+    _auditFlashTimer = Timer(const Duration(milliseconds: 1700), () {
+      if (mounted) {
+        setState(() {
+          _auditFlashIndex = null;
+          _auditFlashEventIndex = null;
+        });
+      }
+    });
+  }
+
+  /// 审计跳转工具行：对消息内过程卡的具体行做精确滚动。
+  void _ensureAuditEventVisible(int messageIndex, int eventIndex) {
+    final key = _auditProcessRowKeys[messageIndex]?[eventIndex];
+    final ctx = key?.currentContext;
+    if (ctx == null) return;
+    Scrollable.ensureVisible(
+      ctx,
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOut,
+      alignment: 0.35,
+    );
+  }
+
+  /// 审计记录没存事件下标时，按工具名在目标消息里找第一个匹配行。
+  int? _resolveAuditEventIndex(
+    AuditLog log,
+    int messageIndex,
+    List<AiChatMessage> messages,
+  ) {
+    if (messageIndex < 0 || messageIndex >= messages.length) return null;
+    final events = messages[messageIndex].agentEvents;
+    if (events.isEmpty) return null;
+    if (log.eventIndex != null &&
+        log.eventIndex! >= 0 &&
+        log.eventIndex! < events.length) {
+      return log.eventIndex;
+    }
+    final tool = log.action;
+    if (tool.isEmpty) return null;
+    for (var i = 0; i < events.length; i++) {
+      final e = events[i];
+      if (e.toolName == tool) return i;
+    }
+    return null;
   }
 
   void _startEdit(int index, AiChatMessage message) {
@@ -1375,10 +1428,18 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                           padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
                           itemBuilder: (context, index) {
                             final log = logs[index];
+                            final messages = ref.read(chatProvider).messages;
                             final jumpIndex = _resolveAuditMessageIndex(
                               log,
-                              ref.read(chatProvider).messages,
+                              messages,
                             );
+                            final jumpEventIndex = jumpIndex == null
+                                ? null
+                                : _resolveAuditEventIndex(
+                                    log,
+                                    jumpIndex,
+                                    messages,
+                                  );
                             return Card(
                               child: ListTile(
                                 onTap: jumpIndex == null
@@ -1388,7 +1449,10 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                         WidgetsBinding.instance
                                             .addPostFrameCallback((_) {
                                           if (mounted) {
-                                            _flashAuditTarget(jumpIndex);
+                                            _flashAuditTarget(
+                                              jumpIndex,
+                                              eventIndex: jumpEventIndex,
+                                            );
                                           }
                                         });
                                       },
@@ -1661,7 +1725,8 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                         _followUpIndex == index;
                                     final isFlash =
                                         _followUpFlashIndex == index ||
-                                            _auditFlashIndex == index;
+                                            (_auditFlashIndex == index &&
+                                                _auditFlashEventIndex == null);
                                     final bubbleChild = GestureDetector(
                                       behavior: HitTestBehavior.opaque,
                                       onLongPress: state.isLoading
@@ -1675,6 +1740,18 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                           _MessageBubble(
                                             message: message,
                                             anchorIndex: index,
+                                            highlightEventIndex:
+                                                _auditFlashIndex == index
+                                                    ? _auditFlashEventIndex
+                                                    : null,
+                                            eventRowKeys:
+                                                _auditFlashIndex == index
+                                                    ? _auditProcessRowKeys
+                                                        .putIfAbsent(
+                                                            index,
+                                                            () => {},
+                                                          )
+                                                    : const {},
                                             selectable:
                                                 _selectableIndex == index,
                                             onResend: state.isLoading
@@ -2597,10 +2674,18 @@ class _MessageBubble extends StatelessWidget {
     this.onSuggestionTap,
     this.anchorIndex,
     this.selectable = false,
+    this.highlightEventIndex,
+    this.eventRowKeys = const {},
   });
 
   final AiChatMessage message;
   final int? anchorIndex;
+
+  /// 审计跳转：需要高亮的过程行下标（对应 message.agentEvents）。
+  final int? highlightEventIndex;
+
+  /// 过程行 GlobalKey，审计跳转时用于精准滚动。
+  final Map<int, GlobalKey> eventRowKeys;
 
   /// 是否开启文本选取。默认关闭，避免长按选取抢占长按菜单。
   final bool selectable;
@@ -2834,6 +2919,8 @@ class _MessageBubble extends StatelessWidget {
               turns: message.turns,
               totalTokens: message.totalTokens,
               modeLabels: message.modeLabels,
+              highlightEventIndex: highlightEventIndex,
+              eventRowKeys: eventRowKeys,
               onOpenCanvas: (canvas) =>
                   AiCanvasSheet.show(context, canvas),
             ),
@@ -2868,6 +2955,8 @@ class _MessageBubble extends StatelessWidget {
             turns: message.turns,
             totalTokens: message.totalTokens,
             modeLabels: message.modeLabels,
+            highlightEventIndex: highlightEventIndex,
+            eventRowKeys: eventRowKeys,
             onOpenCanvas: (canvas) =>
                 AiCanvasSheet.show(context, canvas),
           ),

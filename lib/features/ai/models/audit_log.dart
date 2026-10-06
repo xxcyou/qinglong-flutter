@@ -6,6 +6,7 @@ class AuditLog {
     required this.detail,
     required this.result,
     this.messageIndex,
+    this.eventIndex,
   }) : id = '${time.microsecondsSinceEpoch}_$module';
 
   final String id;
@@ -17,6 +18,9 @@ class AuditLog {
 
   /// 这条记录对应聊天列表里的消息下标；旧记录可能没有。
   final int? messageIndex;
+
+  /// 消息里 agentEvents 的下标，用于精确跳到思维链中的工具/步骤行。
+  final int? eventIndex;
 }
 
 extension AuditLogCodec on AuditLog {
@@ -27,6 +31,7 @@ extension AuditLogCodec on AuditLog {
         'detail': detail,
         'result': result,
         'messageIndex': messageIndex,
+        'eventIndex': eventIndex,
       };
 
   static AuditLog fromJson(Map<String, dynamic> json) {
@@ -38,6 +43,9 @@ extension AuditLogCodec on AuditLog {
       result: json['result']?.toString() ?? '',
       messageIndex: json['messageIndex'] is int
           ? json['messageIndex'] as int
+          : null,
+      eventIndex: json['eventIndex'] is int
+          ? json['eventIndex'] as int
           : null,
     );
   }

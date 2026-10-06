@@ -32,6 +32,8 @@ class AgentProcessCard extends StatefulWidget {
     this.liveSubagentReasoningChars = const {},
     this.liveSubagentContentChars = const {},
     this.modeLabels = const [],
+    this.highlightEventIndex,
+    this.eventRowKeys = const {},
   });
 
   final void Function(AiCanvas canvas)? onOpenCanvas;
@@ -41,6 +43,12 @@ class AgentProcessCard extends StatefulWidget {
   final int turns;
   final int totalTokens;
   final bool initiallyExpanded;
+
+  /// 审计跳转目标：对应 [events] 里的原始终端下标；非空时自动展开并高亮该行。
+  final int? highlightEventIndex;
+
+  /// 终末事件下标 → GlobalKey，用于审计跳转时精准滚动到该工具行。
+  final Map<int, GlobalKey> eventRowKeys;
 
   /// 子代理实时流：group → 思考/正文尾部、工具名、真实字数。
   final Map<String, String> liveSubagentReasoning;
@@ -62,7 +70,8 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
   late bool _expanded = widget.initiallyExpanded ||
       widget.events.any(
         (e) => e.kind == AgentEventKind.toolEnd && e.isWrite,
-      );
+      ) ||
+      widget.highlightEventIndex != null;
 
   /// 时间线上真正要画的事件。
   ///
@@ -145,6 +154,12 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
     );
     // 新图片事件到达时自动展开，保证立即看到图，而不是等工具链结束。
     if (newHasImage && !oldHasImage && !_expanded) {
+      _expanded = true;
+    }
+    // 审计跳转指定具体工具行时也自动展开。
+    if (widget.highlightEventIndex != null &&
+        oldWidget.highlightEventIndex != widget.highlightEventIndex &&
+        !_expanded) {
       _expanded = true;
     }
   }
@@ -345,11 +360,17 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
           );
         }
       } else {
+        final originalIndex = _originalIndexOf(e);
         children.add(
           _TimelineRow(
             event: e,
             isLast: i == events.length - 1,
             onOpenCanvas: widget.onOpenCanvas,
+            highlighted: widget.highlightEventIndex != null &&
+                originalIndex == widget.highlightEventIndex,
+            rowKey: originalIndex >= 0
+                ? widget.eventRowKeys[originalIndex]
+                : null,
           ),
         );
       }
@@ -358,6 +379,13 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: children,
     );
+  }
+
+  int _originalIndexOf(AgentEvent target) {
+    for (var i = 0; i < widget.events.length; i++) {
+      if (identical(widget.events[i], target)) return i;
+    }
+    return -1;
   }
 
   String _subtitle(int toolCount) {
@@ -390,6 +418,8 @@ class _TimelineRow extends StatefulWidget {
     required this.event,
     required this.isLast,
     this.onOpenCanvas,
+    this.highlighted = false,
+    this.rowKey,
   });
 
   final AgentEvent event;
@@ -397,6 +427,12 @@ class _TimelineRow extends StatefulWidget {
 
   /// 给 canvas 时间线行加“重新打开悬浮画布”入口。
   final void Function(AiCanvas canvas)? onOpenCanvas;
+
+  /// 审计跳转时高亮这一行。
+  final bool highlighted;
+
+  /// 用于把滚动精确带到这一行。
+  final Key? rowKey;
 
   @override
   State<_TimelineRow> createState() => _TimelineRowState();
@@ -511,7 +547,17 @@ class _TimelineRowState extends State<_TimelineRow> {
     final scheme = Theme.of(context).colorScheme;
     final visual = _visualFor(event, scheme);
 
-    return Row(
+    return AnimatedContainer(
+      key: widget.rowKey,
+      duration: const Duration(milliseconds: 350),
+      curve: Curves.easeOut,
+      decoration: BoxDecoration(
+        color: widget.highlighted
+            ? scheme.primary.withValues(alpha: 0.26)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Column(
@@ -760,6 +806,7 @@ class _TimelineRowState extends State<_TimelineRow> {
           ),
         ),
       ],
+      ),
     );
   }
 
