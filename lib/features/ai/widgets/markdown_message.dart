@@ -963,11 +963,13 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                 child: Text(
                   parsed.parametric
                       ? '参数曲线'
-                      : parsed.connect
-                          ? '组合曲线 · ${parsed.series.length} 段'
-                          : parsed.series.length > 1
-                              ? '${parsed.series.length} 条函数'
-                              : parsed.series.first.expr,
+                      : parsed.pair
+                          ? '${parsed.series.length ~/ 2} 层闭合曲线'
+                          : parsed.connect
+                              ? '组合曲线 · ${parsed.series.length} 段'
+                              : parsed.series.length > 1
+                                  ? '${parsed.series.length} 条函数'
+                                  : parsed.series.first.expr,
                   style: const TextStyle(
                     color: Color(0xFFE6EDF7),
                     fontSize: 13,
@@ -1012,7 +1014,31 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
               spacing: 10,
               runSpacing: 4,
               children: [
-                if (parsed.connect)
+                if (parsed.pair)
+                  for (var pi = 0; pi < parsed.series.length; pi += 2)
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: parsed.series[pi].color,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '层${pi ~/ 2 + 1}',
+                          style: const TextStyle(
+                            color: Color(0xFFB6C2D4),
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
+                    )
+                else if (parsed.connect)
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -1083,6 +1109,7 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                       t: t,
                       progress: progress,
                       connect: parsed.connect,
+                      pair: parsed.pair,
                       parametric: parsed.parametric,
                       paramX: parsed.paramX,
                       paramY: parsed.paramY,
@@ -1120,12 +1147,18 @@ _ParsePlot? _parsePlot(String source) {
   double xMin = -10, xMax = 10;
   double tMin = 0, tMax = 6.283185307179586;
   var connect = false;
+  var pairFlag = false;
   var paramFlag = false;
   final exprLines = <String>[];
   for (final line in lines) {
     final connectM = RegExp(r'^connect\s*[:：]\s*(true|false)\s*$', caseSensitive: false).firstMatch(line);
     if (connectM != null) {
       connect = connectM.group(1)!.toLowerCase() == 'true';
+      continue;
+    }
+    final pairM = RegExp(r'^pair\s*[:：]\s*(true|false)\s*$', caseSensitive: false).firstMatch(line);
+    if (pairM != null) {
+      pairFlag = pairM.group(1)!.toLowerCase() == 'true';
       continue;
     }
     final paramM = RegExp(r'^(?:param|parametric)\s*[:：]\s*(true|false)\s*$', caseSensitive: false).firstMatch(line);
@@ -1242,7 +1275,9 @@ _ParsePlot? _parsePlot(String source) {
         usesT: usesT,
         color: connect
             ? const Color(0xFF64B5F6)
-            : colors[series.length % colors.length],
+            : pairFlag
+                ? colors[series.length ~/ 2 % colors.length]
+                : colors[series.length % colors.length],
         segmentXMin: segMin,
         segmentXMax: segMax,
       ));
@@ -1253,6 +1288,7 @@ _ParsePlot? _parsePlot(String source) {
       xMin: xMin,
       xMax: xMax,
       connect: connect,
+      pair: pairFlag,
     );
   } catch (_) {
     return null;
@@ -1284,6 +1320,7 @@ class _ParsePlot {
     required this.xMin,
     required this.xMax,
     required this.connect,
+    this.pair = false,
     this.parametric = false,
     this.paramX,
     this.paramY,
@@ -1300,6 +1337,7 @@ class _ParsePlot {
   final double xMin;
   final double xMax;
   final bool connect;
+  final bool pair;
   final bool parametric;
   final _ExprNode? paramX;
   final _ExprNode? paramY;
@@ -1604,6 +1642,7 @@ class _FunctionPainter extends CustomPainter {
     this.t = 0,
     this.progress = 1,
     this.connect = false,
+    this.pair = false,
     this.parametric = false,
     this.paramX,
     this.paramY,
@@ -1619,6 +1658,7 @@ class _FunctionPainter extends CustomPainter {
   final double t;
   final double progress;
   final bool connect;
+  final bool pair;
   final bool parametric;
   final _ExprNode? paramX;
   final _ExprNode? paramY;
@@ -1780,7 +1820,61 @@ class _FunctionPainter extends CustomPainter {
           ? series.fold<int>(0, (sum, s) => sum + 257)
           : sampleCount;
       final drawLimit = (totalConnectSamples * progress).round();
-      if (connect) {
+      if (pair) {
+        // 成对模式：每两条配成一层闭合轮廓，上边从左到右、下边从右到左
+        for (var pi = 0; pi + 1 < series.length; pi += 2) {
+          final s0 = series[pi];
+          final s1 = series[pi + 1];
+          final curve = Paint()
+            ..color = s0.color
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2
+            ..strokeCap = StrokeCap.round;
+          final path = Path();
+          var started = false;
+          // 第一段：左 -> 右
+          final seg0Min = s0.segmentXMin ?? xMin;
+          final seg0Max = s0.segmentXMax ?? xMax;
+          final seg0Step = (seg0Max - seg0Min) / sampleCount;
+          for (var i = 0; i <= drawLimit; i++) {
+            final x = seg0Min + seg0Step * i;
+            final y = s0.fn.eval(x, t);
+            final ok = y.isFinite && y.abs() < 1e9;
+            if (!ok) {
+              continue;
+            }
+            final px = tx(x);
+            final py = ty(y.clamp(axisYMin, axisYMax));
+            if (!started) {
+              path.moveTo(px, py);
+              started = true;
+            } else {
+              path.lineTo(px, py);
+            }
+          }
+          // 第二段：右 -> 左（反向，形成闭合轮廓）
+          final seg1Min = s1.segmentXMin ?? xMin;
+          final seg1Max = s1.segmentXMax ?? xMax;
+          final seg1Step = (seg1Max - seg1Min) / sampleCount;
+          for (var i = drawLimit; i >= 0; i--) {
+            final x = seg1Min + seg1Step * i;
+            final y = s1.fn.eval(x, t);
+            final ok = y.isFinite && y.abs() < 1e9;
+            if (!ok) {
+              continue;
+            }
+            final px = tx(x);
+            final py = ty(y.clamp(axisYMin, axisYMax));
+            if (!started) {
+              path.moveTo(px, py);
+              started = true;
+            } else {
+              path.lineTo(px, py);
+            }
+          }
+          if (started) canvas.drawPath(path, curve);
+        }
+      } else if (connect) {
         final curve = Paint()
           ..color = const Color(0xFF64B5F6)
           ..style = PaintingStyle.stroke
@@ -1866,6 +1960,7 @@ class _FunctionPainter extends CustomPainter {
       oldDelegate.t != t ||
       oldDelegate.progress != progress ||
       oldDelegate.connect != connect ||
+      oldDelegate.pair != pair ||
       oldDelegate.parametric != parametric ||
       oldDelegate.paramX != paramX ||
       oldDelegate.paramY != paramY ||
