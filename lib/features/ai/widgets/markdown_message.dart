@@ -880,6 +880,18 @@ class _FunctionPlotBuilder extends MarkdownElementBuilder {
   }
 }
 
+class _ViewBounds {
+  const _ViewBounds(this.xMin, this.xMax, this.yMin, this.yMax);
+
+  final double xMin;
+  final double xMax;
+  final double yMin;
+  final double yMax;
+
+  double get xSpan => xMax - xMin;
+  double get ySpan => yMax - yMin;
+}
+
 class _FunctionPlotCard extends StatefulWidget {
   const _FunctionPlotCard({required this.source});
 
@@ -893,7 +905,9 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
     with SingleTickerProviderStateMixin {
   _ParsePlot? _parsed;
   late final AnimationController _controller;
-  final TransformationController _transform = TransformationController();
+  _ViewBounds? _view;
+  _ViewBounds? _gestureStart;
+  Size? _plotSize;
 
   @override
   void initState() {
@@ -923,8 +937,148 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
   @override
   void dispose() {
     _controller.dispose();
-    _transform.dispose();
     super.dispose();
+  }
+
+  /// 计算“能完整展示所有结果”的等比视图范围。
+  _ViewBounds? _autoBounds(Size size) {
+    final parsed = _parsed;
+    if (parsed == null || size.width <= 0 || size.height <= 0) return null;
+    double dataXMin;
+    double dataXMax;
+    double dataYMin;
+    double dataYMax;
+    if (parsed.parametric) {
+      final px = parsed.paramX;
+      final py = parsed.paramY;
+      if (px == null || py == null) return null;
+      final pts = <Offset>[];
+      const n = 400;
+      final step = (parsed.tMax - parsed.tMin) / n;
+      for (var i = 0; i <= n; i++) {
+        final tt = parsed.tMin + step * i;
+        final x = px.eval(0, tt);
+        final y = py.eval(0, tt);
+        if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
+          pts.add(Offset(x, y));
+        }
+      }
+      if (pts.isEmpty) return null;
+      final xs = pts.map((p) => p.dx).toList()..sort();
+      final ys = pts.map((p) => p.dy).toList()..sort();
+      dataXMin = xs.first;
+      dataXMax = xs.last;
+      dataYMin = ys.first;
+      dataYMax = ys.last;
+      if ((dataXMax - dataXMin).abs() < 0.5) {
+        final c = (dataXMax + dataXMin) / 2;
+        dataXMin = c - 1;
+        dataXMax = c + 1;
+      }
+      if ((dataYMax - dataYMin).abs() < 0.5) {
+        final c = (dataYMax + dataYMin) / 2;
+        dataYMin = c - 1;
+        dataYMax = c + 1;
+      }
+    } else {
+      dataXMin = parsed.xMin;
+      dataXMax = parsed.xMax;
+      final ys = <double>[];
+      final dynamicMode = parsed.usesT;
+      const rangeSampleCount = 256;
+      final xSpan = dataXMax - dataXMin;
+      if (xSpan <= 0) return null;
+      final rangeStep = xSpan / rangeSampleCount;
+      if (dynamicMode) {
+        const tSteps = 16;
+        for (var ti = 0; ti <= tSteps; ti++) {
+          final tt = 2 * math.pi * ti / tSteps;
+          for (var i = 0; i <= rangeSampleCount; i++) {
+            final x = dataXMin + rangeStep * i;
+            for (final s in parsed.series) {
+              final v = s.fn.eval(x, tt);
+              if (v.isFinite && v.abs() < 1e9) ys.add(v);
+            }
+          }
+        }
+      } else {
+        for (var i = 0; i <= rangeSampleCount; i++) {
+          final x = dataXMin + rangeStep * i;
+          for (final s in parsed.series) {
+            final v = s.fn.eval(x, 0);
+            if (v.isFinite && v.abs() < 1e9) ys.add(v);
+          }
+        }
+      }
+      if (ys.isEmpty) return null;
+      ys.sort();
+      if (dynamicMode) {
+        dataYMin = ys.first;
+        dataYMax = ys.last;
+      } else {
+        dataYMin = ys[ys.length ~/ 20];
+        dataYMax = ys[ys.length * 19 ~/ 20];
+      }
+      if ((dataYMax - dataYMin).abs() < 0.5) {
+        final c = (dataYMax + dataYMin) / 2;
+        dataYMin = c - 1;
+        dataYMax = c + 1;
+      }
+    }
+    if (dataXMax <= dataXMin || dataYMax <= dataYMin) return null;
+    const pad = 8.0;
+    final availW = size.width - pad * 2;
+    final availH = size.height - pad * 2;
+    if (availW <= 0 || availH <= 0) return null;
+    // 等比缩放：x/y 每单位像素数一致，同时留 8% 边距
+    final u = math.min(
+      availW / ((dataXMax - dataXMin) * 1.08),
+      availH / ((dataYMax - dataYMin) * 1.08),
+    );
+    final dispXSpan = availW / u;
+    final dispYSpan = availH / u;
+    final cx = (dataXMin + dataXMax) / 2;
+    final cy = (dataYMin + dataYMax) / 2;
+    return _ViewBounds(
+      cx - dispXSpan / 2,
+      cx + dispXSpan / 2,
+      cy - dispYSpan / 2,
+      cy + dispYSpan / 2,
+    );
+  }
+
+  void _onScaleStart(ScaleStartDetails details) {
+    final auto = _autoBounds(_plotSize ?? Size.zero);
+    if (auto == null) return;
+    _gestureStart = _view ?? auto;
+  }
+
+  void _onScaleUpdate(ScaleUpdateDetails details) {
+    final start = _gestureStart;
+    final size = _plotSize;
+    if (start == null || size == null) return;
+    const pad = 8.0;
+    final availW = size.width - pad * 2;
+    final availH = size.height - pad * 2;
+    if (availW <= 0 || availH <= 0) return;
+    final oldSpanX = start.xSpan;
+    final oldSpanY = start.ySpan;
+    final scale = details.scale.clamp(0.2, 10.0);
+    final newSpanX = oldSpanX / scale;
+    final newSpanY = oldSpanY / scale;
+    final fx = ((details.localFocalPoint.dx - pad) / availW).clamp(0.0, 1.0);
+    final fy = ((details.localFocalPoint.dy - pad) / availH).clamp(0.0, 1.0);
+    final worldX = start.xMin + oldSpanX * fx;
+    final worldY = start.yMax - oldSpanY * fy;
+    final nxMin = worldX - newSpanX * fx;
+    final nxMax = nxMin + newSpanX;
+    final nyMax = worldY + newSpanY * fy;
+    final nyMin = nyMax - newSpanY;
+    setState(() => _view = _ViewBounds(nxMin, nxMax, nyMin, nyMax));
+  }
+
+  void _onScaleEnd(ScaleEndDetails details) {
+    _gestureStart = null;
   }
 
   @override
@@ -981,7 +1135,7 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                 ),
               ),
               IconButton(
-                onPressed: () => _transform.value = Matrix4.identity(),
+                onPressed: () => setState(() => _view = null),
                 icon: const Icon(Icons.center_focus_weak, size: 15),
                 color: const Color(0xFF73839A),
                 padding: EdgeInsets.zero,
@@ -1105,38 +1259,47 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
             child: SizedBox(
               height: 260,
               width: double.infinity,
-              child: AnimatedBuilder(
-                animation: _controller,
-                builder: (context, _) {
-                  final progress = parsed.usesT ? 1.0 : _controller.value;
-                  final t = parsed.usesT
-                      ? _controller.value * 2 * math.pi
-                      : 0.0;
-                  return InteractiveViewer(
-                    transformationController: _transform,
-                    minScale: 0.6,
-                    maxScale: 8,
-                    boundaryMargin: const EdgeInsets.all(80),
-                    clipBehavior: Clip.hardEdge,
-                    child: CustomPaint(
-                      painter: _FunctionPainter(
-                        series: parsed.series,
-                        xMin: parsed.xMin,
-                        xMax: parsed.xMax,
-                        t: t,
-                        progress: progress,
-                        connect: parsed.connect,
-                        pair: parsed.pair,
-                        parametric: parsed.parametric,
-                        paramX: parsed.paramX,
-                        paramY: parsed.paramY,
-                        tMin: parsed.tMin,
-                        tMax: parsed.tMax,
-                        gridColor: const Color(0xFF243044),
-                        axisColor: const Color(0xFF6B7A90),
-                      ),
-                      child: const SizedBox.expand(),
-                    ),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  _plotSize = constraints.biggest;
+                  final view = _view ?? _autoBounds(constraints.biggest);
+                  return AnimatedBuilder(
+                    animation: _controller,
+                    builder: (context, _) {
+                      final progress = parsed.usesT ? 1.0 : _controller.value;
+                      final t = parsed.usesT
+                          ? _controller.value * 2 * math.pi
+                          : 0.0;
+                      return GestureDetector(
+                        onScaleStart: _onScaleStart,
+                        onScaleUpdate: _onScaleUpdate,
+                        onScaleEnd: _onScaleEnd,
+                        onDoubleTap: () => setState(() => _view = null),
+                        child: CustomPaint(
+                          painter: _FunctionPainter(
+                            series: parsed.series,
+                            xMin: parsed.xMin,
+                            xMax: parsed.xMax,
+                            t: t,
+                            progress: progress,
+                            connect: parsed.connect,
+                            pair: parsed.pair,
+                            parametric: parsed.parametric,
+                            paramX: parsed.paramX,
+                            paramY: parsed.paramY,
+                            tMin: parsed.tMin,
+                            tMax: parsed.tMax,
+                            viewXMin: view?.xMin,
+                            viewXMax: view?.xMax,
+                            viewYMin: view?.yMin,
+                            viewYMax: view?.yMax,
+                            gridColor: const Color(0xFF243044),
+                            axisColor: const Color(0xFF6B7A90),
+                          ),
+                          child: const SizedBox.expand(),
+                        ),
+                      );
+                    },
                   );
                 },
               ),
@@ -1145,7 +1308,7 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
           const Padding(
             padding: EdgeInsets.only(top: 6),
             child: Text(
-              '双指缩放 · 拖动平移 · 右上角重置',
+              '双指等比缩放 · 拖动平移 · 双击/右上角重置',
               style: TextStyle(color: Color(0xFF73839A), fontSize: 10),
             ),
           ),
@@ -1674,6 +1837,10 @@ class _FunctionPainter extends CustomPainter {
     this.paramY,
     this.tMin = 0,
     this.tMax = 6.283185307179586,
+    this.viewXMin,
+    this.viewXMax,
+    this.viewYMin,
+    this.viewYMax,
     required this.gridColor,
     required this.axisColor,
   });
@@ -1690,6 +1857,10 @@ class _FunctionPainter extends CustomPainter {
   final _ExprNode? paramY;
   final double tMin;
   final double tMax;
+  final double? viewXMin;
+  final double? viewXMax;
+  final double? viewYMin;
+  final double? viewYMax;
   final Color gridColor;
   final Color axisColor;
 
@@ -1739,83 +1910,97 @@ class _FunctionPainter extends CustomPainter {
         );
         return;
       }
-      final xs = paramPoints.map((p) => p.dx).toList()..sort();
-      final ys = paramPoints.map((p) => p.dy).toList()..sort();
-      axisXMin = xs.first;
-      axisXMax = xs.last;
-      axisYMin = ys.first;
-      axisYMax = ys.last;
-      if ((axisXMax - axisXMin).abs() < 0.5) {
-        final c = (axisXMax + axisXMin) / 2;
-        axisXMin = c - 1;
-        axisXMax = c + 1;
-      }
-      if ((axisYMax - axisYMin).abs() < 0.5) {
-        final c = (axisYMax + axisYMin) / 2;
-        axisYMin = c - 1;
-        axisYMax = c + 1;
+      if (viewXMin != null) {
+        axisXMin = viewXMin!;
+        axisXMax = viewXMax!;
+        axisYMin = viewYMin!;
+        axisYMax = viewYMax!;
+      } else {
+        final xs = paramPoints.map((p) => p.dx).toList()..sort();
+        final ys = paramPoints.map((p) => p.dy).toList()..sort();
+        axisXMin = xs.first;
+        axisXMax = xs.last;
+        axisYMin = ys.first;
+        axisYMax = ys.last;
+        if ((axisXMax - axisXMin).abs() < 0.5) {
+          final c = (axisXMax + axisXMin) / 2;
+          axisXMin = c - 1;
+          axisXMax = c + 1;
+        }
+        if ((axisYMax - axisYMin).abs() < 0.5) {
+          final c = (axisYMax + axisYMin) / 2;
+          axisYMin = c - 1;
+          axisYMax = c + 1;
+        }
       }
     } else {
-      axisXMin = xMin;
-      axisXMax = xMax;
-      final ys = <double>[];
-      final dynamicMode = series.any((s) => s.usesT);
-      if (dynamicMode) {
-        // 动态模式下用整个 0~2π 的包络算固定 y 轴范围，
-        // 避免坐标轴跟着曲线缩放导致“外层看起来不动”。
-        const rangeSampleCount = 256;
-        const tSteps = 16;
-        final rangeStep = (xMax - xMin) / rangeSampleCount;
-        for (var ti = 0; ti <= tSteps; ti++) {
-          final tt = 2 * math.pi * ti / tSteps;
-          for (var i = 0; i <= rangeSampleCount; i++) {
-            final x = xMin + rangeStep * i;
+      if (viewXMin != null) {
+        axisXMin = viewXMin!;
+        axisXMax = viewXMax!;
+        axisYMin = viewYMin!;
+        axisYMax = viewYMax!;
+      } else {
+        axisXMin = xMin;
+        axisXMax = xMax;
+        final ys = <double>[];
+        final dynamicMode = series.any((s) => s.usesT);
+        if (dynamicMode) {
+          // 动态模式下用整个 0~2π 的包络算固定 y 轴范围，
+          // 避免坐标轴跟着曲线缩放导致“外层看起来不动”。
+          const rangeSampleCount = 256;
+          const tSteps = 16;
+          final rangeStep = (xMax - xMin) / rangeSampleCount;
+          for (var ti = 0; ti <= tSteps; ti++) {
+            final tt = 2 * math.pi * ti / tSteps;
+            for (var i = 0; i <= rangeSampleCount; i++) {
+              final x = xMin + rangeStep * i;
+              for (final s in series) {
+                final v = s.fn.eval(x, tt);
+                if (v.isFinite && v.abs() < 1e9) ys.add(v);
+              }
+            }
+          }
+        } else {
+          final step = (xMax - xMin) / sampleCount;
+          for (var i = 0; i <= sampleCount; i++) {
+            final x = xMin + step * i;
             for (final s in series) {
-              final v = s.fn.eval(x, tt);
+              final v = s.fn.eval(x, t);
               if (v.isFinite && v.abs() < 1e9) ys.add(v);
             }
           }
         }
-      } else {
-        final step = (xMax - xMin) / sampleCount;
-        for (var i = 0; i <= sampleCount; i++) {
-          final x = xMin + step * i;
-          for (final s in series) {
-            final v = s.fn.eval(x, t);
-            if (v.isFinite && v.abs() < 1e9) ys.add(v);
-          }
+        if (ys.isEmpty) {
+          final noData = Paint()
+            ..color = const Color(0xFF5B6B82)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1;
+          canvas.drawLine(
+            Offset(0, size.height / 2),
+            Offset(size.width, size.height / 2),
+            noData,
+          );
+          return;
         }
+        ys.sort();
+        if (dynamicMode) {
+          // 动态图用完整包络，保证跳动到最大/最小时也不被裁掉
+          axisYMin = ys.first;
+          axisYMax = ys.last;
+        } else {
+          axisYMin = ys[ys.length ~/ 20];
+          axisYMax = ys[ys.length * 19 ~/ 20];
+        }
+        if ((axisYMax - axisYMin).abs() < 0.5) {
+          final c = (axisYMax + axisYMin) / 2;
+          axisYMin = c - 1;
+          axisYMax = c + 1;
+        }
+        // 上下留一点边距，曲线不会贴着边
+        final ySpan = axisYMax - axisYMin;
+        axisYMin -= ySpan * 0.08;
+        axisYMax += ySpan * 0.08;
       }
-      if (ys.isEmpty) {
-        final noData = Paint()
-          ..color = const Color(0xFF5B6B82)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1;
-        canvas.drawLine(
-          Offset(0, size.height / 2),
-          Offset(size.width, size.height / 2),
-          noData,
-        );
-        return;
-      }
-      ys.sort();
-      if (dynamicMode) {
-        // 动态图用完整包络，保证跳动到最大/最小时也不被裁掉
-        axisYMin = ys.first;
-        axisYMax = ys.last;
-      } else {
-        axisYMin = ys[ys.length ~/ 20];
-        axisYMax = ys[ys.length * 19 ~/ 20];
-      }
-      if ((axisYMax - axisYMin).abs() < 0.5) {
-        final c = (axisYMax + axisYMin) / 2;
-        axisYMin = c - 1;
-        axisYMax = c + 1;
-      }
-      // 上下留一点边距，曲线不会贴着边
-      final ySpan = axisYMax - axisYMin;
-      axisYMin -= ySpan * 0.08;
-      axisYMax += ySpan * 0.08;
     }
 
     double tx(double x) =>
@@ -2030,6 +2215,10 @@ class _FunctionPainter extends CustomPainter {
       oldDelegate.paramY != paramY ||
       oldDelegate.tMin != tMin ||
       oldDelegate.tMax != tMax ||
+      oldDelegate.viewXMin != viewXMin ||
+      oldDelegate.viewXMax != viewXMax ||
+      oldDelegate.viewYMin != viewYMin ||
+      oldDelegate.viewYMax != viewYMax ||
       oldDelegate.axisColor != axisColor;
 }
 
