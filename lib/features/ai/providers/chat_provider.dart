@@ -3321,6 +3321,34 @@ class ChatNotifier extends Notifier<ChatState> {
     final run = _runs[sessionId];
     if (run == null) return;
     run.events.add(event);
+    // 每次工具结束立刻写审计，不用等整轮跑完。
+    // messageIndex 这时就是将来这条 AI 回复的下标（运行期间会话消息数不会变）。
+    if (event.kind == AgentEventKind.toolEnd &&
+        (event.toolName ?? '').isNotEmpty) {
+      final session = _sessionById(sessionId);
+      if (session != null) {
+        final target = _auditTarget(event.args ?? const {});
+        final raw = event.result ?? '';
+        final short = raw.length > 120
+            ? '${raw.substring(0, 120).replaceAll('\n', ' ')}…'
+            : raw.replaceAll('\n', ' ');
+        unawaited(
+          ref.read(auditProvider.notifier).add(
+            sessionId: sessionId,
+            module: _auditModule(event.toolName!),
+            action: event.toolName!,
+            detail: [
+              if (target.isNotEmpty) target,
+              if ((event.durationMs ?? 0) > 0) '${event.durationMs}ms',
+              if (short.isNotEmpty) short,
+            ].join(' · '),
+            result: event.ok ? 'ok' : 'error',
+            messageIndex: session.messages.length,
+            eventIndex: run.events.length - 1,
+          ),
+        );
+      }
+    }
     if (run.roundId.isNotEmpty) {
       unawaited(
         RoundArchiveService.instance.appendEvent(
@@ -5199,39 +5227,18 @@ class ChatNotifier extends Notifier<ChatState> {
   /// 是空的——用户看到的就是"不管执行什么都显示空"。真正该记的是每一次
   /// 工具调用本身。
   void _auditRun(AgentResult result, {int? messageIndex}) {
-    final entries = <AuditLog>[];
-    for (final r in result.toolRecords) {
-      final target = _auditTarget(r.args);
-      entries.add(
-        AuditLog(
-          time: r.createdAt ?? DateTime.now(),
-          module: _auditModule(r.toolName),
-          action: r.toolName,
-          eventIndex: r.eventIndex,
-          detail: [
-            if (target.isNotEmpty) target,
-            if (r.durationMs != null && r.durationMs! > 0) '${r.durationMs}ms',
-            if (r.result.isNotEmpty)
-              r.result.length > 120
-                  ? '${r.result.substring(0, 120).replaceAll('\n', ' ')}…'
-                  : r.result.replaceAll('\n', ' '),
-          ].join(' · '),
-          result: r.status.isEmpty ? 'ok' : r.status,
-        ),
-      );
-    }
-    entries.add(
-      AuditLog(
-        time: DateTime.now(),
-        module: 'ai',
-        action: 'agent_run',
-        detail: '${result.turns} 轮 · ${result.toolRecords.length} 次工具 · '
-            '${result.usage.totalTokens} tokens',
-        result: result.outcome.name,
-      ),
-    );
+    // 工具级审计已经在 _appendAgentEvent 里实时写好了，这里只补一条整轮汇总。
     ref.read(auditProvider.notifier).addAll(
-          entries,
+          [
+            AuditLog(
+              time: DateTime.now(),
+              module: 'ai',
+              action: 'agent_run',
+              detail: '${result.turns} 轮 · ${result.toolRecords.length} 次工具 · '
+                  '${result.usage.totalTokens} tokens',
+              result: result.outcome.name,
+            ),
+          ],
           sessionId: state.currentSessionId,
         );
   }

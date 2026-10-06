@@ -75,6 +75,8 @@ class AuditNotifier extends Notifier<AuditState> {
     required String action,
     required String detail,
     required String result,
+    int? messageIndex,
+    int? eventIndex,
   }) async {
     await addAll(
       [
@@ -84,6 +86,8 @@ class AuditNotifier extends Notifier<AuditState> {
           action: action,
           detail: detail,
           result: result,
+          messageIndex: messageIndex,
+          eventIndex: eventIndex,
         ),
       ],
       sessionId: sessionId,
