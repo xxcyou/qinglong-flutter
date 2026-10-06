@@ -842,13 +842,21 @@ class _JsonTreeNodeState extends State<_JsonTreeNode> {
 
 /// ` ```plot` 代码块 → 函数图。
 class _FunctionPlotSyntax extends md.BlockSyntax {
+  static final RegExp _pattern = RegExp(
+    r'^```(?:plot|func|function|graph|chart)\s*(.*)$',
+    caseSensitive: false,
+  );
+
   @override
-  RegExp get pattern => RegExp(r'^```(?:plot|func)\s*$');
+  RegExp get pattern => _pattern;
 
   @override
   md.Node? parse(md.BlockParser parser) {
+    final first = _pattern.firstMatch(parser.current.content);
     parser.advance();
     final lines = <String>[];
+    final inline = first?.group(1)?.trim();
+    if (inline != null && inline.isNotEmpty) lines.add(inline);
     while (!parser.isDone) {
       final line = parser.current;
       if (line.content.trimLeft().startsWith('```')) {
@@ -1285,43 +1293,81 @@ class _NegNode implements _ExprNode {
 }
 
 class _FuncNode implements _ExprNode {
-  _FuncNode(this.name, this.arg);
+  _FuncNode(this.name, this.args);
   final String name;
-  final _ExprNode arg;
+  final List<_ExprNode> args;
+
+  double _v(int i, double x, double t) => args[i].eval(x, t);
+
   @override
   double eval(double x, double t) {
-    final v = arg.eval(x, t);
     try {
       switch (name) {
         case 'sin':
-          return math.sin(v);
+          return math.sin(_v(0, x, t));
         case 'cos':
-          return math.cos(v);
+          return math.cos(_v(0, x, t));
         case 'tan':
-          return math.tan(v);
+          return math.tan(_v(0, x, t));
         case 'asin':
-          return math.asin(v);
+          return math.asin(_v(0, x, t));
         case 'acos':
-          return math.acos(v);
+          return math.acos(_v(0, x, t));
         case 'atan':
-          return math.atan(v);
+          return math.atan(_v(0, x, t));
+        case 'atan2':
+          return math.atan2(_v(0, x, t), _v(1, x, t));
         case 'sqrt':
+          final v = _v(0, x, t);
           return v < 0 ? double.nan : math.sqrt(v);
         case 'abs':
-          return v.abs();
+          return _v(0, x, t).abs();
         case 'exp':
-          return math.exp(v);
+          return math.exp(_v(0, x, t));
         case 'ln':
+          final v = _v(0, x, t);
           return v <= 0 ? double.nan : math.log(v);
-        case 'log':
+        case 'log2':
+          final v = _v(0, x, t);
+          return v <= 0 ? double.nan : math.log(v) / math.ln2;
         case 'log10':
+          final v = _v(0, x, t);
           return v <= 0 ? double.nan : math.log(v) / math.ln10;
+        case 'log':
+          if (args.length == 2) {
+            final v = _v(0, x, t);
+            final base = _v(1, x, t);
+            if (v <= 0 || base <= 0 || base == 1) return double.nan;
+            return math.log(v) / math.log(base);
+          }
+          final v = _v(0, x, t);
+          return v <= 0 ? double.nan : math.log(v);
+        case 'min':
+          return math.min(_v(0, x, t), _v(1, x, t));
+        case 'max':
+          return math.max(_v(0, x, t), _v(1, x, t));
+        case 'pow':
+          return math.pow(_v(0, x, t), _v(1, x, t)).toDouble();
+        case 'mod':
+          final a = _v(0, x, t);
+          final b = _v(1, x, t);
+          return b == 0 ? double.nan : a % b;
+        case 'clamp':
+          final v = _v(0, x, t);
+          final lo = _v(1, x, t);
+          final hi = _v(2, x, t);
+          return v.clamp(lo, hi).toDouble();
         case 'floor':
-          return v.floorToDouble();
+          return _v(0, x, t).floorToDouble();
         case 'ceil':
-          return v.ceilToDouble();
+          return _v(0, x, t).ceilToDouble();
         case 'round':
-          return v.roundToDouble();
+          return _v(0, x, t).roundToDouble();
+        case 'sign':
+          final v = _v(0, x, t);
+          if (v > 0) return 1;
+          if (v < 0) return -1;
+          return 0;
       }
     } catch (_) {
       return double.nan;
@@ -1341,8 +1387,9 @@ class _ExprParser {
   static final RegExp _num = RegExp(r'^-?\d+(\.\d+)?([eE][+-]?\d+)?$');
   static final RegExp _id = RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$');
   static final Set<String> _functions = {
-    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sqrt', 'abs',
-    'exp', 'ln', 'log', 'log10', 'floor', 'ceil', 'round',
+    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2', 'sqrt', 'abs',
+    'exp', 'ln', 'log', 'log2', 'log10', 'min', 'max', 'pow', 'mod',
+    'clamp', 'floor', 'ceil', 'round', 'sign',
   };
 
   static List<String> _tokenize(String input) {
@@ -1455,12 +1502,20 @@ class _ExprParser {
           throw FormatException('function needs (');
         }
         _pos++;
-        final arg = _parseExpr();
+        final args = <_ExprNode>[];
+        while (true) {
+          args.add(_parseExpr());
+          if (_pos < _tokens.length && _tokens[_pos] == ',') {
+            _pos++;
+            continue;
+          }
+          break;
+        }
         if (_pos >= _tokens.length || _tokens[_pos] != ')') {
           throw FormatException('missing )');
         }
         _pos++;
-        return _FuncNode(token, arg);
+        return _FuncNode(token, args);
       }
       throw FormatException('unknown $token');
     }
