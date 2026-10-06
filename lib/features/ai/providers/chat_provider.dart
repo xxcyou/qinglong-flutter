@@ -271,6 +271,16 @@ class ChatState {
     return 1;
   }
 
+  /// 标题栏实时 token：已落库的会话累计 + 当前这轮已经回来的请求 token。
+  ///
+  /// 每轮 LLM 响应返回时 [lastTokens] 会被 onUsage 刷新，所以运行中数字也在涨，
+  /// 不用等整轮结束。
+  int get liveSessionTokens {
+    final base = sessionTokens;
+    if (!isLoading) return base;
+    return base + lastTokens;
+  }
+
   static Map<String, List<AiPlanAction>> _withCurrentPlan(
     Map<String, List<AiPlanAction>> source,
     String sessionId,

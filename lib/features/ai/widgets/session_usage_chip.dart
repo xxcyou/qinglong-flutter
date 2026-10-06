@@ -8,7 +8,7 @@ import 'ai_control_sheets.dart';
 
 /// 标题栏上的会话用量牌：这个会话花了多少 token、发了多少次请求。
 ///
-/// 为什么要单独有它：原来只有一个"上下文 45%"的百分比，看不出"这一整个会话
+/// 为什么单独要它有：原来只有一个"上下文 45%"的百分比，看不出"这一整个会话
 /// 到底烧了多少"。而计费是按累计 token 走的（每一轮都会重发历史），所以
 /// 会话累计和上下文占用是两个数量级不同的数字，必须分开显示。
 ///
@@ -20,9 +20,10 @@ class SessionUsageChip extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
-    // 只订阅这四个数：整份 ChatState 每 80ms 就会因流式文字变一次，
+    // 只订阅这几个数：整份 ChatState 每 80ms 就会因流式文字变一次，
     // 照它重建的话这块牌子会跟着抖。
-    final tokens = ref.watch(chatProvider.select((s) => s.sessionTokens));
+    final tokens =
+        ref.watch(chatProvider.select((s) => s.liveSessionTokens));
     final requests = ref.watch(chatProvider.select((s) => s.sessionRequests));
     final liveTurn = ref.watch(chatProvider.select((s) => s.liveTurn));
     final running = ref.watch(chatProvider.select((s) => s.isLoading));
@@ -77,25 +78,49 @@ class SessionUsageChip extends ConsumerWidget {
               color: scheme.primary.withValues(alpha: running ? 0.95 : 0.6),
             ),
             const SizedBox(width: 5),
-            RichText(
-              textAlign: TextAlign.right,
-              text: TextSpan(
-                children: [
-                  if (showTokens) ...[
-                    TextSpan(text: Formatter.tokens(tokens), style: strong),
-                    TextSpan(text: ' tok', style: weak),
-                    TextSpan(text: '  ·  ', style: weak),
-                  ],
-                  TextSpan(
-                    text: Formatter.count(totalRequests),
-                    style: strong,
-                  ),
-                  TextSpan(text: ' 次', style: weak),
-                ],
+            if (showTokens) ...[
+              _AnimatedCountText(
+                value: tokens,
+                style: strong,
+                format: Formatter.tokens,
               ),
+              Text(' tok', style: weak),
+              Text('  ·  ', style: weak),
+            ],
+            _AnimatedCountText(
+              value: totalRequests,
+              style: strong,
+              format: Formatter.count,
             ),
+            Text(' 次', style: weak),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// 数值跳动：token/次数变化时用 Tween 平滑滚过去，而不是生硬地跳数字。
+class _AnimatedCountText extends StatelessWidget {
+  const _AnimatedCountText({
+    required this.value,
+    required this.style,
+    required this.format,
+  });
+
+  final int value;
+  final TextStyle style;
+  final String Function(int value) format;
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(end: value.toDouble()),
+      duration: const Duration(milliseconds: 420),
+      curve: Curves.easeOutCubic,
+      builder: (context, animated, _) => Text(
+        format(animated.round()),
+        style: style,
       ),
     );
   }
