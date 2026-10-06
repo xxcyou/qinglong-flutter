@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:markdown/markdown.dart' as md;
 
 import '../../../shared/image_preview_overlay.dart';
 import '../../../shared/mono_text.dart';
@@ -21,6 +22,18 @@ class MarkdownMessage extends StatelessWidget {
   final String text;
   final Color? textColor;
 
+  /// 在 GitHub Flavored Markdown 基础上追加自定义行内语法：
+  /// 默认语法先解析（代码块/行内代码优先），再处理 ++/==/{c:}。
+  static final md.ExtensionSet enhancedExtensionSet = md.ExtensionSet(
+    md.ExtensionSet.gitHubFlavored.blockSyntaxes,
+    [
+      ...md.ExtensionSet.gitHubFlavored.inlineSyntaxes,
+      _UnderlineSyntax(),
+      _GlowSyntax(),
+      _ColorSyntax(),
+    ],
+  );
+
   /// 是否支持长按选取文本。默认 true；聊天气泡取消默认长按选取，
   /// 只有用户从长按菜单点“选取文字”后才临时打开。
   final bool selectable;
@@ -35,6 +48,12 @@ class MarkdownMessage extends StatelessWidget {
     return MarkdownBody(
       data: text,
       selectable: selectable,
+      extensionSet: enhancedExtensionSet,
+      builders: {
+        'u': _UnderlineBuilder(),
+        'mark': _GlowBuilder(),
+        'span': _ColorSpanBuilder(),
+      },
       imageBuilder: (uri, title, alt) => _MarkdownImage(uri: uri, alt: alt),
       onTapLink: (_, href, __) {
         if (href != null) Clipboard.setData(ClipboardData(text: href));
@@ -79,6 +98,154 @@ class MarkdownMessage extends StatelessWidget {
         horizontalRuleDecoration: BoxDecoration(
           border: Border(top: BorderSide(color: scheme.outlineVariant)),
         ),
+      ),
+    );
+  }
+}
+
+/// `++文字++` → 下划线。
+class _UnderlineSyntax extends md.InlineSyntax {
+  _UnderlineSyntax() : super(r'\+\+([^+\n]+?)\+\+');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    parser.addNode(md.Element.text('u', match.group(1) ?? ''));
+    return true;
+  }
+}
+
+/// `==文字==` → 发光（霓虹强调）。
+class _GlowSyntax extends md.InlineSyntax {
+  _GlowSyntax() : super(r'==([^=\n]+?)==');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    parser.addNode(md.Element.text('mark', match.group(1) ?? ''));
+    return true;
+  }
+}
+
+/// `{c:red}文字{/c}` → 指定颜色，支持红/绿/蓝等名字或 #RRGGBB。
+class _ColorSyntax extends md.InlineSyntax {
+  _ColorSyntax() : super(r'\{c:([^}\n]+)\}([^{]+?)\{/c\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element.text('span', match.group(2) ?? '')
+      ..attributes['color'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+class _UnderlineBuilder extends MarkdownElementBuilder {
+  _UnderlineBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final text = element.textContent;
+    if (text.isEmpty) return null;
+    return Text.rich(
+      TextSpan(
+        text: text,
+        style: (parentStyle ?? const TextStyle()).copyWith(
+          decoration: TextDecoration.underline,
+          decorationColor: parentStyle?.color,
+        ),
+      ),
+    );
+  }
+}
+
+class _GlowBuilder extends MarkdownElementBuilder {
+  _GlowBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final text = element.textContent;
+    if (text.isEmpty) return null;
+    const glow = Color(0xFFFFD54F);
+    return Text.rich(
+      TextSpan(
+        text: text,
+        style: (parentStyle ?? const TextStyle()).copyWith(
+          color: glow,
+          shadows: const [
+            Shadow(color: Color(0x66FFD54F), blurRadius: 6),
+            Shadow(color: Color(0x44FFB300), blurRadius: 14),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ColorSpanBuilder extends MarkdownElementBuilder {
+  _ColorSpanBuilder();
+
+  static const Map<String, Color> _named = {
+    'red': Color(0xFFFF5252),
+    'green': Color(0xFF69F0AE),
+    'blue': Color(0xFF82B1FF),
+    'yellow': Color(0xFFFFD740),
+    'orange': Color(0xFFFFAB40),
+    'purple': Color(0xFFB388FF),
+    'pink': Color(0xFFFF80AB),
+    'cyan': Color(0xFF80DEEA),
+    'teal': Color(0xFF80CBC4),
+    'gray': Color(0xFFB0BEC5),
+    'grey': Color(0xFFB0BEC5),
+    'brown': Color(0xFFBCAAA4),
+    'indigo': Color(0xFF9FA8DA),
+    'white': Color(0xFFFFFFFF),
+    'black': Color(0xFF000000),
+  };
+
+  Color? _parse(String raw) {
+    var v = raw.trim();
+    if (v.isEmpty) return null;
+    final lower = v.toLowerCase();
+    if (_named.containsKey(lower)) return _named[lower];
+    if (v.startsWith('#')) v = v.substring(1);
+    if (v.length == 3) {
+      final r = int.parse(v.substring(0, 1), radix: 16);
+      final g = int.parse(v.substring(1, 2), radix: 16);
+      final b = int.parse(v.substring(2, 3), radix: 16);
+      return Color(0xFF000000 | (r << 20) | (g << 12) | (b << 4));
+    }
+    if ((v.length == 6 || v.length == 8) &&
+        int.tryParse(v, radix: 16) != null) {
+      final value = int.parse(v, radix: 16);
+      if (v.length == 6) return Color(0xFF000000 | value);
+      return Color(value);
+    }
+    return null;
+  }
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final text = element.textContent;
+    final color = _parse(element.attributes['color'] ?? '');
+    if (text.isEmpty) return null;
+    return Text.rich(
+      TextSpan(
+        text: text,
+        style: (parentStyle ?? const TextStyle()).copyWith(color: color),
       ),
     );
   }
