@@ -14,6 +14,36 @@ import '../models/ai_message.dart';
 
 /// AI 回复的 Markdown 渲染：表格、代码块、列表都能正常显示，
 /// 代码块可长按复制。用户消息仍用纯文本，避免把用户输入当标记解析。
+/// 修复常见的“代码围栏没闭合”：如果 ```/~~~ 只开不关，
+/// markdown 解析会把后面所有内容都吞进代码块。这里自动补一个闭合围栏。
+String _normalizeUnclosedFences(String input) {
+  final lines = input.split('\n');
+  var inFence = false;
+  String fence = '```';
+  for (final line in lines) {
+    final trimmed = line.trimLeft();
+    if (trimmed.startsWith('```')) {
+      final rest = trimmed.substring(3).trim();
+      if (!inFence) {
+        inFence = true;
+        fence = '```';
+      } else if (rest.isEmpty) {
+        inFence = false;
+      }
+    } else if (trimmed.startsWith('~~~')) {
+      final rest = trimmed.substring(3).trim();
+      if (!inFence) {
+        inFence = true;
+        fence = '~~~';
+      } else if (rest.isEmpty) {
+        inFence = false;
+      }
+    }
+  }
+  if (!inFence) return input;
+  return '$input\n$fence\n';
+}
+
 class MarkdownMessage extends StatelessWidget {
   const MarkdownMessage({
     super.key,
@@ -51,7 +81,7 @@ class MarkdownMessage extends StatelessWidget {
         );
     final codeBlockBuilder = _CodeBlockBuilder();
     return MarkdownBody(
-      data: text,
+      data: _normalizeUnclosedFences(text),
       selectable: selectable,
       extensionSet: enhancedExtensionSet,
       blockSyntaxes: [_FunctionPlotSyntax()],
