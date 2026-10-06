@@ -383,13 +383,87 @@ class _CodeBlock extends StatefulWidget {
 
 class _CodeBlockState extends State<_CodeBlock> {
   bool _copied = false;
+  Object? _json;
+  bool _formatted = false;
+  bool _treeMode = false;
+
+  @override
+  void initState() {
+    super.initState();
+    try {
+      _json = jsonDecode(widget.code.trim());
+      _formatted = _json != null;
+    } catch (_) {}
+  }
+
+  String get _displayCode {
+    if (_json != null && _formatted) {
+      return const JsonEncoder.withIndent('  ').convert(_json);
+    }
+    return widget.code;
+  }
 
   Future<void> _copy() async {
-    await Clipboard.setData(ClipboardData(text: widget.code));
+    final text = _displayCode.isEmpty ? widget.code : _displayCode;
+    await Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
     setState(() => _copied = true);
     await Future<void>.delayed(const Duration(milliseconds: 1500));
     if (mounted) setState(() => _copied = false);
+  }
+
+  void _toggleFormat() {
+    if (_json == null) {
+      ScaffoldMessenger.of(context)
+        ..removeCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('仅 JSON 支持格式化'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+      return;
+    }
+    setState(() {
+      _formatted = !_formatted;
+      _treeMode = false;
+    });
+  }
+
+  void _toggleTree() {
+    if (_json == null) return;
+    setState(() => _treeMode = !_treeMode);
+  }
+
+  Widget _actionButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    bool active = false,
+  }) {
+    final color = active
+        ? const Color(0xFF8AB4FF)
+        : Theme.of(context).colorScheme.onSurfaceVariant;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Row(
+            children: [
+              Icon(icon, size: 13, color: color),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(fontSize: 11, color: color),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -429,6 +503,26 @@ class _CodeBlockState extends State<_CodeBlock> {
                 ),
               ),
               const Spacer(),
+              if (_json == null)
+                _actionButton(
+                  icon: Icons.format_align_left,
+                  label: '格式化',
+                  onTap: _toggleFormat,
+                )
+              else ...[
+                _actionButton(
+                  icon: _formatted ? Icons.undo : Icons.format_align_left,
+                  label: _formatted ? '原文' : '格式化',
+                  onTap: _toggleFormat,
+                  active: _formatted,
+                ),
+                _actionButton(
+                  icon: _treeMode ? Icons.article_outlined : Icons.account_tree_outlined,
+                  label: _treeMode ? '文本' : '树',
+                  onTap: _toggleTree,
+                  active: _treeMode,
+                ),
+              ],
               Material(
                 color: Colors.transparent,
                 child: InkWell(
@@ -466,18 +560,189 @@ class _CodeBlockState extends State<_CodeBlock> {
             ],
           ),
         ),
-        HighlightView(
-          widget.code,
-          language: widget.language,
-          theme: theme,
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-          textStyle: const TextStyle(
+        if (_json != null && _treeMode)
+          _JsonTreeView(data: _json!)
+        else
+          HighlightView(
+            _displayCode,
+            language: widget.language,
+            theme: theme,
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+            textStyle: const TextStyle(
+              fontFamily: kMonoFamily,
+              fontFamilyFallback: kMonoFallback,
+              fontSize: 12.5,
+              height: 1.5,
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _JsonTreeView extends StatelessWidget {
+  const _JsonTreeView({required this.data});
+
+  final Object data;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFF121826),
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: _JsonTreeNode(value: data, depth: 0, initiallyExpanded: true),
+      ),
+    );
+  }
+}
+
+class _JsonTreeNode extends StatefulWidget {
+  const _JsonTreeNode({
+    required this.value,
+    required this.depth,
+    this.keyName,
+    this.initiallyExpanded = false,
+  });
+
+  final Object? value;
+  final int depth;
+  final String? keyName;
+  final bool initiallyExpanded;
+
+  @override
+  State<_JsonTreeNode> createState() => _JsonTreeNodeState();
+}
+
+class _JsonTreeNodeState extends State<_JsonTreeNode> {
+  late bool _expanded = widget.initiallyExpanded;
+
+  bool get _isMap => widget.value is Map;
+  bool get _isList => widget.value is List;
+  bool get _isContainer => _isMap || _isList;
+
+  List<Widget> _children() {
+    final result = <Widget>[];
+    if (widget.value is Map) {
+      final map = widget.value! as Map;
+      for (final entry in map.entries) {
+        result.add(_JsonTreeNode(
+          keyName: entry.key.toString(),
+          value: entry.value,
+          depth: widget.depth + 1,
+        ));
+      }
+    } else if (widget.value is List) {
+      final list = widget.value! as List;
+      for (var i = 0; i < list.length; i++) {
+        result.add(_JsonTreeNode(
+          keyName: '[$i]',
+          value: list[i],
+          depth: widget.depth + 1,
+        ));
+      }
+    }
+    return result;
+  }
+
+  TextSpan _valueSpan(Object? value) {
+    if (value is String) {
+      return TextSpan(
+        text: '"$value"',
+        style: const TextStyle(color: Color(0xFF98C379)),
+      );
+    }
+    if (value is num) {
+      return TextSpan(
+        text: '$value',
+        style: const TextStyle(color: Color(0xFFD19A66)),
+      );
+    }
+    if (value is bool) {
+      return TextSpan(
+        text: '$value',
+        style: const TextStyle(color: Color(0xFFC678DD)),
+      );
+    }
+    if (value == null) {
+      return const TextSpan(
+        text: 'null',
+        style: TextStyle(color: Color(0xFFC678DD), fontStyle: FontStyle.italic),
+      );
+    }
+    return TextSpan(
+      text: '$value',
+      style: const TextStyle(color: Color(0xFFABB2BF)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const keyStyle = TextStyle(color: Color(0xFF8AB4FF));
+    final indent = widget.depth * 16.0;
+    if (!_isContainer) {
+      return Padding(
+        padding: EdgeInsets.only(left: indent, right: 12, top: 2, bottom: 2),
+        child: Text.rich(
+          TextSpan(
+            children: [
+              if (widget.keyName != null) TextSpan(text: '${widget.keyName}: ', style: keyStyle),
+              _valueSpan(widget.value),
+            ],
+          ),
+          style: const TextStyle(
             fontFamily: kMonoFamily,
             fontFamilyFallback: kMonoFallback,
             fontSize: 12.5,
-            height: 1.5,
+            height: 1.4,
           ),
         ),
+      );
+    }
+
+    final count = _isMap ? (widget.value! as Map).length : (widget.value! as List).length;
+    final bracket = _isMap ? '{' : '[';
+    final closeBracket = _isMap ? '}' : ']';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _expanded = !_expanded),
+          child: Padding(
+            padding: EdgeInsets.only(left: indent, right: 12, top: 2, bottom: 2),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  _expanded ? Icons.arrow_drop_down : Icons.arrow_right,
+                  size: 18,
+                  color: const Color(0xFF8AB4FF),
+                ),
+                if (widget.keyName != null)
+                  Text('${widget.keyName}: ', style: keyStyle),
+                Text(
+                  '$bracket$count$closeBracket',
+                  style: const TextStyle(
+                    color: Color(0xFFABB2BF),
+                    fontSize: 12.5,
+                    fontFamily: kMonoFamily,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_expanded)
+          Padding(
+            padding: EdgeInsets.only(left: 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: _children(),
+            ),
+          ),
       ],
     );
   }
