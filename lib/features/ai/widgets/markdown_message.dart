@@ -1081,6 +1081,54 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
     _gestureStart = null;
   }
 
+  void _zoom(double factor) {
+    final size = _plotSize;
+    final auto = _autoBounds(size ?? Size.zero);
+    if (auto == null) return;
+    final current = _view ?? auto;
+    final cx = (current.xMin + current.xMax) / 2;
+    final cy = (current.yMin + current.yMax) / 2;
+    final newSpanX = current.xSpan / factor;
+    final newSpanY = current.ySpan / factor;
+    setState(() {
+      _view = _ViewBounds(
+        cx - newSpanX / 2,
+        cx + newSpanX / 2,
+        cy - newSpanY / 2,
+        cy + newSpanY / 2,
+      );
+    });
+  }
+
+  void _pan(double dx, double dy) {
+    final size = _plotSize;
+    final auto = _autoBounds(size ?? Size.zero);
+    if (auto == null) return;
+    final current = _view ?? auto;
+    final shiftX = current.xSpan * 0.3 * dx;
+    final shiftY = current.ySpan * 0.3 * dy;
+    setState(() {
+      _view = _ViewBounds(
+        current.xMin + shiftX,
+        current.xMax + shiftX,
+        current.yMin + shiftY,
+        current.yMax + shiftY,
+      );
+    });
+  }
+
+  Widget _plotIconButton(IconData icon, String tooltip, VoidCallback onPressed) {
+    return IconButton(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 18),
+      color: const Color(0xFF93C5FD),
+      tooltip: tooltip,
+      padding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1305,10 +1353,48 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
               ),
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _plotIconButton(
+                  Icons.zoom_out,
+                  '缩小',
+                  () => _zoom(1 / 1.35),
+                ),
+                _plotIconButton(
+                  Icons.zoom_in,
+                  '放大',
+                  () => _zoom(1.35),
+                ),
+                _plotIconButton(
+                  Icons.keyboard_arrow_left,
+                  '左移',
+                  () => _pan(-1, 0),
+                ),
+                _plotIconButton(
+                  Icons.keyboard_arrow_right,
+                  '右移',
+                  () => _pan(1, 0),
+                ),
+                _plotIconButton(
+                  Icons.keyboard_arrow_up,
+                  '上移',
+                  () => _pan(0, 1),
+                ),
+                _plotIconButton(
+                  Icons.keyboard_arrow_down,
+                  '下移',
+                  () => _pan(0, -1),
+                ),
+              ],
+            ),
+          ),
           const Padding(
-            padding: EdgeInsets.only(top: 6),
+            padding: EdgeInsets.only(top: 2),
             child: Text(
-              '双指等比缩放 · 拖动平移 · 双击/右上角重置',
+              '也可双指等比缩放/拖动平移 · 双击/右上角重置',
               style: TextStyle(color: Color(0xFF73839A), fontSize: 10),
             ),
           ),
