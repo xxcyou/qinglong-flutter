@@ -189,13 +189,17 @@ class CronApi {
       final file = index < 0 ? logPath : logPath.substring(index + 1);
       // 新版青龙优先 /logs/detail；插件可以改写 log_read。
       if (await QinglongApiAdapterRegistry.hasFunction('log_read')) {
-        final data = await QinglongApiAdapterRegistry.invoke(
-          apiBaseUrl: apiBaseUrl,
-          function: 'log_read',
-          pathParams: {'dir': dir, 'file': file},
-          query: {'path': dir, 'file': file},
-        );
-        return CronLog.fromJson(data);
+        try {
+          final data = await QinglongApiAdapterRegistry.invoke(
+            apiBaseUrl: apiBaseUrl,
+            function: 'log_read',
+            pathParams: {'dir': dir, 'file': file},
+            query: {'path': dir, 'file': file},
+          );
+          if (data != null) return CronLog.fromJson(data);
+        } catch (_) {
+          // 插件失败回退内置。
+        }
       }
       try {
         final response = await DioClient.dio.get<dynamic>(

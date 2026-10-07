@@ -15,19 +15,26 @@ class LogApi {
     String? searchValue,
   }) async {
     if (await QinglongApiAdapterRegistry.hasFunction('log_list')) {
-      final data = await QinglongApiAdapterRegistry.invoke(
-        apiBaseUrl: apiBaseUrl,
-        function: 'log_list',
-        query: {
-          if (searchValue != null && searchValue.isNotEmpty)
-            'searchValue': searchValue,
-        },
-      );
-      return _flatten(data is List
-          ? data
-          : (data is Map<String, dynamic>
-              ? data['data'] as List? ?? const []
-              : const []));
+      try {
+        final data = await QinglongApiAdapterRegistry.invoke(
+          apiBaseUrl: apiBaseUrl,
+          function: 'log_list',
+          query: {
+            if (searchValue != null && searchValue.isNotEmpty)
+              'searchValue': searchValue,
+          },
+        );
+        if (data != null) {
+          final result = _flatten(data is List
+              ? data
+              : (data is Map<String, dynamic>
+                  ? data['data'] as List? ?? const []
+                  : const []));
+          if (result.isNotEmpty) return result;
+        }
+      } catch (_) {
+        // 插件失败回退内置。
+      }
     }
     final response = await DioClient.dio.get<dynamic>(
       '$apiBaseUrl/logs',
@@ -73,13 +80,20 @@ class LogApi {
     String? dir,
   }) async {
     if (await QinglongApiAdapterRegistry.hasFunction('log_read')) {
-      final data = await QinglongApiAdapterRegistry.invoke(
-        apiBaseUrl: apiBaseUrl,
-        function: 'log_read',
-        pathParams: {'dir': dir ?? '', 'file': file},
-        query: {'path': dir ?? '', 'file': file},
-      );
-      return _splitLog(data);
+      try {
+        final data = await QinglongApiAdapterRegistry.invoke(
+          apiBaseUrl: apiBaseUrl,
+          function: 'log_read',
+          pathParams: {'dir': dir ?? '', 'file': file},
+          query: {'path': dir ?? '', 'file': file},
+        );
+        if (data != null) {
+          final result = _splitLog(data);
+          if (result.isNotEmpty) return result;
+        }
+      } catch (_) {
+        // 插件失败回退内置。
+      }
     }
     try {
       // 新版青龙（2.16+）已下线 GET /logs/:file，改用 /logs/detail。

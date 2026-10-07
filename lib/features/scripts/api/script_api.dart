@@ -27,15 +27,22 @@ class ScriptApi {
     String? searchValue,
   }) async {
     if (await QinglongApiAdapterRegistry.hasFunction('script_list')) {
-      final data = await QinglongApiAdapterRegistry.invoke(
-        apiBaseUrl: apiBaseUrl,
-        function: 'script_list',
-        query: {
-          if (searchValue != null && searchValue.isNotEmpty)
-            'searchValue': searchValue,
-        },
-      );
-      return _extractScriptList(data);
+      try {
+        final data = await QinglongApiAdapterRegistry.invoke(
+          apiBaseUrl: apiBaseUrl,
+          function: 'script_list',
+          query: {
+            if (searchValue != null && searchValue.isNotEmpty)
+              'searchValue': searchValue,
+          },
+        );
+        if (data != null) {
+          final result = _extractScriptList(data);
+          if (result.isNotEmpty) return result;
+        }
+      } catch (_) {
+        // 插件失败不阻断：继续走内置硬编码。
+      }
     }
     final response = await DioClient.dio.get<dynamic>(
       '$apiBaseUrl/scripts',
@@ -99,13 +106,20 @@ class ScriptApi {
   }) async {
     final (dir, name) = _split(file);
     if (await QinglongApiAdapterRegistry.hasFunction('script_read')) {
-      final data = await QinglongApiAdapterRegistry.invoke(
-        apiBaseUrl: apiBaseUrl,
-        function: 'script_read',
-        pathParams: {'dir': dir, 'name': name},
-        query: {'path': dir, 'name': name},
-      );
-      return _extractScriptContent(data);
+      try {
+        final data = await QinglongApiAdapterRegistry.invoke(
+          apiBaseUrl: apiBaseUrl,
+          function: 'script_read',
+          pathParams: {'dir': dir, 'name': name},
+          query: {'path': dir, 'name': name},
+        );
+        if (data != null) {
+          final result = _extractScriptContent(data);
+          if (result.isNotEmpty) return result;
+        }
+      } catch (_) {
+        // 插件失败继续内置回退。
+      }
     }
     try {
       // 新版青龙（2.16+）已下线 GET /scripts/:file，改用 /scripts/detail。
@@ -217,13 +231,17 @@ class ScriptApi {
     final (dir, name) = _split(path);
     await ensureDirectory(apiBaseUrl: apiBaseUrl, dir: dir);
     if (await QinglongApiAdapterRegistry.hasFunction('script_create')) {
-      await QinglongApiAdapterRegistry.invoke(
-        apiBaseUrl: apiBaseUrl,
-        function: 'script_create',
-        pathParams: {'dir': dir, 'name': name},
-        body: {'path': dir, 'filename': name, 'content': content},
-      );
-      return;
+      try {
+        await QinglongApiAdapterRegistry.invoke(
+          apiBaseUrl: apiBaseUrl,
+          function: 'script_create',
+          pathParams: {'dir': dir, 'name': name},
+          body: {'path': dir, 'filename': name, 'content': content},
+        );
+        return;
+      } catch (_) {
+        // 插件失败继续内置。
+      }
     }
     final response = await DioClient.dio.post<dynamic>(
       '$apiBaseUrl/scripts',
@@ -246,13 +264,17 @@ class ScriptApi {
     // 保存也要建目录：PUT 对新文件同样是 writeFile，缺目录一样 500。
     await ensureDirectory(apiBaseUrl: apiBaseUrl, dir: dir);
     if (await QinglongApiAdapterRegistry.hasFunction('script_save')) {
-      await QinglongApiAdapterRegistry.invoke(
-        apiBaseUrl: apiBaseUrl,
-        function: 'script_save',
-        pathParams: {'dir': dir, 'name': name},
-        body: {'path': dir, 'filename': name, 'content': content},
-      );
-      return;
+      try {
+        await QinglongApiAdapterRegistry.invoke(
+          apiBaseUrl: apiBaseUrl,
+          function: 'script_save',
+          pathParams: {'dir': dir, 'name': name},
+          body: {'path': dir, 'filename': name, 'content': content},
+        );
+        return;
+      } catch (_) {
+        // 插件失败继续内置。
+      }
     }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts',
@@ -273,13 +295,17 @@ class ScriptApi {
   }) async {
     final (dir, name) = _split(path);
     if (await QinglongApiAdapterRegistry.hasFunction('script_rename')) {
-      await QinglongApiAdapterRegistry.invoke(
-        apiBaseUrl: apiBaseUrl,
-        function: 'script_rename',
-        pathParams: {'dir': dir, 'name': name, 'newName': newFilename},
-        body: {'path': dir, 'filename': name, 'newFilename': newFilename},
-      );
-      return;
+      try {
+        await QinglongApiAdapterRegistry.invoke(
+          apiBaseUrl: apiBaseUrl,
+          function: 'script_rename',
+          pathParams: {'dir': dir, 'name': name, 'newName': newFilename},
+          body: {'path': dir, 'filename': name, 'newFilename': newFilename},
+        );
+        return;
+      } catch (_) {
+        // 插件失败继续内置。
+      }
     }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts/rename',
@@ -298,13 +324,17 @@ class ScriptApi {
     required String directory,
   }) async {
     if (await QinglongApiAdapterRegistry.hasFunction('script_create_directory')) {
-      await QinglongApiAdapterRegistry.invoke(
-        apiBaseUrl: apiBaseUrl,
-        function: 'script_create_directory',
-        pathParams: {'dir': path, 'name': directory},
-        body: {'path': path, 'directory': directory},
-      );
-      return;
+      try {
+        await QinglongApiAdapterRegistry.invoke(
+          apiBaseUrl: apiBaseUrl,
+          function: 'script_create_directory',
+          pathParams: {'dir': path, 'name': directory},
+          body: {'path': path, 'directory': directory},
+        );
+        return;
+      } catch (_) {
+        // 插件失败继续内置。
+      }
     }
     final response = await DioClient.dio.post<dynamic>(
       '$apiBaseUrl/scripts',
@@ -323,17 +353,21 @@ class ScriptApi {
   }) async {
     final (dir, name) = _split(path);
     if (await QinglongApiAdapterRegistry.hasFunction('script_delete')) {
-      await QinglongApiAdapterRegistry.invoke(
-        apiBaseUrl: apiBaseUrl,
-        function: 'script_delete',
-        pathParams: {'dir': dir, 'name': name},
-        body: {
-          'path': dir,
-          'filename': name,
-          'type': isDirectory ? 'directory' : 'file',
-        },
-      );
-      return;
+      try {
+        await QinglongApiAdapterRegistry.invoke(
+          apiBaseUrl: apiBaseUrl,
+          function: 'script_delete',
+          pathParams: {'dir': dir, 'name': name},
+          body: {
+            'path': dir,
+            'filename': name,
+            'type': isDirectory ? 'directory' : 'file',
+          },
+        );
+        return;
+      } catch (_) {
+        // 插件失败继续内置。
+      }
     }
     final response = await DioClient.dio.delete<dynamic>(
       '$apiBaseUrl/scripts',
@@ -359,12 +393,17 @@ class ScriptApi {
   }) async {
     final (dir, name) = _split(path);
     if (await QinglongApiAdapterRegistry.hasFunction('script_run')) {
-      return await QinglongApiAdapterRegistry.invoke(
-        apiBaseUrl: apiBaseUrl,
-        function: 'script_run',
-        pathParams: {'dir': dir, 'name': name},
-        body: {'path': dir, 'filename': name, 'content': content},
-      );
+      try {
+        final data = await QinglongApiAdapterRegistry.invoke(
+          apiBaseUrl: apiBaseUrl,
+          function: 'script_run',
+          pathParams: {'dir': dir, 'name': name},
+          body: {'path': dir, 'filename': name, 'content': content},
+        );
+        if (data != null) return data;
+      } catch (_) {
+        // 插件失败继续内置。
+      }
     }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts/run',
@@ -384,17 +423,21 @@ class ScriptApi {
   }) async {
     final (dir, name) = _split(path);
     if (await QinglongApiAdapterRegistry.hasFunction('script_stop')) {
-      await QinglongApiAdapterRegistry.invoke(
-        apiBaseUrl: apiBaseUrl,
-        function: 'script_stop',
-        pathParams: {'dir': dir, 'name': name},
-        body: {
-          'path': dir,
-          'filename': name,
-          if (pid != null) 'pid': pid,
-        },
-      );
-      return;
+      try {
+        await QinglongApiAdapterRegistry.invoke(
+          apiBaseUrl: apiBaseUrl,
+          function: 'script_stop',
+          pathParams: {'dir': dir, 'name': name},
+          body: {
+            'path': dir,
+            'filename': name,
+            if (pid != null) 'pid': pid,
+          },
+        );
+        return;
+      } catch (_) {
+        // 插件失败继续内置。
+      }
     }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts/stop',

@@ -1259,6 +1259,21 @@ class QlToolRegistry {
           danger: false,
         ),
         ToolDefinition(
+          name: 'qinglong_adapter_remove',
+          description: '删除某个青龙版本的接口适配插件。一般用于插件写错导致内置页面异常时，'
+              '删掉后 APP 回到内置兼容逻辑。不传 version 则删除当前面板版本对应的插件。',
+          parameters: _obj([], {
+            'version': {
+              'type': 'string',
+              'description': '要删除的青龙版本号；缺省删除当前面板版本插件。',
+            },
+          }),
+          isWrite: true,
+          impact: '删除该版本接口适配插件，恢复内置硬编码接口逻辑',
+          reversible: false,
+          danger: false,
+        ),
+        ToolDefinition(
           name: 'app_api_override_list',
           description: '列出当前 APP 内置接口的运行时覆盖规则（用于让内置页面适配面板版本）。',
           parameters: _obj([], {}),
@@ -3031,6 +3046,33 @@ else:
             'functions': plugin.functions.keys.toList(),
             'hint': '插件已热更新并写入版本缓存；当前面板默认版本为 '
                 '${ApiOverrideRegistry.currentVersion}，同版本面板自动复用。',
+          });
+        }
+
+      case 'qinglong_adapter_remove':
+        {
+          final currentPanel = panel;
+          if (currentPanel == null) {
+            return jsonEncode({'error': '未选择面板'});
+          }
+          await QinglongApiAdapterRegistry.ensureLoaded();
+          final version = (args['version'] as String?)
+                  ?.trim()
+                  .isNotEmpty == true
+              ? (args['version'] as String).trim()
+              : ApiOverrideRegistry.currentVersion.trim();
+          if (version.isEmpty) {
+            return jsonEncode({'error': '当前面板版本为空，请显式传 version'});
+          }
+          final existed = QinglongApiAdapterRegistry
+                  .pluginForVersion(version) !=
+              null;
+          await QinglongApiAdapterRegistry.remove(version);
+          return jsonEncode({
+            'ok': true,
+            'version': version,
+            'removed': existed,
+            'hint': '已删除该版本适配插件，APP 下次请求自动回退内置兼容逻辑。',
           });
         }
 
