@@ -20,7 +20,6 @@ import 'ssh_floating_host.dart';
 /// 点击文件可查看图片/编辑文本，并通过中转与外部（本地/SSH）文件管理器互通。
 class SshFloatingFiles {
   static final Set<int> _ids = {};
-  static final Set<String> _containers = {};
 
   static void show(
     BuildContext context, {
@@ -28,7 +27,6 @@ class SshFloatingFiles {
     required String containerId,
     String? title,
   }) {
-    if (_containers.contains(containerId)) return;
     late final int id;
     id = SshFloatingHost.add(
       context,
@@ -44,12 +42,10 @@ class SshFloatingFiles {
         onClose: () {
           SshFloatingHost.close(id);
           _ids.remove(id);
-          _containers.remove(containerId);
         },
       ),
     );
     _ids.add(id);
-    _containers.add(containerId);
   }
 }
 

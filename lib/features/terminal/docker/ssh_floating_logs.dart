@@ -12,7 +12,6 @@ import '../../../shared/mono_text.dart';
 /// 悬浮窗容器日志：通过 SSH 执行 docker logs -f，实时滚动显示。
 class SshFloatingLogs {
   static final Set<int> _ids = {};
-  static final Set<String> _containers = {};
 
   static void show(
     BuildContext context, {
@@ -20,7 +19,6 @@ class SshFloatingLogs {
     required String containerId,
     String? title,
   }) {
-    if (_containers.contains(containerId)) return;
     late final int id;
     id = SshFloatingHost.add(
       context,
@@ -36,12 +34,10 @@ class SshFloatingLogs {
         onClose: () {
           SshFloatingHost.close(id);
           _ids.remove(id);
-          _containers.remove(containerId);
         },
       ),
     );
     _ids.add(id);
-    _containers.add(containerId);
   }
 }
 
