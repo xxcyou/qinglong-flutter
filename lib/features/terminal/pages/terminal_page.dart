@@ -14,6 +14,7 @@ import '../providers/terminal_session_provider.dart';
 import '../terminal_palettes.dart';
 import '../widgets/package_install_sheet.dart';
 import '../widgets/ssh_manager_sheet.dart';
+import '../widgets/adb_manager_sheet.dart';
 import '../widgets/ssh_terminal_view.dart';
 import '../widgets/terminal_key_bar.dart';
 import '../widgets/terminal_selection_bar.dart';
@@ -242,6 +243,11 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
           tooltip: 'SSH 会话管理（新建/连接/删除都在这里）',
           onPressed: () => SshManagerSheet.show(context),
           icon: const Icon(Icons.dns_outlined),
+        ),
+        IconButton(
+          tooltip: 'ADB 设备管理（无线调试/文件管理）',
+          onPressed: () => AdbManagerSheet.show(context),
+          icon: const Icon(Icons.smartphone_outlined),
         ),
         IconButton(
           tooltip: '文件管理',

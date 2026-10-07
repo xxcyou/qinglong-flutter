@@ -436,6 +436,13 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
             await ref
                 .read(shellFilesProvider.notifier)
                 .deleteAtScope(item.sourcePath, FileScope.ssh, item.sourceSshId);
+          } else if (item.sourceType == ContainerRelaySourceType.adb) {
+            await ref.read(shellFilesProvider.notifier).deleteAtScope(
+                  item.sourcePath,
+                  FileScope.adb,
+                  null,
+                  adbId: item.sourceAdbId,
+                );
           } else {
             await ref
                 .read(shellFilesProvider.notifier)
@@ -474,6 +481,7 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
             sourcePath,
             sourceScope,
             st.clipboardSshId,
+            adbId: st.clipboardAdbId,
           );
       if (bytes == null) {
         _toast('读取源文件失败');
@@ -487,6 +495,7 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
               sourcePath,
               sourceScope,
               st.clipboardSshId,
+              adbId: st.clipboardAdbId,
             );
       }
       await _load();

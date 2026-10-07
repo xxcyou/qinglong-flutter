@@ -41,6 +41,7 @@ dependencies:
   webview_flutter_android: ^4.12.0
   flutter_js: ^0.8.7
   dartssh2: ^4.1.0
+  flutter_adb: ^1.0.0
 
 dev_dependencies:
   flutter_test:

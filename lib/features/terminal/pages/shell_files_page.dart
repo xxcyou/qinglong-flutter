@@ -17,6 +17,7 @@ import '../../../shared/image_viewer_page.dart';
 import '../../../shared/text_input_dialog.dart';
 import '../providers/shell_files_provider.dart';
 import '../providers/ssh_session_provider.dart';
+import '../providers/adb_session_provider.dart';
 import '../docker/container_file_relay.dart';
 import '../docker/docker_container.dart';
 import '../floating_terminal.dart';
@@ -361,6 +362,11 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                 icon: Icon(Icons.dns_outlined, size: 17),
                 label: Text('SSH 文件'),
               ),
+              ButtonSegment(
+                value: FileScope.adb,
+                icon: Icon(Icons.smartphone, size: 17),
+                label: Text('ADB 文件'),
+              ),
             ],
             selected: {state.scope},
             showSelectedIcon: false,
@@ -369,6 +375,10 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
           if (state.scope == FileScope.ssh) ...[
             const SizedBox(height: 8),
             _SshSessionPicker(state: state),
+          ],
+          if (state.scope == FileScope.adb) ...[
+            const SizedBox(height: 8),
+            _AdbSessionPicker(state: state),
           ],
           if (_searchVisible) ...[
             const SizedBox(height: 8),
@@ -700,7 +710,8 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
           initialIndex: index < 0 ? 0 : index,
           title: entry.name,
           subtitle: FileKinds.sizeText(entry.size),
-          onOpenExternal: state.scope == FileScope.ssh
+          onOpenExternal: state.scope == FileScope.ssh ||
+                  state.scope == FileScope.adb
               ? null
               : () => _notifier.openExternal(
                     entry.path,
@@ -804,7 +815,8 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
       final sourceType = switch (state.scope) {
         FileScope.ssh => ContainerRelaySourceType.ssh,
         FileScope.app => ContainerRelaySourceType.app,
-        _ => ContainerRelaySourceType.shell,
+        FileScope.adb => ContainerRelaySourceType.adb,
+        FileScope.shell => ContainerRelaySourceType.shell,
       };
       ContainerFileRelay.set(ContainerRelayItem(
         name: entry.name,
@@ -813,6 +825,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
         sourceType: sourceType,
         sourcePath: entry.path,
         sourceSshId: state.scope == FileScope.ssh ? state.sshSessionId : null,
+        sourceAdbId: state.scope == FileScope.adb ? state.adbSessionId : null,
       ));
     } catch (_) {
       // 读不到字节就不放中转，普通同区复制剪切仍走原逻辑。
@@ -1734,6 +1747,57 @@ class _SshSessionPicker extends ConsumerWidget {
             ),
             onSelected: (_) =>
                 ref.read(shellFilesProvider.notifier).setSshSession(s.id),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _AdbSessionPicker extends ConsumerWidget {
+  const _AdbSessionPicker({required this.state});
+
+  final ShellFilesState state;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final adbState = ref.watch(adbSessionsProvider);
+    final sessions = adbState.sessions;
+    if (sessions.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: Text('还没有 ADB 设备，请先在 ADB 设备管理里连接'),
+      );
+    }
+
+    return SizedBox(
+      height: 40,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        itemCount: sessions.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final s = sessions[i];
+          final selected = state.adbSessionId == s.id;
+          final scheme = Theme.of(context).colorScheme;
+          return ChoiceChip(
+            selected: selected,
+            showCheckmark: false,
+            avatar: Icon(
+              s.isConnected ? Icons.smartphone : Icons.smartphone_outlined,
+              size: 15,
+              color: s.isConnected ? Colors.greenAccent : scheme.outline,
+            ),
+            label: Text(
+              '${s.name}${s.isConnected ? '' : '（未连接）'}',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+            onSelected: (_) =>
+                ref.read(shellFilesProvider.notifier).setAdbSession(s.id),
           );
         },
       ),

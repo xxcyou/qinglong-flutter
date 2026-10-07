@@ -4,7 +4,7 @@ import 'dart:typed_data';
 ///
 /// 统一把源文件先读成字节放到这里，再从目标侧写出去；
 /// 剪切会在目标写成功后删除源文件。
-enum ContainerRelaySourceType { container, shell, app, ssh }
+enum ContainerRelaySourceType { container, shell, app, ssh, adb }
 
 class ContainerRelayItem {
   const ContainerRelayItem({
@@ -14,6 +14,7 @@ class ContainerRelayItem {
     required this.sourceType,
     required this.sourcePath,
     this.sourceSshId,
+    this.sourceAdbId,
     this.sourceContainerId,
   });
 
@@ -25,6 +26,9 @@ class ContainerRelayItem {
 
   /// sourceType 为 ssh/container 时对应的 SSH 会话 id。
   final String? sourceSshId;
+
+  /// sourceType 为 adb 时对应的 ADB 会话 id。
+  final String? sourceAdbId;
 
   /// sourceType 为 container 时对应的容器 id。
   final String? sourceContainerId;
