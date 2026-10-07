@@ -339,8 +339,18 @@ class AgentLoop {
   final AgentCancelToken? cancelToken;
 
   /// 每完成一轮 LLM 请求就回调一次最新用量，界面据此实时刷新上下文/token。
-  final void Function(int totalTokens, int promptTokens, int cacheHitTokens)?
-      onUsage;
+  ///
+  /// totalTokens / promptTokens / cacheHitTokens 是“最后一次请求”的上下文占用，
+  /// totalPromptTokens / totalOutputTokens / totalCacheTokens 是本轮 Agent 累计值，
+  /// 供标题栏做输入/输出/缓存的分类实时统计。
+  final void Function({
+    required int totalTokens,
+    required int promptTokens,
+    required int cacheHitTokens,
+    required int totalPromptTokens,
+    required int totalOutputTokens,
+    required int totalCacheTokens,
+  })? onUsage;
 
   /// 提交前 hook：插件可改写要发给模型的 messages。返回 null 表示不改。
   final List<LlmMessage>? Function(List<LlmMessage>)? requestTransformer;
@@ -1569,9 +1579,12 @@ class AgentLoop {
         }
         // 实时用量：每轮请求回来就把最新数字推给界面，不用等整轮 Agent 跑完。
         onUsage?.call(
-          usage.totalTokens,
-          lastPromptTokens,
-          lastCacheHitTokens,
+          totalTokens: usage.totalTokens,
+          promptTokens: lastPromptTokens,
+          cacheHitTokens: lastCacheHitTokens,
+          totalPromptTokens: usage.promptTokens,
+          totalOutputTokens: usage.completionTokens,
+          totalCacheTokens: usage.cacheHitTokens,
         );
 
         final reasoning = response.reasoningContent.trim();

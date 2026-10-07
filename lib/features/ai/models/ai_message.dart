@@ -78,6 +78,9 @@ class AiChatMessage {
     this.totalTokens = 0,
     this.promptTokens = 0,
     this.cachedTokens = 0,
+    this.inputTokens = 0,
+    this.outputTokens = 0,
+    this.cacheTokens = 0,
     this.taskPlan = const AgentTaskPlan(),
     this.canvases = const [],
     this.roundId = '',
@@ -114,8 +117,17 @@ class AiChatMessage {
   /// 最后一次请求的上下文实际占用。
   final int promptTokens;
 
-  /// 命中提示词缓存的 token 数（DeepSeek 等按 1/10 计价）。
+  /// 命中提示词缓存的 token 数（DeepSeek 等按 1/10 计价，最后一次请求）。
   final int cachedTokens;
+
+  /// 本轮累计“输入 token”（usage.promptTokens 累加）。
+  final int inputTokens;
+
+  /// 本轮累计“输出 token”（usage.completionTokens 累加）。
+  final int outputTokens;
+
+  /// 本轮累计“提示词缓存命中 token”（usage.cacheHitTokens 累加）。
+  final int cacheTokens;
 
   /// 本条回复对应的任务清单（AI 拆的步骤 + 最终状态），随会话持久化。
   final AgentTaskPlan taskPlan;
@@ -161,6 +173,9 @@ class AiChatMessage {
         totalTokens: totalTokens,
         promptTokens: promptTokens,
         cachedTokens: cachedTokens,
+        inputTokens: inputTokens,
+        outputTokens: outputTokens,
+        cacheTokens: cacheTokens,
         taskPlan: taskPlan,
         canvases: canvases,
         roundId: roundId,
@@ -189,6 +204,9 @@ class AiChatMessage {
         if (totalTokens > 0) 'totalTokens': totalTokens,
         if (promptTokens > 0) 'promptTokens': promptTokens,
         if (cachedTokens > 0) 'cachedTokens': cachedTokens,
+        if (inputTokens > 0) 'inputTokens': inputTokens,
+        if (outputTokens > 0) 'outputTokens': outputTokens,
+        if (cacheTokens > 0) 'cacheTokens': cacheTokens,
         if (taskPlan.isNotEmpty) 'taskPlan': taskPlan.toJson(),
         if (canvases.isNotEmpty)
           'canvases': [for (final c in canvases) c.toJson()],
@@ -239,6 +257,9 @@ class AiChatMessage {
       totalTokens: (json['totalTokens'] as num?)?.toInt() ?? 0,
       promptTokens: (json['promptTokens'] as num?)?.toInt() ?? 0,
       cachedTokens: (json['cachedTokens'] as num?)?.toInt() ?? 0,
+      inputTokens: (json['inputTokens'] as num?)?.toInt() ?? 0,
+      outputTokens: (json['outputTokens'] as num?)?.toInt() ?? 0,
+      cacheTokens: (json['cacheTokens'] as num?)?.toInt() ?? 0,
       roundId: json['roundId']?.toString() ?? '',
       suggestions: [
         for (final t in (json['suggestions'] as List? ?? const []))

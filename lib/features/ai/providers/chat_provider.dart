@@ -98,6 +98,9 @@ class ChatState {
     this.runningSessionIds = const <String>{},
     this.lastTurns = 0,
     this.lastTokens = 0,
+    this.liveInputTokens = 0,
+    this.liveOutputTokens = 0,
+    this.liveCacheTokens = 0,
     this.error,
   });
 
@@ -218,6 +221,12 @@ class ChatState {
   /// 上一次 Agent 运行的轮次与 token 消耗，用于界面上做成本提示。
   final int lastTurns;
   final int lastTokens;
+
+  /// 当前这轮实时累计的输入 / 输出 / 缓存 token。
+  /// 每轮 LLM 响应返回时由 onUsage 推送，标题栏据此展示运行中的分类统计。
+  final int liveInputTokens;
+  final int liveOutputTokens;
+  final int liveCacheTokens;
   final Object? error;
 
   List<AiChatMessage> get messages {
@@ -280,6 +289,30 @@ class ChatState {
     if (!isLoading) return base;
     return base + lastTokens;
   }
+
+  /// 会话累计输入 token；旧消息没有分类字段时用 promptTokens 兜底。
+  int get sessionInputTokens =>
+      messages.fold(0, (sum, m) => sum + (m.inputTokens > 0 ? m.inputTokens : m.promptTokens));
+
+  /// 会话累计输出 token。
+  int get sessionOutputTokens =>
+      messages.fold(0, (sum, m) => sum + m.outputTokens);
+
+  /// 会话累计缓存命中 token；旧消息没有分类字段时用 cachedTokens 兜底。
+  int get sessionCacheTokens =>
+      messages.fold(0, (sum, m) => sum + (m.cacheTokens > 0 ? m.cacheTokens : m.cachedTokens));
+
+  /// 标题栏实时输入 token：已落库累计 + 当前这轮已经回来的累计输入。
+  int get liveSessionInputTokens =>
+      sessionInputTokens + (isLoading ? liveInputTokens : 0);
+
+  /// 标题栏实时输出 token。
+  int get liveSessionOutputTokens =>
+      sessionOutputTokens + (isLoading ? liveOutputTokens : 0);
+
+  /// 标题栏实时缓存 token。
+  int get liveSessionCacheTokens =>
+      sessionCacheTokens + (isLoading ? liveCacheTokens : 0);
 
   static Map<String, List<AiPlanAction>> _withCurrentPlan(
     Map<String, List<AiPlanAction>> source,
@@ -358,6 +391,9 @@ class ChatState {
     Set<String>? runningSessionIds,
     int? lastTurns,
     int? lastTokens,
+    int? liveInputTokens,
+    int? liveOutputTokens,
+    int? liveCacheTokens,
     Object? error,
     bool clearError = false,
   }) {
@@ -433,6 +469,9 @@ class ChatState {
       runningSessionIds: runningSessionIds ?? this.runningSessionIds,
       lastTurns: lastTurns ?? this.lastTurns,
       lastTokens: lastTokens ?? this.lastTokens,
+      liveInputTokens: liveInputTokens ?? this.liveInputTokens,
+      liveOutputTokens: liveOutputTokens ?? this.liveOutputTokens,
+      liveCacheTokens: liveCacheTokens ?? this.liveCacheTokens,
       error: clearError ? null : error ?? this.error,
     );
   }
@@ -463,6 +502,11 @@ class _SessionRun {
   final List<AgentEvent> events = [];
   final StringBuffer liveReasoning = StringBuffer();
   final StringBuffer liveContent = StringBuffer();
+
+  /// 当前这轮已回来的分类累计用量，切换会话时用来恢复标题栏实时统计。
+  int inputTokens = 0;
+  int outputTokens = 0;
+  int cacheTokens = 0;
 
   /// 中断重发时保留的“已经流出来但还没写成正式消息”的片段，
   /// 交给新 run 的历史，避免 AI 重头再想一遍。
@@ -2076,6 +2120,9 @@ class ChatNotifier extends Notifier<ChatState> {
         totalTokens: result.usage.totalTokens,
         promptTokens: result.lastPromptTokens,
         cachedTokens: result.lastCacheHitTokens,
+        inputTokens: result.usage.promptTokens,
+        outputTokens: result.usage.completionTokens,
+        cacheTokens: result.usage.cacheHitTokens,
         taskPlan: result.taskPlan,
         canvases: result.canvases,
         roundId: run.roundId,
@@ -2455,6 +2502,9 @@ class ChatNotifier extends Notifier<ChatState> {
               totalTokens: result.usage.totalTokens,
               promptTokens: result.lastPromptTokens,
               cachedTokens: result.lastCacheHitTokens,
+              inputTokens: result.usage.promptTokens,
+              outputTokens: result.usage.completionTokens,
+              cacheTokens: result.usage.cacheHitTokens,
               taskPlan: result.taskPlan,
               canvases: result.canvases,
               roundId: run.roundId,
@@ -2869,6 +2919,9 @@ class ChatNotifier extends Notifier<ChatState> {
       lastCacheHitTokens: 0,
       lastTurns: 0,
       lastTokens: 0,
+      liveInputTokens: 0,
+      liveOutputTokens: 0,
+      liveCacheTokens: 0,
     );
     _persist();
   }
@@ -2933,6 +2986,9 @@ class ChatNotifier extends Notifier<ChatState> {
       liveReasoningChars: run?.liveReasoning.length ?? 0,
       liveContentChars: run?.liveContent.length ?? 0,
       liveTool: run?.liveTool ?? '',
+      liveInputTokens: run?.inputTokens ?? 0,
+      liveOutputTokens: run?.outputTokens ?? 0,
+      liveCacheTokens: run?.cacheTokens ?? 0,
       liveSubagentReasoning: {
         for (final entry in (run?.subagentReasoning ?? const {}).entries)
           entry.key: _tail(entry.value.toString()),
@@ -2984,6 +3040,9 @@ class ChatNotifier extends Notifier<ChatState> {
         lastCacheHitTokens: 0,
         lastTurns: 0,
         lastTokens: 0,
+        liveInputTokens: 0,
+        liveOutputTokens: 0,
+        liveCacheTokens: 0,
       );
       _persist();
       return;
@@ -3774,14 +3833,29 @@ class ChatNotifier extends Notifier<ChatState> {
         responseTransformer: _responseTransformerFor(activeProviderId),
         defaultToolTimeout: Duration(seconds: toolTimeout),
         // 每轮 LLM 请求一回来就刷新顶部上下文/token，不用等整轮跑完。
-        onUsage: (total, prompt, cache) {
+        onUsage: ({
+          required totalTokens,
+          required promptTokens,
+          required cacheHitTokens,
+          required totalPromptTokens,
+          required totalOutputTokens,
+          required totalCacheTokens,
+        }) {
           if (_cancelToken != token) return;
+          if (run != null) {
+            run.inputTokens = totalPromptTokens;
+            run.outputTokens = totalOutputTokens;
+            run.cacheTokens = totalCacheTokens;
+          }
           // token/usage 只刷到当前会话的全局视图；后台会话的结果等切回来再显示。
           if (run == null || run.sessionId == state.currentSessionId) {
             state = state.copyWith(
-              lastTokens: total,
-              lastPromptTokens: prompt,
-              lastCacheHitTokens: cache,
+              lastTokens: totalTokens,
+              lastPromptTokens: promptTokens,
+              lastCacheHitTokens: cacheHitTokens,
+              liveInputTokens: totalPromptTokens,
+              liveOutputTokens: totalOutputTokens,
+              liveCacheTokens: totalCacheTokens,
             );
           }
         },
