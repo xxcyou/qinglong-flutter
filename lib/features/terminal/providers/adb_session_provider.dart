@@ -5,7 +5,6 @@ import 'dart:typed_data';
 import 'package:flutter_adb/adb_connection.dart';
 import 'package:flutter_adb/adb_crypto.dart';
 import 'package:flutter_adb/adb_pairing.dart';
-import 'package:flutter_adb/adb_stream.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -130,6 +129,7 @@ class AdbSessionManager {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_prefsKey);
       final list = jsonDecode(raw ?? '[]') as List? ?? const [];
+      final seenEndpoint = <String>{};
       for (final item in list) {
         if (item is! Map) continue;
         final id = item['id']?.toString() ?? '';
@@ -139,6 +139,8 @@ class AdbSessionManager {
         final pairingPort = (item['pairingPort'] as num?)?.toInt();
         final pairingCode = item['pairingCode']?.toString();
         if (id.isEmpty || host.isEmpty) continue;
+        // 同一 主机:端口 只保留一条，清理之前 AI 重复添加留下的脏数据。
+        if (!seenEndpoint.add('$host:$port')) continue;
         _sessions[id] = AdbSession(
           id: id,
           name: name,
@@ -163,9 +165,17 @@ class AdbSessionManager {
   String _newId() =>
       'adb_${DateTime.now().millisecondsSinceEpoch}_${_sessions.length}';
 
+  /// 同一 主机:端口 只保留一条，避免 AI/UI 重复添加。
+  String? _findByEndpoint(String host, int port) {
+    for (final s in _sessions.values) {
+      if (s.host == host && s.port == port) return s.id;
+    }
+    return null;
+  }
+
   Future<String> save(AdbSessionDraft draft, {String? id}) async {
     await loadSaved();
-    final targetId = id ?? _newId();
+    final targetId = id ?? _findByEndpoint(draft.host, draft.port) ?? _newId();
     _sessions[targetId] = AdbSession(
       id: targetId,
       name: draft.name,
@@ -217,7 +227,13 @@ class AdbSessionManager {
         }
       }
       final connection = AdbConnection(draft.host, draft.port, c);
-      final ok = await connection.connect();
+      final ok = await connection.connect().timeout(
+            const Duration(seconds: 15),
+            onTimeout: () {
+              connection.disconnect();
+              throw StateError('ADB 连接超时，请检查 IP/端口/无线调试是否开启');
+            },
+          );
       if (!ok) throw StateError('ADB 连接失败，请确认设备已开启无线调试');
       _clients[targetId] = connection;
       _sessions[targetId] = AdbSession(
@@ -288,12 +304,49 @@ class AdbSessionManager {
   }
 
   /// 执行单条 ADB shell 命令，返回原始输出字符串。
+  ///
+  /// 用交互式 shell + 随机结束标记收尾，避免一次性 `shell:cmd` 在
+  /// 订阅监听前就关闭导致输出/结束事件丢失（表现为“卡住/连不上”）。
   Future<String> execute(String id, String command) async {
     final connection = _clients[id];
     if (connection == null) throw StateError('ADB 未连接：$id');
     if (!connection.connected) throw StateError('ADB 已断开：$id');
-    final stream = await connection.open('shell:$command');
-    return _collectStream(stream);
+    final stream = await connection.open('shell:');
+    final completer = Completer<String>();
+    final bytes = BytesBuilder();
+    final token =
+        '__ADB_DONE_${DateTime.now().microsecondsSinceEpoch}_${id.hashCode}__';
+    late final StreamSubscription<Uint8List> sub;
+    sub = stream.onPayload.listen(
+      (p) {
+        bytes.add(p);
+        final text = utf8.decode(bytes.takeBytes(), allowMalformed: true);
+        bytes.add(utf8.encode(text));
+        final idx = text.indexOf(token);
+        if (idx >= 0) {
+          final result = text.substring(0, idx);
+          if (!completer.isCompleted) completer.complete(result);
+        }
+      },
+      onDone: () {
+        if (!completer.isCompleted) {
+          completer.complete(
+              utf8.decode(bytes.takeBytes(), allowMalformed: true));
+        }
+      },
+      onError: (Object e, StackTrace st) {
+        if (!completer.isCompleted) completer.completeError(e, st);
+      },
+    );
+    try {
+      await stream.writeString('$command; echo $token\n');
+      return await completer.future.timeout(const Duration(seconds: 60));
+    } finally {
+      await sub.cancel();
+      try {
+        await stream.sendClose();
+      } catch (_) {}
+    }
   }
 
   /// 读取 ADB 远端文件为原始字节（base64 中转）。
@@ -306,31 +359,6 @@ class AdbSessionManager {
       return base64Decode(normalized);
     } catch (e) {
       throw StateError('ADB 读取二进制失败：$e');
-    }
-  }
-
-  static Future<String> _collectStream(AdbStream stream) async {
-    final completer = Completer<String>();
-    final bytes = BytesBuilder();
-    late final StreamSubscription<Uint8List> sub;
-    sub = stream.onPayload.listen(
-      (p) => bytes.add(p),
-      onDone: () {
-        if (!completer.isCompleted) {
-          completer.complete(utf8.decode(bytes.takeBytes(), allowMalformed: true));
-        }
-      },
-      onError: (Object e, StackTrace st) {
-        if (!completer.isCompleted) completer.completeError(e, st);
-      },
-    );
-    try {
-      return await completer.future.timeout(const Duration(seconds: 60));
-    } finally {
-      await sub.cancel();
-      try {
-        await stream.sendClose();
-      } catch (_) {}
     }
   }
 }
