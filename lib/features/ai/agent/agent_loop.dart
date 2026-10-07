@@ -354,6 +354,7 @@ class AgentLoop {
     required int totalPromptTokens,
     required int totalOutputTokens,
     required int totalCacheTokens,
+    required LlmUsage requestUsage,
   })? onUsage;
 
   /// 提交前 hook：插件可改写要发给模型的 messages。返回 null 表示不改。
@@ -1591,6 +1592,7 @@ class AgentLoop {
           totalPromptTokens: usage.promptTokens,
           totalOutputTokens: usage.completionTokens,
           totalCacheTokens: usage.cacheHitTokens,
+          requestUsage: response.usage,
         );
 
         final reasoning = response.reasoningContent.trim();

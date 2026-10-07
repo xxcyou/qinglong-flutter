@@ -734,9 +734,66 @@ class _UsageDetailSheet extends ConsumerWidget {
               ),
             ),
           ),
-          const SizedBox(height: 8),
+          if (state.liveUsageDetails.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: scheme.primary.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: scheme.primary.withValues(alpha: 0.2),
+                  ),
+                ),
+                child: ExpansionTile(
+                  initiallyExpanded: true,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  collapsedShape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  tilePadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 2,
+                  ),
+                  childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  leading: Icon(
+                    Icons.bolt,
+                    size: 20,
+                    color: Colors.purpleAccent,
+                  ),
+                  title: const Text(
+                    '正在实时统计 · 当前这轮',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  subtitle: Text(
+                    '已经回来 ${state.liveUsageDetails.length} 次请求，继续运行会实时追加',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  children: [
+                    const Divider(height: 1),
+                    const SizedBox(height: 6),
+                    for (var i = 0; i < state.liveUsageDetails.length; i++)
+                      _RequestDetailRow(
+                        index: i + 1,
+                        detail: state.liveUsageDetails[i],
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
           Text(
-            records.isEmpty
+            records.isEmpty && state.liveUsageDetails.isEmpty
                 ? '    还没有可统计的任务记录'
                 : '    共 ${records.length} 条任务记录',
             style: TextStyle(
@@ -746,7 +803,7 @@ class _UsageDetailSheet extends ConsumerWidget {
             ),
           ),
           const SizedBox(height: 4),
-          if (records.isEmpty)
+          if (records.isEmpty && state.liveUsageDetails.isEmpty)
             const Padding(
               padding: EdgeInsets.all(32),
               child: Center(child: Text('跑一次任务后，这里会出现每次的输入/输出/缓存明细')),

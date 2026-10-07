@@ -101,6 +101,7 @@ class ChatState {
     this.liveInputTokens = 0,
     this.liveOutputTokens = 0,
     this.liveCacheTokens = 0,
+    this.liveUsageDetails = const [],
     this.error,
   });
 
@@ -227,6 +228,10 @@ class ChatState {
   final int liveInputTokens;
   final int liveOutputTokens;
   final int liveCacheTokens;
+
+  /// 当前这轮已经回来的“每次 LLM 请求”用量明细，实时追加，
+  /// 供统计详情面板不重启也能看到点滴。
+  final List<AiUsageDetail> liveUsageDetails;
   final Object? error;
 
   List<AiChatMessage> get messages {
@@ -394,6 +399,7 @@ class ChatState {
     int? liveInputTokens,
     int? liveOutputTokens,
     int? liveCacheTokens,
+    List<AiUsageDetail>? liveUsageDetails,
     Object? error,
     bool clearError = false,
   }) {
@@ -472,6 +478,7 @@ class ChatState {
       liveInputTokens: liveInputTokens ?? this.liveInputTokens,
       liveOutputTokens: liveOutputTokens ?? this.liveOutputTokens,
       liveCacheTokens: liveCacheTokens ?? this.liveCacheTokens,
+      liveUsageDetails: liveUsageDetails ?? this.liveUsageDetails,
       error: clearError ? null : error ?? this.error,
     );
   }
@@ -507,6 +514,9 @@ class _SessionRun {
   int inputTokens = 0;
   int outputTokens = 0;
   int cacheTokens = 0;
+
+  /// 当前这轮每一次 LLM 请求的用量明细，实时追加。
+  final List<AiUsageDetail> usageDetails = [];
 
   /// 中断重发时保留的“已经流出来但还没写成正式消息”的片段，
   /// 交给新 run 的历史，避免 AI 重头再想一遍。
@@ -2175,6 +2185,7 @@ class ChatNotifier extends Notifier<ChatState> {
           lastTokens: result.usage.totalTokens,
           lastPromptTokens: result.lastPromptTokens,
           lastCacheHitTokens: result.lastCacheHitTokens,
+          liveUsageDetails: const [],
           clearError: true,
           runningSessionIds: {..._runs.keys},
         );
@@ -2258,6 +2269,7 @@ class ChatNotifier extends Notifier<ChatState> {
           isLoading: false,
           liveAgentEvents: const [],
           clearLiveText: true,
+          liveUsageDetails: const [],
           error: e,
           runningSessionIds: {..._runs.keys},
         );
@@ -2546,6 +2558,7 @@ class ChatNotifier extends Notifier<ChatState> {
           lastTokens: result.usage.totalTokens,
           lastPromptTokens: result.lastPromptTokens,
           lastCacheHitTokens: result.lastCacheHitTokens,
+          liveUsageDetails: const [],
           clearError: true,
           runningSessionIds: {..._runs.keys},
         );
@@ -2569,6 +2582,7 @@ class ChatNotifier extends Notifier<ChatState> {
       if (session.id == state.currentSessionId) {
         state = state.copyWith(
           isLoading: false,
+          liveUsageDetails: const [],
           runningSessionIds: {..._runs.keys},
           error: e,
         );
@@ -2940,6 +2954,7 @@ class ChatNotifier extends Notifier<ChatState> {
       liveInputTokens: 0,
       liveOutputTokens: 0,
       liveCacheTokens: 0,
+      liveUsageDetails: const [],
     );
     _persist();
   }
@@ -3007,6 +3022,9 @@ class ChatNotifier extends Notifier<ChatState> {
       liveInputTokens: run?.inputTokens ?? 0,
       liveOutputTokens: run?.outputTokens ?? 0,
       liveCacheTokens: run?.cacheTokens ?? 0,
+      liveUsageDetails: run == null
+          ? const []
+          : List<AiUsageDetail>.from(run.usageDetails),
       liveSubagentReasoning: {
         for (final entry in (run?.subagentReasoning ?? const {}).entries)
           entry.key: _tail(entry.value.toString()),
@@ -3061,6 +3079,7 @@ class ChatNotifier extends Notifier<ChatState> {
         liveInputTokens: 0,
         liveOutputTokens: 0,
         liveCacheTokens: 0,
+        liveUsageDetails: const [],
       );
       _persist();
       return;
@@ -3858,12 +3877,21 @@ class ChatNotifier extends Notifier<ChatState> {
           required totalPromptTokens,
           required totalOutputTokens,
           required totalCacheTokens,
+          required LlmUsage requestUsage,
         }) {
           if (_cancelToken != token) return;
           if (run != null) {
             run.inputTokens = totalPromptTokens;
             run.outputTokens = totalOutputTokens;
             run.cacheTokens = totalCacheTokens;
+            run.usageDetails.add(
+              AiUsageDetail(
+                promptTokens: requestUsage.promptTokens,
+                completionTokens: requestUsage.completionTokens,
+                totalTokens: requestUsage.totalTokens,
+                cacheHitTokens: requestUsage.cacheHitTokens,
+              ),
+            );
           }
           // token/usage 只刷到当前会话的全局视图；后台会话的结果等切回来再显示。
           if (run == null || run.sessionId == state.currentSessionId) {
@@ -3874,6 +3902,9 @@ class ChatNotifier extends Notifier<ChatState> {
               liveInputTokens: totalPromptTokens,
               liveOutputTokens: totalOutputTokens,
               liveCacheTokens: totalCacheTokens,
+              liveUsageDetails: run == null
+                  ? state.liveUsageDetails
+                  : List<AiUsageDetail>.from(run.usageDetails),
             );
           }
         },
