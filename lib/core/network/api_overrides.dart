@@ -75,15 +75,24 @@ class ApiOverrideRegistry {
   ApiOverrideRegistry._();
 
   static const _rulesKey = 'ql_api_override_rules_v1';
+  static const _rulesByVersionKey = 'ql_api_override_rules_by_version_v1';
   static const _versionKey = 'ql_api_override_version_v1';
 
+  /// 按面板 ID 保存的规则（旧逻辑，优先使用）。
   static final Map<String, List<ApiOverrideRule>> _rulesByPanel = {};
+
+  /// 按青龙版本号保存的规则缓存：换到同版本的另一面板时直接复用。
+  static final Map<String, List<ApiOverrideRule>> _rulesByVersion = {};
+
+  /// 每个面板最近一次探测到的版本号。
   static final Map<String, String> _versionsByPanel = {};
   static String currentPanelId = '';
   static bool _loaded = false;
 
   static String get _key =>
       currentPanelId.isEmpty ? '__global__' : currentPanelId;
+
+  static String _normalizeVersion(String v) => v.trim();
 
   static Future<void> ensureLoaded() async {
     if (_loaded) return;
@@ -106,6 +115,22 @@ class ApiOverrideRegistry {
           }
         }
       }
+      final rawVersionRules = sp.getString(_rulesByVersionKey);
+      if (rawVersionRules != null && rawVersionRules.isNotEmpty) {
+        final decoded = jsonDecode(rawVersionRules);
+        if (decoded is Map<String, dynamic>) {
+          for (final entry in decoded.entries) {
+            final list = entry.value;
+            if (list is List) {
+              _rulesByVersion[entry.key] = [
+                for (final item in list)
+                  if (item is Map<String, dynamic>)
+                    ApiOverrideRule.fromJson(item),
+              ];
+            }
+          }
+        }
+      }
       final rawVersions = sp.getString(_versionKey);
       if (rawVersions != null && rawVersions.isNotEmpty) {
         final decoded = jsonDecode(rawVersions);
@@ -118,6 +143,7 @@ class ApiOverrideRegistry {
     } catch (_) {
       // 解析失败按空规则处理，不能让覆盖层把 APP 自己的请求搞挂。
       _rulesByPanel.clear();
+      _rulesByVersion.clear();
       _versionsByPanel.clear();
     }
   }
@@ -127,13 +153,57 @@ class ApiOverrideRegistry {
     String? version,
   }) async {
     await ensureLoaded();
-    if (rules != null) _rulesByPanel[_key] = rules;
-    if (version != null) _versionsByPanel[_key] = version;
+    if (rules != null) {
+      _rulesByPanel[_key] = rules;
+      final v = version?.trim() ?? currentVersion.trim();
+      if (v.isNotEmpty) {
+        _rulesByVersion[_normalizeVersion(v)] = rules;
+      }
+    }
+    if (version != null && version.trim().isNotEmpty) {
+      _versionsByPanel[_key] = version.trim();
+    }
+    await _persist();
+  }
+
+  /// 面板健康探测写入版本号专用：不依赖 currentPanelId，避免并发探测串面板。
+  static Future<void> saveVersionForPanel(
+    String panelId,
+    String version,
+  ) async {
+    await ensureLoaded();
+    final v = version.trim();
+    if (v.isNotEmpty) _versionsByPanel[panelId] = v;
+    await _persist();
+  }
+
+  static Future<void> clear() async {
+    await ensureLoaded();
+    _rulesByPanel.remove(_key);
+    _versionsByPanel.remove(_key);
+    await _persist();
+  }
+
+  /// 清空某个版本的全局接口缓存。
+  static Future<void> clearVersion(String version) async {
+    await ensureLoaded();
+    _rulesByVersion.remove(_normalizeVersion(version));
+    await _persist();
+  }
+
+  static Future<void> _persist() async {
     final sp = await SharedPreferences.getInstance();
     await sp.setString(
       _rulesKey,
       jsonEncode({
         for (final e in _rulesByPanel.entries)
+          e.key: [for (final r in e.value) r.toJson()],
+      }),
+    );
+    await sp.setString(
+      _rulesByVersionKey,
+      jsonEncode({
+        for (final e in _rulesByVersion.entries)
           e.key: [for (final r in e.value) r.toJson()],
       }),
     );
@@ -143,24 +213,40 @@ class ApiOverrideRegistry {
     );
   }
 
-  static Future<void> clear() async {
-    await ensureLoaded();
-    _rulesByPanel.remove(_key);
-    _versionsByPanel.remove(_key);
-    final sp = await SharedPreferences.getInstance();
-    await sp.setString(
-      _rulesKey,
-      jsonEncode({
-        for (final e in _rulesByPanel.entries)
-          e.key: [for (final r in e.value) r.toJson()],
-      }),
-    );
-    await sp.setString(_versionKey, jsonEncode(_versionsByPanel));
-  }
-
-  static List<ApiOverrideRule> get rules => _rulesByPanel[_key] ?? const [];
+  static List<ApiOverrideRule> get rules => _activeRules();
 
   static String get currentVersion => _versionsByPanel[_key] ?? '';
+
+  /// 当前面板实际使用的规则来源。
+  static String get ruleSource {
+    if (_rulesByPanel.containsKey(_key)) return 'panel';
+    final v = currentVersion.trim();
+    if (v.isNotEmpty && _rulesByVersion.containsKey(_normalizeVersion(v))) {
+      return 'version';
+    }
+    return 'none';
+  }
+
+  /// 当前面板实际生效的规则：面板自定义优先，其次该版本全局缓存。
+  static List<ApiOverrideRule> _activeRules() {
+    if (_rulesByPanel.containsKey(_key)) {
+      return _rulesByPanel[_key]!;
+    }
+    final v = currentVersion.trim();
+    if (v.isNotEmpty) {
+      final cached = _rulesByVersion[_normalizeVersion(v)];
+      if (cached != null) return cached;
+    }
+    return const [];
+  }
+
+  /// 某个版本是否已有全局接口缓存。
+  static bool hasVersionCache(String version) =>
+      _rulesByVersion.containsKey(_normalizeVersion(version));
+
+  /// 读取某个版本的全局接口缓存。
+  static List<ApiOverrideRule> rulesForVersion(String version) =>
+      _rulesByVersion[_normalizeVersion(version)] ?? const [];
 
   /// 返回是否匹配当前版本。空版本规则对所有版本生效。
   static bool _versionMatches(String ruleVersion) {
@@ -173,7 +259,7 @@ class ApiOverrideRegistry {
   /// 应用覆盖。返回是否发生了改写。
   static Future<bool> apply(RequestOptions options) async {
     await ensureLoaded();
-    final activeRules = _rulesByPanel[_key] ?? const [];
+    final activeRules = _activeRules();
     if (activeRules.isEmpty) return false;
 
     final originalPath = options.path;

@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/network/api_overrides.dart';
 import '../../../core/storage/secure_storage.dart';
 import '../../crons/models/cron_task.dart';
 import '../models/panel_info.dart';
@@ -160,6 +161,10 @@ class PanelHealthNotifier extends Notifier<Map<String, PanelHealth>> {
         } else if (systemData['version'] != null) {
           version = systemData['version'].toString();
         }
+      }
+      if (version.isNotEmpty) {
+        // 写入该面板最近探测的版本，之后切到同版本面板可复用版本接口缓存。
+        await ApiOverrideRegistry.saveVersionForPanel(panel.id, version);
       }
 
       // 任务统计：一次拉回来自己数，比多次请求快。

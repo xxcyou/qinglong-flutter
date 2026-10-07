@@ -1214,7 +1214,8 @@ class QlToolRegistry {
           description: '更新 APP 内置接口的运行时覆盖规则。面板升级导致内置页面接口不兼容时，'
               '按新面板 API 文档生成规则写入，APP 无需重装即可适配。'
               'rules 会整体替换现有规则，所以先 app_api_override_list 看当前规则再合并。'
-              'version 可选，写入后作为当前面板版本标识，规则里的 version 只在该版本身效。',
+              'version 可选：传入后除写入当前面板外，还会写入“该青龙版本”的全局接口缓存；'
+              '之后切换到同版本的其他面板会自动复用，无需重新更新。',
           parameters: _obj([
             'rules'
           ], {
@@ -2953,16 +2954,24 @@ else:
               matched.add(doc.path);
             }
           }
+          final hasCache = ApiOverrideRegistry.hasVersionCache(version);
           return jsonEncode({
             'panel': currentPanel.name,
             'version': version,
             'docs_found': matched.isNotEmpty,
             'matched_paths': matched,
+            'interface_cache_exists': hasCache,
+            'interface_cache_rules': hasCache
+                ? ApiOverrideRegistry.rulesForVersion(version).length
+                : 0,
             'action': matched.isNotEmpty ? 'up_to_date' : 'sync_needed',
-            'hint': matched.isNotEmpty
-                ? '知识库已有当前版本文档，可直接使用。'
-                : '知识库没有当前版本文档，用 web_search/web_fetch 找该版本官方 API 文档，'
-                    '再 kb_write 写入（标题带版本号）；已有旧版就用 kb_update 原地更新。',
+            'hint': hasCache
+                ? '该版本已有全局接口缓存，切换面板时自动复用。'
+                : matched.isNotEmpty
+                    ? '知识库已有当前版本文档，可直接使用。'
+                    : '知识库没有当前版本文档，用 web_search/web_fetch 找该版本官方 API 文档，'
+                        '再 kb_write 写入（标题带版本号）；已有旧版就用 kb_update 原地更新，'
+                        '最后用 app_api_override_update 把接口规则写入该版本缓存。',
           });
         }
 
@@ -2975,9 +2984,13 @@ else:
           ApiOverrideRegistry.currentPanelId = currentPanel.id;
           await ApiOverrideRegistry.ensureLoaded();
           final rules = ApiOverrideRegistry.rules;
+          final version = ApiOverrideRegistry.currentVersion;
           return jsonEncode({
             'panel': currentPanel.name,
-            'version': ApiOverrideRegistry.currentVersion,
+            'version': version,
+            'source': ApiOverrideRegistry.ruleSource,
+            'version_cache_exists':
+                version.isNotEmpty && ApiOverrideRegistry.hasVersionCache(version),
             'count': rules.length,
             'rules': [for (final r in rules) r.toJson()],
           });
@@ -3003,7 +3016,9 @@ else:
               // 单条规则不合法就跳过，不让整批写入失败。
             }
           }
-          final version = args['version']?.toString().trim() ?? '';
+          final version =
+              args['version']?.toString().trim() ??
+              ApiOverrideRegistry.currentVersion.trim();
           await ApiOverrideRegistry.save(
             rules: rules,
             version: version.isEmpty ? null : version,
@@ -3011,8 +3026,14 @@ else:
           return jsonEncode({
             'ok': true,
             'saved': rules.length,
-            'version': ApiOverrideRegistry.currentVersion,
-            'hint': '规则已生效，APP 内置接口下一次请求自动按新路径/参数执行。',
+            'version': version,
+            'source': ApiOverrideRegistry.ruleSource,
+            'version_cache': version.isNotEmpty
+                ? ApiOverrideRegistry.rulesForVersion(version).length
+                : 0,
+            'hint': '规则已生效；若 version 非空，也已写入该版本全局缓存，'
+                '以后切换到同版本面板会自动复用。'
+                '下次请求即按新路径/参数执行。',
           });
         }
 
