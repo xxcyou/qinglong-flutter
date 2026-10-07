@@ -195,7 +195,8 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
       error = null;
     });
     try {
-      final cmd = "$_docker sh -c 'ls -la ${_shq(path)} 2>&1'";
+      final cmd =
+          "$_docker sh -c 'ls -la \"\$1\" 2>&1' sh ${_shq(path)}";
       final raw =
           await SshSessionManager.instance.executeFull(widget.sessionId, cmd);
       final parsed = _parse(raw);
@@ -261,7 +262,8 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
     );
     if (name == null || name.trim().isEmpty || !mounted) return;
     final dir = _join(path, name.trim());
-    final cmd = "$_docker sh -c 'mkdir -p ${_shq(dir)} 2>&1'";
+    final cmd =
+        "$_docker sh -c 'mkdir -p \"\$1\" 2>&1' sh ${_shq(dir)}";
     final r = await SshSessionManager.instance.executeFull(widget.sessionId, cmd);
     if (r.contains('[exit=')) {
       if (mounted) _toast('新建失败：$r');
@@ -280,7 +282,8 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
     if (name == null || name.trim().isEmpty || !mounted) return;
     final src = _join(path, e.name);
     final dst = _join(path, name.trim());
-    final cmd = "$_docker sh -c 'mv -- ${_shq(src)} ${_shq(dst)} 2>&1'";
+    final cmd =
+        "$_docker sh -c 'mv -- \"\$1\" \"\$2\" 2>&1' sh ${_shq(src)} ${_shq(dst)}";
     final r = await SshSessionManager.instance.executeFull(widget.sessionId, cmd);
     if (r.contains('[exit=')) {
       if (mounted) _toast('重命名失败：$r');
@@ -300,7 +303,8 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
     if (!ok || !mounted) return;
     final target = _join(path, e.name);
     final flag = e.isDirectory ? 'rm -rf --' : 'rm -f --';
-    final cmd = "$_docker sh -c '$flag ${_shq(target)} 2>&1'";
+    final cmd =
+        "$_docker sh -c '$flag \"\$1\" 2>&1' sh ${_shq(target)}";
     final r = await SshSessionManager.instance.executeFull(widget.sessionId, cmd);
     if (r.contains('[exit=')) {
       if (mounted) _toast('删除失败：$r');
