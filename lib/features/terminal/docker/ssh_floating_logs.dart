@@ -6,11 +6,12 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 
 import '../providers/ssh_session_provider.dart';
+import 'ssh_floating_host.dart';
 import '../../../shared/mono_text.dart';
 
 /// 悬浮窗容器日志：通过 SSH 执行 docker logs -f，实时滚动显示。
 class SshFloatingLogs {
-  static OverlayEntry? _entry;
+  static int? _id;
 
   static void show(
     BuildContext context, {
@@ -18,21 +19,22 @@ class SshFloatingLogs {
     required String containerId,
     String? title,
   }) {
-    if (_entry != null) return;
-    final overlay = Overlay.of(context, rootOverlay: true);
-    final entry = OverlayEntry(
-      builder: (_) => SshFloatingLogsWindow(
+    if (_id != null) return;
+    late final int id;
+    id = SshFloatingHost.add(
+      context,
+      (_) => SshFloatingLogsWindow(
         sessionId: sessionId,
         containerId: containerId,
         title: title,
+        onFocus: () => SshFloatingHost.focus(id),
         onClose: () {
-          _entry?.remove();
-          _entry = null;
+          SshFloatingHost.close(id);
+          _id = null;
         },
       ),
     );
-    _entry = entry;
-    overlay.insert(entry);
+    _id = id;
   }
 }
 
@@ -42,12 +44,14 @@ class SshFloatingLogsWindow extends StatefulWidget {
     required this.sessionId,
     required this.containerId,
     required this.title,
+    required this.onFocus,
     required this.onClose,
   });
 
   final String sessionId;
   final String containerId;
   final String? title;
+  final VoidCallback onFocus;
   final VoidCallback onClose;
 
   @override
@@ -66,7 +70,10 @@ class _SshFloatingLogsWindowState extends State<SshFloatingLogsWindow> {
     final left = _pos.dx.clamp(0.0, media.size.width - width - 8);
     final top = _pos.dy.clamp(MediaQuery.paddingOf(context).top,
         media.size.height - height - 8);
-    return Positioned(
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Positioned(
       left: left,
       top: top,
       width: width,
@@ -74,14 +81,17 @@ class _SshFloatingLogsWindowState extends State<SshFloatingLogsWindow> {
       child: Stack(
         children: [
           Positioned.fill(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Material(
-                color: const Color(0xF0182028),
-                child: SshContainerLogView(
-                  sessionId: widget.sessionId,
-                  containerId: widget.containerId,
-                  title: widget.title,
+            child: GestureDetector(
+              onTapDown: (_) => widget.onFocus(),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Material(
+                  color: const Color(0xF0182028),
+                  child: SshContainerLogView(
+                    sessionId: widget.sessionId,
+                    containerId: widget.containerId,
+                    title: widget.title,
+                  ),
                 ),
               ),
             ),
@@ -93,6 +103,7 @@ class _SshFloatingLogsWindowState extends State<SshFloatingLogsWindow> {
             height: 20,
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
+              onTapDown: (_) => widget.onFocus(),
               onPanUpdate: (d) => setState(() => _pos += d.delta),
               child: Container(
                 color: const Color(0x00182028),
@@ -146,6 +157,8 @@ class _SshFloatingLogsWindowState extends State<SshFloatingLogsWindow> {
           ),
         ],
       ),
+    ),
+      ],
     );
   }
 }

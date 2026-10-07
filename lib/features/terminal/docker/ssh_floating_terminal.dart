@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../widgets/ssh_terminal_view.dart';
+import 'ssh_floating_host.dart';
 
 /// 悬浮窗容器终端：复用完整 SSH 终端组件，只是打开后自动 exec 进容器。
 class SshFloatingTerminal {
-  static OverlayEntry? _entry;
+  static int? _id;
 
-  static bool get isOpen => _entry != null;
+  static bool get isOpen => _id != null;
 
   static void show(
     BuildContext context, {
@@ -14,26 +15,28 @@ class SshFloatingTerminal {
     required String containerId,
     String? title,
   }) {
-    if (_entry != null) return;
-    final overlay = Overlay.of(context, rootOverlay: true);
-    final entry = OverlayEntry(
-      builder: (_) => SshFloatingTerminalWindow(
+    if (_id != null) return;
+    late final int id;
+    id = SshFloatingHost.add(
+      context,
+      (_) => SshFloatingTerminalWindow(
         sessionId: sessionId,
         containerId: containerId,
         title: title,
+        onFocus: () => SshFloatingHost.focus(id),
         onClose: () {
-          _entry?.remove();
-          _entry = null;
+          SshFloatingHost.close(id);
+          _id = null;
         },
       ),
     );
-    _entry = entry;
-    overlay.insert(entry);
+    _id = id;
   }
 
   static void close() {
-    _entry?.remove();
-    _entry = null;
+    final id = _id;
+    _id = null;
+    if (id != null) SshFloatingHost.close(id);
   }
 }
 
@@ -43,12 +46,14 @@ class SshFloatingTerminalWindow extends StatefulWidget {
     required this.sessionId,
     required this.containerId,
     required this.title,
+    required this.onFocus,
     required this.onClose,
   });
 
   final String sessionId;
   final String containerId;
   final String? title;
+  final VoidCallback onFocus;
   final VoidCallback onClose;
 
   @override
@@ -69,7 +74,10 @@ class _SshFloatingTerminalWindowState extends State<SshFloatingTerminalWindow> {
     final top = _pos.dy.clamp(MediaQuery.paddingOf(context).top,
         media.size.height - height - 8);
     final shell = "docker exec -it '${widget.containerId.replaceAll("'", "'\\''")}' /bin/sh -l";
-    return Positioned(
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Positioned(
       left: left,
       top: top,
       width: width,
@@ -77,19 +85,22 @@ class _SshFloatingTerminalWindowState extends State<SshFloatingTerminalWindow> {
       child: Stack(
         children: [
           Positioned.fill(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Material(
-                color: const Color(0xF0282C34),
-                child: SafeArea(
-                  top: false,
-                  bottom: false,
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(0, 20, 0, 0),
-                    child: SshTerminalView(
-                      sessionId: widget.sessionId,
-                      initialCommand: shell,
-                      title: widget.title ?? '容器 ${widget.containerId.substring(0, widget.containerId.length > 12 ? 12 : widget.containerId.length)}',
+            child: GestureDetector(
+              onTapDown: (_) => widget.onFocus(),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Material(
+                  color: const Color(0xF0282C34),
+                  child: SafeArea(
+                    top: false,
+                    bottom: false,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(0, 20, 0, 0),
+                      child: SshTerminalView(
+                        sessionId: widget.sessionId,
+                        initialCommand: shell,
+                        title: widget.title ?? '容器 ${widget.containerId.substring(0, widget.containerId.length > 12 ? 12 : widget.containerId.length)}',
+                      ),
                     ),
                   ),
                 ),
@@ -103,6 +114,7 @@ class _SshFloatingTerminalWindowState extends State<SshFloatingTerminalWindow> {
             height: 20,
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
+              onTapDown: (_) => widget.onFocus(),
               onPanUpdate: (d) => setState(() => _pos += d.delta),
               child: Container(
                 color: const Color(0x00282C34),
@@ -156,6 +168,8 @@ class _SshFloatingTerminalWindowState extends State<SshFloatingTerminalWindow> {
           ),
         ],
       ),
+),
+      ],
     );
   }
 }
