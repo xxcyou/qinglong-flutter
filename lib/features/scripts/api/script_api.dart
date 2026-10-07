@@ -85,20 +85,67 @@ class ScriptApi {
     required String apiBaseUrl,
     required String file,
   }) async {
+    final (dir, name) = _split(file);
     try {
-      final (dir, name) = _split(file);
+      // 新版青龙（2.16+）已下线 GET /scripts/:file，改用 /scripts/detail。
       final response = await DioClient.dio.get<dynamic>(
-        '$apiBaseUrl/scripts/$name',
-        queryParameters: {
-          // v2.15 的 /scripts/:file 要求 path 始终存在（空串也可），缺失会 500。
-          'path': dir,
-        },
+        '$apiBaseUrl/scripts/detail',
+        queryParameters: {'path': dir, 'file': name},
       );
       final data = parseQlResponse(response);
       return _extractScriptContent(data);
     } on DioException catch (e) {
+      // 旧版没有 /scripts/detail：遇到 404/405/410 回退旧路径 /scripts/:file。
+      if (_isNotFound(e.response?.statusCode) ||
+          _isNotFound(_businessCode(e.response?.data))) {
+        try {
+          final response = await DioClient.dio.get<dynamic>(
+            '$apiBaseUrl/scripts/$name',
+            queryParameters: {
+              // v2.15 的 /scripts/:file 要求 path 始终存在（空串也可），缺失会 500。
+              'path': dir,
+            },
+          );
+          final data = parseQlResponse(response);
+          return _extractScriptContent(data);
+        } on DioException catch (e2) {
+          throw ApiException(message: readableError(e2));
+        }
+      }
       throw ApiException(message: readableError(e));
+    } on ApiException catch (e) {
+      // detail 接口存在但返回 404/410（比如文件不存在/接口下线）也回退。
+      if (_isNotFound(e.code)) {
+        try {
+          final response = await DioClient.dio.get<dynamic>(
+            '$apiBaseUrl/scripts/$name',
+            queryParameters: {'path': dir},
+          );
+          final data = parseQlResponse(response);
+          return _extractScriptContent(data);
+        } on DioException catch (e2) {
+          throw ApiException(message: readableError(e2));
+        }
+      }
+      rethrow;
     }
+  }
+
+  static bool _isNotFound(dynamic code) {
+    if (code is int) return code == 404 || code == 405 || code == 410;
+    if (code is String) {
+      return code == '404' || code == '405' || code == '410';
+    }
+    return false;
+  }
+
+  static int? _businessCode(dynamic data) {
+    if (data is Map<String, dynamic>) {
+      final code = data['code'];
+      if (code is int) return code;
+      if (code is String) return int.tryParse(code);
+    }
+    return null;
   }
 
   static String _extractScriptContent(dynamic data) {
