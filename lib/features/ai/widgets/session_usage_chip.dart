@@ -25,8 +25,7 @@ class SessionUsageChip extends ConsumerWidget {
         ref.watch(chatProvider.select((s) => s.liveSessionOutputTokens));
     final cache =
         ref.watch(chatProvider.select((s) => s.liveSessionCacheTokens));
-    final total =
-        ref.watch(chatProvider.select((s) => s.liveSessionTokens));
+    final total = ref.watch(chatProvider.select((s) => s.liveSessionTokens));
     final requests = ref.watch(chatProvider.select((s) => s.sessionRequests));
     final liveTurn = ref.watch(chatProvider.select((s) => s.liveTurn));
     final running = ref.watch(chatProvider.select((s) => s.isLoading));
@@ -72,64 +71,79 @@ class SessionUsageChip extends ConsumerWidget {
       return buf.toString();
     }
 
+    // 屏幕宽度不同时动态限制最大宽度：先给右侧 5 个动作按钮留出约 200px，
+    // 剩下的宽度才是用量牌的可用空间，再交给 FittedBox 等比缩放。
+    // 窄屏自动缩小（必要时隐藏缓存，优先保输入/输出），宽屏保持自然大小。
+    final maxWidth =
+        (MediaQuery.sizeOf(context).width - 200.0).clamp(90.0, 320.0);
+    final showCache = cache > 0 && maxWidth >= 145;
+
     return Tooltip(
       message: tooltip(),
-      child: GlassPanel(
-        radius: 14,
-        blur: 10,
-        shadowY: 2,
-        opacity: 0.62,
-        borderWidth: 0.8,
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        onTap: () => AiControlSheets.showContext(context, ref),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              running ? Icons.blur_on : Icons.data_saver_off,
-              size: 13,
-              color: scheme.primary.withValues(alpha: running ? 0.95 : 0.6),
-            ),
-            const SizedBox(width: 5),
-            if (hasBreakdown) ...[
-              _UsageItem(
-                icon: Icons.arrow_downward,
-                iconColor: Colors.lightBlueAccent,
-                value: input,
-                style: strong,
-              ),
-              Text(' · ', style: weak),
-              _UsageItem(
-                icon: Icons.arrow_upward,
-                iconColor: Colors.orangeAccent,
-                value: output,
-                style: strong,
-              ),
-              if (cache > 0) ...[
-                Text(' · ', style: weak),
-                _UsageItem(
-                  icon: Icons.bolt,
-                  iconColor: Colors.purpleAccent,
-                  value: cache,
-                  style: strong,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: GlassPanel(
+            radius: 14,
+            blur: 10,
+            shadowY: 2,
+            opacity: 0.62,
+            borderWidth: 0.8,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            onTap: () => AiControlSheets.showContext(context, ref),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  running ? Icons.blur_on : Icons.data_saver_off,
+                  size: 13,
+                  color: scheme.primary.withValues(
+                    alpha: running ? 0.95 : 0.6,
+                  ),
                 ),
+                const SizedBox(width: 5),
+                if (hasBreakdown) ...[
+                  _UsageItem(
+                    icon: Icons.arrow_downward,
+                    iconColor: Colors.lightBlueAccent,
+                    value: input,
+                    style: strong,
+                  ),
+                  Text(' · ', style: weak),
+                  _UsageItem(
+                    icon: Icons.arrow_upward,
+                    iconColor: Colors.orangeAccent,
+                    value: output,
+                    style: strong,
+                  ),
+                  if (showCache) ...[
+                    Text(' · ', style: weak),
+                    _UsageItem(
+                      icon: Icons.bolt,
+                      iconColor: Colors.purpleAccent,
+                      value: cache,
+                      style: strong,
+                    ),
+                  ],
+                ] else if (total > 0) ...[
+                  _AnimatedCountText(
+                    value: total,
+                    style: strong,
+                    format: Formatter.tokens,
+                  ),
+                  Text(' tok', style: weak),
+                ],
+                Text('  ·  ', style: weak),
+                _AnimatedCountText(
+                  value: totalRequests,
+                  style: strong,
+                  format: Formatter.count,
+                ),
+                Text(' 次', style: weak),
               ],
-            ] else if (total > 0) ...[
-              _AnimatedCountText(
-                value: total,
-                style: strong,
-                format: Formatter.tokens,
-              ),
-              Text(' tok', style: weak),
-            ],
-            Text('  ·  ', style: weak),
-            _AnimatedCountText(
-              value: totalRequests,
-              style: strong,
-              format: Formatter.count,
             ),
-            Text(' 次', style: weak),
-          ],
+          ),
         ),
       ),
     );
