@@ -5,9 +5,10 @@ import 'ssh_floating_host.dart';
 
 /// 悬浮窗容器终端：复用完整 SSH 终端组件，只是打开后自动 exec 进容器。
 class SshFloatingTerminal {
-  static int? _id;
+  static final Set<int> _ids = {};
+  static final Set<String> _containers = {};
 
-  static bool get isOpen => _id != null;
+  static bool get isOpen => _ids.isNotEmpty;
 
   static void show(
     BuildContext context, {
@@ -15,7 +16,7 @@ class SshFloatingTerminal {
     required String containerId,
     String? title,
   }) {
-    if (_id != null) return;
+    if (_containers.contains(containerId)) return;
     late final int id;
     id = SshFloatingHost.add(
       context,
@@ -30,17 +31,21 @@ class SshFloatingTerminal {
         onMinimize: () => SshFloatingHost.minimize(id),
         onClose: () {
           SshFloatingHost.close(id);
-          _id = null;
+          _ids.remove(id);
+          _containers.remove(containerId);
         },
       ),
     );
-    _id = id;
+    _ids.add(id);
+    _containers.add(containerId);
   }
 
   static void close() {
-    final id = _id;
-    _id = null;
-    if (id != null) SshFloatingHost.close(id);
+    for (final id in _ids.toList()) {
+      SshFloatingHost.close(id);
+    }
+    _ids.clear();
+    _containers.clear();
   }
 }
 
