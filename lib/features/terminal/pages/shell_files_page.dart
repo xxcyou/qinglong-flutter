@@ -345,32 +345,49 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
       child: Column(
         children: [
-          SegmentedButton<FileScope>(
-            segments: const [
-              ButtonSegment(
-                value: FileScope.shell,
-                icon: Icon(Icons.terminal, size: 17),
-                label: Text('终端文件'),
+          Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: _ScopeOptionTile(
+                      scope: FileScope.shell,
+                      selected: state.scope == FileScope.shell,
+                      onTap: () =>
+                          _notifier.switchScope(FileScope.shell),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _ScopeOptionTile(
+                      scope: FileScope.app,
+                      selected: state.scope == FileScope.app,
+                      onTap: () => _notifier.switchScope(FileScope.app),
+                    ),
+                  ),
+                ],
               ),
-              ButtonSegment(
-                value: FileScope.app,
-                icon: Icon(Icons.phone_android, size: 17),
-                label: Text('APP 文件'),
-              ),
-              ButtonSegment(
-                value: FileScope.ssh,
-                icon: Icon(Icons.dns_outlined, size: 17),
-                label: Text('SSH 文件'),
-              ),
-              ButtonSegment(
-                value: FileScope.adb,
-                icon: Icon(Icons.smartphone, size: 17),
-                label: Text('ADB 文件'),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: _ScopeOptionTile(
+                      scope: FileScope.ssh,
+                      selected: state.scope == FileScope.ssh,
+                      onTap: () => _notifier.switchScope(FileScope.ssh),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _ScopeOptionTile(
+                      scope: FileScope.adb,
+                      selected: state.scope == FileScope.adb,
+                      onTap: () => _notifier.switchScope(FileScope.adb),
+                    ),
+                  ),
+                ],
               ),
             ],
-            selected: {state.scope},
-            showSelectedIcon: false,
-            onSelectionChanged: (v) => _notifier.switchScope(v.first),
           ),
           if (state.scope == FileScope.ssh) ...[
             const SizedBox(height: 8),
@@ -1698,6 +1715,67 @@ class _FileTile extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ScopeOptionTile extends StatelessWidget {
+  const _ScopeOptionTile({
+    required this.scope,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final FileScope scope;
+  final bool selected;
+  final VoidCallback onTap;
+
+  IconData _icon() => switch (scope) {
+        FileScope.shell => Icons.terminal,
+        FileScope.app => Icons.phone_android,
+        FileScope.ssh => Icons.dns_outlined,
+        FileScope.adb => Icons.smartphone,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: selected
+          ? scheme.primaryContainer.withValues(alpha: 0.85)
+          : scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              Icon(
+                _icon(),
+                size: 18,
+                color: selected ? scheme.primary : scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  scope.label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                    color: selected
+                        ? scheme.onPrimaryContainer
+                        : scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              if (selected)
+                Icon(Icons.check_circle, size: 16, color: scheme.primary),
+            ],
+          ),
+        ),
       ),
     );
   }
