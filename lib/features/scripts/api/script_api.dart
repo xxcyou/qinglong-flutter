@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../core/network/dio_client.dart';
 import '../../../core/network/error_handler.dart';
+import '../../../core/network/qinglong_version_compat.dart';
 import '../models/script_node.dart';
 
 /// 脚本管理 API。
@@ -21,10 +22,106 @@ class ScriptApi {
     return (file.substring(0, index), file.substring(index + 1));
   }
 
+  static List<ScriptNode> _extractScriptList(dynamic data) {
+    if (data is List) {
+      return data
+          .whereType<Map<String, dynamic>>()
+          .map(ScriptNode.fromJson)
+          .toList();
+    }
+    if (data is Map<String, dynamic>) {
+      for (final key in const ['data', 'tree', 'children', 'directories']) {
+        final v = data[key];
+        if (v is List) {
+          return v
+              .whereType<Map<String, dynamic>>()
+              .map(ScriptNode.fromJson)
+              .toList();
+        }
+        if (v is Map<String, dynamic>) {
+          final nested = _extractScriptList(v);
+          if (nested.isNotEmpty) return nested;
+        }
+      }
+      final list = data['list'];
+      if (list is List) {
+        return list
+            .whereType<Map<String, dynamic>>()
+            .map(ScriptNode.fromJson)
+            .toList();
+      }
+    }
+    return const [];
+  }
+
+  static String _extractScriptContent(dynamic data) {
+    if (data is String) return data;
+    if (data is Map<String, dynamic>) {
+      for (final key in ['content', 'data', 'value']) {
+        final v = data[key];
+        if (v is String && v.isNotEmpty) return v;
+        if (v is Map<String, dynamic>) {
+          final nested = _extractScriptContent(v);
+          if (nested.isNotEmpty) return nested;
+        }
+      }
+    }
+    return data?.toString() ?? '';
+  }
+
+  /// 按当前面板版本执行兼容规格；失败返回 null（调用方回退内置）。
+  static Future<dynamic> _compatCall({
+    required String apiBaseUrl,
+    required String function,
+    Map<String, String> pathParams = const {},
+    Map<String, dynamic> query = const {},
+    Map<String, dynamic> body = const {},
+  }) async {
+    final spec = await QinglongVersionCompat.specForCurrentVersion(
+      function,
+      pathParams: pathParams,
+    );
+    if (spec == null) return null;
+
+    final path = QinglongCompatRender.render(spec.path, pathParams, query);
+    final queryParameters = <String, dynamic>{
+      for (final e in spec.query.entries)
+        e.key: QinglongCompatRender.renderValue(e.value, pathParams, query),
+    };
+    final requestBody = QinglongCompatRender.renderBody(
+      spec.body,
+      pathParams,
+      body,
+    );
+    final response = await DioClient.dio.request<dynamic>(
+      '$apiBaseUrl$path',
+      options: Options(method: spec.method),
+      queryParameters: queryParameters,
+      data: requestBody.isEmpty ? null : requestBody,
+    );
+    return parseQlResponse(response);
+  }
+
   static Future<List<ScriptNode>> files({
     required String apiBaseUrl,
     String? searchValue,
   }) async {
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_list',
+        query: {
+          if (searchValue != null && searchValue.isNotEmpty)
+            'searchValue': searchValue,
+        },
+      );
+      if (data != null) {
+        final result = _extractScriptList(data);
+        if (result.isNotEmpty) return result;
+      }
+    } catch (_) {
+      // 兼容请求失败继续内置。
+    }
     final response = await DioClient.dio.get<dynamic>(
       '$apiBaseUrl/scripts',
       queryParameters: {
@@ -34,12 +131,8 @@ class ScriptApi {
       },
     );
     final data = parseQlResponse(response);
-    if (data is List) {
-      return data
-          .whereType<Map<String, dynamic>>()
-          .map(ScriptNode.fromJson)
-          .toList();
-    }
+    final result = _extractScriptList(data);
+    if (result.isNotEmpty) return result;
     return const [];
   }
 
@@ -47,8 +140,21 @@ class ScriptApi {
     required String apiBaseUrl,
     required String file,
   }) async {
+    final (dir, name) = _split(file);
     try {
-      final (dir, name) = _split(file);
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_read',
+        pathParams: {'dir': dir, 'name': name},
+      );
+      if (data != null) {
+        final content = _extractScriptContent(data);
+        if (content.isNotEmpty) return content;
+      }
+    } catch (_) {
+      // 兼容请求失败继续内置。
+    }
+    try {
       final response = await DioClient.dio.get<dynamic>(
         '$apiBaseUrl/scripts/$name',
         queryParameters: {
@@ -100,6 +206,17 @@ class ScriptApi {
   }) async {
     final (dir, name) = _split(path);
     await ensureDirectory(apiBaseUrl: apiBaseUrl, dir: dir);
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_create',
+        pathParams: {'dir': dir, 'name': name},
+        body: {'content': content},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 继续内置。
+    }
     final response = await DioClient.dio.post<dynamic>(
       '$apiBaseUrl/scripts',
       data: {
@@ -120,6 +237,17 @@ class ScriptApi {
     final (dir, name) = _split(path);
     // 保存也要建目录：PUT 对新文件同样是 writeFile，缺目录一样 500。
     await ensureDirectory(apiBaseUrl: apiBaseUrl, dir: dir);
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_save',
+        pathParams: {'dir': dir, 'name': name},
+        body: {'content': content},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 继续内置。
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts',
       data: {
@@ -138,6 +266,16 @@ class ScriptApi {
     required String newFilename,
   }) async {
     final (dir, name) = _split(path);
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_rename',
+        pathParams: {'dir': dir, 'name': name, 'newName': newFilename},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 继续内置。
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts/rename',
       data: {
@@ -154,6 +292,16 @@ class ScriptApi {
     required String path,
     required String directory,
   }) async {
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_create_directory',
+        pathParams: {'path': path, 'directory': directory},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 继续内置。
+    }
     final response = await DioClient.dio.post<dynamic>(
       '$apiBaseUrl/scripts',
       data: {
@@ -170,6 +318,20 @@ class ScriptApi {
     bool isDirectory = false,
   }) async {
     final (dir, name) = _split(path);
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_delete',
+        pathParams: {
+          'dir': dir,
+          'name': name,
+          'type': isDirectory ? 'directory' : 'file',
+        },
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 继续内置。
+    }
     final response = await DioClient.dio.delete<dynamic>(
       '$apiBaseUrl/scripts',
       data: {
@@ -193,6 +355,17 @@ class ScriptApi {
     required String content,
   }) async {
     final (dir, name) = _split(path);
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_run',
+        pathParams: {'dir': dir, 'name': name},
+        body: {'content': content},
+      );
+      if (data != null) return data;
+    } catch (_) {
+      // 继续内置。
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts/run',
       data: {
@@ -210,6 +383,17 @@ class ScriptApi {
     int? pid,
   }) async {
     final (dir, name) = _split(path);
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_stop',
+        pathParams: {'dir': dir, 'name': name},
+        body: {if (pid != null) 'pid': pid},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 继续内置。
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts/stop',
       data: {

@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../core/network/dio_client.dart';
 import '../../../core/network/error_handler.dart';
+import '../../../core/network/qinglong_version_compat.dart';
 import '../../../core/utils/cron_parser.dart';
 import '../models/cron_log.dart';
 import '../models/cron_task.dart';
@@ -186,6 +187,28 @@ class CronApi {
       final index = logPath.lastIndexOf('/');
       final dir = index < 0 ? '' : logPath.substring(0, index);
       final file = index < 0 ? logPath : logPath.substring(index + 1);
+      try {
+        final spec = await QinglongVersionCompat.specForCurrentVersion(
+          'log_read',
+          pathParams: {'dir': dir, 'file': file},
+        );
+        if (spec != null) {
+          final path = QinglongCompatRender.render(spec.path, {'dir': dir, 'file': file}, const {});
+          final queryParameters = <String, dynamic>{
+            for (final e in spec.query.entries)
+              e.key: QinglongCompatRender.renderValue(
+                  e.value, {'dir': dir, 'file': file}, const {}),
+          };
+          final response = await DioClient.dio.request<dynamic>(
+            '$apiBaseUrl$path',
+            options: Options(method: spec.method),
+            queryParameters: queryParameters,
+          );
+          return CronLog.fromJson(parseQlResponse(response));
+        }
+      } catch (_) {
+        // 兼容失败回退旧路径。
+      }
       final response = await DioClient.dio.get<dynamic>(
         '$apiBaseUrl/logs/$file',
         // v2.15 的 /logs/:file 要求 path 始终存在（空串也可）。
