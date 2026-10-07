@@ -34,9 +34,12 @@ class SshFloatingHost {
         builder: (context) => Stack(
           children: [
             for (final w in _windows)
-              Offstage(
-                offstage: w.minimized,
-                child: KeyedSubtree(key: w.key, child: w.builder(context)),
+              KeyedSubtree(
+                key: w.key,
+                child: Offstage(
+                  offstage: w.minimized,
+                  child: w.builder(context),
+                ),
               ),
             if (_windows.any((w) => w.minimized))
               Positioned(
