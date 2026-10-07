@@ -154,7 +154,7 @@ class _SshFloatingFilesWindowState extends State<SshFloatingFilesWindow> {
                   constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
                   iconSize: 14,
                   padding: EdgeInsets.zero,
-                  icon: const Icon(Icons.minimize, color: Colors.black54),
+                  icon: const Icon(Icons.picture_in_picture_alt, color: Colors.black54),
                   onPressed: widget.onMinimize,
                 ),
               ),

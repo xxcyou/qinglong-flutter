@@ -134,7 +134,7 @@ class _SshFloatingLogsWindowState extends State<SshFloatingLogsWindow> {
               constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
               iconSize: 14,
               padding: EdgeInsets.zero,
-              icon: const Icon(Icons.minimize, color: Colors.white70),
+              icon: const Icon(Icons.picture_in_picture_alt, color: Colors.white70),
               onPressed: widget.onMinimize,
             ),
           ),
