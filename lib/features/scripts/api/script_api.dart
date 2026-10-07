@@ -87,6 +87,7 @@ class ScriptApi {
     final queryParameters = <String, dynamic>{
       for (final e in spec.query.entries)
         e.key: QinglongCompatRender.renderValue(e.value, pathParams, query),
+      ...query,
     };
     final requestBody = QinglongCompatRender.renderBody(
       spec.body,

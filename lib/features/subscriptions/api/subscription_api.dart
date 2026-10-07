@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../core/network/dio_client.dart';
 import '../../../core/network/error_handler.dart';
+import '../../../core/network/qinglong_version_compat.dart';
 import '../../crons/models/cron_log.dart';
 import '../models/subscription.dart';
 
@@ -18,6 +19,22 @@ class SubscriptionApi {
     required String apiBaseUrl,
     String? searchValue,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'sub_list',
+        query: {
+          if (searchValue != null && searchValue.trim().isNotEmpty)
+            'searchValue': searchValue.trim(),
+        },
+      );
+      if (data != null) {
+        final parsed = _parseList(data);
+        if (parsed.isNotEmpty) return parsed;
+      }
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.get<dynamic>(
       '$apiBaseUrl/subscriptions',
       queryParameters: {
@@ -56,6 +73,16 @@ class SubscriptionApi {
     required String apiBaseUrl,
     required int id,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'sub_detail',
+        pathParams: {'id': '$id'},
+      );
+      if (data is Map<String, dynamic>) return Subscription.fromJson(data);
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.get<dynamic>(
       '$apiBaseUrl/subscriptions/$id',
     );
@@ -68,6 +95,17 @@ class SubscriptionApi {
     required String apiBaseUrl,
     required Subscription sub,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'sub_create',
+        body: sub.toRequestBody(),
+      );
+      if (data is Map<String, dynamic>) return Subscription.fromJson(data);
+      if (data != null) return sub;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.post<dynamic>(
       '$apiBaseUrl/subscriptions',
       data: sub.toRequestBody(),
@@ -84,6 +122,16 @@ class SubscriptionApi {
     if (sub.id == null) {
       throw const ApiException(message: '缺少订阅 id，无法更新');
     }
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'sub_update',
+        body: sub.toRequestBody(withId: true),
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/subscriptions',
       data: sub.toRequestBody(withId: true),
@@ -97,6 +145,17 @@ class SubscriptionApi {
     required List<int> ids,
     bool force = false,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'sub_delete',
+        body: ids,
+        query: {if (force) 'force': true},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.delete<dynamic>(
       '$apiBaseUrl/subscriptions',
       data: ids,
@@ -109,6 +168,16 @@ class SubscriptionApi {
     required String apiBaseUrl,
     required List<int> ids,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'sub_run',
+        body: ids,
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/subscriptions/run',
       data: ids,
@@ -120,6 +189,16 @@ class SubscriptionApi {
     required String apiBaseUrl,
     required List<int> ids,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'sub_stop',
+        body: ids,
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/subscriptions/stop',
       data: ids,
@@ -132,6 +211,16 @@ class SubscriptionApi {
     required List<int> ids,
     required bool enabled,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: enabled ? 'sub_enable' : 'sub_disable',
+        body: ids,
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/subscriptions/${enabled ? 'enable' : 'disable'}',
       data: ids,
@@ -149,6 +238,16 @@ class SubscriptionApi {
     required int id,
   }) async {
     try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'sub_log',
+        pathParams: {'id': '$id'},
+      );
+      if (data != null) return CronLog.fromJson(data);
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
+    try {
       final response = await DioClient.dio.get<dynamic>(
         '$apiBaseUrl/subscriptions/$id/log',
       );
@@ -158,21 +257,43 @@ class SubscriptionApi {
     }
   }
 
-  /// 历史日志文件列表。
-  static Future<List<SubLogFile>> logFiles({
-    required String apiBaseUrl,
-    required int id,
-  }) async {
-    final response = await DioClient.dio.get<dynamic>(
-      '$apiBaseUrl/subscriptions/$id/logs',
-    );
-    final data = parseQlResponse(response);
+  static List<SubLogFile> _parseSubLogFiles(dynamic data) {
     if (data is List) {
       return data
           .whereType<Map<String, dynamic>>()
           .map(SubLogFile.fromJson)
           .toList();
     }
+    if (data is Map<String, dynamic>) {
+      final inner = data['data'];
+      if (inner is List) {
+        return inner
+            .whereType<Map<String, dynamic>>()
+            .map(SubLogFile.fromJson)
+            .toList();
+      }
+    }
     return const [];
+  }
+
+  /// 历史日志文件列表。
+  static Future<List<SubLogFile>> logFiles({
+    required String apiBaseUrl,
+    required int id,
+  }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'sub_logs',
+        pathParams: {'id': '$id'},
+      );
+      if (data is List) return _parseSubLogFiles(data);
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
+    final response = await DioClient.dio.get<dynamic>(
+      '$apiBaseUrl/subscriptions/$id/logs',
+    );
+    return _parseSubLogFiles(parseQlResponse(response));
   }
 }

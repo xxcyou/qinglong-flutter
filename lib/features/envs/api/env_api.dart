@@ -1,4 +1,5 @@
 import '../../../core/network/dio_client.dart';
+import '../../../core/network/qinglong_version_compat.dart';
 import '../models/env_var.dart';
 
 /// 环境变量 API。
@@ -9,6 +10,22 @@ class EnvApi {
     required String apiBaseUrl,
     String? searchValue,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'env_list',
+        query: {
+          if (searchValue != null && searchValue.isNotEmpty)
+            'searchValue': searchValue,
+        },
+      );
+      if (data != null) {
+        final parsed = _parseList(data);
+        if (parsed.isNotEmpty) return parsed;
+      }
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.get<dynamic>(
       '$apiBaseUrl/envs',
       queryParameters: {
@@ -35,10 +52,50 @@ class EnvApi {
     return const [];
   }
 
+  static List<EnvVar> _parseList(dynamic data) {
+    if (data is List) {
+      return data.whereType<Map<String, dynamic>>().map(EnvVar.fromJson).toList();
+    }
+    if (data is Map<String, dynamic>) {
+      final list = data['data'] ?? const [];
+      if (list is List) {
+        return list
+            .whereType<Map<String, dynamic>>()
+            .map(EnvVar.fromJson)
+            .toList();
+      }
+    }
+    return const [];
+  }
+
   static Future<EnvVar> create({
     required String apiBaseUrl,
     required EnvVar env,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'env_create',
+        body: [
+          {
+            'name': env.name,
+            'value': env.value,
+            if (env.remarks != null) 'remarks': env.remarks,
+          },
+        ],
+      );
+      if (data != null) {
+        if (data is List &&
+            data.isNotEmpty &&
+            data.first is Map<String, dynamic>) {
+          return EnvVar.fromJson(data.first as Map<String, dynamic>);
+        }
+        if (data is Map<String, dynamic>) return EnvVar.fromJson(data);
+        return env;
+      }
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.post<dynamic>(
       '$apiBaseUrl/envs',
       data: [
@@ -61,6 +118,21 @@ class EnvApi {
     required String apiBaseUrl,
     required EnvVar env,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'env_update',
+        body: {
+          if (env.id != null) 'id': env.id,
+          'name': env.name,
+          'value': env.value,
+          if (env.remarks != null) 'remarks': env.remarks,
+        },
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/envs',
       data: {
@@ -77,6 +149,16 @@ class EnvApi {
     required String apiBaseUrl,
     required List<int> ids,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'env_delete',
+        body: ids,
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.delete<dynamic>(
       '$apiBaseUrl/envs',
       data: ids,
@@ -89,6 +171,16 @@ class EnvApi {
     required List<int> ids,
     required bool enabled,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: enabled ? 'env_enable' : 'env_disable',
+        body: ids,
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/envs/${enabled ? 'enable' : 'disable'}',
       data: ids,

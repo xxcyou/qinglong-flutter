@@ -33,6 +33,7 @@ class LogApi {
     final queryParameters = <String, dynamic>{
       for (final e in spec.query.entries)
         e.key: QinglongCompatRender.renderValue(e.value, pathParams, query),
+      ...query,
     };
     final response = await DioClient.dio.request<dynamic>(
       '$apiBaseUrl$path',

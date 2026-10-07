@@ -1,4 +1,5 @@
 import '../../../core/network/dio_client.dart';
+import '../../../core/network/qinglong_version_compat.dart';
 import '../models/dependency.dart';
 
 /// 依赖管理 API。
@@ -33,6 +34,19 @@ class DependencyApi {
     String apiBaseUrl,
     String typeName,
   ) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'dep_list',
+        query: {'type': typeName},
+      );
+      if (data != null) {
+        final parsed = _parseList(data);
+        if (parsed.isNotEmpty) return parsed;
+      }
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.get<dynamic>(
       '$apiBaseUrl/dependencies',
       queryParameters: {'type': typeName},
@@ -56,11 +70,42 @@ class DependencyApi {
     return const [];
   }
 
+  static List<Dependency> _parseList(dynamic data) {
+    if (data is List) {
+      return data
+          .whereType<Map<String, dynamic>>()
+          .map(Dependency.fromJson)
+          .toList();
+    }
+    if (data is Map<String, dynamic>) {
+      final list = data['data'] ?? const [];
+      if (list is List) {
+        return list
+            .whereType<Map<String, dynamic>>()
+            .map(Dependency.fromJson)
+            .toList();
+      }
+    }
+    return const [];
+  }
+
   static Future<void> install({
     required String apiBaseUrl,
     required int type,
     required List<String> names,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'dep_install',
+        body: [
+          for (final name in names) {'type': type, 'name': name},
+        ],
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.post<dynamic>(
       '$apiBaseUrl/dependencies',
       data: [
@@ -74,6 +119,16 @@ class DependencyApi {
     required String apiBaseUrl,
     required List<int> ids,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'dep_remove',
+        body: ids,
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.delete<dynamic>(
       '$apiBaseUrl/dependencies',
       data: ids,
@@ -85,6 +140,16 @@ class DependencyApi {
     required String apiBaseUrl,
     required List<int> ids,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'dep_reinstall',
+        body: ids,
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/dependencies/reinstall',
       data: ids,
@@ -98,6 +163,16 @@ class DependencyApi {
     required int type,
     required String name,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'dep_update',
+        body: {'id': id, 'type': type, 'name': name},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/dependencies',
       data: {'id': id, 'type': type, 'name': name},
