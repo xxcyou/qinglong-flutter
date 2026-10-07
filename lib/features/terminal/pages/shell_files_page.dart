@@ -17,6 +17,8 @@ import '../../../shared/image_viewer_page.dart';
 import '../../../shared/text_input_dialog.dart';
 import '../providers/shell_files_provider.dart';
 import '../providers/ssh_session_provider.dart';
+import '../docker/container_file_relay.dart';
+import '../docker/docker_container.dart';
 import '../floating_terminal.dart';
 // import 'ssh_files_page.dart';
 import '../widgets/file_action_sheet.dart';
@@ -225,7 +227,11 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
     final content = Column(
       children: [
         _buildHeaderBottom(state),
-        _PathBar(state: state, notifier: _notifier),
+        _PathBar(
+          state: state,
+          notifier: _notifier,
+          onPaste: () => _paste(),
+        ),
         if (state.error != null) _buildError(state),
         Expanded(
           child: GestureDetector(
@@ -738,7 +744,9 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
       context,
       entry: entry,
       kind: FileKinds.of(entry.name, isDirectory: entry.isDirectory),
-      canPaste: state.clipboardPath != null,
+      canPaste: state.clipboardPath != null ||
+          ContainerFileRelay.item?.sourceType ==
+              ContainerRelaySourceType.container,
       onAction: (action) => _handleAction(action, entry),
     );
   }
@@ -765,12 +773,14 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
         await _rename(entry);
       case 'copy':
         _notifier.copyToClipboard(entry.path);
+        await _captureRelay(entry, cut: false);
         _toast('已复制，进目标目录后点粘贴');
       case 'cut':
         _notifier.cutToClipboard(entry.path);
+        await _captureRelay(entry, cut: true);
         _toast('已剪切，进目标目录后点粘贴');
       case 'pasteInto':
-        await _notifier.paste(targetDir: entry.path);
+        await _paste(targetDir: entry.path);
       case 'copyPath':
         await Clipboard.setData(ClipboardData(text: entry.path));
         _toast('路径已复制到剪贴板');
@@ -783,6 +793,53 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
       case 'delete':
         await _delete(entry);
     }
+  }
+
+  /// 复制/剪切时把文件字节放进容器中转，供容器文件管理粘贴。
+  Future<void> _captureRelay(ShellFileEntry entry, {required bool cut}) async {
+    final state = ref.read(shellFilesProvider);
+    try {
+      final bytes = await _notifier.readBytes(entry.path);
+      if (bytes == null) return;
+      final sourceType = switch (state.scope) {
+        FileScope.ssh => ContainerRelaySourceType.ssh,
+        FileScope.app => ContainerRelaySourceType.app,
+        _ => ContainerRelaySourceType.shell,
+      };
+      ContainerFileRelay.set(ContainerRelayItem(
+        name: entry.name,
+        bytes: bytes,
+        cut: cut,
+        sourceType: sourceType,
+        sourcePath: entry.path,
+        sourceSshId: state.scope == FileScope.ssh ? state.sshSessionId : null,
+      ));
+    } catch (_) {
+      // 读不到字节就不放中转，普通同区复制剪切仍走原逻辑。
+    }
+  }
+
+  /// 粘贴入口：容器中转内容优先，其余走原 provider 剪贴板。
+  Future<void> _paste({String? targetDir}) async {
+    final item = ContainerFileRelay.item;
+    if (item != null && item.sourceType == ContainerRelaySourceType.container) {
+      final state = ref.read(shellFilesProvider);
+      final dir = targetDir ?? state.path;
+      final name = item.name;
+      final target = dir.endsWith('/') ? '$dir$name' : '$dir/$name';
+      final ok = await _notifier.writeBytes(target, item.bytes);
+      if (!ok || !mounted) return;
+      if (item.cut) {
+        try {
+          await DockerService(item.sourceSshId!)
+              .deleteFile(item.sourceContainerId!, item.sourcePath);
+        } catch (_) {}
+      }
+      ContainerFileRelay.clear();
+      _toast('已粘贴');
+      return;
+    }
+    await _notifier.paste(targetDir: targetDir);
   }
 
   /// 把文件内容丢给 AI 悬浮窗（大文件截断，别把上下文一次吃光）。
@@ -992,10 +1049,15 @@ class _InfoRow extends StatelessWidget {
 }
 
 class _PathBar extends StatefulWidget {
-  const _PathBar({required this.state, required this.notifier});
+  const _PathBar({
+    required this.state,
+    required this.notifier,
+    required this.onPaste,
+  });
 
   final ShellFilesState state;
   final ShellFilesNotifier notifier;
+  final VoidCallback onPaste;
 
   @override
   State<_PathBar> createState() => _PathBarState();
@@ -1129,11 +1191,13 @@ class _PathBarState extends State<_PathBar> {
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 6),
                 children: [
-                  if (state.clipboardPath != null)
+                  if (state.clipboardPath != null ||
+                      ContainerFileRelay.item?.sourceType ==
+                          ContainerRelaySourceType.container)
                     IconButton(
                       tooltip: state.clipboardIsCut ? '粘贴（移动）' : '粘贴（复制）',
                       visualDensity: VisualDensity.compact,
-                      onPressed: () => notifier.paste(),
+                      onPressed: widget.onPaste,
                       icon: Icon(
                         Icons.content_paste_go,
                         size: 20,

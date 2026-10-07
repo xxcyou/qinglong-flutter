@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../providers/ssh_session_provider.dart';
 
 class DockerContainer {
@@ -74,6 +76,41 @@ class DockerService {
     return SshSessionManager.instance
         .executeFull(sessionId, command)
         .then((r) => r.trim().isEmpty ? 'ok' : r);
+  }
+
+  /// 读取容器内文件原始字节。
+  Future<Uint8List> readFileBytes(String containerId, String path) async {
+    final client = SshSessionManager.instance.clientOf(sessionId);
+    if (client == null) throw StateError('SSH 未连接：$sessionId');
+    final session = await client.execute(
+      'docker exec $containerId cat ${_shq(path)}',
+    );
+    final builder = BytesBuilder(copy: false);
+    await for (final chunk in session.stdout) {
+      builder.add(chunk);
+    }
+    await session.done;
+    return builder.takeBytes();
+  }
+
+  /// 把原始字节写入容器内文件（不存在自动创建/存在则覆盖）。
+  Future<void> writeFileBytes(String containerId, String path, Uint8List bytes) async {
+    final client = SshSessionManager.instance.clientOf(sessionId);
+    if (client == null) throw StateError('SSH 未连接：$sessionId');
+    final session = await client.execute(
+      "docker exec -i $containerId sh -c 'cat > \"\$1\"' sh ${_shq(path)}",
+    );
+    session.write(bytes);
+    session.close();
+    await session.done;
+  }
+
+  /// 删除容器内文件。
+  Future<String> deleteFile(String containerId, String path) async {
+    return SshSessionManager.instance.executeFull(
+      sessionId,
+      "docker exec $containerId sh -c 'rm -f -- \"\$1\"' sh ${_shq(path)}",
+    );
   }
 
   static String _shq(String s) => "'${s.replaceAll("'", "'\\''")}'";

@@ -1,11 +1,23 @@
-import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'dart:typed_data';
 
-import '../providers/ssh_session_provider.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../shared/code_editor_page.dart';
 import '../../../shared/confirm_dialog.dart';
+import '../../../shared/file_kinds.dart';
+import '../../../shared/image_viewer_page.dart';
 import '../../../shared/text_input_dialog.dart';
+import '../providers/shell_files_provider.dart';
+import '../providers/ssh_session_provider.dart';
+import 'container_file_relay.dart';
+import 'docker_container.dart';
 import 'ssh_floating_host.dart';
 
-/// 悬浮窗容器内部文件管理：通过 docker exec 浏览/新建文件/新建目录/重命名/删除/改权限。
+/// 悬浮窗容器内部文件管理：
+/// 浏览/新建文件/新建目录/重命名/删除/改权限/复制/剪切/粘贴，
+/// 点击文件可查看图片/编辑文本，并通过中转与外部（本地/SSH）文件管理器互通。
 class SshFloatingFiles {
   static int? _id;
 
@@ -68,13 +80,13 @@ class SshFloatingFilesWindow extends StatefulWidget {
 
 class _SshFloatingFilesWindowState extends State<SshFloatingFilesWindow> {
   Offset _pos = const Offset(32, 100);
-  Size _size = const Size(400, 340);
+  Size _size = const Size(420, 360);
 
   @override
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
-    final width = (_size.width).clamp(300.0, media.size.width - 12);
-    final height = (_size.height).clamp(260.0, media.size.height - 100);
+    final width = (_size.width).clamp(320.0, media.size.width - 12);
+    final height = (_size.height).clamp(280.0, media.size.height - 100);
     final left = _pos.dx.clamp(0.0, media.size.width - width - 8);
     final top = _pos.dy.clamp(MediaQuery.paddingOf(context).top,
         media.size.height - height - 8);
@@ -82,96 +94,97 @@ class _SshFloatingFilesWindowState extends State<SshFloatingFilesWindow> {
       fit: StackFit.expand,
       children: [
         Positioned(
-      left: left,
-      top: top,
-      width: width,
-      height: height,
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: GestureDetector(
-              onTapDown: (_) => widget.onFocus(),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Material(
-                  color: const Color(0xFFF2F2F6),
-                  child: SshContainerFilesView(
-                    sessionId: widget.sessionId,
-                    containerId: widget.containerId,
-                    title: widget.title,
+          left: left,
+          top: top,
+          width: width,
+          height: height,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: GestureDetector(
+                  onTapDown: (_) => widget.onFocus(),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Material(
+                      color: const Color(0xFFF2F2F6),
+                      child: SshContainerFilesView(
+                        sessionId: widget.sessionId,
+                        containerId: widget.containerId,
+                        title: widget.title,
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
-          Positioned(
-            left: 0,
-            right: 36,
-            top: 0,
-            height: 20,
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onTapDown: (_) => widget.onFocus(),
-              onPanUpdate: (d) => setState(() => _pos += d.delta),
-              child: Container(
-                color: const Color(0x00FFFFFF),
-                padding: const EdgeInsets.only(left: 8),
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '${widget.title ?? '容器文件'} · ${widget.containerId.length > 8 ? widget.containerId.substring(0, 8) : widget.containerId}',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Colors.black54,
-                    fontWeight: FontWeight.w600,
+              Positioned(
+                left: 0,
+                right: 36,
+                top: 0,
+                height: 20,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTapDown: (_) => widget.onFocus(),
+                  onPanUpdate: (d) => setState(() => _pos += d.delta),
+                  child: Container(
+                    color: const Color(0x00FFFFFF),
+                    padding: const EdgeInsets.only(left: 8),
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '${widget.title ?? '容器文件'} · ${widget.containerId.length > 8 ? widget.containerId.substring(0, 8) : widget.containerId}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Colors.black54,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
-          Positioned(
-            right: 2,
-            top: 0,
-            child: IconButton(
-              tooltip: '关闭容器文件管理',
-              visualDensity: VisualDensity.compact,
-              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-              iconSize: 14,
-              padding: EdgeInsets.zero,
-              icon: const Icon(Icons.close_rounded, color: Colors.black54),
-              onPressed: widget.onClose,
-            ),
-          ),
-          Positioned(
-            right: 0,
-            bottom: 0,
-            width: 20,
-            height: 20,
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onPanUpdate: (d) {
-                setState(() {
-                  _size = Size(
-                    (_size.width + d.delta.dx).clamp(300.0, 1000.0),
-                    (_size.height + d.delta.dy).clamp(260.0, 900.0),
-                  );
-                });
-              },
-              child: const Icon(
-                Icons.open_in_full_rounded,
-                size: 13,
-                color: Colors.black38,
+              Positioned(
+                right: 2,
+                top: 0,
+                child: IconButton(
+                  tooltip: '关闭容器文件管理',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                  iconSize: 14,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.close_rounded, color: Colors.black54),
+                  onPressed: widget.onClose,
+                ),
               ),
-            ),
+              Positioned(
+                right: 0,
+                bottom: 0,
+                width: 20,
+                height: 20,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: (_) => widget.onFocus(),
+                  onPanUpdate: (d) {
+                    setState(() {
+                      _size = Size(
+                        (_size.width + d.delta.dx).clamp(320.0, 1200.0),
+                        (_size.height + d.delta.dy).clamp(280.0, 1000.0),
+                      );
+                    });
+                  },
+                  child: const Icon(
+                    Icons.open_in_full_rounded,
+                    size: 13,
+                    color: Colors.black38,
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
-    ),
+        ),
       ],
     );
   }
 }
 
-class SshContainerFilesView extends StatefulWidget {
+class SshContainerFilesView extends ConsumerStatefulWidget {
   const SshContainerFilesView({
     super.key,
     required this.sessionId,
@@ -184,15 +197,17 @@ class SshContainerFilesView extends StatefulWidget {
   final String? title;
 
   @override
-  State<SshContainerFilesView> createState() => _SshContainerFilesViewState();
+  ConsumerState<SshContainerFilesView> createState() =>
+      _SshContainerFilesViewState();
 }
 
-class _SshContainerFilesViewState extends State<SshContainerFilesView> {
+class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
   String path = '/';
   List<ContainerFileEntry> entries = const [];
   bool loading = true;
   String? error;
   bool _busy = false;
+  final Map<String, Uint8List> _thumbCache = {};
 
   @override
   void initState() {
@@ -220,8 +235,7 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
       error = null;
     });
     try {
-      final cmd =
-          "$_docker sh -c 'ls -la \"\$1\" 2>&1' sh ${_shq(path)}";
+      final cmd = "$_docker sh -c 'ls -la \"\$1\" 2>&1' sh ${_shq(path)}";
       final raw =
           await SshSessionManager.instance.executeFull(widget.sessionId, cmd);
       final parsed = _parse(raw);
@@ -246,7 +260,6 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
       final trimmed = line.trim();
       if (trimmed.isEmpty || trimmed.startsWith('total ')) continue;
       final tokens = trimmed.split(RegExp(r'\s+'));
-      // mode links owner group size month day time name
       if (tokens.length < 8) continue;
       final mode = tokens[0];
       if (mode.length < 2 || !mode.startsWith(RegExp(r'[-dlcbps]'))) continue;
@@ -269,6 +282,8 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
     if (dir.endsWith('/')) return '$dir$name';
     return '$dir/$name';
   }
+
+  String _abs(ContainerFileEntry e) => _join(path, e.name);
 
   Future<void> _enter(String name) async {
     path = _join(path, name);
@@ -306,8 +321,8 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
     );
     if (name == null || name.trim().isEmpty || !mounted) return;
     final file = _join(path, name.trim());
-    final r = await _runRemote(
-        "$_docker sh -c 'touch \"\$1\" 2>&1' sh ${_shq(file)}");
+    final r =
+        await _runRemote("$_docker sh -c 'touch \"\$1\" 2>&1' sh ${_shq(file)}");
     if (r.contains('[exit=')) return _toast('新建文件失败：$r');
     await _load();
   }
@@ -320,7 +335,7 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
       initialValue: e.name,
     );
     if (name == null || name.trim().isEmpty || !mounted) return;
-    final src = _join(path, e.name);
+    final src = _abs(e);
     final dst = _join(path, name.trim());
     final r = await _runRemote(
         "$_docker sh -c 'mv -- \"\$1\" \"\$2\" 2>&1' sh ${_shq(src)} ${_shq(dst)}");
@@ -337,7 +352,7 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
       confirmText: '修改',
     );
     if (mode == null || mode.trim().isEmpty || !mounted) return;
-    final target = _join(path, e.name);
+    final target = _abs(e);
     final r = await _runRemote(
         "$_docker sh -c 'chmod \"\$1\" -- \"\$2\" 2>&1' sh ${_shq(mode.trim())} ${_shq(target)}");
     if (r.contains('[exit=')) return _toast('修改权限失败：$r');
@@ -353,12 +368,223 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
       destructive: true,
     );
     if (!ok || !mounted) return;
-    final target = _join(path, e.name);
     final flag = e.isDirectory ? 'rm -rf --' : 'rm -f --';
     final r = await _runRemote(
-        "$_docker sh -c '$flag \"\$1\" 2>&1' sh ${_shq(target)}");
+        "$_docker sh -c '$flag \"\$1\" 2>&1' sh ${_shq(_abs(e))}");
     if (r.contains('[exit=')) return _toast('删除失败：$r');
     await _load();
+  }
+
+  // ---------- 复制/剪切中转 ----------
+
+  Future<void> _copyOrCut(ContainerFileEntry e, {required bool cut}) async {
+    if (e.isDirectory) {
+      _toast('中转暂只支持文件，文件夹请先进入后复制文件');
+      return;
+    }
+    try {
+      final bytes =
+          await DockerService(widget.sessionId).readFileBytes(
+        widget.containerId,
+        _abs(e),
+      );
+      ContainerFileRelay.set(ContainerRelayItem(
+        name: e.name,
+        bytes: bytes,
+        cut: cut,
+        sourceType: ContainerRelaySourceType.container,
+        sourcePath: _abs(e),
+        sourceSshId: widget.sessionId,
+        sourceContainerId: widget.containerId,
+      ));
+      _toast(cut ? '已剪切，到目标位置粘贴' : '已复制，到目标位置粘贴');
+    } catch (err) {
+      _toast('读取容器文件失败：$err');
+    }
+  }
+
+  Future<void> _paste() async {
+    final item = ContainerFileRelay.item;
+    if (item != null) {
+      final target = _join(path, item.name);
+      try {
+        await DockerService(widget.sessionId)
+            .writeFileBytes(widget.containerId, target, item.bytes);
+        if (item.cut) {
+          if (item.sourceType == ContainerRelaySourceType.container) {
+            await DockerService(item.sourceSshId!)
+                .deleteFile(item.sourceContainerId!, item.sourcePath);
+          } else if (item.sourceType == ContainerRelaySourceType.ssh) {
+            await ref
+                .read(shellFilesProvider.notifier)
+                .deleteAtScope(item.sourcePath, FileScope.ssh, item.sourceSshId);
+          } else {
+            await ref
+                .read(shellFilesProvider.notifier)
+                .deleteAtScope(
+                  item.sourcePath,
+                  item.sourceType == ContainerRelaySourceType.app
+                      ? FileScope.app
+                      : FileScope.shell,
+                  null,
+                );
+          }
+        }
+        ContainerFileRelay.clear();
+        await _load();
+        _toast('已粘贴到容器');
+      } catch (err) {
+        _toast('粘贴失败：$err');
+      }
+      return;
+    }
+
+    // 兼容旧剪贴板/未走中转的外部复制：直接从 provider 剪贴板取字节。
+    final st = ref.read(shellFilesProvider);
+    final sourcePath = st.clipboardPath;
+    final sourceScopeName = st.clipboardScope;
+    if (sourcePath == null || sourceScopeName == null) {
+      _toast('没有可粘贴的内容');
+      return;
+    }
+    final sourceScope = FileScope.values.firstWhere(
+      (e) => e.name == sourceScopeName,
+      orElse: () => FileScope.shell,
+    );
+    try {
+      final bytes = await ref.read(shellFilesProvider.notifier).readBytesAtScope(
+            sourcePath,
+            sourceScope,
+            st.clipboardSshId,
+          );
+      if (bytes == null) {
+        _toast('读取源文件失败');
+        return;
+      }
+      final target = _join(path, sourcePath.split('/').last);
+      await DockerService(widget.sessionId)
+          .writeFileBytes(widget.containerId, target, bytes);
+      if (st.clipboardIsCut) {
+        await ref.read(shellFilesProvider.notifier).deleteAtScope(
+              sourcePath,
+              sourceScope,
+              st.clipboardSshId,
+            );
+      }
+      await _load();
+      _toast('已粘贴到容器');
+    } catch (err) {
+      _toast('粘贴失败：$err');
+    }
+  }
+
+  // ---------- 打开文件：图片/文本编辑 ----------
+
+  Future<void> _openEntry(ContainerFileEntry e) async {
+    if (e.isDirectory) return _enter(e.name);
+    final absolute = _abs(e);
+    final kind = FileKinds.of(e.name);
+    try {
+      final bytes =
+          await DockerService(widget.sessionId).readFileBytes(
+        widget.containerId,
+        absolute,
+      );
+      if (kind.category == FileCategory.image) {
+        if (!mounted || bytes.isEmpty) return;
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => ImageViewerPage(
+              title: e.name,
+              subtitle: '容器内图片 · ${FileKinds.sizeText(e.size)}',
+              imageBytes: [bytes],
+              imageNames: [e.name],
+            ),
+          ),
+        );
+        return;
+      }
+      if (kind.needsExternalApp) {
+        _toast('该类型暂不支持内置打开，可下载到本地后用其它应用打开');
+        return;
+      }
+      final text = utf8.decode(bytes, allowMalformed: true);
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => CodeEditorPage(
+            path: absolute,
+            initial: text,
+            subtitle: '${kind.label} · 容器内文件',
+            onSave: (content) async {
+              try {
+                await DockerService(widget.sessionId).writeFileBytes(
+                  widget.containerId,
+                  absolute,
+                  Uint8List.fromList(utf8.encode(content)),
+                );
+                return true;
+              } catch (_) {
+                return false;
+              }
+            },
+            onDelete: () async {
+              final r = await DockerService(widget.sessionId)
+                  .deleteFile(widget.containerId, absolute);
+              return !r.contains('[exit=');
+            },
+          ),
+        ),
+      );
+    } catch (err) {
+      _toast('打开文件失败：$err');
+    }
+  }
+
+  Future<Uint8List?> _readThumb(String name) async {
+    final abs = _join(path, name);
+    final cached = _thumbCache[abs];
+    if (cached != null) return cached;
+    try {
+      final bytes =
+          await DockerService(widget.sessionId).readFileBytes(
+        widget.containerId,
+        abs,
+      );
+      if (bytes.isNotEmpty) _thumbCache[abs] = bytes;
+      return bytes.isEmpty ? null : bytes;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Widget _leading(ContainerFileEntry e) {
+    final kind = FileKinds.of(e.name);
+    if (kind.category == FileCategory.image && !e.isDirectory) {
+      return FutureBuilder<Uint8List?>(
+        future: _readThumb(e.name),
+        builder: (context, snap) {
+          final bytes = snap.data;
+          if (bytes == null || bytes.isEmpty) {
+            return const Icon(Icons.image_outlined);
+          }
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: Image.memory(
+              bytes,
+              width: 40,
+              height: 40,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+            ),
+          );
+        },
+      );
+    }
+    return Icon(
+      e.isDirectory ? Icons.folder_outlined : Icons.insert_drive_file_outlined,
+      color: e.isDirectory ? Colors.amber : null,
+    );
   }
 
   Future<void> _showItemActions(ContainerFileEntry e) async {
@@ -373,6 +599,18 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
               dense: true,
             ),
             const Divider(height: 1),
+            if (!e.isDirectory) ...[
+              ListTile(
+                leading: const Icon(Icons.content_copy),
+                title: const Text('复制'),
+                onTap: () => Navigator.pop(context, 'copy'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.content_cut),
+                title: const Text('剪切'),
+                onTap: () => Navigator.pop(context, 'cut'),
+              ),
+            ],
             ListTile(
               leading: const Icon(Icons.drive_file_rename_outline),
               title: const Text('重命名'),
@@ -394,6 +632,10 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
     );
     if (action == null || !mounted) return;
     switch (action) {
+      case 'copy':
+        await _copyOrCut(e, cut: false);
+      case 'cut':
+        await _copyOrCut(e, cut: true);
       case 'rename':
         await _rename(e);
       case 'chmod':
@@ -414,6 +656,7 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final canPaste = ContainerFileRelay.hasValue;
     return Column(
       children: [
         Padding(
@@ -445,6 +688,14 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
                     color: scheme.onSurface,
                   ),
                 ),
+              ),
+              IconButton(
+                tooltip: '粘贴',
+                visualDensity: VisualDensity.compact,
+                iconSize: 18,
+                onPressed: _busy || !canPaste ? null : _paste,
+                icon: const Icon(Icons.content_paste_go),
+                color: canPaste ? scheme.primary : null,
               ),
               IconButton(
                 tooltip: '新建文件',
@@ -482,12 +733,7 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
                             final e = entries[i];
                             return ListTile(
                               dense: true,
-                              leading: Icon(
-                                e.isDirectory
-                                    ? Icons.folder_outlined
-                                    : Icons.insert_drive_file_outlined,
-                                color: e.isDirectory ? Colors.amber : null,
-                              ),
+                              leading: _leading(e),
                               title: Text(
                                 e.name,
                                 maxLines: 1,
@@ -504,9 +750,12 @@ class _SshContainerFilesViewState extends State<SshContainerFilesView> {
                                 visualDensity: VisualDensity.compact,
                                 iconSize: 18,
                                 icon: const Icon(Icons.more_horiz),
-                                onPressed: _busy ? null : () => _showItemActions(e),
+                                onPressed:
+                                    _busy ? null : () => _showItemActions(e),
                               ),
-                              onTap: e.isDirectory ? () => _enter(e.name) : null,
+                              onTap: e.isDirectory
+                                  ? () => _enter(e.name)
+                                  : () => _openEntry(e),
                             );
                           },
                         ),

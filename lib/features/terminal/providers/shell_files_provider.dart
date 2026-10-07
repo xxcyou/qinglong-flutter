@@ -700,6 +700,93 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
     }
   }
 
+  /// 按原始字节读取当前作用域文件（跨区中转/容器粘贴等场景用）。
+  Future<Uint8List?> readBytes(String path) async {
+    try {
+      if (state.scope == FileScope.ssh) {
+        final sftp = await _sftpFor(state.sshSessionId!);
+        final f = await sftp.open(path);
+        final bytes = await f.readBytes();
+        await f.close();
+        return bytes;
+      }
+      final host = await _bridge.hostPath(path: path, scope: _scope);
+      if (host.isEmpty) return null;
+      return File(host).readAsBytes();
+    } catch (e) {
+      state = state.copyWith(error: _message(e));
+      return null;
+    }
+  }
+
+  /// 按原始字节读取指定作用域文件（跨区中转用，不依赖当前 state.scope）。
+  Future<Uint8List?> readBytesAtScope(
+    String path,
+    FileScope scope,
+    String? sshId,
+  ) async {
+    try {
+      if (scope == FileScope.ssh) {
+        final sftp = await _sftpFor(sshId!);
+        final f = await sftp.open(path);
+        final bytes = await f.readBytes();
+        await f.close();
+        return bytes;
+      }
+      final host = await _bridge.hostPath(path: path, scope: scope.name);
+      if (host.isEmpty) return null;
+      return File(host).readAsBytes();
+    } catch (e) {
+      state = state.copyWith(error: _message(e));
+      return null;
+    }
+  }
+
+  /// 按原始字节写入当前作用域文件（容器中转粘贴到本地/SSH 用）。
+  Future<bool> writeBytes(String path, Uint8List bytes) async {
+    try {
+      if (state.scope == FileScope.ssh) {
+        final sftp = await _sftpFor(state.sshSessionId!);
+        final dst = await sftp.open(
+          path,
+          mode: SftpFileOpenMode.write |
+              SftpFileOpenMode.create |
+              SftpFileOpenMode.truncate,
+        );
+        await dst.writeBytes(bytes);
+        await dst.close();
+        await refresh();
+        return true;
+      }
+      final host = await _bridge.hostPath(path: path, scope: _scope);
+      if (host.isEmpty) return false;
+      await File(host).writeAsBytes(bytes, flush: true);
+      await refresh();
+      return true;
+    } catch (e) {
+      state = state.copyWith(error: _message(e));
+      return false;
+    }
+  }
+
+  /// 删除指定作用域里的文件/目录（跨区剪切到容器后清理源文件用）。
+  Future<bool> deleteAtScope(String path, FileScope scope, String? sshId) async {
+    try {
+      if (scope == FileScope.ssh) {
+        final sftp = await _sftpFor(sshId!);
+        await sftp.remove(path);
+        if (state.scope == scope && state.sshSessionId == sshId) await refresh();
+        return true;
+      }
+      await _bridge.deletePath(path, scope: scope.name);
+      if (state.scope == scope) await refresh();
+      return true;
+    } catch (e) {
+      state = state.copyWith(error: _message(e));
+      return false;
+    }
+  }
+
   /// 取宿主真实路径（内置图片查看器要用）。
   Future<String?> hostPath(String path) async {
     if (state.scope == FileScope.ssh) return null;
