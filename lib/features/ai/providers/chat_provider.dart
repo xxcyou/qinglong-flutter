@@ -2123,6 +2123,15 @@ class ChatNotifier extends Notifier<ChatState> {
         inputTokens: result.usage.promptTokens,
         outputTokens: result.usage.completionTokens,
         cacheTokens: result.usage.cacheHitTokens,
+        usageDetails: [
+          for (final u in result.usageDetails)
+            AiUsageDetail(
+              promptTokens: u.promptTokens,
+              completionTokens: u.completionTokens,
+              totalTokens: u.totalTokens,
+              cacheHitTokens: u.cacheHitTokens,
+            ),
+        ],
         taskPlan: result.taskPlan,
         canvases: result.canvases,
         roundId: run.roundId,
@@ -2505,6 +2514,15 @@ class ChatNotifier extends Notifier<ChatState> {
               inputTokens: result.usage.promptTokens,
               outputTokens: result.usage.completionTokens,
               cacheTokens: result.usage.cacheHitTokens,
+              usageDetails: [
+                for (final u in result.usageDetails)
+                  AiUsageDetail(
+                    promptTokens: u.promptTokens,
+                    completionTokens: u.completionTokens,
+                    totalTokens: u.totalTokens,
+                    cacheHitTokens: u.cacheHitTokens,
+                  ),
+              ],
               taskPlan: result.taskPlan,
               canvases: result.canvases,
               roundId: run.roundId,

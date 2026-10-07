@@ -190,6 +190,7 @@ class AgentResult {
     this.pendingActions = const [],
     this.outcome = AgentOutcome.completed,
     this.usage = const LlmUsage(),
+    this.usageDetails = const [],
     this.turns = 0,
     this.question,
     this.lastPromptTokens = 0,
@@ -205,6 +206,9 @@ class AgentResult {
   final List<AiPlanAction> pendingActions;
   final AgentOutcome outcome;
   final LlmUsage usage;
+
+  /// 本轮每一次 LLM 请求的用量明细，按请求顺序。
+  final List<LlmUsage> usageDetails;
   final int turns;
 
   /// outcome == awaitingInput 时，模型向用户提的问题。
@@ -1236,6 +1240,7 @@ class AgentLoop {
     final errorCache = <String, int>{};
     var content = '';
     var usage = const LlmUsage();
+    final usageDetails = <LlmUsage>[];
     var outcome = AgentOutcome.exhausted;
     var turnsUsed = 0;
     var unfinishedNudges = 0;
@@ -1573,6 +1578,7 @@ class AgentLoop {
         // 界面该改用那两份稳定数据显示了。
         pipe(const LlmDelta(reset: true));
         usage = usage + response.usage;
+        usageDetails.add(response.usage);
         if (response.usage.promptTokens > 0) {
           lastPromptTokens = response.usage.promptTokens;
           lastCacheHitTokens = response.usage.cacheHitTokens;
@@ -1995,6 +2001,7 @@ class AgentLoop {
             pendingActions: pending,
             outcome: outcome,
             usage: usage,
+            usageDetails: List.unmodifiable(usageDetails),
             turns: turnsUsed,
             lastPromptTokens: lastPromptTokens,
             lastCacheHitTokens: lastCacheHitTokens,
@@ -2911,6 +2918,7 @@ class AgentLoop {
               pendingActions: pending,
               outcome: AgentOutcome.awaitingInput,
               usage: usage,
+              usageDetails: List.unmodifiable(usageDetails),
               turns: turnsUsed,
               question: askedQuestion,
               lastPromptTokens: lastPromptTokens,
@@ -3167,6 +3175,7 @@ class AgentLoop {
         pendingActions: pending,
         outcome: AgentOutcome.cancelled,
         usage: usage,
+        usageDetails: List.unmodifiable(usageDetails),
         turns: turnsUsed,
         lastPromptTokens: lastPromptTokens,
         lastCacheHitTokens: lastCacheHitTokens,
@@ -3218,6 +3227,7 @@ class AgentLoop {
       pendingActions: pending,
       outcome: outcome,
       usage: usage,
+      usageDetails: List.unmodifiable(usageDetails),
       turns: turnsUsed,
       lastPromptTokens: lastPromptTokens,
       lastCacheHitTokens: lastCacheHitTokens,

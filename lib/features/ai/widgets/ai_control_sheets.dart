@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/utils/formatter.dart';
 import '../../../core/llm/llm_registry_provider.dart';
+import '../models/ai_message.dart';
 import '../models/approval_mode.dart';
 import '../providers/chat_provider.dart';
 
@@ -663,7 +664,7 @@ class _UsageDetailSheet extends ConsumerWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Text(
-              '所有数字都是“会话累计”值，运行中会实时上涨；缓存表示命中提示词缓存的部分。',
+              '所有数字都是“会话累计”值；点开每条任务可以看到里面每次 LLM 请求的点滴用量。',
               style: TextStyle(
                 fontSize: 12,
                 color: scheme.onSurfaceVariant,
@@ -671,7 +672,6 @@ class _UsageDetailSheet extends ConsumerWidget {
             ),
           ),
           const SizedBox(height: 12),
-          // 汇总卡
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Container(
@@ -774,91 +774,127 @@ class _UsageDetailSheet extends ConsumerWidget {
                   final clipped = preview.length > 80
                       ? '${preview.substring(0, 80)}…'
                       : preview;
-                  return Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: scheme.surfaceContainerHighest
-                          .withValues(alpha: 0.35),
+                  final details = m.usageDetails.isEmpty
+                      ? [
+                          AiUsageDetail(
+                            promptTokens: inTokens,
+                            completionTokens: outTokens,
+                            totalTokens: m.totalTokens,
+                            cacheHitTokens: cacheTokens,
+                          ),
+                        ]
+                      : m.usageDetails;
+                  return ExpansionTile(
+                    shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(14),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    collapsedShape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    tilePadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 2,
+                    ),
+                    childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    leading: Icon(
+                      Icons.auto_awesome_outlined,
+                      size: 20,
+                      color: scheme.primary,
+                    ),
+                    title: Row(
                       children: [
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.auto_awesome_outlined,
-                              size: 16,
-                              color: scheme.primary,
-                            ),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(
-                                '#$num ${_fmtTime(m.createdAt)}',
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ),
-                            Text(
-                              '${Formatter.tokens(m.totalTokens)}',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                color: scheme.primary,
-                              ),
-                            ),
-                          ],
-                        ),
-                        if (clipped.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              clipped,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 11.5,
-                                height: 1.35,
-                                color: scheme.onSurfaceVariant,
-                              ),
+                        Expanded(
+                          child: Text(
+                            '#$num ${_fmtTime(m.createdAt)}',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 12,
-                          runSpacing: 4,
-                          children: [
-                            _RecordToken(
-                              icon: Icons.arrow_downward,
-                              color: Colors.lightBlueAccent,
-                              label: '输入',
-                              value: inTokens,
-                            ),
-                            _RecordToken(
-                              icon: Icons.arrow_upward,
-                              color: Colors.orangeAccent,
-                              label: '输出',
-                              value: outTokens,
-                            ),
-                            if (cacheTokens > 0)
-                              _RecordToken(
-                                icon: Icons.bolt,
-                                color: Colors.purpleAccent,
-                                label: '缓存',
-                                value: cacheTokens,
-                              ),
-                            _RecordToken(
-                              icon: Icons.repeat,
-                              color: scheme.onSurfaceVariant,
-                              label: '轮次',
-                              value: m.turns,
-                            ),
-                          ],
+                        ),
+                        Text(
+                          '${Formatter.tokens(m.totalTokens)}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: scheme.primary,
+                          ),
                         ),
                       ],
                     ),
+                    subtitle: Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (clipped.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 6),
+                              child: Text(
+                                clipped,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  height: 1.35,
+                                  color: scheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                          Wrap(
+                            spacing: 12,
+                            runSpacing: 4,
+                            children: [
+                              _RecordToken(
+                                icon: Icons.arrow_downward,
+                                color: Colors.lightBlueAccent,
+                                label: '输入',
+                                value: inTokens,
+                              ),
+                              _RecordToken(
+                                icon: Icons.arrow_upward,
+                                color: Colors.orangeAccent,
+                                label: '输出',
+                                value: outTokens,
+                              ),
+                              if (cacheTokens > 0)
+                                _RecordToken(
+                                  icon: Icons.bolt,
+                                  color: Colors.purpleAccent,
+                                  label: '缓存',
+                                  value: cacheTokens,
+                                ),
+                              _RecordToken(
+                                icon: Icons.repeat,
+                                color: scheme.onSurfaceVariant,
+                                label: '轮次',
+                                value: m.turns,
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    children: [
+                      const Divider(height: 1),
+                      const SizedBox(height: 6),
+                      Text(
+                        details.length > 1
+                            ? '这次任务里每一次请求的用量（共 ${details.length} 次）'
+                            : '单次请求用量',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          color: scheme.primary,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      for (var i = 0; i < details.length; i++)
+                        _RequestDetailRow(
+                          index: i + 1,
+                          detail: details[i],
+                        ),
+                    ],
                   );
                 },
               ),
@@ -932,8 +968,10 @@ class _RecordToken extends StatelessWidget {
       children: [
         Icon(icon, size: 12, color: color),
         const SizedBox(width: 3),
-        Text(label,
-            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
+        Text(
+          label,
+          style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+        ),
         const SizedBox(width: 4),
         Text(
           Formatter.tokens(value),
@@ -944,6 +982,100 @@ class _RecordToken extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _RequestDetailRow extends StatelessWidget {
+  const _RequestDetailRow({
+    required this.index,
+    required this.detail,
+  });
+
+  final int index;
+  final AiUsageDetail detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerLow.withValues(alpha: 0.4),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 22,
+                  height: 22,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: scheme.primary.withValues(alpha: 0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Text(
+                    '$index',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: scheme.primary,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  '第 $index 次请求',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '${Formatter.tokens(detail.totalTokens)}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: scheme.primary,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 12,
+              runSpacing: 4,
+              children: [
+                _RecordToken(
+                  icon: Icons.arrow_downward,
+                  color: Colors.lightBlueAccent,
+                  label: '输入',
+                  value: detail.promptTokens,
+                ),
+                _RecordToken(
+                  icon: Icons.arrow_upward,
+                  color: Colors.orangeAccent,
+                  label: '输出',
+                  value: detail.completionTokens,
+                ),
+                if (detail.cacheHitTokens > 0)
+                  _RecordToken(
+                    icon: Icons.bolt,
+                    color: Colors.purpleAccent,
+                    label: '缓存',
+                    value: detail.cacheHitTokens,
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

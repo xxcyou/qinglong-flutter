@@ -63,6 +63,35 @@ class AiImageAttachment {
       );
 }
 
+/// 一次 LLM 请求的原始 token 用量（输入/输出/缓存）。
+class AiUsageDetail {
+  const AiUsageDetail({
+    this.promptTokens = 0,
+    this.completionTokens = 0,
+    this.totalTokens = 0,
+    this.cacheHitTokens = 0,
+  });
+
+  final int promptTokens;
+  final int completionTokens;
+  final int totalTokens;
+  final int cacheHitTokens;
+
+  Map<String, dynamic> toJson() => {
+        if (promptTokens > 0) 'promptTokens': promptTokens,
+        if (completionTokens > 0) 'completionTokens': completionTokens,
+        if (totalTokens > 0) 'totalTokens': totalTokens,
+        if (cacheHitTokens > 0) 'cacheHitTokens': cacheHitTokens,
+      };
+
+  factory AiUsageDetail.fromJson(Map<String, dynamic> json) => AiUsageDetail(
+        promptTokens: (json['promptTokens'] as num?)?.toInt() ?? 0,
+        completionTokens: (json['completionTokens'] as num?)?.toInt() ?? 0,
+        totalTokens: (json['totalTokens'] as num?)?.toInt() ?? 0,
+        cacheHitTokens: (json['cacheHitTokens'] as num?)?.toInt() ?? 0,
+      );
+}
+
 class AiChatMessage {
   const AiChatMessage({
     required this.role,
@@ -81,6 +110,7 @@ class AiChatMessage {
     this.inputTokens = 0,
     this.outputTokens = 0,
     this.cacheTokens = 0,
+    this.usageDetails = const [],
     this.taskPlan = const AgentTaskPlan(),
     this.canvases = const [],
     this.roundId = '',
@@ -129,6 +159,9 @@ class AiChatMessage {
   /// 本轮累计“提示词缓存命中 token”（usage.cacheHitTokens 累加）。
   final int cacheTokens;
 
+  /// 本轮每一次 LLM 请求的 token 明细，按请求先后顺序。
+  final List<AiUsageDetail> usageDetails;
+
   /// 本条回复对应的任务清单（AI 拆的步骤 + 最终状态），随会话持久化。
   final AgentTaskPlan taskPlan;
 
@@ -176,6 +209,7 @@ class AiChatMessage {
         inputTokens: inputTokens,
         outputTokens: outputTokens,
         cacheTokens: cacheTokens,
+        usageDetails: usageDetails,
         taskPlan: taskPlan,
         canvases: canvases,
         roundId: roundId,
@@ -207,6 +241,8 @@ class AiChatMessage {
         if (inputTokens > 0) 'inputTokens': inputTokens,
         if (outputTokens > 0) 'outputTokens': outputTokens,
         if (cacheTokens > 0) 'cacheTokens': cacheTokens,
+        if (usageDetails.isNotEmpty)
+          'usageDetails': [for (final u in usageDetails) u.toJson()],
         if (taskPlan.isNotEmpty) 'taskPlan': taskPlan.toJson(),
         if (canvases.isNotEmpty)
           'canvases': [for (final c in canvases) c.toJson()],
@@ -260,6 +296,10 @@ class AiChatMessage {
       inputTokens: (json['inputTokens'] as num?)?.toInt() ?? 0,
       outputTokens: (json['outputTokens'] as num?)?.toInt() ?? 0,
       cacheTokens: (json['cacheTokens'] as num?)?.toInt() ?? 0,
+      usageDetails: [
+        for (final u in (json['usageDetails'] as List? ?? const []))
+          if (u is Map<String, dynamic>) AiUsageDetail.fromJson(u),
+      ],
       roundId: json['roundId']?.toString() ?? '',
       suggestions: [
         for (final t in (json['suggestions'] as List? ?? const []))
