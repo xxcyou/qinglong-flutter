@@ -40,20 +40,22 @@ class SshFloatingHost {
               ),
             if (_windows.any((w) => w.minimized))
               Positioned(
+                left: 8,
                 right: 8,
                 bottom: 8,
-                child: Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  alignment: WrapAlignment.end,
-                  children: [
-                    for (final w in _windows.where((w) => w.minimized))
-                      _MinimizeCube(
-                        title: w.title,
-                        icon: w.icon,
-                        onTap: () => expand(w.id),
-                      ),
-                  ],
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      for (final w in _windows.where((w) => w.minimized))
+                        _MinimizeCube(
+                          title: w.title,
+                          icon: w.icon,
+                          onTap: () => expand(w.id),
+                        ),
+                      const SizedBox(width: 8),
+                    ],
+                  ),
                 ),
               ),
           ],
