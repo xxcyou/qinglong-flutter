@@ -5,6 +5,7 @@ import '../../../core/network/dio_client.dart';
 import '../../../core/network/error_handler.dart';
 import '../../../core/utils/cron_parser.dart';
 import '../models/cron_log.dart';
+import '../../panels/adapters/qinglong_api_adapter.dart';
 import '../models/cron_task.dart';
 
 /// 定时任务 API。
@@ -186,12 +187,35 @@ class CronApi {
       final index = logPath.lastIndexOf('/');
       final dir = index < 0 ? '' : logPath.substring(0, index);
       final file = index < 0 ? logPath : logPath.substring(index + 1);
-      final response = await DioClient.dio.get<dynamic>(
-        '$apiBaseUrl/logs/$file',
-        // v2.15 的 /logs/:file 要求 path 始终存在（空串也可）。
-        queryParameters: {'path': dir},
-      );
-      return CronLog.fromJson(parseQlResponse(response));
+      // 新版青龙优先 /logs/detail；插件可以改写 log_read。
+      if (await QinglongApiAdapterRegistry.hasFunction('log_read')) {
+        final data = await QinglongApiAdapterRegistry.invoke(
+          apiBaseUrl: apiBaseUrl,
+          function: 'log_read',
+          pathParams: {'dir': dir, 'file': file},
+          query: {'path': dir, 'file': file},
+        );
+        return CronLog.fromJson(data);
+      }
+      try {
+        final response = await DioClient.dio.get<dynamic>(
+          '$apiBaseUrl/logs/detail',
+          queryParameters: {'path': dir, 'file': file},
+        );
+        return CronLog.fromJson(parseQlResponse(response));
+      } on DioException catch (e) {
+        if (e.response?.statusCode == 404 ||
+            e.response?.statusCode == 405 ||
+            e.response?.statusCode == 410) {
+          final response = await DioClient.dio.get<dynamic>(
+            '$apiBaseUrl/logs/$file',
+            // v2.15 的 /logs/:file 要求 path 始终存在（空串也可）。
+            queryParameters: {'path': dir},
+          );
+          return CronLog.fromJson(parseQlResponse(response));
+        }
+        rethrow;
+      }
     } on DioException catch (e) {
       throw ApiException(message: readableError(e));
     }
