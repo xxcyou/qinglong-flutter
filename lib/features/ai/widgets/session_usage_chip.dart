@@ -67,7 +67,7 @@ class SessionUsageChip extends ConsumerWidget {
         buf.write(' · $totalRequests 次请求');
       }
       if (running) buf.write('（含正在跑的第 $liveTurn 轮）');
-      buf.write('\n点一下看上下文占用与上限');
+      buf.write('\n点一下看详细用量记录');
       return buf.toString();
     }
 
@@ -91,7 +91,7 @@ class SessionUsageChip extends ConsumerWidget {
             opacity: 0.62,
             borderWidth: 0.8,
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            onTap: () => AiControlSheets.showContext(context, ref),
+            onTap: () => AiControlSheets.showUsageDetail(context),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [

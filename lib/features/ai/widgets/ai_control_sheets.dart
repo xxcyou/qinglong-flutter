@@ -171,6 +171,15 @@ class AiControlSheets {
       builder: (context) => const _ContextSheet(),
     );
   }
+
+  /// Token 统计详情：每次任务一条记录，展开看输入/输出/缓存拆得干干净净。
+  static void showUsageDetail(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => const _UsageDetailSheet(),
+    );
+  }
 }
 
 /// 上下文面板：默认折叠，可展开看当前上下文里到底有什么。
@@ -595,6 +604,346 @@ class _ModelPickerSheetState extends ConsumerState<_ModelPickerSheet> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Token 用量明细面板：顶部是会话汇总，下面按时间倒序列出每一次任务的分类消耗。
+class _UsageDetailSheet extends ConsumerWidget {
+  const _UsageDetailSheet();
+
+  static String _fmtTime(DateTime? dt) {
+    if (dt == null) return '';
+    final h = dt.hour.toString().padLeft(2, '0');
+    final m = dt.minute.toString().padLeft(2, '0');
+    final s = dt.second.toString().padLeft(2, '0');
+    return '${dt.month}-${dt.day} $h:$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(chatProvider);
+    final scheme = Theme.of(context).colorScheme;
+    final records = state.messages
+        .where(
+            (m) => m.role == 'assistant' && (m.totalTokens > 0 || m.turns > 0))
+        .toList()
+        .reversed
+        .toList();
+
+    final input = state.liveSessionInputTokens;
+    final output = state.liveSessionOutputTokens;
+    final cache = state.liveSessionCacheTokens;
+    final total = state.liveSessionTokens;
+    final totalRequests = state.sessionRequests + state.liveTurn;
+
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 4),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Token 用量明细',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '关闭',
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Text(
+              '所有数字都是“会话累计”值，运行中会实时上涨；缓存表示命中提示词缓存的部分。',
+              style: TextStyle(
+                fontSize: 12,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          // 汇总卡
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: scheme.primaryContainer.withValues(alpha: 0.25),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      _SummaryCell(
+                        icon: Icons.arrow_downward,
+                        color: Colors.lightBlueAccent,
+                        label: '输入',
+                        value: input,
+                      ),
+                      const SizedBox(width: 14),
+                      _SummaryCell(
+                        icon: Icons.arrow_upward,
+                        color: Colors.orangeAccent,
+                        label: '输出',
+                        value: output,
+                      ),
+                      if (cache > 0) ...[
+                        const SizedBox(width: 14),
+                        _SummaryCell(
+                          icon: Icons.bolt,
+                          color: Colors.purpleAccent,
+                          label: '缓存',
+                          value: cache,
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Text(
+                        '累计总 token：${Formatter.tokens(total)}',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        '$totalRequests 次请求',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            records.isEmpty
+                ? '    还没有可统计的任务记录'
+                : '    共 ${records.length} 条任务记录',
+            style: TextStyle(
+              fontSize: 12,
+              color: scheme.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 4),
+          if (records.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(32),
+              child: Center(child: Text('跑一次任务后，这里会出现每次的输入/输出/缓存明细')),
+            )
+          else
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                itemCount: records.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 6),
+                itemBuilder: (context, index) {
+                  final m = records[index];
+                  final num = records.length - index;
+                  final inTokens =
+                      m.inputTokens > 0 ? m.inputTokens : m.promptTokens;
+                  final outTokens = m.outputTokens;
+                  final cacheTokens =
+                      m.cacheTokens > 0 ? m.cacheTokens : m.cachedTokens;
+                  final summary = m.displayContent.isNotEmpty
+                      ? m.displayContent
+                      : m.content;
+                  final preview =
+                      summary.replaceAll(RegExp(r'\s+'), ' ').trim();
+                  final clipped = preview.length > 80
+                      ? '${preview.substring(0, 80)}…'
+                      : preview;
+                  return Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHighest
+                          .withValues(alpha: 0.35),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.auto_awesome_outlined,
+                              size: 16,
+                              color: scheme.primary,
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                '#$num ${_fmtTime(m.createdAt)}',
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            Text(
+                              '${Formatter.tokens(m.totalTokens)}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: scheme.primary,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (clipped.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              clipped,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                height: 1.35,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 12,
+                          runSpacing: 4,
+                          children: [
+                            _RecordToken(
+                              icon: Icons.arrow_downward,
+                              color: Colors.lightBlueAccent,
+                              label: '输入',
+                              value: inTokens,
+                            ),
+                            _RecordToken(
+                              icon: Icons.arrow_upward,
+                              color: Colors.orangeAccent,
+                              label: '输出',
+                              value: outTokens,
+                            ),
+                            if (cacheTokens > 0)
+                              _RecordToken(
+                                icon: Icons.bolt,
+                                color: Colors.purpleAccent,
+                                label: '缓存',
+                                value: cacheTokens,
+                              ),
+                            _RecordToken(
+                              icon: Icons.repeat,
+                              color: scheme.onSurfaceVariant,
+                              label: '轮次',
+                              value: m.turns,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SummaryCell extends StatelessWidget {
+  const _SummaryCell({
+    required this.icon,
+    required this.color,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String label;
+  final int value;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 3),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Text(
+          Formatter.tokens(value),
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+        ),
+      ],
+    );
+  }
+}
+
+class _RecordToken extends StatelessWidget {
+  const _RecordToken({
+    required this.icon,
+    required this.color,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String label;
+  final int value;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 12, color: color),
+        const SizedBox(width: 3),
+        Text(label,
+            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
+        const SizedBox(width: 4),
+        Text(
+          Formatter.tokens(value),
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            fontFeatures: [FontFeature.tabularFigures()],
+          ),
+        ),
+      ],
     );
   }
 }
