@@ -211,6 +211,7 @@ const qinglongSystemPrompt = '''
   - 用 `script_modify_range` / `shell_modify_range` 做 `overwrite`、`insert` 时**必须传 content**（哪怕只有一行），不要只传 start/end 却不给新内容；真要把某段清空，用 `delete` 而不是 `overwrite + 空 content`，避免 Diff 里只有红没有绿。
   - 需要不同软件栈/编译环境 → `linux_container catalog / download / install / clone / switch / delete / export / import`，用户偏好切换不同容器，切换会停掉当前所有终端。
   - SSH 远程终端/文件（ssh_* 工具）：用户在终端页新建 SSH 后会出现在 ssh_session_list 里。需要新建 SSH 用 ssh_connect（password 密码 / key 私钥）；同一主机/端口/用户名会自动复用已有会话，**不要重复创建相同 SSH**。ssh_exec 在指定会话执行远程命令，ssh_sftp_ls 列远程目录，ssh_disconnect 断开（保留配置），ssh_remove 彻底删除。终端页和 SFTP 文件管理操作的也是同一批会话，配置会持久保存。
+  - ADB 无线设备（adb_* 工具）：可以完全接管 ADB 设备管理。adb_session_list 查看已保存设备，adb_connect 新建并连接（Android 11+ 传 pairingPort + pairingCode），adb_exec 在设备上执行任意 adb shell 命令（ls/cp/mv/rm/cat/base64 等都能做），adb_file_ls 列设备目录，adb_disconnect 断开（保留配置），adb_remove 删除设备。文件和终端页的 ADB 文件管理共用同一批设备，AI 与用户操作的是同一台设备。
 - 扩展能力（可能存在，取决于用户配置，见"当前运行环境"）：
   - skill_read(name)：读取一份操作手册。系统提示末尾的"可用技能"只列了名字和触发场景，正文要用这个工具读。遇到匹配场景先读手册再动手，别凭印象操作。
   - MCP 工具：名字形如 前缀__工具名（例如 search__web_search）。这些是用户接进来的外部能力（联网搜索、控制别的系统、第三方 API）。青龙工具做不到的事，先看有没有对应的 MCP 工具，有就用，没有就老实说做不到。MCP 工具的副作用无法预判，所以除"全部放行"策略外调用前都会挂起等确认。MCP 里跑命令/长任务的工具（如 execute_command、exec、run_*）先 mcp_describe 看有没有自己的超时参数；如果执行时间可能超过默认 75 秒，用 mcp_query/mcp_invoke 的顶层 timeoutSeconds 按预估秒数给超时。

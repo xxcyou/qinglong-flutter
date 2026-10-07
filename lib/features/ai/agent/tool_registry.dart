@@ -29,6 +29,7 @@ import '../../../core/local_shell/proot_bridge.dart';
 import '../../../core/local_shell/sandbox.dart';
 import '../../../core/local_shell/shell_lock.dart';
 import '../../terminal/providers/ssh_session_provider.dart';
+import '../../terminal/providers/adb_session_provider.dart';
 import '../../terminal/providers/shell_files_provider.dart';
 import '../models/approval_mode.dart';
 
@@ -900,6 +901,85 @@ class QlToolRegistry {
           }),
           isWrite: false,
         ),
+        ToolDefinition(
+          name: 'adb_session_get',
+          description: '获取一个已保存 ADB 设备连接的全部配置：主机、端口、配对端口、配对码、状态。'
+              'id 来自 adb_session_list。',
+          parameters: _obj(['id'], {'id': _stringProp}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'adb_session_list',
+          description: '列出当前已保存的 ADB 无线调试设备（含连接状态）',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'adb_connect',
+          description:
+              '新建并连接一个 ADB 无线调试设备。Android 11+ 需要 pairingPort（配对端口）和 '
+              'pairingCode（6 位配对码），连接成功后可用 adb_exec / adb_file_ls 操作设备。',
+          parameters: _obj([
+            'name',
+            'host',
+            'port'
+          ], {
+            'name': _stringProp,
+            'host': _stringProp,
+            'port': _intProp,
+            'pairingPort': _intProp,
+            'pairingCode': _stringProp,
+          }),
+          isWrite: true,
+          impact: '新增一条 ADB 设备连接，之后可执行设备命令',
+          reversible: true,
+        ),
+        ToolDefinition(
+          name: 'adb_disconnect',
+          description: '断开一个 ADB 设备连接，但保留已保存的配置，之后可以重新连接',
+          parameters: _obj(['id'], {'id': _stringProp}),
+          isWrite: true,
+          impact: '关闭 ADB 连接，已保存设备保留',
+          reversible: true,
+        ),
+        ToolDefinition(
+          name: 'adb_remove',
+          description: '彻底删除一个已保存/已连接的 ADB 设备配置',
+          parameters: _obj(['id'], {'id': _stringProp}),
+          isWrite: true,
+          impact: '删除 ADB 设备配置，不可恢复',
+          reversible: false,
+          danger: true,
+        ),
+        ToolDefinition(
+          name: 'adb_exec',
+          description: '在已连接的 ADB 设备上执行一条 shell 命令（走 Android adb shell）。'
+              '支持管道、重定向、&& 等。id 来自 adb_session_list。',
+          parameters: _obj([
+            'id',
+            'command'
+          ], {
+            'id': _stringProp,
+            'command': _stringProp,
+          }),
+          isWrite: true,
+          impact: '在 ADB 设备上执行命令，可能产生真实副作用',
+          reversible: false,
+          danger: true,
+        ),
+        ToolDefinition(
+          name: 'adb_file_ls',
+          description: '列出已连接 ADB 设备的目录内容（等价 adb shell ls -la），用于远程文件管理',
+          parameters: _obj([
+            'id',
+            'path'
+          ], {
+            'id': _stringProp,
+            'path': _stringProp,
+          }),
+          isWrite: false,
+        ),
+
         ToolDefinition(
           name: 'shell_exec',
           description: '在本机 PRoot Debian 里执行命令。这是一个**真正的 shell**：'
@@ -2411,6 +2491,103 @@ class QlToolRegistry {
                 'isDirectory': item.attr.isDirectory,
               }
           ]);
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'adb_session_get': {
+        await AdbSessionManager.instance.loadSaved();
+        final id = args['id']?.toString() ?? '';
+        AdbSession? session;
+        for (final s in AdbSessionManager.instance.sessions) {
+          if (s.id == id) {
+            session = s;
+            break;
+          }
+        }
+        final draft = AdbSessionManager.instance.draftOf(id);
+        if (session == null || draft == null) {
+          return jsonEncode({'error': '找不到 ADB 设备 $id'});
+        }
+        return jsonEncode({
+          'id': session.id,
+          'name': session.name,
+          'host': session.host,
+          'port': session.port,
+          'pairingPort': session.pairingPort,
+          'pairingCode': session.pairingCode,
+          'status': session.status,
+        });
+      }
+
+      case 'adb_session_list':
+        await AdbSessionManager.instance.loadSaved();
+        return jsonEncode([
+          for (final s in AdbSessionManager.instance.sessions)
+            {
+              'id': s.id,
+              'name': s.name,
+              'host': s.host,
+              'port': s.port,
+              'status': s.status,
+            }
+        ]);
+
+      case 'adb_connect':
+        try {
+          final draft = AdbSessionDraft(
+            name: args['name']?.toString() ?? args['host']?.toString() ?? 'ADB',
+            host: args['host'].toString(),
+            port: (args['port'] as num?)?.toInt() ?? 5555,
+            pairingPort: (args['pairingPort'] as num?)?.toInt(),
+            pairingCode: args['pairingCode']?.toString(),
+          );
+          final session = await AdbSessionManager.instance.connect(draft);
+          return jsonEncode({
+            'id': session.id,
+            'name': session.name,
+            'host': session.host,
+            'port': session.port,
+            'status': session.status,
+          });
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'adb_disconnect':
+        try {
+          await AdbSessionManager.instance.loadSaved();
+          await AdbSessionManager.instance.disconnect(args['id'].toString());
+          return jsonEncode({'ok': true});
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'adb_remove':
+        try {
+          await AdbSessionManager.instance.loadSaved();
+          await AdbSessionManager.instance.remove(args['id'].toString());
+          return jsonEncode({'ok': true});
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'adb_exec':
+        try {
+          await AdbSessionManager.instance.loadSaved();
+          return await AdbSessionManager.instance
+              .execute(args['id'].toString(), args['command'].toString());
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'adb_file_ls':
+        try {
+          await AdbSessionManager.instance.loadSaved();
+          final quoted = (args['path']?.toString() ?? '/sdcard')
+              .replaceAll("'", "'\\''");
+          return await AdbSessionManager.instance
+              .execute(args['id'].toString(), 'ls -la \'$quoted\'');
         } catch (e) {
           return jsonEncode({'error': e.toString()});
         }
