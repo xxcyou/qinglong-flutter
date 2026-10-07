@@ -10,6 +10,7 @@ import '../../../core/network/dio_client.dart';
 import '../../../core/storage/secure_storage.dart';
 import '../../../core/llm/llm_provider.dart';
 import '../knowledge/knowledge_store.dart';
+import '../../panels/adapters/qinglong_api_adapter.dart';
 import '../../panels/models/panel_info.dart';
 import '../../panels/providers/panel_token_manager.dart';
 import '../../configs/api/config_api.dart';
@@ -1202,6 +1203,60 @@ class QlToolRegistry {
               '返回当前面板版本、知识库里是否有该版本文档、是否需要联网同步。',
           parameters: _obj([], {}),
           isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'qinglong_adapter_status',
+          description: '查看当前默认面板版本对应的“青龙接口适配插件”状态。'
+              '插件是可热更新的内置函数适配层：每个版本一份，APP 固定调用函数名，'
+              '由插件把请求/响应转换成该版本实际接口。'
+              '返回当前版本、已安装插件、插件里覆盖的函数清单。',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'qinglong_adapter_update',
+          description: '更新/新建当前青龙版本的接口适配插件。'
+              '插件 JSON 结构：{version, name, functions}，其中 functions 的每个函数可配置：'
+              'method、path、query、body、responseDataPath、responseContentKeys。'
+              '写入后会作为“该版本”的接口适配缓存，切换到同版本面板自动复用；'
+              '未覆盖的函数继续走 APP 内置硬编码。',
+          parameters: _obj([
+            'plugin'
+          ], {
+            'plugin': {
+              'type': 'object',
+              'description': '插件定义：{version, name, functions}',
+              'properties': {
+                'version': {'type': 'string'},
+                'name': {'type': 'string'},
+                'functions': {
+                  'type': 'object',
+                  'description': '函数名→函数适配规则，例如 script_list/script_read/script_save/script_create/script_rename/script_delete/script_create_directory/script_run/script_stop',
+                  'additionalProperties': {
+                    'type': 'object',
+                    'properties': {
+                      'method': {'type': 'string'},
+                      'path': {'type': 'string'},
+                      'query': {'type': 'object'},
+                      'body': {'type': 'object'},
+                      'responseDataPath': {
+                        'type': 'array',
+                        'items': {'type': 'string'},
+                      },
+                      'responseContentKeys': {
+                        'type': 'array',
+                        'items': {'type': 'string'},
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          }),
+          isWrite: true,
+          impact: '热更新 APP 内置青龙函数的接口适配，按版本生效，影响当前版本面板的所有相关功能',
+          reversible: true,
+          danger: false,
         ),
         ToolDefinition(
           name: 'app_api_override_list',
@@ -2931,6 +2986,53 @@ else:
           'dest': dest,
           'stdout': aResult.stdout,
         });
+
+      case 'qinglong_adapter_status':
+        {
+          final currentPanel = panel;
+          if (currentPanel == null) {
+            return jsonEncode({'error': '未选择面板'});
+          }
+          await QinglongApiAdapterRegistry.ensureLoaded();
+          final plugin = await QinglongApiAdapterRegistry.currentPlugin();
+          return jsonEncode({
+            'panel': currentPanel.name,
+            'version': ApiOverrideRegistry.currentVersion,
+            'plugin': plugin?.toJson(),
+            'functions': plugin?.functions.keys.toList() ?? [],
+            'installed_versions': [
+              for (final p in QinglongApiAdapterRegistry.all) p.version,
+            ],
+            'hint': '没有 functions 表示该版本还没有适配插件；'
+                '用 qinglong_adapter_update 按官方 API 写入对应版本插件。',
+          });
+        }
+
+      case 'qinglong_adapter_update':
+        {
+          final currentPanel = panel;
+          if (currentPanel == null) {
+            return jsonEncode({'error': '未选择面板'});
+          }
+          final raw = args['plugin'];
+          if (raw is! Map) {
+            return jsonEncode({'error': 'plugin 必须是对象'});
+          }
+          final plugin =
+              QinglongApiAdapterPlugin.fromJson(raw.cast<String, dynamic>());
+          if (plugin.version.isEmpty) {
+            return jsonEncode({'error': 'plugin.version 不能为空'});
+          }
+          await QinglongApiAdapterRegistry.upsert(plugin);
+          return jsonEncode({
+            'ok': true,
+            'version': plugin.version,
+            'name': plugin.name,
+            'functions': plugin.functions.keys.toList(),
+            'hint': '插件已热更新并写入版本缓存；当前面板默认版本为 '
+                '${ApiOverrideRegistry.currentVersion}，同版本面板自动复用。',
+          });
+        }
 
       case 'panel_api_docs_status':
         {

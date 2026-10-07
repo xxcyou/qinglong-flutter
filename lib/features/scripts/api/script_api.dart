@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../core/network/dio_client.dart';
 import '../../../core/network/error_handler.dart';
+import '../../panels/adapters/qinglong_api_adapter.dart';
 import '../models/script_node.dart';
 
 /// 脚本管理 API。
@@ -25,6 +26,17 @@ class ScriptApi {
     required String apiBaseUrl,
     String? searchValue,
   }) async {
+    if (await QinglongApiAdapterRegistry.hasFunction('script_list')) {
+      final data = await QinglongApiAdapterRegistry.invoke(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_list',
+        query: {
+          if (searchValue != null && searchValue.isNotEmpty)
+            'searchValue': searchValue,
+        },
+      );
+      return _extractScriptList(data);
+    }
     final response = await DioClient.dio.get<dynamic>(
       '$apiBaseUrl/scripts',
       queryParameters: {
@@ -86,6 +98,15 @@ class ScriptApi {
     required String file,
   }) async {
     final (dir, name) = _split(file);
+    if (await QinglongApiAdapterRegistry.hasFunction('script_read')) {
+      final data = await QinglongApiAdapterRegistry.invoke(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_read',
+        pathParams: {'dir': dir, 'name': name},
+        query: {'path': dir, 'name': name},
+      );
+      return _extractScriptContent(data);
+    }
     try {
       // 新版青龙（2.16+）已下线 GET /scripts/:file，改用 /scripts/detail。
       final response = await DioClient.dio.get<dynamic>(
@@ -195,6 +216,15 @@ class ScriptApi {
   }) async {
     final (dir, name) = _split(path);
     await ensureDirectory(apiBaseUrl: apiBaseUrl, dir: dir);
+    if (await QinglongApiAdapterRegistry.hasFunction('script_create')) {
+      await QinglongApiAdapterRegistry.invoke(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_create',
+        pathParams: {'dir': dir, 'name': name},
+        body: {'path': dir, 'filename': name, 'content': content},
+      );
+      return;
+    }
     final response = await DioClient.dio.post<dynamic>(
       '$apiBaseUrl/scripts',
       data: {
@@ -215,6 +245,15 @@ class ScriptApi {
     final (dir, name) = _split(path);
     // 保存也要建目录：PUT 对新文件同样是 writeFile，缺目录一样 500。
     await ensureDirectory(apiBaseUrl: apiBaseUrl, dir: dir);
+    if (await QinglongApiAdapterRegistry.hasFunction('script_save')) {
+      await QinglongApiAdapterRegistry.invoke(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_save',
+        pathParams: {'dir': dir, 'name': name},
+        body: {'path': dir, 'filename': name, 'content': content},
+      );
+      return;
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts',
       data: {
@@ -233,6 +272,15 @@ class ScriptApi {
     required String newFilename,
   }) async {
     final (dir, name) = _split(path);
+    if (await QinglongApiAdapterRegistry.hasFunction('script_rename')) {
+      await QinglongApiAdapterRegistry.invoke(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_rename',
+        pathParams: {'dir': dir, 'name': name, 'newName': newFilename},
+        body: {'path': dir, 'filename': name, 'newFilename': newFilename},
+      );
+      return;
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts/rename',
       data: {
@@ -249,6 +297,15 @@ class ScriptApi {
     required String path,
     required String directory,
   }) async {
+    if (await QinglongApiAdapterRegistry.hasFunction('script_create_directory')) {
+      await QinglongApiAdapterRegistry.invoke(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_create_directory',
+        pathParams: {'dir': path, 'name': directory},
+        body: {'path': path, 'directory': directory},
+      );
+      return;
+    }
     final response = await DioClient.dio.post<dynamic>(
       '$apiBaseUrl/scripts',
       data: {
@@ -265,6 +322,19 @@ class ScriptApi {
     bool isDirectory = false,
   }) async {
     final (dir, name) = _split(path);
+    if (await QinglongApiAdapterRegistry.hasFunction('script_delete')) {
+      await QinglongApiAdapterRegistry.invoke(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_delete',
+        pathParams: {'dir': dir, 'name': name},
+        body: {
+          'path': dir,
+          'filename': name,
+          'type': isDirectory ? 'directory' : 'file',
+        },
+      );
+      return;
+    }
     final response = await DioClient.dio.delete<dynamic>(
       '$apiBaseUrl/scripts',
       data: {
@@ -288,6 +358,14 @@ class ScriptApi {
     required String content,
   }) async {
     final (dir, name) = _split(path);
+    if (await QinglongApiAdapterRegistry.hasFunction('script_run')) {
+      return await QinglongApiAdapterRegistry.invoke(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_run',
+        pathParams: {'dir': dir, 'name': name},
+        body: {'path': dir, 'filename': name, 'content': content},
+      );
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts/run',
       data: {
@@ -305,6 +383,19 @@ class ScriptApi {
     int? pid,
   }) async {
     final (dir, name) = _split(path);
+    if (await QinglongApiAdapterRegistry.hasFunction('script_stop')) {
+      await QinglongApiAdapterRegistry.invoke(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_stop',
+        pathParams: {'dir': dir, 'name': name},
+        body: {
+          'path': dir,
+          'filename': name,
+          if (pid != null) 'pid': pid,
+        },
+      );
+      return;
+    }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts/stop',
       data: {
