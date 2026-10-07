@@ -244,7 +244,8 @@ dynamic parseQlResponse(Response<dynamic> response) {
   if (body is Map<String, dynamic>) {
     final code = body['code'];
     final message = body['message'] ?? body['msg'] ?? '未知错误';
-    if (code != null && code != 200) {
+    // 青龙不同版本成功码有 200 也有 0；两者都视为成功。
+    if (code != null && code != 200 && code != 0) {
       throw ApiException(
         message: '$message（业务码 $code）',
         code: code is int ? code : null,

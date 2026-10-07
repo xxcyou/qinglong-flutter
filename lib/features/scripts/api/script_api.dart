@@ -34,11 +34,49 @@ class ScriptApi {
       },
     );
     final data = parseQlResponse(response);
+    return _extractScriptList(data);
+  }
+
+  /// 兼容不同青龙版本的 /scripts 返回形态：
+  /// - 直接是 List
+  /// - { data: [...] }
+  /// - { data: { tree: [...] } }
+  /// - { data: { children: [...] } }
+  /// - { tree: [...] } / { children: [...] }
+  static List<ScriptNode> _extractScriptList(dynamic data) {
     if (data is List) {
       return data
           .whereType<Map<String, dynamic>>()
           .map(ScriptNode.fromJson)
           .toList();
+    }
+    if (data is Map<String, dynamic>) {
+      for (final key in const ['data', 'tree', 'children', 'directories']) {
+        final v = data[key];
+        if (v is List) {
+          return v
+              .whereType<Map<String, dynamic>>()
+              .map(ScriptNode.fromJson)
+              .toList();
+        }
+        if (v is Map<String, dynamic>) {
+          final nested = _extractScriptList(v);
+          if (nested.isNotEmpty) return nested;
+        }
+      }
+      // 有的版本直接返回 { code:200, data:{ list:[...] } }
+      final listMap = data['list'];
+      if (listMap is Map<String, dynamic>) {
+        final nested = _extractScriptList(listMap);
+        if (nested.isNotEmpty) return nested;
+      }
+      final list = data['list'];
+      if (list is List) {
+        return list
+            .whereType<Map<String, dynamic>>()
+            .map(ScriptNode.fromJson)
+            .toList();
+      }
     }
     return const [];
   }
@@ -57,15 +95,25 @@ class ScriptApi {
         },
       );
       final data = parseQlResponse(response);
-      if (data is String) return data;
-      if (data is Map<String, dynamic>) {
-        final content = data['content'] ?? data['data'];
-        if (content is String) return content;
-      }
-      return data?.toString() ?? '';
+      return _extractScriptContent(data);
     } on DioException catch (e) {
       throw ApiException(message: readableError(e));
     }
+  }
+
+  static String _extractScriptContent(dynamic data) {
+    if (data is String) return data;
+    if (data is Map<String, dynamic>) {
+      final content = data['content'];
+      if (content is String) return content;
+      final nested = data['data'];
+      if (nested is Map<String, dynamic>) {
+        final inner = nested['content'];
+        if (inner is String) return inner;
+      }
+      return data.toString();
+    }
+    return data?.toString() ?? '';
   }
 
   /// 保证 `dir` 这一串目录在面板上存在。
