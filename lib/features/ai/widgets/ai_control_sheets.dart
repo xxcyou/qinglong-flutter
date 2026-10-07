@@ -811,7 +811,6 @@ class _UsageDetailSheet extends ConsumerWidget {
           else
             Flexible(
               child: ListView.separated(
-                shrinkWrap: true,
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
                 itemCount: records.length,
                 separatorBuilder: (_, __) => const SizedBox(height: 6),

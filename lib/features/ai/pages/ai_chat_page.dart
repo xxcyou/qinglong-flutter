@@ -397,8 +397,33 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   }
 
   /// 审计记录点击后跳转到消息里的具体工具行并闪烁提醒。
+  ///
+  /// index == -1 表示当前“实时过程卡”（运行中还没有落成 assistant 消息）。
   void _flashAuditTarget(int index, {int? eventIndex}) {
     _auditFlashTimer?.cancel();
+    if (index < 0) {
+      final liveListIndex = _liveCardListIndex();
+      if (liveListIndex == null) return;
+      setState(() {
+        _auditFlashIndex = -1;
+        _auditFlashEventIndex = eventIndex;
+      });
+      _scrollToIndex(liveListIndex);
+      if (eventIndex != null) {
+        Future<void>.delayed(const Duration(milliseconds: 260), () {
+          if (mounted) _ensureAuditEventVisible(-1, eventIndex);
+        });
+      }
+      _auditFlashTimer = Timer(const Duration(milliseconds: 1700), () {
+        if (mounted) {
+          setState(() {
+            _auditFlashIndex = null;
+            _auditFlashEventIndex = null;
+          });
+        }
+      });
+      return;
+    }
     setState(() {
       _auditFlashIndex = index;
       _auditFlashEventIndex = eventIndex;
@@ -417,6 +442,15 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
         });
       }
     });
+  }
+
+  /// 当前实时过程卡在消息 ListView 里的下标；没有实时过程卡就返回 null。
+  int? _liveCardListIndex() {
+    final state = ref.read(chatProvider);
+    if (state.liveAgentEvents.isEmpty) return null;
+    var index = state.messages.length;
+    if (state.livePlan.isNotEmpty) index += 1;
+    return index;
   }
 
   /// 审计跳转工具行：对消息内过程卡的具体行做精确滚动。
@@ -451,8 +485,41 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   int? _resolveAuditEventIndex(
     AuditLog log,
     int messageIndex,
-    List<AiChatMessage> messages,
-  ) {
+    List<AiChatMessage> messages, {
+    List<AgentEvent>? liveEvents,
+  }) {
+    if (messageIndex < 0) {
+      final events = liveEvents;
+      if (events == null || events.isEmpty) return null;
+      final idx = log.eventIndex;
+      if (idx != null && idx >= 0 && idx < events.length) {
+        final e = events[idx];
+        if (e.kind == AgentEventKind.toolStart) {
+          for (var j = idx + 1; j < events.length; j++) {
+            if (events[j].kind == AgentEventKind.toolEnd &&
+                events[j].toolName == e.toolName) {
+              return j;
+            }
+          }
+        }
+        return idx;
+      }
+      final tool = log.action;
+      if (tool.isEmpty) return null;
+      for (var i = events.length - 1; i >= 0; i--) {
+        if (events[i].kind == AgentEventKind.toolEnd &&
+            events[i].toolName == tool) {
+          return i;
+        }
+      }
+      for (var i = events.length - 1; i >= 0; i--) {
+        if (events[i].kind == AgentEventKind.toolStart &&
+            events[i].toolName == tool) {
+          return i;
+        }
+      }
+      return null;
+    }
     if (messageIndex < 0 || messageIndex >= messages.length) return null;
     final events = messages[messageIndex].agentEvents;
     if (events.isEmpty) return null;
@@ -1435,10 +1502,14 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   /// - 工具调用记录发生在回复生成之前，取最早不早于它时间的回复。
   int? _resolveAuditMessageIndex(
     AuditLog log,
-    List<AiChatMessage> messages,
-  ) {
+    List<AiChatMessage> messages, {
+    bool hasLive = false,
+  }) {
     if (log.messageIndex != null) {
       final idx = log.messageIndex!;
+      // 运行期间记录指向“将来才出现的 assistant 消息”。只要当前正好有实时过程卡，
+      // 就用 -1 代表“当前实时过程卡”，让审计点击立刻能跳过去。
+      if (idx == messages.length && hasLive) return -1;
       return idx >= 0 && idx < messages.length ? idx : null;
     }
     if (messages.isEmpty) return null;
@@ -1507,10 +1578,14 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                           padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
                           itemBuilder: (context, index) {
                             final log = logs[index];
-                            final messages = ref.read(chatProvider).messages;
+                            final chatState = ref.read(chatProvider);
+                            final messages = chatState.messages;
+                            final hasLive = chatState.liveAgentEvents.isNotEmpty;
+                            final liveEvents = chatState.liveAgentEvents;
                             final jumpIndex = _resolveAuditMessageIndex(
                               log,
                               messages,
+                              hasLive: hasLive,
                             );
                             final jumpEventIndex = jumpIndex == null
                                 ? null
@@ -1518,6 +1593,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                     log,
                                     jumpIndex,
                                     messages,
+                                    liveEvents: hasLive ? liveEvents : null,
                                   );
                             return Card(
                               child: ListTile(
@@ -1969,6 +2045,18 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                                     running: state.isLoading,
                                                     modeLabels:
                                                         state.liveModeLabels,
+                                                    highlightEventIndex:
+                                                        _auditFlashIndex == -1
+                                                            ? _auditFlashEventIndex
+                                                            : null,
+                                                    eventRowKeys:
+                                                        _auditFlashIndex == -1
+                                                            ? _auditProcessRowKeys
+                                                                .putIfAbsent(
+                                                                    -1,
+                                                                    () => {},
+                                                                  )
+                                                            : null,
                                                     initiallyExpanded: state
                                                             .isLoading ||
                                                         state.liveAgentEvents
@@ -2005,6 +2093,18 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                                 running: state.isLoading,
                                                 modeLabels:
                                                     state.liveModeLabels,
+                                                highlightEventIndex:
+                                                    _auditFlashIndex == -1
+                                                        ? _auditFlashEventIndex
+                                                        : null,
+                                                eventRowKeys:
+                                                    _auditFlashIndex == -1
+                                                        ? _auditProcessRowKeys
+                                                            .putIfAbsent(
+                                                                -1,
+                                                                () => {},
+                                                              )
+                                                        : null,
                                                 initiallyExpanded: state
                                                         .isLoading ||
                                                     state.liveAgentEvents.any(
