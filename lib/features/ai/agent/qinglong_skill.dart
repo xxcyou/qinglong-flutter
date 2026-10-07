@@ -80,10 +80,17 @@ const qinglongSystemPrompt = '''
 3. 写/更新时把接口路径、方法、参数、鉴权方式、版本差异写清楚，方便下次直接照着调。
 4. 用 `panel_api` 调接口前先查这篇文档；工具报 4xx/5xx 时优先怀疑版本差异，再回查一次文档。
    面板接口慢/返回大（如脚本列表、日志、备份）时，`panel_api` 传 `timeoutSeconds`（60/120）避免中途超时。
-5. 如果**APP 内置页面**（任务/脚本/环境变量/订阅等）也报接口不兼容：先 `app_api_override_list` 看现有规则，
-   再根据新版本文档生成规则，用 `app_api_override_update` 写入。规则会即时生效，不用重装 APP。
-   规则写法：method + path（相对 /api 或 /open 的后缀）+ newPath/queryAdd/queryRemove + 可选 version。
-6. 规则和版本是**按面板 ID 分别保存**的：A 面板 2.15、B 面板 2.16 各有一套规则和知识库文档，切换面板后自动用对应的那套，不会互相覆盖。
+5. 如果**APP 内置页面**（任务/脚本/环境变量/订阅等）报接口不兼容、`接口已下架`、410/404/405：
+   这是**必须自动修复**的信号，不要等用户开口说“更新接口”。固定走：
+   a. `qinglong_adapter_status` 看当前版本有没有适配插件、缺哪些函数；
+   b. 缺 → `web_search` / `web_fetch` 找当前版本官方 API 文档（优先 GitHub whyour/qinglong 的 back/api/*.ts）；
+   c. 用 `kb_write` 或 `kb_update` 沉淀该版本文档（标题带版本号）；
+   d. 用 `qinglong_adapter_update` 写入当前版本的适配插件，覆盖报错的内置函数
+      （如 script_read 改为 /scripts/detail、log_read 改为 /logs/detail）。
+   插件按版本缓存，同一个版本所有面板共享；改一次即可，不需要每个面板重复做。
+6. 简单路径/参数改写用 `app_api_override_list` / `app_api_override_update`；
+   涉及返回结构转换、函数级适配的用 `qinglong_adapter_status` / `qinglong_adapter_update`。
+   两者都不需要重装 APP，写完后当前版本的 APP 内置页面会直接走新接口。
 
 ## 会话延续（每条新消息先做这个判断）
 用户随时可能回到几天前的旧会话继续提需求，也可能故意中断你再补一句话。**不要去匹配"继续"这类关键词**，而是读懂这句话跟上文是什么关系，自己选一种走法：
