@@ -17,9 +17,20 @@ import 'terminal_selection_bar.dart';
 
 /// 一个已经连接的 SSH 会话终端页。
 class SshTerminalView extends ConsumerStatefulWidget {
-  const SshTerminalView({super.key, required this.sessionId});
+  const SshTerminalView({
+    super.key,
+    required this.sessionId,
+    this.initialCommand,
+    this.title,
+  });
 
   final String sessionId;
+
+  /// 打开 shell 后自动发送的命令（例如 docker exec -it xxx sh）。
+  final String? initialCommand;
+
+  /// 覆盖标题栏主文本（例如容器名）。
+  final String? title;
 
   @override
   ConsumerState<SshTerminalView> createState() => _SshTerminalViewState();
@@ -75,6 +86,10 @@ class _SshTerminalViewState extends ConsumerState<SshTerminalView> {
           _session = null;
         }
       });
+      final init = widget.initialCommand;
+      if (init != null && init.isNotEmpty) {
+        session.write(Uint8List.fromList(utf8.encode('$init\r')));
+      }
       if (mounted) setState(() => _error = null);
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
@@ -126,7 +141,7 @@ class _SshTerminalViewState extends ConsumerState<SshTerminalView> {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    '${session.name} · ${session.username}@${session.host}:${session.port}',
+                    '${widget.title ?? session.name} · ${session.username}@${session.host}:${session.port}',
                     style: const TextStyle(fontSize: 12),
                     overflow: TextOverflow.ellipsis,
                   ),

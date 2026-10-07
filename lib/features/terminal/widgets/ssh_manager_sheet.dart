@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/glass.dart';
 import '../providers/ssh_session_provider.dart';
 import 'ssh_connect_dialog.dart';
+import '../docker/docker_container_page.dart';
 
 class SshManagerSheet extends ConsumerWidget {
   const SshManagerSheet({super.key, this.asSheet = false, this.onClose});
@@ -141,6 +142,9 @@ class SshManagerSheet extends ConsumerWidget {
                     final s = sessions[i];
                     return _SshSessionCard(
                       session: s,
+                      onDocker: () async {
+                        await showDockerPage(context, s.id);
+                      },
                       onConnect: () async {
                         final draft = SshSessionManager.instance.draftOf(s.id);
                         if (draft == null) return;
@@ -189,12 +193,14 @@ class SshManagerSheet extends ConsumerWidget {
 class _SshSessionCard extends ConsumerWidget {
   const _SshSessionCard({
     required this.session,
+    required this.onDocker,
     required this.onConnect,
     required this.onDisconnect,
     required this.onDelete,
   });
 
   final SshSession session;
+  final VoidCallback onDocker;
   final VoidCallback onConnect;
   final VoidCallback onDisconnect;
   final VoidCallback onDelete;
@@ -302,6 +308,7 @@ class _SshSessionCard extends ConsumerWidget {
                 onSelected: (v) {
                   if (v == 'connect') onConnect();
                   if (v == 'disconnect') onDisconnect();
+                  if (v == 'docker') onDocker();
                   if (v == 'delete') onDelete();
                 },
                 itemBuilder: (_) => [
@@ -315,7 +322,7 @@ class _SshSessionCard extends ConsumerWidget {
                         title: Text('连接'),
                       ),
                     ),
-                  if (connected)
+                  if (connected) ...[
                     const PopupMenuItem(
                       value: 'disconnect',
                       child: ListTile(
@@ -325,6 +332,16 @@ class _SshSessionCard extends ConsumerWidget {
                         title: Text('断开'),
                       ),
                     ),
+                    const PopupMenuItem(
+                      value: 'docker',
+                      child: ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.inventory_2_outlined),
+                        title: Text('Docker 容器管理'),
+                      ),
+                    ),
+                  ],
                   const PopupMenuItem(
                     value: 'delete',
                     child: ListTile(

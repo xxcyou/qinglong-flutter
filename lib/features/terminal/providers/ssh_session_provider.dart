@@ -342,6 +342,32 @@ class SshSessionManager {
 
   /// 给 AI/UI 调用的同步执行通道。
   Future<String> execute(String id, String command) async {
+    final session = await _sessionFor(id, command);
+    final out = await utf8.decoder.bind(session.stdout).join();
+    await session.done;
+    return out;
+  }
+
+  /// 给 UI 用的执行通道：同时收集 stdout 和 stderr，返回合并文本；
+  /// 命令本身有非 0 退出码时也把退出码拼进去，方便界面直接显示错误。
+  Future<String> executeFull(String id, String command) async {
+    final session = await _sessionFor(id, command);
+    final out = await utf8.decoder.bind(session.stdout).join();
+    final err = await utf8.decoder.bind(session.stderr).join();
+    final exitCode = await session.done.then<int?>((_) => session.exitCode);
+    final parts = <String>[
+      if (out.trim().isNotEmpty) out.trim(),
+      if (err.trim().isNotEmpty) err.trim(),
+    ];
+    var text = parts.join('\n');
+    if (exitCode != null && exitCode != 0) {
+      if (text.trim().isNotEmpty) text = '$text\n';
+      text = '$text[exit=$exitCode]';
+    }
+    return text;
+  }
+
+  Future<SSHSession> _sessionFor(String id, String command) async {
     final client = _clients[id];
     if (client == null) throw StateError('SSH 未连接：$id');
     if (client.isClosed) {
@@ -349,10 +375,7 @@ class SshSessionManager {
       _markDisconnected(id, 'error: 连接已断开');
       throw StateError('SSH 已断开：$id，请用 ssh_connect 重新连接');
     }
-    final session = await client.execute(command);
-    final out = await utf8.decoder.bind(session.stdout).join();
-    await session.done;
-    return out;
+    return client.execute(command);
   }
 }
 
