@@ -19,11 +19,15 @@ class SshFloatingTerminal {
     late final int id;
     id = SshFloatingHost.add(
       context,
-      (_) => SshFloatingTerminalWindow(
+      group: containerId,
+      title: title ?? '容器终端',
+      icon: Icons.terminal,
+      builder: (_) => SshFloatingTerminalWindow(
         sessionId: sessionId,
         containerId: containerId,
         title: title,
         onFocus: () => SshFloatingHost.focus(id),
+        onMinimize: () => SshFloatingHost.minimize(id),
         onClose: () {
           SshFloatingHost.close(id);
           _id = null;
@@ -47,6 +51,7 @@ class SshFloatingTerminalWindow extends StatefulWidget {
     required this.containerId,
     required this.title,
     required this.onFocus,
+    required this.onMinimize,
     required this.onClose,
   });
 
@@ -54,6 +59,7 @@ class SshFloatingTerminalWindow extends StatefulWidget {
   final String containerId;
   final String? title;
   final VoidCallback onFocus;
+  final VoidCallback onMinimize;
   final VoidCallback onClose;
 
   @override
@@ -129,6 +135,19 @@ class _SshFloatingTerminalWindowState extends State<SshFloatingTerminalWindow> {
                   ),
                 ),
               ),
+            ),
+          ),
+          Positioned(
+            right: 32,
+            top: 0,
+            child: IconButton(
+              tooltip: '最小化容器终端',
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+              iconSize: 14,
+              padding: EdgeInsets.zero,
+              icon: const Icon(Icons.minimize, color: Colors.white70),
+              onPressed: widget.onMinimize,
             ),
           ),
           Positioned(

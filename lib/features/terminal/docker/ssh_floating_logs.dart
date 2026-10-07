@@ -23,11 +23,15 @@ class SshFloatingLogs {
     late final int id;
     id = SshFloatingHost.add(
       context,
-      (_) => SshFloatingLogsWindow(
+      group: containerId,
+      title: title ?? '容器日志',
+      icon: Icons.receipt_long,
+      builder: (_) => SshFloatingLogsWindow(
         sessionId: sessionId,
         containerId: containerId,
         title: title,
         onFocus: () => SshFloatingHost.focus(id),
+        onMinimize: () => SshFloatingHost.minimize(id),
         onClose: () {
           SshFloatingHost.close(id);
           _id = null;
@@ -45,6 +49,7 @@ class SshFloatingLogsWindow extends StatefulWidget {
     required this.containerId,
     required this.title,
     required this.onFocus,
+    required this.onMinimize,
     required this.onClose,
   });
 
@@ -52,6 +57,7 @@ class SshFloatingLogsWindow extends StatefulWidget {
   final String containerId;
   final String? title;
   final VoidCallback onFocus;
+  final VoidCallback onMinimize;
   final VoidCallback onClose;
 
   @override
@@ -118,6 +124,19 @@ class _SshFloatingLogsWindowState extends State<SshFloatingLogsWindow> {
                   ),
                 ),
               ),
+            ),
+          ),
+          Positioned(
+            right: 32,
+            top: 0,
+            child: IconButton(
+              tooltip: '最小化容器日志',
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+              iconSize: 14,
+              padding: EdgeInsets.zero,
+              icon: const Icon(Icons.minimize, color: Colors.white70),
+              onPressed: widget.onMinimize,
             ),
           ),
           Positioned(

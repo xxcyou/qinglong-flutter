@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
-/// SSH 容器悬浮窗总控：多个悬浮窗共用同一个 OverlayEntry，
-/// 点击窗口时只调整内部 Stack 顺序，不销毁重建，因此终端/日志状态不丢。
+/// SSH 容器悬浮窗总控：多个悬浮窗共用同一个 OverlayEntry。
+/// 支持：点击置顶、最小化成小方块、按容器分组批量最小化/恢复。
+/// 所有窗口都保留在树里（Offstage），因此终端会话/路径/文件状态不会丢。
 class SshFloatingHost {
   SshFloatingHost._();
 
@@ -9,10 +10,23 @@ class SshFloatingHost {
   static OverlayEntry? _entry;
   static int _counter = 0;
 
-  /// 注册一个悬浮窗，返回它的稳定 id。
-  static int add(BuildContext context, WidgetBuilder builder) {
+  /// 注册一个悬浮窗，返回稳定 id。
+  static int add(
+    BuildContext context, {
+    required String group,
+    required String title,
+    required IconData icon,
+    required WidgetBuilder builder,
+  }) {
     final id = ++_counter;
-    _windows.add(_HostedWindow(id: id, key: UniqueKey(), builder: builder));
+    _windows.add(_HostedWindow(
+      id: id,
+      group: group,
+      title: title,
+      icon: icon,
+      key: UniqueKey(),
+      builder: builder,
+    ));
     final overlay = Overlay.of(context, rootOverlay: true);
     if (_entry == null) {
       late final OverlayEntry entry;
@@ -20,7 +34,28 @@ class SshFloatingHost {
         builder: (context) => Stack(
           children: [
             for (final w in _windows)
-              KeyedSubtree(key: w.key, child: w.builder(context)),
+              Offstage(
+                offstage: w.minimized,
+                child: KeyedSubtree(key: w.key, child: w.builder(context)),
+              ),
+            if (_windows.any((w) => w.minimized))
+              Positioned(
+                right: 8,
+                bottom: 8,
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  alignment: WrapAlignment.end,
+                  children: [
+                    for (final w in _windows.where((w) => w.minimized))
+                      _MinimizeCube(
+                        title: w.title,
+                        icon: w.icon,
+                        onTap: () => expand(w.id),
+                      ),
+                  ],
+                ),
+              ),
           ],
         ),
       );
@@ -41,6 +76,45 @@ class SshFloatingHost {
     _entry?.markNeedsBuild();
   }
 
+  /// 最小化成小方块。
+  static void minimize(int id) {
+    final w = _windows.where((x) => x.id == id).firstOrNull;
+    if (w == null || w.minimized) return;
+    w.minimized = true;
+    _entry?.markNeedsBuild();
+  }
+
+  /// 从小方块恢复显示，并置顶。
+  static void expand(int id) {
+    final w = _windows.where((x) => x.id == id).firstOrNull;
+    if (w == null) return;
+    w.minimized = false;
+    focus(id);
+  }
+
+  /// 把某容器当前展开（非最小化）的悬浮窗全部最小化，返回展开的 id 列表。
+  static Set<int> minimizeExpandedGroup(String group) {
+    final expanded = <int>{};
+    for (final w in _windows) {
+      if (w.group == group && !w.minimized) {
+        w.minimized = true;
+        expanded.add(w.id);
+      }
+    }
+    _entry?.markNeedsBuild();
+    return expanded;
+  }
+
+  /// 恢复某容器在编辑前展开过的悬浮窗。
+  static void restoreExpandedGroup(String group, Set<int> ids) {
+    for (final w in _windows) {
+      if (w.group == group && ids.contains(w.id)) {
+        w.minimized = false;
+      }
+    }
+    _entry?.markNeedsBuild();
+  }
+
   /// 关闭某个悬浮窗。
   static void close(int id) {
     final i = _windows.indexWhere((w) => w.id == id);
@@ -56,13 +130,70 @@ class SshFloatingHost {
 }
 
 class _HostedWindow {
-  const _HostedWindow({
+  _HostedWindow({
     required this.id,
+    required this.group,
+    required this.title,
+    required this.icon,
     required this.key,
     required this.builder,
   });
 
   final int id;
+  final String group;
+  final String title;
+  final IconData icon;
+  bool minimized = false;
   final Key key;
   final WidgetBuilder builder;
+}
+
+class _MinimizeCube extends StatelessWidget {
+  const _MinimizeCube({
+    required this.title,
+    required this.icon,
+    required this.onTap,
+  });
+
+  final String title;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: '展开 $title',
+      child: Material(
+        color: const Color(0xFF28313B),
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(10),
+          child: Container(
+            width: 42,
+            height: 42,
+            alignment: Alignment.center,
+            padding: const EdgeInsets.all(6),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 18, color: Colors.white),
+                const SizedBox(height: 2),
+                Text(
+                  title.length > 3 ? title.substring(0, 3) : title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 8, color: Colors.white70),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+extension _FirstOrNull<T> on Iterable<T> {
+  T? get firstOrNull => isEmpty ? null : first;
 }

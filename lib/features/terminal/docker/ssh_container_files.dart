@@ -31,11 +31,15 @@ class SshFloatingFiles {
     late final int id;
     id = SshFloatingHost.add(
       context,
-      (_) => SshFloatingFilesWindow(
+      group: containerId,
+      title: title ?? '容器文件',
+      icon: Icons.folder_open,
+      builder: (_) => SshFloatingFilesWindow(
         sessionId: sessionId,
         containerId: containerId,
         title: title,
         onFocus: () => SshFloatingHost.focus(id),
+        onMinimize: () => SshFloatingHost.minimize(id),
         onClose: () {
           SshFloatingHost.close(id);
           _id = null;
@@ -65,6 +69,7 @@ class SshFloatingFilesWindow extends StatefulWidget {
     required this.containerId,
     required this.title,
     required this.onFocus,
+    required this.onMinimize,
     required this.onClose,
   });
 
@@ -72,6 +77,7 @@ class SshFloatingFilesWindow extends StatefulWidget {
   final String containerId;
   final String? title;
   final VoidCallback onFocus;
+  final VoidCallback onMinimize;
   final VoidCallback onClose;
 
   @override
@@ -138,6 +144,19 @@ class _SshFloatingFilesWindowState extends State<SshFloatingFilesWindow> {
                       ),
                     ),
                   ),
+                ),
+              ),
+              Positioned(
+                right: 32,
+                top: 0,
+                child: IconButton(
+                  tooltip: '最小化容器文件管理',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                  iconSize: 14,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.minimize, color: Colors.black54),
+                  onPressed: widget.onMinimize,
                 ),
               ),
               Positioned(
@@ -480,6 +499,18 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
 
   // ---------- 打开文件：图片/文本编辑 ----------
 
+  Future<void> _openWithAutoMinimize(Future<void> Function() open) async {
+    // 打开编辑器前自动收缩本容器的所有悬浮窗，避免遮挡阅读。
+    final expanded = SshFloatingHost.minimizeExpandedGroup(widget.containerId);
+    try {
+      await open();
+    } finally {
+      if (mounted) {
+        SshFloatingHost.restoreExpandedGroup(widget.containerId, expanded);
+      }
+    }
+  }
+
   Future<void> _openEntry(ContainerFileEntry e) async {
     if (e.isDirectory) return _enter(e.name);
     final absolute = _abs(e);
@@ -492,16 +523,19 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
       );
       if (kind.category == FileCategory.image) {
         if (!mounted || bytes.isEmpty) return;
-        await Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => ImageViewerPage(
-              title: e.name,
-              subtitle: '容器内图片 · ${FileKinds.sizeText(e.size)}',
-              imageBytes: [bytes],
-              imageNames: [e.name],
+        await _openWithAutoMinimize(() async {
+          if (!mounted) return;
+          await Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => ImageViewerPage(
+                title: e.name,
+                subtitle: '容器内图片 · ${FileKinds.sizeText(e.size)}',
+                imageBytes: [bytes],
+                imageNames: [e.name],
+              ),
             ),
-          ),
-        );
+          );
+        });
         return;
       }
       if (kind.needsExternalApp) {
@@ -510,32 +544,35 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
       }
       final text = utf8.decode(bytes, allowMalformed: true);
       if (!mounted) return;
-      await Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => CodeEditorPage(
-            path: absolute,
-            initial: text,
-            subtitle: '${kind.label} · 容器内文件',
-            onSave: (content) async {
-              try {
-                await DockerService(widget.sessionId).writeFileBytes(
-                  widget.containerId,
-                  absolute,
-                  Uint8List.fromList(utf8.encode(content)),
-                );
-                return true;
-              } catch (_) {
-                return false;
-              }
-            },
-            onDelete: () async {
-              final r = await DockerService(widget.sessionId)
-                  .deleteFile(widget.containerId, absolute);
-              return !r.contains('[exit=');
-            },
+      await _openWithAutoMinimize(() async {
+        if (!mounted) return;
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => CodeEditorPage(
+              path: absolute,
+              initial: text,
+              subtitle: '${kind.label} · 容器内文件',
+              onSave: (content) async {
+                try {
+                  await DockerService(widget.sessionId).writeFileBytes(
+                    widget.containerId,
+                    absolute,
+                    Uint8List.fromList(utf8.encode(content)),
+                  );
+                  return true;
+                } catch (_) {
+                  return false;
+                }
+              },
+              onDelete: () async {
+                final r = await DockerService(widget.sessionId)
+                    .deleteFile(widget.containerId, absolute);
+                return !r.contains('[exit=');
+              },
+            ),
           ),
-        ),
-      );
+        );
+      });
     } catch (err) {
       _toast('打开文件失败：$err');
     }
