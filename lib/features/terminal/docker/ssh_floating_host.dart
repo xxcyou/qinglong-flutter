@@ -168,21 +168,13 @@ class _MinimizeDock extends StatelessWidget {
         .where((w) => w.minimized)
         .toList();
     if (minimized.isEmpty) return const SizedBox.shrink();
-    final groups = <String>[];
-    for (final w in minimized) {
-      if (!groups.contains(w.group)) groups.add(w.group);
-    }
     return SizedBox(
-      height: 66,
+      height: 68,
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
-            for (final group in groups)
-              _MinimizeFolder(
-                label: (minimized.firstWhere((w) => w.group == group)).title,
-                windows: minimized.where((w) => w.group == group).toList(),
-              ),
+            for (final w in minimized) _MinimizeCube(window: w),
             const SizedBox(width: 8),
           ],
         ),
@@ -191,85 +183,46 @@ class _MinimizeDock extends StatelessWidget {
   }
 }
 
-class _MinimizeFolder extends StatelessWidget {
-  const _MinimizeFolder({
-    required this.label,
-    required this.windows,
-  });
+class _MinimizeCube extends StatelessWidget {
+  const _MinimizeCube({required this.window});
 
-  final String label;
-  final List<_HostedWindow> windows;
+  final _HostedWindow window;
 
   @override
   Widget build(BuildContext context) {
-    final display = label.length > 8 ? '${label.substring(0, 8)}…' : label;
-    return Container(
-      margin: const EdgeInsets.only(right: 8),
-      padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
-      decoration: BoxDecoration(
-        color: const Color(0xEE28313B),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white12),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Tooltip(
-            message: '展开 $label 的全部悬浮窗',
-            child: InkWell(
-              onTap: () => SshFloatingHost.expandGroup(windows.first.group),
-              borderRadius: BorderRadius.circular(10),
-              child: const Padding(
-                padding: EdgeInsets.all(4),
-                child: Icon(Icons.folder_rounded, color: Colors.amber, size: 20),
+    final display =
+        window.title.length > 5 ? '${window.title.substring(0, 5)}…' : window.title;
+    return Tooltip(
+      message: '展开 ${window.title}',
+      child: Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: Material(
+          color: const Color(0xEE28313B),
+          borderRadius: BorderRadius.circular(10),
+          child: InkWell(
+            onTap: () => SshFloatingHost.expand(window.id),
+            borderRadius: BorderRadius.circular(10),
+            child: Container(
+              width: 56,
+              height: 58,
+              padding: const EdgeInsets.all(6),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(window.icon, size: 20, color: Colors.white),
+                  const SizedBox(height: 3),
+                  Text(
+                    display,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 9, color: Colors.white70),
+                  ),
+                ],
               ),
             ),
           ),
-          const SizedBox(width: 4),
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                display,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (final w in windows)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 4),
-                      child: Tooltip(
-                        message: '展开 ${w.title}',
-                        child: InkWell(
-                          onTap: () => SshFloatingHost.expand(w.id),
-                          borderRadius: BorderRadius.circular(6),
-                          child: Container(
-                            width: 26,
-                            height: 22,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.10),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Icon(w.icon, size: 14, color: Colors.white),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }
