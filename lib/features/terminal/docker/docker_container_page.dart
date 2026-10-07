@@ -261,27 +261,28 @@ class _ContainerCard extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 4),
-              Text(
-                c.image,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: scheme.onSurfaceVariant,
-                ),
+              const SizedBox(height: 8),
+              _InfoRow(label: '镜像', value: c.image),
+              const SizedBox(height: 3),
+              _InfoRow(label: '状态', value: c.status),
+              const SizedBox(height: 3),
+              _InfoRow(
+                label: '端口',
+                value: c.ports.isEmpty ? '无端口映射' : c.ports,
               ),
-              const SizedBox(height: 2),
-              Text(
-                '${c.status}${c.ports.isNotEmpty ? ' · ${c.ports}' : ''}',
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 11.5,
-                  color: scheme.onSurfaceVariant,
-                ),
+              const SizedBox(height: 3),
+              _InfoRow(
+                label: '容器ID',
+                value: c.id.length > 24 ? '${c.id.substring(0, 24)}…' : c.id,
+                mono: true,
               ),
+              const SizedBox(height: 3),
+              _InfoRow(label: '创建时间', value: c.createdAt),
               if (expanded) ...[
+                const Divider(height: 16),
+                _InfoRow(label: 'State', value: c.state),
+                const SizedBox(height: 3),
+                _InfoRow(label: '完整ID', value: c.id, mono: true),
                 const Divider(height: 16),
                 Wrap(
                   spacing: 6,
@@ -396,6 +397,49 @@ class _ContainerCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  const _InfoRow({
+    required this.label,
+    required this.value,
+    this.mono = false,
+  });
+
+  final String label;
+  final String value;
+  final bool mono;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 62,
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            value,
+            style: TextStyle(
+              fontSize: 12,
+              color: mono ? scheme.primary : scheme.onSurface,
+              fontFamily: mono ? 'monospace' : null,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
