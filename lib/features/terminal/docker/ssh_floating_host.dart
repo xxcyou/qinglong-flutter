@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 /// SSH 容器悬浮窗总控：多个悬浮窗共用同一个 OverlayEntry。
-/// 支持：点击置顶、最小化成容器文件夹、按容器分组批量最小化/恢复。
+/// 支持：点击置顶、最小化成小方块。
 /// 所有窗口都保留在树里（Offstage），因此终端会话/路径/文件状态不会丢。
 class SshFloatingHost {
   SshFloatingHost._();
@@ -39,11 +39,22 @@ class SshFloatingHost {
                 child: KeyedSubtree(key: w.key, child: w.builder(context)),
               ),
             if (_windows.any((w) => w.minimized))
-              const Positioned(
-                left: 8,
+              Positioned(
                 right: 8,
                 bottom: 8,
-                child: _MinimizeDock(),
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  alignment: WrapAlignment.end,
+                  children: [
+                    for (final w in _windows.where((w) => w.minimized))
+                      _MinimizeCube(
+                        title: w.title,
+                        icon: w.icon,
+                        onTap: () => expand(w.id),
+                      ),
+                  ],
+                ),
               ),
           ],
         ),
@@ -65,7 +76,7 @@ class SshFloatingHost {
     _entry?.markNeedsBuild();
   }
 
-  /// 最小化成容器文件夹里的一个图标。
+  /// 最小化成小方块。
   static void minimize(int id) {
     final w = _windows.where((x) => x.id == id).firstOrNull;
     if (w == null || w.minimized) return;
@@ -78,28 +89,9 @@ class SshFloatingHost {
     final w = _windows.where((x) => x.id == id).firstOrNull;
     if (w == null) return;
     w.minimized = false;
-    // 先强制重建，再置顶；避免目标本来就是最后一个时 focus 提前 return 不刷新。
+    // 先强制刷新再置顶，避免目标本来就是最后一个时 focus 提前 return 不刷新。
     _entry?.markNeedsBuild();
     focus(id);
-  }
-
-  /// 展开某个容器文件夹里的全部最小化窗口。
-  static void expandGroup(String group) {
-    var changed = false;
-    for (final w in _windows) {
-      if (w.group == group && w.minimized) {
-        w.minimized = false;
-        changed = true;
-      }
-    }
-    if (changed) {
-      _entry?.markNeedsBuild();
-      final last = _windows.lastWhere(
-        (w) => w.group == group,
-        orElse: () => _windows.last,
-      );
-      focus(last.id);
-    }
   }
 
   /// 把某容器当前展开（非最小化）的悬浮窗全部最小化，返回展开的 id 列表。
@@ -158,68 +150,45 @@ class _HostedWindow {
   final WidgetBuilder builder;
 }
 
-/// 底部收纳栏：按容器分组显示，一行横向滑动。
-class _MinimizeDock extends StatelessWidget {
-  const _MinimizeDock();
-
-  @override
-  Widget build(BuildContext context) {
-    final minimized = SshFloatingHost._windows
-        .where((w) => w.minimized)
-        .toList();
-    if (minimized.isEmpty) return const SizedBox.shrink();
-    return SizedBox(
-      height: 68,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            for (final w in minimized) _MinimizeCube(window: w),
-            const SizedBox(width: 8),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _MinimizeCube extends StatelessWidget {
-  const _MinimizeCube({required this.window});
+  const _MinimizeCube({
+    required this.title,
+    required this.icon,
+    required this.onTap,
+  });
 
-  final _HostedWindow window;
+  final String title;
+  final IconData icon;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final display =
-        window.title.length > 5 ? '${window.title.substring(0, 5)}…' : window.title;
+    final display = title.length > 4 ? '${title.substring(0, 4)}…' : title;
     return Tooltip(
-      message: '展开 ${window.title}',
-      child: Padding(
-        padding: const EdgeInsets.only(right: 8),
-        child: Material(
-          color: const Color(0xEE28313B),
+      message: '展开 $title',
+      child: Material(
+        color: const Color(0xFF28313B),
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          onTap: onTap,
           borderRadius: BorderRadius.circular(10),
-          child: InkWell(
-            onTap: () => SshFloatingHost.expand(window.id),
-            borderRadius: BorderRadius.circular(10),
-            child: Container(
-              width: 56,
-              height: 58,
-              padding: const EdgeInsets.all(6),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(window.icon, size: 20, color: Colors.white),
-                  const SizedBox(height: 3),
-                  Text(
-                    display,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 9, color: Colors.white70),
-                  ),
-                ],
-              ),
+          child: Container(
+            width: 46,
+            height: 46,
+            alignment: Alignment.center,
+            padding: const EdgeInsets.all(6),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 18, color: Colors.white),
+                const SizedBox(height: 2),
+                Text(
+                  display,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 8, color: Colors.white70),
+                ),
+              ],
             ),
           ),
         ),
