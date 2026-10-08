@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/adb_session_provider.dart';
 import 'adb_connect_dialog.dart';
+import 'adb_terminal_sheet.dart';
 
 class AdbManagerSheet extends ConsumerWidget {
   const AdbManagerSheet({super.key, this.asSheet = false, this.onClose});
@@ -66,7 +67,7 @@ class AdbManagerSheet extends ConsumerWidget {
                       ),
                     ),
                     Text(
-                      '网络无线调试，连接后可进文件管理操作设备文件',
+                      '网络无线调试，连接后可进文件管理和 ADB 终端',
                       style: TextStyle(fontSize: 12),
                     ),
                   ],
@@ -147,6 +148,16 @@ class AdbManagerSheet extends ConsumerWidget {
                       trailing: Wrap(
                         spacing: 4,
                         children: [
+                          if (s.isConnected)
+                            IconButton(
+                              tooltip: 'ADB 终端',
+                              onPressed: () => AdbTerminalSheet.show(
+                                context,
+                                sessionId: s.id,
+                                title: s.name,
+                              ),
+                              icon: const Icon(Icons.terminal),
+                            ),
                           if (s.isConnected)
                             IconButton(
                               tooltip: '断开',

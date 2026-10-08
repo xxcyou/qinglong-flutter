@@ -327,10 +327,8 @@ class ScriptApi {
     bool? isDirectory,
   }) async {
     final (dir, name) = _split(path);
-    var asDirectory = isDirectory;
-    if (asDirectory == null) {
-      asDirectory = await _looksLikeDirectory(apiBaseUrl, dir, name) ?? false;
-    }
+    final asDirectory = isDirectory ??
+        (await _looksLikeDirectory(apiBaseUrl, dir, name) ?? false);
 
     Future<void> request(bool dirFlag) async {
       final type = dirFlag ? 'directory' : 'file';

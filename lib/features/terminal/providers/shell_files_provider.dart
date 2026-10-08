@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -233,7 +232,7 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
     FileScope.shell: '/workspace',
     FileScope.app: '',
     FileScope.ssh: '/',
-    FileScope.adb: '/sdcard',
+    FileScope.adb: '/storage/emulated/0',
   };
   final Map<String, String> _sshPaths = {};
 
@@ -316,7 +315,7 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
             : scope == FileScope.app
                 ? ''
                 : scope == FileScope.adb
-                    ? '/sdcard'
+                    ? '/storage/emulated/0'
                     : '/');
     if (scope == FileScope.adb) {
       if (adbId == null ||
@@ -336,9 +335,9 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
           return;
         }
         adbId = saved.first.id;
-        path = '/sdcard';
+        path = '/storage/emulated/0';
       } else {
-        path = '/sdcard';
+        path = '/storage/emulated/0';
       }
     } else if (scope == FileScope.ssh) {
       if (sshId == null || SshSessionManager.instance.clientOf(sshId) == null) {
@@ -764,6 +763,13 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
   }
 
   /// ADB 目录列表：用 `ls -la` 输出解析，兼容 Android toybox。
+  ///
+  /// 两个容易踩的坑：
+  /// 1. Android toybox 的日期是 `YYYY-MM-DD HH:MM` 两列，文件名在第 7 列；
+  ///    而 GNU coreutils 是 `Mon DD HH:MM` 三列，文件名在第 8 列。以前按
+  ///    GNU 固定取第 8 列，结果小米/toybox 上普通文件全部解析不出来。
+  /// 2. `/sdcard` 本身是软链接，直接 `ls -la /sdcard` 只会得到一行
+  ///    `sdcard -> /storage/...`；先 readlink -f 解析到真实目录再列。
   Future<ShellDirectoryListing> _adbListing(String path) async {
     final id = _adbId();
     final manager = AdbSessionManager.instance;
@@ -773,18 +779,54 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       final session = await manager.connect(draft, id: id);
       if (!session.isConnected) throw StateError(session.status);
     }
-    final raw = await manager.execute(id, 'ls -la ${_shq(path)}');
+    final realPath = await _adbRealPath(id, path);
+    final raw = await manager.execute(id, 'ls -la ${_shq(realPath)}');
     final lines = raw.split('\n');
     final entries = <ShellFileEntry>[];
+    String? errorLine;
     for (final line in lines) {
-      final entry = _parseAdbLsLine(line, path);
+      final trimmed = line.trim();
+      if (trimmed.startsWith('ls:')) {
+        final lower = trimmed.toLowerCase();
+        if (errorLine == null &&
+            (lower.contains('permission denied') ||
+                lower.contains('no such file') ||
+                lower.contains('not a directory'))) {
+          errorLine = trimmed;
+        }
+        continue;
+      }
+      final entry = _parseAdbLsLine(line, realPath);
       if (entry != null) entries.add(entry);
     }
+    if (entries.isEmpty && errorLine != null) {
+      throw StateError(
+        errorLine.replaceFirst(RegExp(r'^ls:\s*'), '').trim(),
+      );
+    }
     return ShellDirectoryListing(
-      path: path,
-      roots: const ['/sdcard', '/data/local/tmp', '/storage/emulated/0'],
+      path: realPath,
+      roots: const ['/storage/emulated/0', '/data/local/tmp'],
       entries: entries,
     );
+  }
+
+  /// 把软链接解析到真实路径；Toybox readlink 不支持时会原样返回。
+  Future<String> _adbRealPath(String id, String path) async {
+    try {
+      final out = await AdbSessionManager.instance
+          .execute(id, 'readlink -f ${_shq(path)}');
+      final resolved = out.trim();
+      // Toybox readlink -f 正常输出绝对路径；命令不存在/报错时可能返回
+      // `/system/bin/sh: readlink: not found`，不能把它当路径。
+      if (resolved.startsWith('/') &&
+          !resolved.contains('\n') &&
+          !resolved.contains('not found') &&
+          !resolved.startsWith('readlink:')) {
+        return resolved;
+      }
+    } catch (_) {}
+    return path;
   }
 
   ShellFileEntry? _parseAdbLsLine(String line, String dir) {
@@ -795,29 +837,67 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       return null;
     }
     final parts = trimmed.split(RegExp(r'\s+'));
-    if (parts.length < 8) return null;
+    // 有些目录（/、/data 等）元数据被 SELinux 遮住，行内会有
+    // `-????????? ? ? ? ? ? init.environ.rc` 只有 7 列，不能按 8 列拒掉。
+    if (parts.length < 7) return null;
     final perms = parts[0];
-    if (!perms.startsWith('-') && !perms.startsWith('d') && !perms.startsWith('l')) {
+    if (!perms.startsWith('-') &&
+        !perms.startsWith('d') &&
+        !perms.startsWith('l')) {
       return null;
     }
-    final name = parts.sublist(8).join(' ');
-    if (name.isEmpty) return null;
-    // ls -l 的 filename 列是第 9 个字段；目录也可用同规则。
+
+    // 位 5 是日期列：
+    // - Android toybox: 2025-09-07 01:07 name  → 名字从第 7 列开始
+    // - GNU coreutils:  Sep  7 01:07 name       → 名字从第 8 列开始
+    // - 元数据缺失:     ? ? ? ? ? name           → 名字紧跟在元数据后
+    final f5 = parts.length > 5 ? parts[5] : '';
+    final bool toyboxDate = RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(f5);
+    final bool gnuMonth = RegExp(r'^[A-Za-z]{3}$').hasMatch(f5);
+    final arrowIndex = parts.indexOf('->');
+    final logicalEnd = arrowIndex >= 0 ? arrowIndex : parts.length;
+    final int nameStart;
+    if (toyboxDate) {
+      nameStart = 7;
+    } else if (gnuMonth) {
+      nameStart = 8;
+    } else {
+      // 元数据缺失时至少取 `->` 前最后一个 token 作为文件名。
+      nameStart = logicalEnd - 1;
+    }
+    if (nameStart < 1 || nameStart >= logicalEnd) return null;
+
+    // 软链接行是 `name -> target`，展示名只留 name；路径解析交给 _adbRealPath。
+    final name = parts.sublist(nameStart, logicalEnd).join(' ').trim();
+    if (name.isEmpty || name == '.' || name == '..') return null;
+
     final size = int.tryParse(parts[4]) ?? 0;
     final isDir = perms.startsWith('d') || perms.startsWith('l');
     final hidden = name.startsWith('.');
-    final modTokens = parts.sublist(5, 8);
+
     var modified = DateTime.now();
-    final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})').firstMatch(modTokens[0]);
-    if (m != null) {
-      modified = DateTime.tryParse(
-              '${m.group(1)}-${m.group(2)}-${m.group(3)} ${modTokens[1]}:${modTokens[2]}') ??
-          DateTime.now();
-    } else {
-      modified = DateTime.tryParse(
-              '${DateTime.now().year}-${modTokens[0]}-${modTokens[1]} ${modTokens[2]}:00') ??
-          DateTime.now();
+    if (toyboxDate) {
+      final time = (parts.length > 6 && parts[6].contains(':'))
+          ? parts[6]
+          : '00:00';
+      modified = DateTime.tryParse('$f5 $time') ?? modified;
+    } else if (gnuMonth) {
+      final month = _monthNumber(f5);
+      final day = int.tryParse(parts[6]) ?? 1;
+      final yearOrTime = parts.length > 7 ? parts[7] : '';
+      if (yearOrTime.contains(':')) {
+        modified = DateTime.tryParse(
+              '${DateTime.now().year}-'
+              '${month.toString().padLeft(2, '0')}-'
+              '${day.toString().padLeft(2, '0')} $yearOrTime',
+            ) ??
+            modified;
+      } else {
+        final year = int.tryParse(yearOrTime) ?? DateTime.now().year;
+        modified = DateTime(year, month, day);
+      }
     }
+
     return ShellFileEntry(
       name: name,
       path: _adbJoin(dir, name),
@@ -829,6 +909,14 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       executable: perms.length > 3 && perms[3] == 'x',
       hidden: hidden,
     );
+  }
+
+  static int _monthNumber(String name) {
+    const months = {
+      'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+      'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
+    };
+    return months[name] ?? 1;
   }
 
   Future<String> _adbRead(String path) async {

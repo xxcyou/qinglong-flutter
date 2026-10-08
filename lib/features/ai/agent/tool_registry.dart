@@ -975,7 +975,7 @@ class QlToolRegistry {
         ),
         ToolDefinition(
           name: 'adb_file_ls',
-          description: '列出已连接 ADB 设备的目录内容（等价 adb shell ls -la），用于远程文件管理',
+          description: '列出已连接 ADB 设备的目录内容（等价 adb shell ls -la，默认 /storage/emulated/0），用于远程文件管理',
           parameters: _obj([
             'id',
             'path'
@@ -2595,7 +2595,7 @@ class QlToolRegistry {
       case 'adb_file_ls':
         try {
           await AdbSessionManager.instance.loadSaved();
-          final quoted = (args['path']?.toString() ?? '/sdcard')
+          final quoted = (args['path']?.toString() ?? '/storage/emulated/0')
               .replaceAll("'", "'\\''");
           return await AdbSessionManager.instance
               .execute(args['id'].toString(), 'ls -la \'$quoted\'');
