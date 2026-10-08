@@ -171,7 +171,7 @@ class MarkdownMessage extends StatelessWidget {
 
 /// `++文字++` → 下划线。
 class _UnderlineSyntax extends md.InlineSyntax {
-  _UnderlineSyntax() : super(r'\+\+([^+\n]+?)\+\+');
+  _UnderlineSyntax() : super(r'\+\+(.+?)\+\+');
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
@@ -183,7 +183,7 @@ class _UnderlineSyntax extends md.InlineSyntax {
 
 /// `==文字==` → 发光（霓虹强调）。
 class _GlowSyntax extends md.InlineSyntax {
-  _GlowSyntax() : super(r'==([^=\n]+?)==');
+  _GlowSyntax() : super(r'==(.+?)==');
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
@@ -195,7 +195,7 @@ class _GlowSyntax extends md.InlineSyntax {
 
 /// `{c:red}文字{/c}` → 指定颜色，支持红/绿/蓝等名字或 #RRGGBB。
 class _ColorSyntax extends md.InlineSyntax {
-  _ColorSyntax() : super(r'\{c:([^}\n]+)\}([^{]+?)\{/c\}');
+  _ColorSyntax() : super(r'\{c:([^}\n]+)\}(.+?)\{/c\}');
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
@@ -208,7 +208,7 @@ class _ColorSyntax extends md.InlineSyntax {
 
 /// `{bg:yellow}文字{/bg}` → 背景高亮（荧光笔）。
 class _HighlightSyntax extends md.InlineSyntax {
-    _HighlightSyntax() : super(r'\{bg:([^}\n]+)\}([^{]+?)\{/bg\}');
+    _HighlightSyntax() : super(r'\{bg:([^}\n]+)\}(.+?)\{/bg\}');
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
@@ -288,6 +288,16 @@ List<InlineSpan> _buildNodeSpans(md.Node node, TextStyle? parent) {
           fontFamily: kMonoFamily,
           fontFamilyFallback: kMonoFallback,
           fontSize: 12.5,
+        );
+        return [
+          TextSpan(style: style, children: _buildInlineSpans(children, style)),
+        ];
+      case 'del':
+      case 's':
+      case 'strike':
+        final style = base.copyWith(
+          decoration: TextDecoration.lineThrough,
+          decorationColor: base.color,
         );
         return [
           TextSpan(style: style, children: _buildInlineSpans(children, style)),
