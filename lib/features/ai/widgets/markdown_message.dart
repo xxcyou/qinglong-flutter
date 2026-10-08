@@ -1041,15 +1041,26 @@ class _ShimmerTextState extends State<_ShimmerText>
       animation: _controller,
       builder: (context, _) {
         final t = _controller.value;
-        final baseColor = widget.colors.length >= 2 ? widget.colors[0] : const Color(0xFF888888);
-        final endColor = widget.colors.length >= 2 ? widget.colors[1] : const Color(0xFFDDDDDD);
+        final baseColor =
+            widget.colors.length >= 2
+                ? widget.colors[0]
+                : const Color(0xFF888888);
+        final endColor =
+            widget.colors.length >= 2
+                ? widget.colors[1]
+                : const Color(0xFFDDDDDD);
         return ShaderMask(
-          shaderCallback: (bounds) => LinearGradient(
-            colors: [baseColor, Colors.white, endColor],
-            stops: const [0.35, 0.5, 0.65],
-            begin: Alignment(-1.0 + 2.0 * t, 0),
-            end: Alignment(1.0 + 2.0 * t, 0),
-          ).createShader(bounds),
+          shaderCallback: (bounds) {
+            // 光带从第一个字开始，向右扫到最后一个字后离开。
+            final bandWidth = bounds.width * 0.45;
+            final startX = -bandWidth + t * (bounds.width + bandWidth);
+            return ui.Gradient.linear(
+              Offset(startX, 0),
+              Offset(startX + bandWidth, 0),
+              [baseColor, Colors.white, endColor],
+              const [0.0, 0.5, 1.0],
+            );
+          },
           blendMode: BlendMode.srcIn,
           child: widget.child,
         );
@@ -1119,8 +1130,8 @@ class _TypingTextState extends State<_TypingText>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 2200),
-    )..forward();
+      duration: const Duration(milliseconds: 2600),
+    )..repeat(reverse: true);
   }
 
   @override
@@ -1134,17 +1145,28 @@ class _TypingTextState extends State<_TypingText>
     return AnimatedBuilder(
       animation: _controller,
       builder: (context, _) {
-        final t = Curves.easeOut.transform(_controller.value);
+        final t = Curves.easeInOut.transform(_controller.value);
         return ClipRect(
-          child: Align(
-            alignment: Alignment.centerLeft,
-            widthFactor: t <= 0 ? 0.0001 : t,
-            child: widget.child,
-          ),
+          clipper: _TypingRevealClipper(t.clamp(0.0, 1.0)),
+          child: widget.child,
         );
       },
     );
   }
+}
+
+class _TypingRevealClipper extends CustomClipper<Rect> {
+  const _TypingRevealClipper(this.fraction);
+
+  final double fraction;
+
+  @override
+  Rect getClip(Size size) =>
+      Rect.fromLTRB(0, 0, size.width * fraction, size.height);
+
+  @override
+  bool shouldReclip(covariant _TypingRevealClipper oldClipper) =>
+      oldClipper.fraction != fraction;
 }
 
 class _CodeBlockBuilder extends MarkdownElementBuilder {
