@@ -2367,6 +2367,16 @@ _ParsePlot? _parsePlot(String source) {
       (exprLines.any((l) => RegExp(r'^x\s*=').hasMatch(l)) &&
           exprLines.any((l) => RegExp(r'^y\s*=').hasMatch(l)));
   if (parametric) {
+    // 支持局部变量：先收集 `r = ...` 这类赋值行，再代入 x/y 表达式。
+    final localVars = <String, _ExprNode>{};
+    for (final line in exprLines) {
+      final m = RegExp(r'^([a-zA-Z_]\w*)\s*=\s*(.+)$').firstMatch(line);
+      if (m != null) {
+        final name = m.group(1)!;
+        if (name == 'x' || name == 'y') continue;
+        localVars[name] = _ExprParser(m.group(2)!, vars: localVars).parse();
+      }
+    }
     String? xExpr;
     String? yExpr;
     for (final line in exprLines) {
@@ -2380,8 +2390,8 @@ _ParsePlot? _parsePlot(String source) {
       return null;
     }
     try {
-      final px = _ExprParser(xExpr).parse();
-      final py = _ExprParser(yExpr).parse();
+      final px = _ExprParser(xExpr, vars: localVars).parse();
+      final py = _ExprParser(yExpr, vars: localVars).parse();
       return _ParsePlot(
         series: const [],
         xMin: xMin,
@@ -2538,6 +2548,13 @@ class _TVarNode implements _ExprNode {
   double eval(double x, double t) => t;
 }
 
+class _UserVarNode implements _ExprNode {
+  _UserVarNode(this.expr);
+  final _ExprNode expr;
+  @override
+  double eval(double x, double t) => expr.eval(x, t);
+}
+
 class _BinaryNode implements _ExprNode {
   _BinaryNode(this.op, this.left, this.right);
   final String op;
@@ -2599,6 +2616,81 @@ class _FuncNode implements _ExprNode {
           return math.atan(_v(0, x, t));
         case 'atan2':
           return math.atan2(_v(0, x, t), _v(1, x, t));
+        case 'sinh':
+          final v = _v(0, x, t);
+          return (math.exp(v) - math.exp(-v)) / 2;
+        case 'cosh':
+          final v = _v(0, x, t);
+          return (math.exp(v) + math.exp(-v)) / 2;
+        case 'tanh':
+          final v = _v(0, x, t);
+          final e = math.exp(2 * v);
+          return (e - 1) / (e + 1);
+        case 'asinh':
+          final v = _v(0, x, t);
+          return math.log(v + math.sqrt(v * v + 1));
+        case 'acosh':
+          final v = _v(0, x, t);
+          return v < 1 ? double.nan : math.log(v + math.sqrt(v * v - 1));
+        case 'atanh':
+          final v = _v(0, x, t);
+          final a = 1 + v;
+          final b = 1 - v;
+          if (b <= 0) return double.nan;
+          return 0.5 * math.log(a / b);
+        case 'sec':
+          return 1 / math.cos(_v(0, x, t));
+        case 'csc':
+          return 1 / math.sin(_v(0, x, t));
+        case 'cot':
+          return math.cos(_v(0, x, t)) / math.sin(_v(0, x, t));
+        case 'sinc': {
+          final v = _v(0, x, t);
+          return v.abs() < 1e-12 ? 1 : math.sin(v) / v;
+        }
+        case 'hypot':
+          return math.sqrt(_v(0, x, t) * _v(0, x, t) +
+              _v(1, x, t) * _v(1, x, t));
+        case 'gcd': {
+          var a = _v(0, x, t).round();
+          var b = _v(1, x, t).round();
+          a = a.abs();
+          b = b.abs();
+          while (b != 0) {
+            final r = a % b;
+            a = b;
+            b = r;
+          }
+          return a.toDouble();
+        }
+        case 'lcm': {
+          final a = _v(0, x, t).round().abs();
+          final b = _v(1, x, t).round().abs();
+          if (a == 0 || b == 0) return 0;
+          var p = a;
+          var q = b;
+          while (q != 0) {
+            final r = p % q;
+            p = q;
+            q = r;
+          }
+          return (a / p * b).toDouble();
+        }
+        case 'frac':
+          final v = _v(0, x, t);
+          return v - v.floorToDouble();
+        case 'trunc':
+          return _v(0, x, t).truncateToDouble();
+        case 'rad':
+          return _v(0, x, t) * math.pi / 180;
+        case 'deg':
+          return _v(0, x, t) * 180 / math.pi;
+        case 'smoothstep': {
+          final e0 = _v(0, x, t);
+          final e1 = _v(1, x, t);
+          final v = ((_v(2, x, t) - e0) / (e1 - e0)).clamp(0.0, 1.0);
+          return v * v * (3 - 2 * v);
+        }
         case 'sqrt':
           final v = _v(0, x, t);
           return v < 0 ? double.nan : math.sqrt(v);
@@ -2659,19 +2751,24 @@ class _FuncNode implements _ExprNode {
 }
 
 class _ExprParser {
-  _ExprParser(String input)
+  _ExprParser(String input, {Map<String, _ExprNode>? vars})
       : _tokens = _tokenize(input),
-        _pos = 0;
+        _pos = 0,
+        _vars = vars ?? const {};
 
   final List<String> _tokens;
+  final Map<String, _ExprNode> _vars;
   int _pos;
 
   static final RegExp _num = RegExp(r'^-?\d+(\.\d+)?([eE][+-]?\d+)?$');
   static final RegExp _id = RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$');
   static final Set<String> _functions = {
-    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2', 'sqrt', 'abs',
-    'exp', 'ln', 'log', 'log2', 'log10', 'min', 'max', 'pow', 'mod',
-    'clamp', 'floor', 'ceil', 'round', 'sign',
+    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
+    'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
+    'sec', 'csc', 'cot', 'sinc', 'hypot',
+    'gcd', 'lcm', 'frac', 'trunc', 'rad', 'deg', 'smoothstep',
+    'sqrt', 'abs', 'exp', 'ln', 'log', 'log2', 'log10',
+    'min', 'max', 'pow', 'mod', 'clamp', 'floor', 'ceil', 'round', 'sign',
   };
 
   static List<String> _tokenize(String input) {
@@ -2779,6 +2876,9 @@ class _ExprParser {
       if (token == 't') return _TVarNode();
       if ((token == 'pi')) return _NumberNode(3.141592653589793);
       if (token == 'e') return _NumberNode(2.718281828459045);
+      if (_vars.containsKey(token)) {
+        return _UserVarNode(_vars[token]!);
+      }
       if (_functions.contains(token)) {
         if (_pos >= _tokens.length || _tokens[_pos] != '(') {
           throw FormatException('function needs (');
