@@ -515,10 +515,16 @@ class QlToolRegistry {
         ),
         ToolDefinition(
           name: 'script_delete',
-          description: '删除脚本',
-          parameters: _obj(['path'], {'path': _stringProp}),
+          description: '删除脚本或脚本目录（自动识别文件/目录）',
+          parameters: _obj(['path'], {
+            'path': _stringProp,
+            'isDirectory': {
+              'type': 'boolean',
+              'description': '可选：明确知道是目录时传 true；不传会自动判断',
+            },
+          }),
           isWrite: true,
-          impact: '永久删除脚本文件',
+          impact: '永久删除脚本文件或整个脚本目录（目录会递归删除）',
           reversible: false,
           danger: true,
         ),
@@ -2003,11 +2009,16 @@ class QlToolRegistry {
         }
 
       case 'script_delete':
+        final deletePath = args['path'] as String;
+        final isDirectory = args['isDirectory'];
         await ScriptApi.delete(
           apiBaseUrl: base,
-          path: args['path'] as String,
+          path: deletePath,
+          isDirectory: isDirectory is bool ? isDirectory : null,
         );
-        return '已删除脚本 ${args['path']}';
+        return isDirectory == true
+            ? '已删除目录 $deletePath'
+            : '已删除脚本/目录 $deletePath';
 
       case 'script_run':
         // 面板执行的是请求里带的 content（写成 .swap 临时文件），

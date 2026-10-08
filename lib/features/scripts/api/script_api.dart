@@ -313,35 +313,119 @@ class ScriptApi {
     parseQlResponse(response);
   }
 
+  /// 删除脚本或脚本目录。
+  ///
+  /// [isDirectory] 缺省时自动判断：先拉一次脚本树，按 key 找到目标是
+  /// file 还是 directory。面板的删除接口靠 `type` 区分，
+  /// **对目录用 `type:file` 会 500 `EISDIR: illegal operation on a
+  /// directory, unlink ...`，且目录会原样留着**——AI 删除目录时最常踩
+  /// 这个坑。即使自动判断失败，下面还会在收到 EISDIR 后自动换
+  /// `type:directory` 重试一次。
   static Future<void> delete({
     required String apiBaseUrl,
     required String path,
-    bool isDirectory = false,
+    bool? isDirectory,
   }) async {
     final (dir, name) = _split(path);
-    try {
-      final data = await _compatCall(
-        apiBaseUrl: apiBaseUrl,
-        function: 'script_delete',
-        pathParams: {
-          'dir': dir,
-          'name': name,
-          'type': isDirectory ? 'directory' : 'file',
+    var asDirectory = isDirectory;
+    if (asDirectory == null) {
+      asDirectory = await _looksLikeDirectory(apiBaseUrl, dir, name) ?? false;
+    }
+
+    Future<void> request(bool dirFlag) async {
+      final type = dirFlag ? 'directory' : 'file';
+      try {
+        final data = await _compatCall(
+          apiBaseUrl: apiBaseUrl,
+          function: 'script_delete',
+          pathParams: {'dir': dir, 'name': name, 'type': type},
+        );
+        if (data != null) return;
+      } catch (_) {
+        // 继续内置。
+      }
+      final response = await DioClient.dio.delete<dynamic>(
+        '$apiBaseUrl/scripts',
+        data: {
+          'path': dir,
+          'filename': name,
+          'type': type,
         },
       );
-      if (data != null) return;
-    } catch (_) {
-      // 继续内置。
+      parseQlResponse(response);
     }
-    final response = await DioClient.dio.delete<dynamic>(
-      '$apiBaseUrl/scripts',
-      data: {
-        'path': dir,
-        'filename': name,
-        'type': isDirectory ? 'directory' : 'file',
-      },
-    );
-    parseQlResponse(response);
+
+    try {
+      await request(asDirectory);
+    } on DioException catch (e) {
+      final body = _errorText(e);
+      if (!asDirectory && _looksLikeDirectoryError(body)) {
+        await request(true);
+        return;
+      }
+      if (_looksLikeMissingError(body)) {
+        throw ApiException(message: '脚本或目录不存在：$path');
+      }
+      throw ApiException(message: readableError(e));
+    } on ApiException catch (e) {
+      if (!asDirectory && _looksLikeDirectoryError(e.message)) {
+        await request(true);
+        return;
+      }
+      if (_looksLikeMissingError(e.message)) {
+        throw ApiException(message: '脚本或目录不存在：$path');
+      }
+      rethrow;
+    }
+  }
+
+  /// 找到就返回该路径是不是目录；列表失败或没找到返回 null，让调用方按文件试。
+  static Future<bool?> _looksLikeDirectory(
+    String apiBaseUrl,
+    String dir,
+    String name,
+  ) async {
+    final key = dir.isEmpty ? name : '$dir/$name';
+    try {
+      final nodes = await files(apiBaseUrl: apiBaseUrl);
+      final node = _findNode(nodes, key);
+      if (node == null) return null;
+      return !node.isLeaf;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static ScriptNode? _findNode(List<ScriptNode> nodes, String key) {
+    for (final node in nodes) {
+      final nodeKey = (node.key == null || node.key!.isEmpty)
+          ? node.title
+          : node.key!;
+      if (nodeKey == key) return node;
+      if (node.children.isNotEmpty) {
+        final found = _findNode(node.children, key);
+        if (found != null) return found;
+      }
+    }
+    return null;
+  }
+
+  static String _errorText(DioException e) {
+    final data = e.response?.data;
+    final text = data is Map
+        ? '${data['message'] ?? data['msg'] ?? data}'
+        : '${data ?? e.message ?? ''}';
+    return text;
+  }
+
+  static bool _looksLikeDirectoryError(String body) {
+    final lower = body.toLowerCase();
+    return body.contains('EISDIR') || lower.contains('is a directory');
+  }
+
+  static bool _looksLikeMissingError(String body) {
+    final lower = body.toLowerCase();
+    return body.contains('ENOENT') || lower.contains('no such file or directory');
   }
 
   /// 手动运行脚本。返回面板给的 pid（用于停止）。

@@ -5,11 +5,18 @@
 
 ## 脚本 Scripts
 
-| 版本范围 | 列表 | 读取 | 保存 | 新建 | 重命名 | 运行/停止 |
-|---|---|---|---|---|---|---|
-| v2.10 - v2.12 | `GET /scripts/files` | `GET /scripts/:file?path=` | `PUT /scripts` | `POST /scripts` | - | `PUT /scripts/run` / `PUT /scripts/stop` |
-| v2.13 - v2.16 | `GET /scripts` | `GET /scripts/:file?path=` | `PUT /scripts` | `POST /scripts` | v2.15+ `PUT /scripts/rename` | 同上 |
-| v2.17+ | `GET /scripts` | `GET /scripts/detail?path=&file=`（旧 `/:file` 返回 410） | `PUT /scripts` | `POST /scripts` | `PUT /scripts/rename` | 同上 |
+| 版本范围 | 列表 | 读取 | 保存 | 新建 | 删除 | 重命名 | 运行/停止 |
+|---|---|---|---|---|---|---|---|
+| v2.10 - v2.12 | `GET /scripts/files` | `GET /scripts/:file?path=` | `PUT /scripts` | `POST /scripts` | `DELETE /scripts` | - | `PUT /scripts/run` / `PUT /scripts/stop` |
+| v2.13 - v2.16 | `GET /scripts` | `GET /scripts/:file?path=` | `PUT /scripts` | `POST /scripts` | `DELETE /scripts` | v2.15+ `PUT /scripts/rename` | 同上 |
+| v2.17+ | `GET /scripts` | `GET /scripts/detail?path=&file=`（旧 `/:file` 返回 410） | `PUT /scripts` | `POST /scripts` | `DELETE /scripts` | `PUT /scripts/rename` | 同上 |
+
+> **删除目录的坑**：`DELETE /scripts` 的 body 是 `{filename, path, type}`。
+> `type=file` 删文件、`type=directory` 删目录（递归）。对目录传
+> `type=file` 时旧版后端会 `fs.unlinkSync` 失败并回
+> `500 EISDIR: illegal operation on a directory, unlink ...`，而且目录不会
+> 被清掉——APP 现已自动识别目标类型并在收到 EISDIR 后自动换
+> `type=directory` 重试。
 
 ## 日志 Logs
 
