@@ -1845,21 +1845,21 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
     double dataYMin;
     double dataYMax;
     if (parsed.parametric) {
-      final px = parsed.paramX;
-      final py = parsed.paramY;
-      if (px == null || py == null) return null;
+      if (parsed.paramSeries.isEmpty) return null;
       final pts = <Offset>[];
       const n = 400;
       final step = (parsed.tMax - parsed.tMin) / n;
       final uCount = parsed.usesU ? 16 : 1;
-      for (var ui = 0; ui <= uCount; ui++) {
-        final uu = parsed.usesU ? 2 * math.pi * ui / uCount : 0.0;
-        for (var i = 0; i <= n; i++) {
-          final tt = parsed.tMin + step * i;
-          final x = px.eval(0, tt, uu);
-          final y = py.eval(0, tt, uu);
-          if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
-            pts.add(Offset(x, y));
+      for (final ps in parsed.paramSeries) {
+        for (var ui = 0; ui <= uCount; ui++) {
+          final uu = parsed.usesU ? 2 * math.pi * ui / uCount : 0.0;
+          for (var i = 0; i <= n; i++) {
+            final tt = parsed.tMin + step * i;
+            final x = ps.x.eval(0, tt, uu);
+            final y = ps.y.eval(0, tt, uu);
+            if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
+              pts.add(Offset(x, y));
+            }
           }
         }
       }
@@ -2066,7 +2066,9 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
               Expanded(
                 child: Text(
                   parsed.parametric
-                      ? '参数曲线'
+                      ? (parsed.paramSeries.length > 1
+                          ? '${parsed.paramSeries.length} 条参数曲线'
+                          : '参数曲线')
                       : parsed.pair
                           ? '${parsed.series.length ~/ 2} 层闭合曲线'
                           : parsed.connect
@@ -2234,8 +2236,7 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                             connect: parsed.connect,
                             pair: parsed.pair,
                             parametric: parsed.parametric,
-                            paramX: parsed.paramX,
-                            paramY: parsed.paramY,
+                            paramSeries: parsed.paramSeries,
                             usesU: parsed.usesU,
                             tMin: parsed.tMin,
                             tMax: parsed.tMax,
@@ -2383,29 +2384,36 @@ _ParsePlot? _parsePlot(String source) {
         localVars[name] = _ExprParser(m.group(2)!, vars: localVars).parse();
       }
     }
-    String? xExpr;
-    String? yExpr;
+    // 参数方程支持多组 x/y：每一组按顺序组成一条独立曲线。
+    final pairs = <List<String>>[];
+    String? pendingX;
     for (final line in exprLines) {
       if (RegExp(r'^x\s*=').hasMatch(line)) {
-        xExpr = line.substring(line.indexOf('=') + 1).trim();
+        pendingX = line.substring(line.indexOf('=') + 1).trim();
       } else if (RegExp(r'^y\s*=').hasMatch(line)) {
-        yExpr = line.substring(line.indexOf('=') + 1).trim();
+        if (pendingX == null || pendingX.isEmpty) return null;
+        pairs.add([pendingX, line.substring(line.indexOf('=') + 1).trim()]);
+        pendingX = null;
       }
     }
-    if (xExpr == null || yExpr == null || xExpr.isEmpty || yExpr.isEmpty) {
+    if (pendingX != null || pairs.isEmpty) {
       return null;
     }
     try {
-      final px = _ExprParser(xExpr, vars: localVars).parse();
-      final py = _ExprParser(yExpr, vars: localVars).parse();
+      final paramSeries = <_ParametricSeries>[
+        for (final p in pairs)
+          _ParametricSeries(
+            x: _ExprParser(p[0], vars: localVars).parse(),
+            y: _ExprParser(p[1], vars: localVars).parse(),
+          ),
+      ];
       return _ParsePlot(
         series: const [],
         xMin: xMin,
         xMax: xMax,
         connect: false,
         parametric: true,
-        paramX: px,
-        paramY: py,
+        paramSeries: paramSeries,
         tMin: tMin,
         tMax: tMax,
         usesU: exprLines.any((l) => RegExp(r'\b(?:u|phase)\b').hasMatch(l)),
@@ -2502,6 +2510,13 @@ class _FunctionSeries {
   final double? segmentXMax;
 }
 
+class _ParametricSeries {
+  const _ParametricSeries({required this.x, required this.y});
+
+  final _ExprNode x;
+  final _ExprNode y;
+}
+
 class _ParsePlot {
   const _ParsePlot({
     required this.series,
@@ -2510,8 +2525,7 @@ class _ParsePlot {
     required this.connect,
     this.pair = false,
     this.parametric = false,
-    this.paramX,
-    this.paramY,
+    this.paramSeries = const [],
     this.tMin = 0,
     this.tMax = 6.283185307179586,
     this.usesU = false,
@@ -2528,8 +2542,9 @@ class _ParsePlot {
   final bool connect;
   final bool pair;
   final bool parametric;
-  final _ExprNode? paramX;
-  final _ExprNode? paramY;
+
+  /// 参数方程可以写多组 x/y，每一组是一条独立曲线，自动配色。
+  final List<_ParametricSeries> paramSeries;
   final double tMin;
   final double tMax;
 
@@ -2922,6 +2937,17 @@ class _ExprParser {
   }
 }
 
+const _paramCurveColors = [
+  Color(0xFF64B5F6),
+  Color(0xFFF48FB1),
+  Color(0xFF81C784),
+  Color(0xFFFFD54F),
+  Color(0xFFBA68C8),
+  Color(0xFF4DD0E1),
+  Color(0xFFFF8A65),
+  Color(0xFF9CCC65),
+];
+
 class _FunctionPainter extends CustomPainter {
   _FunctionPainter({
     required this.series,
@@ -2932,8 +2958,7 @@ class _FunctionPainter extends CustomPainter {
     this.connect = false,
     this.pair = false,
     this.parametric = false,
-    this.paramX,
-    this.paramY,
+    this.paramSeries = const [],
     this.tMin = 0,
     this.tMax = 6.283185307179586,
     this.usesU = false,
@@ -2953,8 +2978,7 @@ class _FunctionPainter extends CustomPainter {
   final bool connect;
   final bool pair;
   final bool parametric;
-  final _ExprNode? paramX;
-  final _ExprNode? paramY;
+  final List<_ParametricSeries> paramSeries;
   final double tMin;
   final double tMax;
 
@@ -2967,22 +2991,23 @@ class _FunctionPainter extends CustomPainter {
   final Color gridColor;
   final Color axisColor;
 
-  List<Offset> _sampleParametric(double u) {
-    final pts = <Offset>[];
+  List<List<Offset>> _sampleParametric(double u) {
+    final curves = <List<Offset>>[];
     const n = 800;
     final step = (tMax - tMin) / n;
-    final px = paramX;
-    final py = paramY;
-    if (px == null || py == null) return pts;
-    for (var i = 0; i <= n; i++) {
-      final tt = tMin + step * i;
-      final x = px.eval(0, tt, u);
-      final y = py.eval(0, tt, u);
-      if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
-        pts.add(Offset(x, y));
+    for (final ps in paramSeries) {
+      final pts = <Offset>[];
+      for (var i = 0; i <= n; i++) {
+        final tt = tMin + step * i;
+        final x = ps.x.eval(0, tt, u);
+        final y = ps.y.eval(0, tt, u);
+        if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
+          pts.add(Offset(x, y));
+        }
       }
+      curves.add(pts);
     }
-    return pts;
+    return curves;
   }
 
   @override
@@ -2997,11 +3022,12 @@ class _FunctionPainter extends CustomPainter {
     late double axisXMax;
     late double axisYMin;
     late double axisYMax;
-    List<Offset>? paramPoints;
+    List<List<Offset>>? paramPoints;
 
     if (parametric) {
       paramPoints = _sampleParametric(t);
-      if (paramPoints.isEmpty) {
+      if (paramPoints.isEmpty ||
+          paramPoints.every((pts) => pts.isEmpty)) {
         final noData = Paint()
           ..color = const Color(0xFF5B6B82)
           ..style = PaintingStyle.stroke
@@ -3019,8 +3045,16 @@ class _FunctionPainter extends CustomPainter {
         axisYMin = viewYMin!;
         axisYMax = viewYMax!;
       } else {
-        final xs = paramPoints.map((p) => p.dx).toList()..sort();
-        final ys = paramPoints.map((p) => p.dy).toList()..sort();
+        final xs = paramPoints
+            .expand((pts) => pts)
+            .map((p) => p.dx)
+            .toList()
+          ..sort();
+        final ys = paramPoints
+            .expand((pts) => pts)
+            .map((p) => p.dy)
+            .toList()
+          ..sort();
         axisXMin = xs.first;
         axisXMax = xs.last;
         axisYMin = ys.first;
@@ -3142,24 +3176,29 @@ class _FunctionPainter extends CustomPainter {
       Rect.fromLTWH(pad, pad, size.width - pad * 2, size.height - pad * 2),
     );
     if (parametric) {
-      final curve = Paint()
-        ..color = const Color(0xFF64B5F6)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..strokeCap = StrokeCap.round;
-      final path = Path();
-      final drawCount = (paramPoints!.length * progress).round();
-      for (var i = 0; i <= drawCount && i < paramPoints.length; i++) {
-        final p = paramPoints[i];
-        final px = tx(p.dx);
-        final py = ty(p.dy);
-        if (i == 0) {
-          path.moveTo(px, py);
-        } else {
-          path.lineTo(px, py);
+      final curves = paramPoints!;
+      for (var ci = 0; ci < curves.length; ci++) {
+        final pts = curves[ci];
+        if (pts.isEmpty) continue;
+        final curve = Paint()
+          ..color = _paramCurveColors[ci % _paramCurveColors.length]
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..strokeCap = StrokeCap.round;
+        final path = Path();
+        final drawCount = (pts.length * progress).round();
+        for (var i = 0; i <= drawCount && i < pts.length; i++) {
+          final p = pts[i];
+          final px = tx(p.dx);
+          final py = ty(p.dy);
+          if (i == 0) {
+            path.moveTo(px, py);
+          } else {
+            path.lineTo(px, py);
+          }
         }
+        canvas.drawPath(path, curve);
       }
-      canvas.drawPath(path, curve);
     } else {
       final step = (xMax - xMin) / sampleCount;
       final totalConnectSamples = connect
@@ -3314,8 +3353,7 @@ class _FunctionPainter extends CustomPainter {
       oldDelegate.connect != connect ||
       oldDelegate.pair != pair ||
       oldDelegate.parametric != parametric ||
-      oldDelegate.paramX != paramX ||
-      oldDelegate.paramY != paramY ||
+      oldDelegate.paramSeries != paramSeries ||
       oldDelegate.tMin != tMin ||
       oldDelegate.tMax != tMax ||
       oldDelegate.usesU != usesU ||
