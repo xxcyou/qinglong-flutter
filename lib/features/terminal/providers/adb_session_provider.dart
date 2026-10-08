@@ -8,6 +8,7 @@ import 'package:flutter_adb/adb_pairing.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'qinglong_adb_connection.dart';
 import 'qinglong_adb_crypto.dart';
 
 /// ADB 连接方式（网络 ADB，仿 SSH 会话管理）。
@@ -261,7 +262,7 @@ class AdbSessionManager {
           throw StateError('ADB 配对失败，请检查配对端口和 6 位配对码');
         }
       }
-      final connection = AdbConnection(normalized.host, normalized.port, c);
+      final connection = QinglongAdbConnection(normalized.host, normalized.port, c);
       // flutter_adb 1.0.0 的 connect() 有广播事件竞态：设备响应很快时，
       // CNXN 可能在 connect() 自己订阅 _adbConnectedController 之前就到达，
       // 导致它返回的 future 永远不完成——表现为每次重连都卡到 15 秒超时。
