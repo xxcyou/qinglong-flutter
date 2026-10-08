@@ -76,6 +76,11 @@ class MarkdownMessage extends StatelessWidget {
       _NeonSyntax(),
       _GradientSyntax(),
       _FlashSyntax(),
+      _RainbowSyntax(),
+      _PulseSyntax(),
+      _ShimmerSyntax(),
+      _BounceSyntax(),
+      _TypingSyntax(),
     ],
   );
 
@@ -104,6 +109,11 @@ class MarkdownMessage extends StatelessWidget {
         'neon': _NeonBuilder(),
         'g': _GradientBuilder(),
         'flash': _FlashBuilder(),
+        'rainbow': _RainbowBuilder(),
+        'pulse': _PulseBuilder(),
+        'shimmer': _ShimmerBuilder(),
+        'bounce': _BounceBuilder(),
+        'typing': _TypingBuilder(),
         'pre': codeBlockBuilder,
         'code': codeBlockBuilder,
         'functionPlot': _FunctionPlotBuilder(),
@@ -286,6 +296,67 @@ double _estimateTextWidth(String text, TextStyle? style) {
   return math.max(20.0, count * size * 0.62);
 }
 
+/// `{rainbow}文字{/rainbow}` → 彩虹渐变循环（可 `{rainbow:red,blue}` 自定义色板）。
+class _RainbowSyntax extends md.InlineSyntax {
+  _RainbowSyntax() : super(r'\{rainbow(?::([^}\n]+))?\}(.+?)\{/rainbow\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('rainbow', [md.Text(match.group(2) ?? '')])
+      ..attributes['colors'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// `{pulse}文字{/pulse}` → 呼吸/脉冲效果（可给颜色）。
+class _PulseSyntax extends md.InlineSyntax {
+  _PulseSyntax() : super(r'\{pulse(?::([^}\n]+))?\}(.+?)\{/pulse\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('pulse', [md.Text(match.group(2) ?? '')])
+      ..attributes['colors'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// `{shimmer}文字{/shimmer}` → 金属流光扫过。
+class _ShimmerSyntax extends md.InlineSyntax {
+  _ShimmerSyntax() : super(r'\{shimmer(?::([^}\n]+))?\}(.+?)\{/shimmer\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('shimmer', [md.Text(match.group(2) ?? '')])
+      ..attributes['colors'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// `{bounce}文字{/bounce}` → 上下跳动。
+class _BounceSyntax extends md.InlineSyntax {
+  _BounceSyntax() : super(r'\{bounce\}(.+?)\{/bounce\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    parser.addNode(md.Element('bounce', [md.Text(match.group(1) ?? '')]));
+    return true;
+  }
+}
+
+/// `{typing}文字{/typing}` → 打字机逐个出现。
+class _TypingSyntax extends md.InlineSyntax {
+  _TypingSyntax() : super(r'\{typing\}(.+?)\{/typing\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    parser.addNode(md.Element('typing', [md.Text(match.group(1) ?? '')]));
+    return true;
+  }
+}
+
 /// 递归构建**扁平**内联 TextSpan。
 ///
 /// 不能返回嵌套 TextSpan 树：flutter_markdown 合并相邻文本时会把中间层
@@ -423,6 +494,57 @@ void _buildNodeSpans(md.Node node, TextStyle? parent, List<InlineSpan> out) {
         for (final child in _parseStyleNodes(node.textContent)) {
           _buildNodeSpans(child, style, out);
         }
+        return;
+      case 'rainbow':
+        final rainbowColors = _parseColorList(node.attributes['colors'] ?? '');
+        out.add(WidgetSpan(
+          child: _RainbowText(
+            child: Text.rich(TextSpan(
+                children:
+                    _buildInlineSpans(_parseStyleNodes(node.textContent), base))),
+            colors: rainbowColors,
+          ),
+        ));
+        return;
+      case 'pulse':
+        final pulseColors = _parseColorList(node.attributes['colors'] ?? '');
+        out.add(WidgetSpan(
+          child: _PulseText(
+            child: Text.rich(TextSpan(
+                children:
+                    _buildInlineSpans(_parseStyleNodes(node.textContent), base))),
+            colors: pulseColors,
+          ),
+        ));
+        return;
+      case 'shimmer':
+        final shimmerColors = _parseColorList(node.attributes['colors'] ?? '');
+        out.add(WidgetSpan(
+          child: _ShimmerText(
+            child: Text.rich(TextSpan(
+                children:
+                    _buildInlineSpans(_parseStyleNodes(node.textContent), base))),
+            colors: shimmerColors,
+          ),
+        ));
+        return;
+      case 'bounce':
+        out.add(WidgetSpan(
+          child: _BounceText(
+            child: Text.rich(TextSpan(
+                children:
+                    _buildInlineSpans(_parseStyleNodes(node.textContent), base))),
+          ),
+        ));
+        return;
+      case 'typing':
+        out.add(WidgetSpan(
+          child: _TypingText(
+            child: Text.rich(TextSpan(
+                children:
+                    _buildInlineSpans(_parseStyleNodes(node.textContent), base))),
+          ),
+        ));
         return;
       default:
         style = parent;
@@ -691,6 +813,335 @@ class _FlashTextState extends State<_FlashText>
         final style = base.copyWith(color: flashColor);
         final spans = _buildInlineSpans(widget.nodes, style);
         return Text.rich(TextSpan(children: spans));
+      },
+    );
+  }
+}
+
+class _RainbowBuilder extends MarkdownElementBuilder {
+  _RainbowBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final colors = _parseColorList(element.attributes['colors'] ?? '');
+    final child = Text.rich(TextSpan(
+        children: _buildInlineSpans(
+            _parseStyleNodes(element.textContent), parentStyle)));
+    return Text.rich(TextSpan(
+      children: [WidgetSpan(child: _RainbowText(child: child, colors: colors))],
+    ));
+  }
+}
+
+class _PulseBuilder extends MarkdownElementBuilder {
+  _PulseBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final colors = _parseColorList(element.attributes['colors'] ?? '');
+    final child = Text.rich(TextSpan(
+        children: _buildInlineSpans(
+            _parseStyleNodes(element.textContent), parentStyle)));
+    return Text.rich(TextSpan(
+      children: [WidgetSpan(child: _PulseText(child: child, colors: colors))],
+    ));
+  }
+}
+
+class _ShimmerBuilder extends MarkdownElementBuilder {
+  _ShimmerBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final colors = _parseColorList(element.attributes['colors'] ?? '');
+    final child = Text.rich(TextSpan(
+        children: _buildInlineSpans(
+            _parseStyleNodes(element.textContent), parentStyle)));
+    return Text.rich(TextSpan(
+      children: [WidgetSpan(child: _ShimmerText(child: child, colors: colors))],
+    ));
+  }
+}
+
+class _BounceBuilder extends MarkdownElementBuilder {
+  _BounceBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final child = Text.rich(TextSpan(
+        children: _buildInlineSpans(
+            _parseStyleNodes(element.textContent), parentStyle)));
+    return Text.rich(TextSpan(
+      children: [WidgetSpan(child: _BounceText(child: child))],
+    ));
+  }
+}
+
+class _TypingBuilder extends MarkdownElementBuilder {
+  _TypingBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final child = Text.rich(TextSpan(
+        children: _buildInlineSpans(
+            _parseStyleNodes(element.textContent), parentStyle)));
+    return Text.rich(TextSpan(
+      children: [WidgetSpan(child: _TypingText(child: child))],
+    ));
+  }
+}
+
+class _RainbowText extends StatefulWidget {
+  const _RainbowText({required this.child, required this.colors});
+
+  final Widget child;
+  final List<Color> colors;
+
+  @override
+  State<_RainbowText> createState() => _RainbowTextState();
+}
+
+class _RainbowTextState extends State<_RainbowText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2600),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = _controller.value;
+        return ShaderMask(
+          shaderCallback: (bounds) => LinearGradient(
+            colors: widget.colors,
+            begin: Alignment(-1.2 + 2.4 * t, 0),
+            end: Alignment(0.8 + 2.4 * t, 0),
+          ).createShader(bounds),
+          blendMode: BlendMode.srcIn,
+          child: widget.child,
+        );
+      },
+    );
+  }
+}
+
+class _PulseText extends StatefulWidget {
+  const _PulseText({required this.child, required this.colors});
+
+  final Widget child;
+  final List<Color> colors;
+
+  @override
+  State<_PulseText> createState() => _PulseTextState();
+}
+
+class _PulseTextState extends State<_PulseText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = Curves.easeInOut.transform(_controller.value);
+        return Opacity(opacity: 0.55 + 0.45 * t, child: widget.child);
+      },
+    );
+  }
+}
+
+class _ShimmerText extends StatefulWidget {
+  const _ShimmerText({required this.child, required this.colors});
+
+  final Widget child;
+  final List<Color> colors;
+
+  @override
+  State<_ShimmerText> createState() => _ShimmerTextState();
+}
+
+class _ShimmerTextState extends State<_ShimmerText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = _controller.value;
+        final baseColor = widget.colors.length >= 2 ? widget.colors[0] : const Color(0xFF888888);
+        final endColor = widget.colors.length >= 2 ? widget.colors[1] : const Color(0xFFDDDDDD);
+        return ShaderMask(
+          shaderCallback: (bounds) => LinearGradient(
+            colors: [baseColor, Colors.white, endColor],
+            stops: const [0.35, 0.5, 0.65],
+            begin: Alignment(-1.0 + 2.0 * t, 0),
+            end: Alignment(1.0 + 2.0 * t, 0),
+          ).createShader(bounds),
+          blendMode: BlendMode.srcIn,
+          child: widget.child,
+        );
+      },
+    );
+  }
+}
+
+class _BounceText extends StatefulWidget {
+  const _BounceText({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_BounceText> createState() => _BounceTextState();
+}
+
+class _BounceTextState extends State<_BounceText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final dy = math.sin(_controller.value * math.pi * 2) * 5.0;
+        return Transform.translate(
+          offset: Offset(0, dy),
+          child: widget.child,
+        );
+      },
+    );
+  }
+}
+
+class _TypingText extends StatefulWidget {
+  const _TypingText({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_TypingText> createState() => _TypingTextState();
+}
+
+class _TypingTextState extends State<_TypingText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2200),
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = Curves.easeOut.transform(_controller.value);
+        return ClipRect(
+          child: Align(
+            alignment: Alignment.centerLeft,
+            widthFactor: t <= 0 ? 0.0001 : t,
+            child: widget.child,
+          ),
+        );
       },
     );
   }
