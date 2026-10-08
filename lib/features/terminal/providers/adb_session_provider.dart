@@ -8,6 +8,8 @@ import 'package:flutter_adb/adb_pairing.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'qinglong_adb_crypto.dart';
+
 /// ADB 连接方式（网络 ADB，仿 SSH 会话管理）。
 class AdbSession {
   const AdbSession({
@@ -99,7 +101,7 @@ class AdbSessionManager {
       if (raw != null && raw.isNotEmpty) {
         final map = jsonDecode(raw);
         if (map is Map<String, dynamic>) {
-          _crypto = AdbCrypto(
+          _crypto = QinglongAdbCrypto(
             keyPair: AdbCrypto.keyPairFromStorageMap(map),
             adbKeyName: 'qinglong_flutter@dsh',
           );
@@ -107,7 +109,7 @@ class AdbSessionManager {
         }
       }
     } catch (_) {}
-    _crypto = AdbCrypto(adbKeyName: 'qinglong_flutter@dsh');
+    _crypto = QinglongAdbCrypto(adbKeyName: 'qinglong_flutter@dsh');
     await _persistCrypto();
     return _crypto!;
   }
@@ -167,25 +169,49 @@ class AdbSessionManager {
 
   /// 同一 主机:端口 只保留一条，避免 AI/UI 重复添加。
   String? _findByEndpoint(String host, int port) {
+    final target = host.trim();
     for (final s in _sessions.values) {
-      if (s.host == host && s.port == port) return s.id;
+      if (s.host.trim() == target && s.port == port) return s.id;
+    }
+    return null;
+  }
+
+  /// 同一台手机重新开无线调试时端口会变，AI 很容易因此重复建设备。
+  /// 精确 主机:端口 找不到时，按主机复用已有会话并更新端口。
+  String? _findByHost(String host) {
+    final target = host.trim();
+    if (target.isEmpty) return null;
+    for (final s in _sessions.values) {
+      if (s.host.trim() == target) return s.id;
     }
     return null;
   }
 
   Future<String> save(AdbSessionDraft draft, {String? id}) async {
     await loadSaved();
-    final targetId = id ?? _findByEndpoint(draft.host, draft.port) ?? _newId();
+    final host = draft.host.trim();
+    final name = draft.name.trim().isEmpty ? host : draft.name.trim();
+    final normalized = AdbSessionDraft(
+      name: name,
+      host: host,
+      port: draft.port,
+      pairingPort: draft.pairingPort,
+      pairingCode: draft.pairingCode,
+    );
+    final targetId = id ??
+        _findByEndpoint(host, draft.port) ??
+        _findByHost(host) ??
+        _newId();
     _sessions[targetId] = AdbSession(
       id: targetId,
-      name: draft.name,
-      host: draft.host,
+      name: name,
+      host: host,
       port: draft.port,
       status: _sessions[targetId]?.status ?? 'disconnected',
       pairingPort: draft.pairingPort,
       pairingCode: draft.pairingCode,
     );
-    _drafts[targetId] = draft;
+    _drafts[targetId] = normalized;
     await _persist();
     _notify();
     return targetId;
@@ -193,16 +219,25 @@ class AdbSessionManager {
 
   Future<AdbSession> connect(AdbSessionDraft draft, {String? id}) async {
     await loadSaved();
-    final targetId = id ?? await save(draft);
+    final host = draft.host.trim();
+    final name = draft.name.trim().isEmpty ? host : draft.name.trim();
+    final normalized = AdbSessionDraft(
+      name: name,
+      host: host,
+      port: draft.port,
+      pairingPort: draft.pairingPort,
+      pairingCode: draft.pairingCode,
+    );
+    final targetId = id ?? await save(normalized);
     final alive = _clients[targetId];
     if (alive != null && alive.connected) {
       return _sessions[targetId]!;
     }
-    _drafts[targetId] = draft;
+    _drafts[targetId] = normalized;
     _sessions[targetId] = AdbSession(
       id: targetId,
-      name: draft.name,
-      host: draft.host,
+      name: name,
+      host: host,
       port: draft.port,
       status: 'connecting',
       pairingPort: draft.pairingPort,
@@ -213,33 +248,46 @@ class AdbSessionManager {
     try {
       final c = await crypto();
       // Android 11+ 无线调试需要先配对。
-      if (draft.pairingPort != null &&
-          draft.pairingCode != null &&
-          draft.pairingCode!.isNotEmpty) {
+      if (normalized.pairingPort != null &&
+          normalized.pairingCode != null &&
+          normalized.pairingCode!.isNotEmpty) {
         final paired = await AdbPairing.pair(
-          draft.host,
-          draft.pairingPort!,
-          draft.pairingCode!,
+          normalized.host,
+          normalized.pairingPort!,
+          normalized.pairingCode!,
           c,
         );
         if (!paired) {
           throw StateError('ADB 配对失败，请检查配对端口和 6 位配对码');
         }
       }
-      final connection = AdbConnection(draft.host, draft.port, c);
-      final ok = await connection.connect().timeout(
-            const Duration(seconds: 15),
-            onTimeout: () {
-              connection.disconnect();
-              throw StateError('ADB 连接超时，请检查 IP/端口/无线调试是否开启');
-            },
+      final connection = AdbConnection(normalized.host, normalized.port, c);
+      // flutter_adb 1.0.0 的 connect() 有广播事件竞态：设备响应很快时，
+      // CNXN 可能在 connect() 自己订阅 _adbConnectedController 之前就到达，
+      // 导致它返回的 future 永远不完成——表现为每次重连都卡到 15 秒超时。
+      // 这里先挂 onConnectionChanged，再发起 connect()，两者竞速。
+      final adbReady = connection.onConnectionChanged.where((v) => v).first;
+      final connectFuture = connection.connect();
+      unawaited(connectFuture.catchError((Object _) => false));
+      final ok = await Future.any<bool>([
+        adbReady.then((_) => true),
+        connectFuture,
+      ]).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          connection.disconnect();
+          throw StateError(
+            'ADB 连接超时：请解锁手机，若弹出“允许调试”就点允许/始终允许；'
+            '已连过可回 ADB 设备管理点重新连接。',
           );
+        },
+      );
       if (!ok) throw StateError('ADB 连接失败，请确认设备已开启无线调试');
       _clients[targetId] = connection;
       _sessions[targetId] = AdbSession(
         id: targetId,
-        name: draft.name,
-        host: draft.host,
+        name: name,
+        host: host,
         port: draft.port,
         status: 'connected',
         pairingPort: draft.pairingPort,
@@ -251,8 +299,8 @@ class AdbSessionManager {
       _clients.remove(targetId);
       _sessions[targetId] = AdbSession(
         id: targetId,
-        name: draft.name,
-        host: draft.host,
+        name: name,
+        host: host,
         port: draft.port,
         status: 'error: $e',
         pairingPort: draft.pairingPort,
@@ -305,41 +353,48 @@ class AdbSessionManager {
 
   /// 执行单条 ADB shell 命令，返回原始输出字符串。
   ///
-  /// 用交互式 shell + 随机结束标记收尾，避免一次性 `shell:cmd` 在
-  /// 订阅监听前就关闭导致输出/结束事件丢失（表现为“卡住/连不上”）。
+  /// 关键点：必须用非交互式 raw shell（`shell,raw:`）把命令直接写进
+  /// service 参数，而不是先开 `shell:` 再 writeString。交互式 shell 会回显
+  /// 命令，结束标记先出现在回显里，execute 会把“提示符+命令本身”当结果
+  /// 返回——所以之前 ls 解析不到文件、cat 打开文件显示 `matisse:/ $ ...`。
   Future<String> execute(String id, String command) async {
     final connection = _clients[id];
     if (connection == null) throw StateError('ADB 未连接：$id');
     if (!connection.connected) throw StateError('ADB 已断开：$id');
-    final stream = await connection.open('shell:');
-    final completer = Completer<String>();
-    final bytes = BytesBuilder();
     final token =
         '__ADB_DONE_${DateTime.now().microsecondsSinceEpoch}_${id.hashCode}__';
-    late final StreamSubscription<Uint8List> sub;
-    sub = stream.onPayload.listen(
-      (p) {
-        bytes.add(p);
-        final text = utf8.decode(bytes.takeBytes(), allowMalformed: true);
-        bytes.add(utf8.encode(text));
-        final idx = text.indexOf(token);
-        if (idx >= 0) {
-          final result = text.substring(0, idx);
-          if (!completer.isCompleted) completer.complete(result);
+    final stream = await connection.open('shell,raw:$command; echo $token');
+
+    final completer = Completer<String>();
+    final acc = StringBuffer();
+    var tail = '';
+    late final StreamSubscription<String> sub;
+    sub = utf8.decoder.bind(stream.onPayload).listen(
+      (text) {
+        acc.write(text);
+        tail += text;
+        // 只保留尾部一小段用于跨 chunk 搜 token，避免大输出 O(n²)。
+        if (tail.length > 4096) {
+          tail = tail.substring(tail.length - 4096);
+        }
+        final idx = tail.indexOf(token);
+        if (idx >= 0 && !completer.isCompleted) {
+          final cut = acc.length - (tail.length - idx);
+          if (cut < 0) {
+            completer.complete(acc.toString());
+          } else {
+            completer.complete(acc.toString().substring(0, cut));
+          }
         }
       },
       onDone: () {
-        if (!completer.isCompleted) {
-          completer.complete(
-              utf8.decode(bytes.takeBytes(), allowMalformed: true));
-        }
+        if (!completer.isCompleted) completer.complete(acc.toString());
       },
       onError: (Object e, StackTrace st) {
         if (!completer.isCompleted) completer.completeError(e, st);
       },
     );
     try {
-      await stream.writeString('$command; echo $token\n');
       return await completer.future.timeout(const Duration(seconds: 60));
     } finally {
       await sub.cancel();

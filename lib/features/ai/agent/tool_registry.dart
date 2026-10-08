@@ -2548,7 +2548,7 @@ class QlToolRegistry {
         try {
           final draft = AdbSessionDraft(
             name: args['name']?.toString() ?? args['host']?.toString() ?? 'ADB',
-            host: args['host'].toString(),
+            host: args['host'].toString().trim(),
             port: (args['port'] as num?)?.toInt() ?? 5555,
             pairingPort: (args['pairingPort'] as num?)?.toInt(),
             pairingCode: args['pairingCode']?.toString(),
