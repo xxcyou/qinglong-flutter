@@ -1817,7 +1817,7 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
       );
       return;
     }
-    if (parsed.usesT) {
+    if (parsed.usesT || parsed.usesU) {
       _controller = AnimationController(
         vsync: this,
         duration: const Duration(seconds: 4),
@@ -1851,12 +1851,16 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
       final pts = <Offset>[];
       const n = 400;
       final step = (parsed.tMax - parsed.tMin) / n;
-      for (var i = 0; i <= n; i++) {
-        final tt = parsed.tMin + step * i;
-        final x = px.eval(0, tt);
-        final y = py.eval(0, tt);
-        if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
-          pts.add(Offset(x, y));
+      final uCount = parsed.usesU ? 16 : 1;
+      for (var ui = 0; ui <= uCount; ui++) {
+        final uu = parsed.usesU ? 2 * math.pi * ui / uCount : 0.0;
+        for (var i = 0; i <= n; i++) {
+          final tt = parsed.tMin + step * i;
+          final x = px.eval(0, tt, uu);
+          final y = py.eval(0, tt, uu);
+          if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
+            pts.add(Offset(x, y));
+          }
         }
       }
       if (pts.isEmpty) return null;
@@ -2210,8 +2214,9 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                   return AnimatedBuilder(
                     animation: _controller,
                     builder: (context, _) {
-                      final progress = parsed.usesT ? 1.0 : _controller.value;
-                      final t = parsed.usesT
+                      final _dynamicMode = parsed.usesT || parsed.usesU;
+                      final progress = _dynamicMode ? 1.0 : _controller.value;
+                      final t = _dynamicMode
                           ? _controller.value * 2 * math.pi
                           : 0.0;
                       return GestureDetector(
@@ -2231,6 +2236,7 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                             parametric: parsed.parametric,
                             paramX: parsed.paramX,
                             paramY: parsed.paramY,
+                            usesU: parsed.usesU,
                             tMin: parsed.tMin,
                             tMax: parsed.tMax,
                             viewXMin: view?.xMin,
@@ -2402,6 +2408,7 @@ _ParsePlot? _parsePlot(String source) {
         paramY: py,
         tMin: tMin,
         tMax: tMax,
+        usesU: exprLines.any((l) => RegExp(r'\b(?:u|phase)\b').hasMatch(l)),
       );
     } catch (_) {
       return null;
@@ -2507,6 +2514,7 @@ class _ParsePlot {
     this.paramY,
     this.tMin = 0,
     this.tMax = 6.283185307179586,
+    this.usesU = false,
   });
 
   final List<_FunctionSeries> series;
@@ -2524,35 +2532,43 @@ class _ParsePlot {
   final _ExprNode? paramY;
   final double tMin;
   final double tMax;
+
+  /// 参数方程是否使用 `u`/`phase` 作为动态相位（旋转/呼吸等）。
+  final bool usesU;
 }
 /// 简易表达式求值：支持 + - * / ^ ( ) 数字、x、t、pi/e，以及常见函数。
 /// `t` 是动态时间变量，函数图会把它当作动画参数（0~2π 循环）。
 abstract class _ExprNode {
-  double eval(double x, double t);
+  double eval(double x, double t, [double u = 0]);
 }
 
 class _NumberNode implements _ExprNode {
   _NumberNode(this.value);
   final double value;
   @override
-  double eval(double x, double t) => value;
+  double eval(double x, double t, [double u = 0]) => value;
 }
 
 class _VarNode implements _ExprNode {
   @override
-  double eval(double x, double t) => x;
+  double eval(double x, double t, [double u = 0]) => x;
 }
 
 class _TVarNode implements _ExprNode {
   @override
-  double eval(double x, double t) => t;
+  double eval(double x, double t, [double u = 0]) => t;
+}
+
+class _UVarNode implements _ExprNode {
+  @override
+  double eval(double x, double t, [double u = 0]) => u;
 }
 
 class _UserVarNode implements _ExprNode {
   _UserVarNode(this.expr);
   final _ExprNode expr;
   @override
-  double eval(double x, double t) => expr.eval(x, t);
+  double eval(double x, double t, [double u = 0]) => expr.eval(x, t, u);
 }
 
 class _BinaryNode implements _ExprNode {
@@ -2561,9 +2577,9 @@ class _BinaryNode implements _ExprNode {
   final _ExprNode left;
   final _ExprNode right;
   @override
-  double eval(double x, double t) {
-    final l = left.eval(x, t);
-    final r = right.eval(x, t);
+  double eval(double x, double t, [double u = 0]) {
+    final l = left.eval(x, t, u);
+    final r = right.eval(x, t, u);
     switch (op) {
       case '+':
         return l + r;
@@ -2588,7 +2604,7 @@ class _NegNode implements _ExprNode {
   _NegNode(this.child);
   final _ExprNode child;
   @override
-  double eval(double x, double t) => -child.eval(x, t);
+  double eval(double x, double t, [double u = 0]) => -child.eval(x, t, u);
 }
 
 class _FuncNode implements _ExprNode {
@@ -2596,64 +2612,64 @@ class _FuncNode implements _ExprNode {
   final String name;
   final List<_ExprNode> args;
 
-  double _v(int i, double x, double t) => args[i].eval(x, t);
+  double _v(int i, double x, double t, double u) => args[i].eval(x, t, u);
 
   @override
-  double eval(double x, double t) {
+  double eval(double x, double t, [double u = 0]) {
     try {
       switch (name) {
         case 'sin':
-          return math.sin(_v(0, x, t));
+          return math.sin(_v(0, x, t, u));
         case 'cos':
-          return math.cos(_v(0, x, t));
+          return math.cos(_v(0, x, t, u));
         case 'tan':
-          return math.tan(_v(0, x, t));
+          return math.tan(_v(0, x, t, u));
         case 'asin':
-          return math.asin(_v(0, x, t));
+          return math.asin(_v(0, x, t, u));
         case 'acos':
-          return math.acos(_v(0, x, t));
+          return math.acos(_v(0, x, t, u));
         case 'atan':
-          return math.atan(_v(0, x, t));
+          return math.atan(_v(0, x, t, u));
         case 'atan2':
-          return math.atan2(_v(0, x, t), _v(1, x, t));
+          return math.atan2(_v(0, x, t, u), _v(1, x, t, u));
         case 'sinh':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return (math.exp(v) - math.exp(-v)) / 2;
         case 'cosh':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return (math.exp(v) + math.exp(-v)) / 2;
         case 'tanh':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           final e = math.exp(2 * v);
           return (e - 1) / (e + 1);
         case 'asinh':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return math.log(v + math.sqrt(v * v + 1));
         case 'acosh':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v < 1 ? double.nan : math.log(v + math.sqrt(v * v - 1));
         case 'atanh':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           final a = 1 + v;
           final b = 1 - v;
           if (b <= 0) return double.nan;
           return 0.5 * math.log(a / b);
         case 'sec':
-          return 1 / math.cos(_v(0, x, t));
+          return 1 / math.cos(_v(0, x, t, u));
         case 'csc':
-          return 1 / math.sin(_v(0, x, t));
+          return 1 / math.sin(_v(0, x, t, u));
         case 'cot':
-          return math.cos(_v(0, x, t)) / math.sin(_v(0, x, t));
+          return math.cos(_v(0, x, t, u)) / math.sin(_v(0, x, t, u));
         case 'sinc': {
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v.abs() < 1e-12 ? 1 : math.sin(v) / v;
         }
         case 'hypot':
-          return math.sqrt(_v(0, x, t) * _v(0, x, t) +
-              _v(1, x, t) * _v(1, x, t));
+          return math.sqrt(_v(0, x, t, u) * _v(0, x, t, u) +
+              _v(1, x, t, u) * _v(1, x, t, u));
         case 'gcd': {
-          var a = _v(0, x, t).round();
-          var b = _v(1, x, t).round();
+          var a = _v(0, x, t, u).round();
+          var b = _v(1, x, t, u).round();
           a = a.abs();
           b = b.abs();
           while (b != 0) {
@@ -2664,8 +2680,8 @@ class _FuncNode implements _ExprNode {
           return a.toDouble();
         }
         case 'lcm': {
-          final a = _v(0, x, t).round().abs();
-          final b = _v(1, x, t).round().abs();
+          final a = _v(0, x, t, u).round().abs();
+          final b = _v(1, x, t, u).round().abs();
           if (a == 0 || b == 0) return 0;
           var p = a;
           var q = b;
@@ -2677,68 +2693,68 @@ class _FuncNode implements _ExprNode {
           return (a / p * b).toDouble();
         }
         case 'frac':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v - v.floorToDouble();
         case 'trunc':
-          return _v(0, x, t).truncateToDouble();
+          return _v(0, x, t, u).truncateToDouble();
         case 'rad':
-          return _v(0, x, t) * math.pi / 180;
+          return _v(0, x, t, u) * math.pi / 180;
         case 'deg':
-          return _v(0, x, t) * 180 / math.pi;
+          return _v(0, x, t, u) * 180 / math.pi;
         case 'smoothstep': {
-          final e0 = _v(0, x, t);
-          final e1 = _v(1, x, t);
-          final v = ((_v(2, x, t) - e0) / (e1 - e0)).clamp(0.0, 1.0);
+          final e0 = _v(0, x, t, u);
+          final e1 = _v(1, x, t, u);
+          final v = ((_v(2, x, t, u) - e0) / (e1 - e0)).clamp(0.0, 1.0);
           return v * v * (3 - 2 * v);
         }
         case 'sqrt':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v < 0 ? double.nan : math.sqrt(v);
         case 'abs':
-          return _v(0, x, t).abs();
+          return _v(0, x, t, u).abs();
         case 'exp':
-          return math.exp(_v(0, x, t));
+          return math.exp(_v(0, x, t, u));
         case 'ln':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v <= 0 ? double.nan : math.log(v);
         case 'log2':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v <= 0 ? double.nan : math.log(v) / math.ln2;
         case 'log10':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v <= 0 ? double.nan : math.log(v) / math.ln10;
         case 'log':
           if (args.length == 2) {
-            final v = _v(0, x, t);
-            final base = _v(1, x, t);
+            final v = _v(0, x, t, u);
+            final base = _v(1, x, t, u);
             if (v <= 0 || base <= 0 || base == 1) return double.nan;
             return math.log(v) / math.log(base);
           }
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v <= 0 ? double.nan : math.log(v);
         case 'min':
-          return math.min(_v(0, x, t), _v(1, x, t));
+          return math.min(_v(0, x, t, u), _v(1, x, t, u));
         case 'max':
-          return math.max(_v(0, x, t), _v(1, x, t));
+          return math.max(_v(0, x, t, u), _v(1, x, t, u));
         case 'pow':
-          return math.pow(_v(0, x, t), _v(1, x, t)).toDouble();
+          return math.pow(_v(0, x, t, u), _v(1, x, t, u)).toDouble();
         case 'mod':
-          final a = _v(0, x, t);
-          final b = _v(1, x, t);
+          final a = _v(0, x, t, u);
+          final b = _v(1, x, t, u);
           return b == 0 ? double.nan : a % b;
         case 'clamp':
-          final v = _v(0, x, t);
-          final lo = _v(1, x, t);
-          final hi = _v(2, x, t);
+          final v = _v(0, x, t, u);
+          final lo = _v(1, x, t, u);
+          final hi = _v(2, x, t, u);
           return v.clamp(lo, hi).toDouble();
         case 'floor':
-          return _v(0, x, t).floorToDouble();
+          return _v(0, x, t, u).floorToDouble();
         case 'ceil':
-          return _v(0, x, t).ceilToDouble();
+          return _v(0, x, t, u).ceilToDouble();
         case 'round':
-          return _v(0, x, t).roundToDouble();
+          return _v(0, x, t, u).roundToDouble();
         case 'sign':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           if (v > 0) return 1;
           if (v < 0) return -1;
           return 0;
@@ -2874,6 +2890,7 @@ class _ExprParser {
       _pos++;
       if (token == 'x') return _VarNode();
       if (token == 't') return _TVarNode();
+      if (token == 'u' || token == 'phase') return _UVarNode();
       if ((token == 'pi')) return _NumberNode(3.141592653589793);
       if (token == 'e') return _NumberNode(2.718281828459045);
       if (_vars.containsKey(token)) {
@@ -2919,6 +2936,7 @@ class _FunctionPainter extends CustomPainter {
     this.paramY,
     this.tMin = 0,
     this.tMax = 6.283185307179586,
+    this.usesU = false,
     this.viewXMin,
     this.viewXMax,
     this.viewYMin,
@@ -2939,6 +2957,9 @@ class _FunctionPainter extends CustomPainter {
   final _ExprNode? paramY;
   final double tMin;
   final double tMax;
+
+  /// 参数方程是否使用 `u`/`phase` 作为动态相位。
+  final bool usesU;
   final double? viewXMin;
   final double? viewXMax;
   final double? viewYMin;
@@ -2946,7 +2967,7 @@ class _FunctionPainter extends CustomPainter {
   final Color gridColor;
   final Color axisColor;
 
-  List<Offset> _sampleParametric() {
+  List<Offset> _sampleParametric(double u) {
     final pts = <Offset>[];
     const n = 800;
     final step = (tMax - tMin) / n;
@@ -2955,8 +2976,8 @@ class _FunctionPainter extends CustomPainter {
     if (px == null || py == null) return pts;
     for (var i = 0; i <= n; i++) {
       final tt = tMin + step * i;
-      final x = px.eval(0, tt);
-      final y = py.eval(0, tt);
+      final x = px.eval(0, tt, u);
+      final y = py.eval(0, tt, u);
       if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
         pts.add(Offset(x, y));
       }
@@ -2979,7 +3000,7 @@ class _FunctionPainter extends CustomPainter {
     List<Offset>? paramPoints;
 
     if (parametric) {
-      paramPoints = _sampleParametric();
+      paramPoints = _sampleParametric(t);
       if (paramPoints.isEmpty) {
         final noData = Paint()
           ..color = const Color(0xFF5B6B82)
@@ -3297,6 +3318,7 @@ class _FunctionPainter extends CustomPainter {
       oldDelegate.paramY != paramY ||
       oldDelegate.tMin != tMin ||
       oldDelegate.tMax != tMax ||
+      oldDelegate.usesU != usesU ||
       oldDelegate.viewXMin != viewXMin ||
       oldDelegate.viewXMax != viewXMax ||
       oldDelegate.viewYMin != viewYMin ||
