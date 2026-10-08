@@ -81,6 +81,7 @@ class MarkdownMessage extends StatelessWidget {
       _ShimmerSyntax(),
       _BounceSyntax(),
       _TypingSyntax(),
+      _WrapASyntax(),
     ],
   );
 
@@ -114,6 +115,7 @@ class MarkdownMessage extends StatelessWidget {
         'shimmer': _ShimmerBuilder(),
         'bounce': _BounceBuilder(),
         'typing': _TypingBuilder(),
+        'wrap': _TransparentBuilder(),
         'pre': codeBlockBuilder,
         'code': codeBlockBuilder,
         'functionPlot': _FunctionPlotBuilder(),
@@ -296,6 +298,17 @@ double _estimateTextWidth(String text, TextStyle? style) {
   return math.max(20.0, count * size * 0.62);
 }
 
+/// `{a}...{/a}` → 通用透明外层（AI 偶尔会生成，不增加特效，只让里面标签正常渲染）。
+class _WrapASyntax extends md.InlineSyntax {
+  _WrapASyntax() : super(r'\{a\}(.+?)\{/a\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    parser.addNode(md.Element('wrap', [md.Text(match.group(1) ?? '')]));
+    return true;
+  }
+}
+
 /// `{rainbow}文字{/rainbow}` → 彩虹渐变循环（可 `{rainbow:red,blue}` 自定义色板）。
 class _RainbowSyntax extends md.InlineSyntax {
   _RainbowSyntax() : super(r'\{rainbow(?::([^}\n]+))?\}(.+?)\{/rainbow\}');
@@ -348,11 +361,13 @@ class _BounceSyntax extends md.InlineSyntax {
 
 /// `{typing}文字{/typing}` → 打字机逐个出现。
 class _TypingSyntax extends md.InlineSyntax {
-  _TypingSyntax() : super(r'\{typing\}(.+?)\{/typing\}');
+  _TypingSyntax() : super(r'\{typing(?::([^}\n]+))?\}(.+?)\{/typing\}');
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
-    parser.addNode(md.Element('typing', [md.Text(match.group(1) ?? '')]));
+    final node = md.Element('typing', [md.Text(match.group(2) ?? '')])
+      ..attributes['color'] = match.group(1) ?? '';
+    parser.addNode(node);
     return true;
   }
 }
@@ -538,13 +553,22 @@ void _buildNodeSpans(md.Node node, TextStyle? parent, List<InlineSpan> out) {
         ));
         return;
       case 'typing':
+        final typingColor =
+            _ColorSpanBuilder()._parse(node.attributes['color'] ?? '');
+        final typingBase =
+            typingColor != null ? base.copyWith(color: typingColor) : base;
         out.add(WidgetSpan(
           child: _TypingText(
             child: Text.rich(TextSpan(
-                children:
-                    _buildInlineSpans(_parseStyleNodes(node.textContent), base))),
+                children: _buildInlineSpans(
+                    _parseStyleNodes(node.textContent), typingBase))),
           ),
         ));
+        return;
+      case 'wrap':
+        for (final child in _parseStyleNodes(node.textContent)) {
+          _buildNodeSpans(child, base, out);
+        }
         return;
       default:
         style = parent;
@@ -907,12 +931,33 @@ class _TypingBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
+    final color =
+        _ColorSpanBuilder()._parse(element.attributes['color'] ?? '');
+    final base = parentStyle ?? const TextStyle();
+    final style = color != null ? base.copyWith(color: color) : base;
     final child = Text.rich(TextSpan(
         children: _buildInlineSpans(
-            _parseStyleNodes(element.textContent), parentStyle)));
+            _parseStyleNodes(element.textContent), style)));
     return Text.rich(TextSpan(
       children: [WidgetSpan(child: _TypingText(child: child))],
     ));
+  }
+}
+
+class _TransparentBuilder extends MarkdownElementBuilder {
+  _TransparentBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final spans = _buildInlineSpans(
+        _parseStyleNodes(element.textContent), parentStyle);
+    if (spans.isEmpty) return null;
+    return Text.rich(TextSpan(children: spans));
   }
 }
 
@@ -1000,7 +1045,17 @@ class _PulseTextState extends State<_PulseText>
       animation: _controller,
       builder: (context, _) {
         final t = Curves.easeInOut.transform(_controller.value);
-        return Opacity(opacity: 0.55 + 0.45 * t, child: widget.child);
+        Widget child = widget.child;
+        if (widget.colors.isNotEmpty) {
+          final from = widget.colors.first;
+          final to = widget.colors.length >= 2 ? widget.colors[1] : from;
+          final color = Color.lerp(from, to, t) ?? from;
+          child = ColorFiltered(
+            colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
+            child: widget.child,
+          );
+        }
+        return Opacity(opacity: 0.55 + 0.45 * t, child: child);
       },
     );
   }

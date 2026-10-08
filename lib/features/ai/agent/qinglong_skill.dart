@@ -52,10 +52,11 @@ const qinglongSystemPrompt = '''
 - 渐变：`{g:red,yellow}文字{/g}`，可写多个颜色如 `{g:red,#00ffcc,blue}文字{/g}`，从左到右渐变
 - 闪烁：`{flash:red,blue}文字{/flash}`，颜色逗号分隔，在两种颜色间循环闪烁
 - 彩虹：`{rainbow}文字{/rainbow}`，渐变自动循环流动，可 `{rainbow:red,yellow,blue}文字{/rainbow}` 自定义色板
-- 呼吸/脉冲：`{pulse}文字{/pulse}`，透明度像呼吸灯一样脉动，可给颜色 `{pulse:red}`
+- 呼吸/脉冲：`{pulse}文字{/pulse}`，透明度像呼吸灯一样脉动，可给颜色 `{pulse:red}`，颜色会显示在文字上
 - 流光：`{shimmer}文字{/shimmer}`，高光从左到右反复扫过
 - 跳动：`{bounce}文字{/bounce}`，文字上下轻轻跳动
-- 打字机：`{typing}文字{/typing}`，文字逐个浮现
+- 打字机：`{typing}文字{/typing}`，文字逐个浮现；可给颜色 `{typing:green}文字{/typing}`
+- 透明外层：`{a}文字{/a}` 不会被当成特效，只用来包住内部标签让它们正常渲染；不要用它代替 rainbow/pulse 等具体特效
 - 函数图：用 ```plot 代码块输出，支持 `y = x^2`、`y = sin(x)`、`y = sqrt(x)` 等，也支持 `min/max/clamp/pow/mod/log2/atan2` 等高级函数，第二行写 `x: -10, 10` 指定范围；多函数就每个函数写一行（`y1 = ...`、`y2 = ...`，会自动配色并显示图例）；需要把多段连成一条完整同色曲线时加 `connect: true`，每段可写自己的区间如 `y = x^2, x: -10, 0`；多层跳动爱心这类上/下成对曲线加 `pair: true`，会每两行配成一层闭合轮廓；要让图动起来就在表达式里用 `t`，如 `y = sin(x + t)`，会自动 0~2π 循环动态播放；更复杂的闭合曲线（心形、椭圆、圆）用参数方程：写 `x = ...` 和 `y = ...` 两行，用 `t` 做参数，可写 `t: 0, 6.28`，例如爱心 `x = 16*sin(t)^3`、`y = 13*cos(t) - 5*cos(2*t) - 2*cos(3*t) - cos(4*t)`
 给用户打关键词、突出结论、标注重点时按需使用，不要整段刷色，少量强调最有效。
 
