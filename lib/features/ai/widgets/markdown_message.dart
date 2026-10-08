@@ -1840,12 +1840,12 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
   _ViewBounds? _autoBounds(Size size) {
     final parsed = _parsed;
     if (parsed == null || size.width <= 0 || size.height <= 0) return null;
-    double dataXMin;
-    double dataXMax;
-    double dataYMin;
-    double dataYMax;
-    if (parsed.parametric) {
-      if (parsed.paramSeries.isEmpty) return null;
+    double? dataXMin;
+    double? dataXMax;
+    double? dataYMin;
+    double? dataYMax;
+
+    if (parsed.paramSeries.isNotEmpty) {
       final pts = <Offset>[];
       const n = 400;
       final step = (parsed.tMax - parsed.tMin) / n;
@@ -1863,67 +1863,74 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
           }
         }
       }
-      if (pts.isEmpty) return null;
-      final xs = pts.map((p) => p.dx).toList()..sort();
-      final ys = pts.map((p) => p.dy).toList()..sort();
-      dataXMin = xs.first;
-      dataXMax = xs.last;
-      dataYMin = ys.first;
-      dataYMax = ys.last;
-      if ((dataXMax - dataXMin).abs() < 0.5) {
-        final c = (dataXMax + dataXMin) / 2;
-        dataXMin = c - 1;
-        dataXMax = c + 1;
+      if (pts.isNotEmpty) {
+        final xs = pts.map((p) => p.dx).toList()..sort();
+        final ys = pts.map((p) => p.dy).toList()..sort();
+        dataXMin = xs.first;
+        dataXMax = xs.last;
+        dataYMin = ys.first;
+        dataYMax = ys.last;
       }
-      if ((dataYMax - dataYMin).abs() < 0.5) {
-        final c = (dataYMax + dataYMin) / 2;
-        dataYMin = c - 1;
-        dataYMax = c + 1;
-      }
-    } else {
-      dataXMin = parsed.xMin;
-      dataXMax = parsed.xMax;
-      final ys = <double>[];
-      final dynamicMode = parsed.usesT;
-      const rangeSampleCount = 256;
-      final xSpan = dataXMax - dataXMin;
-      if (xSpan <= 0) return null;
-      final rangeStep = xSpan / rangeSampleCount;
-      if (dynamicMode) {
-        const tSteps = 16;
-        for (var ti = 0; ti <= tSteps; ti++) {
-          final tt = 2 * math.pi * ti / tSteps;
+    }
+
+    if (parsed.series.isNotEmpty) {
+      final fxMin = parsed.xMin;
+      final fxMax = parsed.xMax;
+      if (fxMax > fxMin) {
+        final ys = <double>[];
+        final dynamicMode = parsed.usesT || parsed.usesU;
+        const rangeSampleCount = 256;
+        final xSpan = fxMax - fxMin;
+        final rangeStep = xSpan / rangeSampleCount;
+        if (dynamicMode) {
+          const tSteps = 16;
+          for (var ti = 0; ti <= tSteps; ti++) {
+            final tt = 2 * math.pi * ti / tSteps;
+            for (var i = 0; i <= rangeSampleCount; i++) {
+              final x = fxMin + rangeStep * i;
+              for (final s in parsed.series) {
+                final v = s.fn.eval(x, tt, tt);
+                if (v.isFinite && v.abs() < 1e9) ys.add(v);
+              }
+            }
+          }
+        } else {
           for (var i = 0; i <= rangeSampleCount; i++) {
-            final x = dataXMin + rangeStep * i;
+            final x = fxMin + rangeStep * i;
             for (final s in parsed.series) {
-              final v = s.fn.eval(x, tt);
+              final v = s.fn.eval(x, 0, 0);
               if (v.isFinite && v.abs() < 1e9) ys.add(v);
             }
           }
         }
-      } else {
-        for (var i = 0; i <= rangeSampleCount; i++) {
-          final x = dataXMin + rangeStep * i;
-          for (final s in parsed.series) {
-            final v = s.fn.eval(x, 0);
-            if (v.isFinite && v.abs() < 1e9) ys.add(v);
-          }
+        if (ys.isNotEmpty) {
+          ys.sort();
+          final yMin = dynamicMode ? ys.first : ys[ys.length ~/ 20];
+          final yMax = dynamicMode ? ys.last : ys[ys.length * 19 ~/ 20];
+          final dxMin = dataXMin ?? fxMin;
+          final dxMax = dataXMax ?? fxMax;
+          final dyMin = dataYMin ?? yMin;
+          final dyMax = dataYMax ?? yMax;
+          dataXMin = math.min(dxMin, fxMin);
+          dataXMax = math.max(dxMax, fxMax);
+          dataYMin = math.min(dyMin, yMin);
+          dataYMax = math.max(dyMax, yMax);
         }
       }
-      if (ys.isEmpty) return null;
-      ys.sort();
-      if (dynamicMode) {
-        dataYMin = ys.first;
-        dataYMax = ys.last;
-      } else {
-        dataYMin = ys[ys.length ~/ 20];
-        dataYMax = ys[ys.length * 19 ~/ 20];
-      }
-      if ((dataYMax - dataYMin).abs() < 0.5) {
-        final c = (dataYMax + dataYMin) / 2;
-        dataYMin = c - 1;
-        dataYMax = c + 1;
-      }
+    }
+
+    if (dataXMin == null || dataXMax == null || dataYMin == null || dataYMax == null) {
+      return null;
+    }
+    if ((dataXMax - dataXMin).abs() < 0.5) {
+      final c = (dataXMax + dataXMin) / 2;
+      dataXMin = c - 1;
+      dataXMax = c + 1;
+    }
+    if ((dataYMax - dataYMin).abs() < 0.5) {
+      final c = (dataYMax + dataYMin) / 2;
+      dataYMin = c - 1;
+      dataYMax = c + 1;
     }
     if (dataXMax <= dataXMin || dataYMax <= dataYMin) return null;
     const pad = 8.0;
@@ -2066,9 +2073,12 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
               Expanded(
                 child: Text(
                   parsed.parametric
-                      ? (parsed.paramSeries.length > 1
-                          ? '${parsed.paramSeries.length} 条参数曲线'
-                          : '参数曲线')
+                      ? (parsed.series.isNotEmpty
+                          ? '${parsed.paramSeries.length} 条参数曲线 + '
+                              '${parsed.series.length} 条函数'
+                          : parsed.paramSeries.length > 1
+                              ? '${parsed.paramSeries.length} 条参数曲线'
+                              : '参数曲线')
                       : parsed.pair
                           ? '${parsed.series.length ~/ 2} 层闭合曲线'
                           : parsed.connect
@@ -2093,7 +2103,7 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                 constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
                 tooltip: '重置缩放',
               ),
-              if (parsed.usesT)
+              if (parsed.usesT || parsed.usesU)
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
@@ -2301,11 +2311,11 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
               style: TextStyle(color: Color(0xFF73839A), fontSize: 10),
             ),
           ),
-          if (parsed.usesT)
+          if (parsed.usesT || parsed.usesU)
             const Padding(
               padding: EdgeInsets.only(top: 2),
               child: Text(
-                't 为动态参数，自动 0~2π 循环',
+                '动态参数 t/u 自动 0~2π 循环',
                 style: TextStyle(color: Color(0xFF73839A), fontSize: 10),
               ),
             ),
@@ -2370,57 +2380,71 @@ _ParsePlot? _parsePlot(String source) {
   }
   if (exprLines.isEmpty) return null;
 
-  final parametric = paramFlag ||
-      (exprLines.any((l) => RegExp(r'^x\s*=').hasMatch(l)) &&
-          exprLines.any((l) => RegExp(r'^y\s*=').hasMatch(l)));
-  if (parametric) {
-    // 支持局部变量：先收集 `r = ...` 这类赋值行，再代入 x/y 表达式。
-    final localVars = <String, _ExprNode>{};
-    for (final line in exprLines) {
-      final m = RegExp(r'^([a-zA-Z_]\w*)\s*=\s*(.+)$').firstMatch(line);
-      if (m != null) {
-        final name = m.group(1)!;
-        if (name == 'x' || name == 'y') continue;
-        localVars[name] = _ExprParser(m.group(2)!, vars: localVars).parse();
+  // 统一收集：局部变量 r/r1/m/k、参数方程 x/y 对、以及独立函数 y= 行。
+  final localVars = <String, _ExprNode>{};
+  final pairs = <List<String>>[];
+  final functionLines = <String>[];
+  String? pendingX;
+  for (final line in exprLines) {
+    final assign = RegExp(r'^([a-zA-Z_]\w*)\s*=\s*(.+)$').firstMatch(line);
+    if (assign != null) {
+      final name = assign.group(1)!;
+      if (name == 'x') {
+        pendingX = assign.group(2)!.trim();
+        continue;
       }
-    }
-    // 参数方程支持多组 x/y：每一组按顺序组成一条独立曲线。
-    final pairs = <List<String>>[];
-    String? pendingX;
-    for (final line in exprLines) {
-      if (RegExp(r'^x\s*=').hasMatch(line)) {
-        pendingX = line.substring(line.indexOf('=') + 1).trim();
-      } else if (RegExp(r'^y\s*=').hasMatch(line)) {
-        if (pendingX == null || pendingX.isEmpty) return null;
-        pairs.add([pendingX, line.substring(line.indexOf('=') + 1).trim()]);
-        pendingX = null;
+      if (name == 'y') {
+        final yExpr = assign.group(2)!.trim();
+        if (pendingX != null) {
+          pairs.add([pendingX, yExpr]);
+          pendingX = null;
+        } else {
+          functionLines.add(line);
+        }
+        continue;
       }
+      // y1/y2 这类是普通函数标签，不是局部变量。
+      if (RegExp(r'^y\d+[a-zA-Z_]*$').hasMatch(name)) {
+        functionLines.add(line);
+        continue;
+      }
+      // 其它名字按局部变量保存，支持 r/r1/m/k 等。
+      try {
+        localVars[name] = _ExprParser(assign.group(2)!, vars: localVars).parse();
+      } catch (_) {}
+      continue;
     }
-    if (pendingX != null || pairs.isEmpty) {
-      return null;
-    }
+    functionLines.add(line);
+  }
+  if (pendingX != null) return null;
+
+  final useParam = paramFlag || pairs.isNotEmpty;
+  List<_ParametricSeries>? paramSeries;
+  if (!pairs.isEmpty) {
     try {
-      final paramSeries = <_ParametricSeries>[
+      paramSeries = [
         for (final p in pairs)
           _ParametricSeries(
             x: _ExprParser(p[0], vars: localVars).parse(),
             y: _ExprParser(p[1], vars: localVars).parse(),
           ),
       ];
-      return _ParsePlot(
-        series: const [],
-        xMin: xMin,
-        xMax: xMax,
-        connect: false,
-        parametric: true,
-        paramSeries: paramSeries,
-        tMin: tMin,
-        tMax: tMax,
-        usesU: exprLines.any((l) => RegExp(r'\b(?:u|phase)\b').hasMatch(l)),
-      );
     } catch (_) {
       return null;
     }
+  }
+  if (useParam && paramSeries != null && functionLines.isEmpty) {
+    return _ParsePlot(
+      series: const [],
+      xMin: xMin,
+      xMax: xMax,
+      connect: connect,
+      parametric: true,
+      paramSeries: paramSeries,
+      tMin: tMin,
+      tMax: tMax,
+      usesU: exprLines.any((l) => RegExp(r'\b(?:u|phase)\b').hasMatch(l)),
+    );
   }
 
   if (xMax <= xMin) return null;
@@ -2436,8 +2460,8 @@ _ParsePlot? _parsePlot(String source) {
   ];
   try {
     final series = <_FunctionSeries>[];
-    for (var i = 0; i < exprLines.length; i++) {
-      final raw = exprLines[i];
+    for (var i = 0; i < functionLines.length; i++) {
+      final raw = functionLines[i];
       double? segMin;
       double? segMax;
       var body = raw;
@@ -2462,7 +2486,7 @@ _ParsePlot? _parsePlot(String source) {
         expr = body.substring(idx + 1).trim();
       }
       if (expr.isEmpty) continue;
-      final fn = _ExprParser(expr).parse();
+      final fn = _ExprParser(expr, vars: localVars).parse();
       final usesT = RegExp(r'(^|[^a-zA-Z_])t([^a-zA-Z_]|$)').hasMatch(expr);
       series.add(_FunctionSeries(
         label: label.isEmpty ? (series.length == 0 ? 'y' : 'y${series.length + 1}') : label,
@@ -2485,6 +2509,11 @@ _ParsePlot? _parsePlot(String source) {
       xMax: xMax,
       connect: connect,
       pair: pairFlag,
+      parametric: paramSeries != null,
+      paramSeries: paramSeries ?? const [],
+      tMin: tMin,
+      tMax: tMax,
+      usesU: exprLines.any((l) => RegExp(r'\b(?:u|phase)\b').hasMatch(l)),
     );
   } catch (_) {
     return null;
@@ -3024,10 +3053,9 @@ class _FunctionPainter extends CustomPainter {
     late double axisYMax;
     List<List<Offset>>? paramPoints;
 
-    if (parametric) {
+    if (paramSeries.isNotEmpty) {
       paramPoints = _sampleParametric(t);
-      if (paramPoints.isEmpty ||
-          paramPoints.every((pts) => pts.isEmpty)) {
+      if (paramPoints.isEmpty || paramPoints.every((pts) => pts.isEmpty)) {
         final noData = Paint()
           ..color = const Color(0xFF5B6B82)
           ..style = PaintingStyle.stroke
@@ -3039,105 +3067,85 @@ class _FunctionPainter extends CustomPainter {
         );
         return;
       }
-      if (viewXMin != null) {
-        axisXMin = viewXMin!;
-        axisXMax = viewXMax!;
-        axisYMin = viewYMin!;
-        axisYMax = viewYMax!;
-      } else {
-        final xs = paramPoints
-            .expand((pts) => pts)
-            .map((p) => p.dx)
-            .toList()
-          ..sort();
-        final ys = paramPoints
-            .expand((pts) => pts)
-            .map((p) => p.dy)
-            .toList()
-          ..sort();
-        axisXMin = xs.first;
-        axisXMax = xs.last;
-        axisYMin = ys.first;
-        axisYMax = ys.last;
-        if ((axisXMax - axisXMin).abs() < 0.5) {
-          final c = (axisXMax + axisXMin) / 2;
-          axisXMin = c - 1;
-          axisXMax = c + 1;
-        }
-        if ((axisYMax - axisYMin).abs() < 0.5) {
-          final c = (axisYMax + axisYMin) / 2;
-          axisYMin = c - 1;
-          axisYMax = c + 1;
+    }
+    if (paramPoints == null && series.isEmpty) return;
+
+    if (viewXMin != null) {
+      axisXMin = viewXMin!;
+      axisXMax = viewXMax!;
+      axisYMin = viewYMin!;
+      axisYMax = viewYMax!;
+    } else {
+      final xs = <double>[];
+      final ys = <double>[];
+      for (final pts in paramPoints ?? const <List<Offset>>[]) {
+        for (final p in pts) {
+          xs.add(p.dx);
+          ys.add(p.dy);
         }
       }
-    } else {
-      if (viewXMin != null) {
-        axisXMin = viewXMin!;
-        axisXMax = viewXMax!;
-        axisYMin = viewYMin!;
-        axisYMax = viewYMax!;
-      } else {
-        axisXMin = xMin;
-        axisXMax = xMax;
-        final ys = <double>[];
-        final dynamicMode = series.any((s) => s.usesT);
-        if (dynamicMode) {
-          // 动态模式下用整个 0~2π 的包络算固定 y 轴范围，
-          // 避免坐标轴跟着曲线缩放导致“外层看起来不动”。
-          const rangeSampleCount = 256;
-          const tSteps = 16;
-          final rangeStep = (xMax - xMin) / rangeSampleCount;
-          for (var ti = 0; ti <= tSteps; ti++) {
-            final tt = 2 * math.pi * ti / tSteps;
+      if (series.isNotEmpty) {
+        final dynamicMode = series.any((s) => s.usesT) || usesU;
+        const rangeSampleCount = 256;
+        final xSpan = xMax - xMin;
+        if (xSpan > 0) {
+          final rangeStep = xSpan / rangeSampleCount;
+          if (dynamicMode) {
+            const tSteps = 16;
+            for (var ti = 0; ti <= tSteps; ti++) {
+              final tt = 2 * math.pi * ti / tSteps;
+              for (var i = 0; i <= rangeSampleCount; i++) {
+                final x = xMin + rangeStep * i;
+                for (final s in series) {
+                  final v = s.fn.eval(x, tt, tt);
+                  if (v.isFinite && v.abs() < 1e9) ys.add(v);
+                }
+              }
+            }
+          } else {
             for (var i = 0; i <= rangeSampleCount; i++) {
               final x = xMin + rangeStep * i;
               for (final s in series) {
-                final v = s.fn.eval(x, tt);
+                final v = s.fn.eval(x, t, t);
                 if (v.isFinite && v.abs() < 1e9) ys.add(v);
               }
             }
           }
-        } else {
-          final step = (xMax - xMin) / sampleCount;
-          for (var i = 0; i <= sampleCount; i++) {
-            final x = xMin + step * i;
-            for (final s in series) {
-              final v = s.fn.eval(x, t);
-              if (v.isFinite && v.abs() < 1e9) ys.add(v);
-            }
-          }
+          xs.add(xMin);
+          xs.add(xMax);
         }
-        if (ys.isEmpty) {
-          final noData = Paint()
-            ..color = const Color(0xFF5B6B82)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1;
-          canvas.drawLine(
-            Offset(0, size.height / 2),
-            Offset(size.width, size.height / 2),
-            noData,
-          );
-          return;
-        }
-        ys.sort();
-        if (dynamicMode) {
-          // 动态图用完整包络，保证跳动到最大/最小时也不被裁掉
-          axisYMin = ys.first;
-          axisYMax = ys.last;
-        } else {
-          axisYMin = ys[ys.length ~/ 20];
-          axisYMax = ys[ys.length * 19 ~/ 20];
-        }
-        if ((axisYMax - axisYMin).abs() < 0.5) {
-          final c = (axisYMax + axisYMin) / 2;
-          axisYMin = c - 1;
-          axisYMax = c + 1;
-        }
-        // 上下留一点边距，曲线不会贴着边
-        final ySpan = axisYMax - axisYMin;
-        axisYMin -= ySpan * 0.08;
-        axisYMax += ySpan * 0.08;
       }
+      if (xs.isEmpty || ys.isEmpty) {
+        final noData = Paint()
+          ..color = const Color(0xFF5B6B82)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1;
+        canvas.drawLine(
+          Offset(0, size.height / 2),
+          Offset(size.width, size.height / 2),
+          noData,
+        );
+        return;
+      }
+      xs.sort();
+      ys.sort();
+      axisXMin = xs.first;
+      axisXMax = xs.last;
+      axisYMin = ys.first;
+      axisYMax = ys.last;
+      if ((axisXMax - axisXMin).abs() < 0.5) {
+        final c = (axisXMax + axisXMin) / 2;
+        axisXMin = c - 1;
+        axisXMax = c + 1;
+      }
+      if ((axisYMax - axisYMin).abs() < 0.5) {
+        final c = (axisYMax + axisYMin) / 2;
+        axisYMin = c - 1;
+        axisYMax = c + 1;
+      }
+      final ySpan = axisYMax - axisYMin;
+      axisYMin -= ySpan * 0.08;
+      axisYMax += ySpan * 0.08;
     }
 
     double tx(double x) =>
@@ -3175,7 +3183,7 @@ class _FunctionPainter extends CustomPainter {
     canvas.clipRect(
       Rect.fromLTWH(pad, pad, size.width - pad * 2, size.height - pad * 2),
     );
-    if (parametric) {
+    if (paramSeries.isNotEmpty) {
       final curves = paramPoints!;
       for (var ci = 0; ci < curves.length; ci++) {
         final pts = curves[ci];
@@ -3199,7 +3207,8 @@ class _FunctionPainter extends CustomPainter {
         }
         canvas.drawPath(path, curve);
       }
-    } else {
+    }
+    if (series.isNotEmpty) {
       final step = (xMax - xMin) / sampleCount;
       final totalConnectSamples = connect
           ? series.fold<int>(0, (sum, s) => sum + 257)
