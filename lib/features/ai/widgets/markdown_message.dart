@@ -20,28 +20,29 @@ import '../models/ai_message.dart';
 String _normalizeUnclosedFences(String input) {
   final lines = input.split('\n');
   var inFence = false;
-  String fence = '```';
+  var fenceChar = '`';
+  var fenceLen = 3;
   for (final line in lines) {
     final trimmed = line.trimLeft();
-    if (trimmed.startsWith('```')) {
-      final rest = trimmed.substring(3).trim();
-      if (!inFence) {
-        inFence = true;
-        fence = '```';
-      } else if (rest.isEmpty) {
-        inFence = false;
-      }
-    } else if (trimmed.startsWith('~~~')) {
-      final rest = trimmed.substring(3).trim();
-      if (!inFence) {
-        inFence = true;
-        fence = '~~~';
-      } else if (rest.isEmpty) {
-        inFence = false;
-      }
+    if (trimmed.isEmpty) continue;
+    final ch = trimmed[0];
+    if (ch != '`' && ch != '~') continue;
+    var run = 0;
+    while (run < trimmed.length && trimmed[run] == ch) {
+      run++;
+    }
+    if (run < 3) continue;
+    final rest = trimmed.substring(run).trim();
+    if (!inFence) {
+      inFence = true;
+      fenceChar = ch;
+      fenceLen = run;
+    } else if (ch == fenceChar && run >= fenceLen && rest.isEmpty) {
+      inFence = false;
     }
   }
   if (!inFence) return input;
+  final fence = fenceChar * fenceLen;
   return '$input\n$fence\n';
 }
 
@@ -1736,10 +1737,13 @@ class _JsonTreeNodeState extends State<_JsonTreeNode> {
   }
 }
 
-/// ` ```plot` 代码块 → 函数图。
+/// ` ```plot` / `~~~plot` 代码块 → 函数图。
+///
+/// 兼容 AI 常见的各种写法：0~3 空格缩进、3 个以上反引号/波浪线、
+/// plot/plotly/gnuplot/func/function/graph/chart/curve/math 等语言名。
 class _FunctionPlotSyntax extends md.BlockSyntax {
   static final RegExp _pattern = RegExp(
-    r'^```(?:plot|func|function|graph|chart)\s*(.*)$',
+    r'^\s*(`{3,}|~{3,})\s*(?:plot(?:ly)?|gnuplot|func(?:tion)?|graph|chart|curve|math)\s*(.*)$',
     caseSensitive: false,
   );
 
@@ -1749,17 +1753,28 @@ class _FunctionPlotSyntax extends md.BlockSyntax {
   @override
   md.Node? parse(md.BlockParser parser) {
     final first = _pattern.firstMatch(parser.current.content);
+    if (first == null) return null;
+    final marker = first.group(1)!;
+    final fenceChar = marker[0];
+    final fenceLen = marker.length;
     parser.advance();
     final lines = <String>[];
-    final inline = first?.group(1)?.trim();
+    final inline = first.group(2)?.trim();
     if (inline != null && inline.isNotEmpty) lines.add(inline);
     while (!parser.isDone) {
-      final line = parser.current;
-      if (line.content.trimLeft().startsWith('```')) {
-        parser.advance();
-        break;
+      final raw = parser.current.content;
+      final trimmed = raw.trimLeft();
+      if (trimmed.isNotEmpty && trimmed[0] == fenceChar) {
+        var run = 0;
+        while (run < trimmed.length && trimmed[run] == fenceChar) {
+          run++;
+        }
+        if (run >= fenceLen && trimmed.substring(run).trim().isEmpty) {
+          parser.advance();
+          break;
+        }
       }
-      lines.add(line.content);
+      lines.add(raw);
       parser.advance();
     }
     return md.Element('functionPlot', <md.Node>[md.Text(lines.join('\n'))]);
@@ -2043,15 +2058,25 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
     if (parsed == null) {
       return Container(
         width: double.infinity,
-        padding: const EdgeInsets.all(10),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
           color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
           borderRadius: BorderRadius.circular(10),
         ),
-        child: Text(
-          '函数图格式示例：\n```plot\ny = x^2\nx: -10, 10\n```\n'
-          '动态函数用 t：\n```plot\ny = sin(x + t)\n```',
-          style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+        child: Row(
+          children: [
+            Icon(Icons.error_outline, size: 15, color: scheme.error),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                '函数图解析失败：表达式可能被截断或某一行格式不对。',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
@@ -2416,24 +2441,22 @@ _ParsePlot? _parsePlot(String source) {
     }
     functionLines.add(line);
   }
-  if (pendingX != null) return null;
+  // 末尾悬空的 x= 说明这块可能被截断：忽略它，让其他能解析的曲线继续画。
+  pendingX = null;
 
   final useParam = paramFlag || pairs.isNotEmpty;
-  List<_ParametricSeries>? paramSeries;
-  if (!pairs.isEmpty) {
+  final paramSeries = <_ParametricSeries>[];
+  for (final p in pairs) {
     try {
-      paramSeries = [
-        for (final p in pairs)
-          _ParametricSeries(
-            x: _ExprParser(p[0], vars: localVars).parse(),
-            y: _ExprParser(p[1], vars: localVars).parse(),
-          ),
-      ];
+      paramSeries.add(_ParametricSeries(
+        x: _ExprParser(p[0], vars: localVars).parse(),
+        y: _ExprParser(p[1], vars: localVars).parse(),
+      ));
     } catch (_) {
-      return null;
+      // 单条参数曲线写错时不拖垮整块图，先跳过，能画的继续画。
     }
   }
-  if (useParam && paramSeries != null && functionLines.isEmpty) {
+  if (useParam && paramSeries.isNotEmpty && functionLines.isEmpty) {
     return _ParsePlot(
       series: const [],
       xMin: xMin,
@@ -2458,34 +2481,34 @@ _ParsePlot? _parsePlot(String source) {
     Color(0xFFFF8A65),
     Color(0xFF9CCC65),
   ];
-  try {
-    final series = <_FunctionSeries>[];
-    for (var i = 0; i < functionLines.length; i++) {
-      final raw = functionLines[i];
-      double? segMin;
-      double? segMax;
-      var body = raw;
-      final segM = RegExp(
-        r'^(.*?),\s*x\s*[:：]\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$',
-      ).firstMatch(raw);
-      if (segM != null) {
-        body = segM.group(1)!.trim();
-        segMin = double.tryParse(segM.group(2)!);
-        segMax = double.tryParse(segM.group(3)!);
-        if (segMin == null || segMax == null || segMax <= segMin) {
-          body = raw;
-          segMin = null;
-          segMax = null;
-        }
+  final series = <_FunctionSeries>[];
+  for (var i = 0; i < functionLines.length; i++) {
+    final raw = functionLines[i];
+    double? segMin;
+    double? segMax;
+    var body = raw;
+    final segM = RegExp(
+      r'^(.*?),\s*x\s*[:：]\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$',
+    ).firstMatch(raw);
+    if (segM != null) {
+      body = segM.group(1)!.trim();
+      segMin = double.tryParse(segM.group(2)!);
+      segMax = double.tryParse(segM.group(3)!);
+      if (segMin == null || segMax == null || segMax <= segMin) {
+        body = raw;
+        segMin = null;
+        segMax = null;
       }
-      var label = '';
-      var expr = body;
-      if (body.contains('=')) {
-        final idx = body.indexOf('=');
-        label = body.substring(0, idx).trim();
-        expr = body.substring(idx + 1).trim();
-      }
-      if (expr.isEmpty) continue;
+    }
+    var label = '';
+    var expr = body;
+    if (body.contains('=')) {
+      final idx = body.indexOf('=');
+      label = body.substring(0, idx).trim();
+      expr = body.substring(idx + 1).trim();
+    }
+    if (expr.isEmpty) continue;
+    try {
       final fn = _ExprParser(expr, vars: localVars).parse();
       final usesT = RegExp(r'(^|[^a-zA-Z_])t([^a-zA-Z_]|$)').hasMatch(expr);
       series.add(_FunctionSeries(
@@ -2501,23 +2524,23 @@ _ParsePlot? _parsePlot(String source) {
         segmentXMin: segMin,
         segmentXMax: segMax,
       ));
+    } catch (_) {
+      // 单条函数写错时同样跳过，不影响同块里其他曲线。
     }
-    if (series.isEmpty) return null;
-    return _ParsePlot(
-      series: series,
-      xMin: xMin,
-      xMax: xMax,
-      connect: connect,
-      pair: pairFlag,
-      parametric: paramSeries != null,
-      paramSeries: paramSeries ?? const [],
-      tMin: tMin,
-      tMax: tMax,
-      usesU: exprLines.any((l) => RegExp(r'\b(?:u|phase)\b').hasMatch(l)),
-    );
-  } catch (_) {
-    return null;
   }
+  if (series.isEmpty && paramSeries.isEmpty) return null;
+  return _ParsePlot(
+    series: series,
+    xMin: xMin,
+    xMax: xMax,
+    connect: connect,
+    pair: pairFlag,
+    parametric: paramSeries.isNotEmpty,
+    paramSeries: paramSeries,
+    tMin: tMin,
+    tMax: tMax,
+    usesU: exprLines.any((l) => RegExp(r'\b(?:u|phase)\b').hasMatch(l)),
+  );
 }
 class _FunctionSeries {
   const _FunctionSeries({
