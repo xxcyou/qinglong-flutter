@@ -245,8 +245,10 @@ List<InlineSpan> _buildNodeSpans(md.Node node, TextStyle? parent) {
         ];
       case 'mark':
         const glow = Color(0xFFFFD54F);
+        // 发光只负责加光晕；如果外层已经指定颜色，保留外层颜色，
+        // 否则才用默认发光色，这样 {c:red}==文字=={/c} 也是红字发光。
         final style = base.copyWith(
-          color: glow,
+          color: base.color ?? glow,
           shadows: const [
             Shadow(color: Color(0x66FFD54F), blurRadius: 6),
             Shadow(color: Color(0x44FFB300), blurRadius: 14),
@@ -263,12 +265,15 @@ List<InlineSpan> _buildNodeSpans(md.Node node, TextStyle? parent) {
         ];
       case 'highlight':
         final bg = _ColorSpanBuilder()._parse(node.attributes['bg'] ?? '');
+        // 背景不覆盖外层指定的颜色；只有没指定颜色时才按背景亮度自适应。
         final style = base.copyWith(
           backgroundColor: bg,
           color:
-              bg != null && bg.computeLuminance() > 0.55
-                  ? const Color(0xFF1A1A1A)
-                  : base.color,
+              base.color != null
+                  ? base.color
+                  : (bg != null && bg.computeLuminance() > 0.55
+                      ? const Color(0xFF1A1A1A)
+                      : base.color),
         );
         return [
           TextSpan(style: style, children: _buildInlineSpans(children, style)),
