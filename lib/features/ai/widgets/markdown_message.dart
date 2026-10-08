@@ -44,6 +44,12 @@ String _normalizeUnclosedFences(String input) {
   return '$input\n$fence\n';
 }
 
+
+/// 用同一个文档的内联语法解析内层内容，支持 `=={c:red}文字{/c}==` 这类嵌套渲染。
+List<md.Node> _parseInner(md.InlineParser parser, String text) {
+  return md.InlineParser(text, parser.document).parse();
+}
+
 class MarkdownMessage extends StatelessWidget {
   const MarkdownMessage({
     super.key,
@@ -169,7 +175,8 @@ class _UnderlineSyntax extends md.InlineSyntax {
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
-    parser.addNode(md.Element.text('u', match.group(1) ?? ''));
+    parser.addNode(
+        md.Element('u', _parseInner(parser, match.group(1) ?? '')));
     return true;
   }
 }
@@ -180,7 +187,8 @@ class _GlowSyntax extends md.InlineSyntax {
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
-    parser.addNode(md.Element.text('mark', match.group(1) ?? ''));
+    parser.addNode(
+        md.Element('mark', _parseInner(parser, match.group(1) ?? '')));
     return true;
   }
 }
@@ -191,7 +199,7 @@ class _ColorSyntax extends md.InlineSyntax {
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
-    final node = md.Element.text('span', match.group(2) ?? '')
+    final node = md.Element('span', _parseInner(parser, match.group(2) ?? ''))
       ..attributes['color'] = match.group(1) ?? '';
     parser.addNode(node);
     return true;
@@ -204,11 +212,93 @@ class _HighlightSyntax extends md.InlineSyntax {
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
-    final node = md.Element.text('highlight', match.group(2) ?? '')
+    final node = md.Element('highlight', _parseInner(parser, match.group(2) ?? ''))
       ..attributes['bg'] = match.group(1) ?? '';
     parser.addNode(node);
     return true;
   }
+}
+
+/// 递归构建内联 TextSpan，让 =={c:red}...{/c}== / {c:red}==...=={/c} 等嵌套样式真正生效。
+List<InlineSpan> _buildInlineSpans(List<md.Node>? nodes, TextStyle? parent) {
+  if (nodes == null || nodes.isEmpty) return const [];
+  final spans = <InlineSpan>[];
+  for (final node in nodes) {
+    spans.addAll(_buildNodeSpans(node, parent));
+  }
+  return spans;
+}
+
+List<InlineSpan> _buildNodeSpans(md.Node node, TextStyle? parent) {
+  final base = parent ?? const TextStyle();
+  if (node is md.Text) return [TextSpan(text: node.text, style: parent)];
+  if (node is md.Element) {
+    final children = node.children;
+    switch (node.tag) {
+      case 'u':
+        final style = base.copyWith(
+          decoration: TextDecoration.underline,
+          decorationColor: base.color,
+        );
+        return [
+          TextSpan(style: style, children: _buildInlineSpans(children, style)),
+        ];
+      case 'mark':
+        const glow = Color(0xFFFFD54F);
+        final style = base.copyWith(
+          color: glow,
+          shadows: const [
+            Shadow(color: Color(0x66FFD54F), blurRadius: 6),
+            Shadow(color: Color(0x44FFB300), blurRadius: 14),
+          ],
+        );
+        return [
+          TextSpan(style: style, children: _buildInlineSpans(children, style)),
+        ];
+      case 'span':
+        final color = _ColorSpanBuilder()._parse(node.attributes['color'] ?? '');
+        final style = base.copyWith(color: color);
+        return [
+          TextSpan(style: style, children: _buildInlineSpans(children, style)),
+        ];
+      case 'highlight':
+        final bg = _ColorSpanBuilder()._parse(node.attributes['bg'] ?? '');
+        final style = base.copyWith(
+          backgroundColor: bg,
+          color:
+              bg != null && bg.computeLuminance() > 0.55
+                  ? const Color(0xFF1A1A1A)
+                  : base.color,
+        );
+        return [
+          TextSpan(style: style, children: _buildInlineSpans(children, style)),
+        ];
+      case 'strong':
+        final style = base.copyWith(fontWeight: FontWeight.bold);
+        return [
+          TextSpan(style: style, children: _buildInlineSpans(children, style)),
+        ];
+      case 'em':
+        final style = base.copyWith(fontStyle: FontStyle.italic);
+        return [
+          TextSpan(style: style, children: _buildInlineSpans(children, style)),
+        ];
+      case 'code':
+        final style = base.copyWith(
+          fontFamily: kMonoFamily,
+          fontFamilyFallback: kMonoFallback,
+          fontSize: 12.5,
+        );
+        return [
+          TextSpan(style: style, children: _buildInlineSpans(children, style)),
+        ];
+      default:
+        return [
+          TextSpan(style: parent, children: _buildInlineSpans(children, parent)),
+        ];
+    }
+  }
+  return [TextSpan(text: node.textContent, style: parent)];
 }
 
 class _UnderlineBuilder extends MarkdownElementBuilder {
@@ -221,17 +311,15 @@ class _UnderlineBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
-    final text = element.textContent;
-    if (text.isEmpty) return null;
-    return Text.rich(
-      TextSpan(
-        text: text,
-        style: (parentStyle ?? const TextStyle()).copyWith(
-          decoration: TextDecoration.underline,
-          decorationColor: parentStyle?.color,
-        ),
+    final spans = _buildInlineSpans(element.children, parentStyle);
+    if (spans.isEmpty) return null;
+    return Text.rich(TextSpan(
+      style: (parentStyle ?? const TextStyle()).copyWith(
+        decoration: TextDecoration.underline,
+        decorationColor: parentStyle?.color,
       ),
-    );
+      children: spans,
+    ));
   }
 }
 
@@ -245,12 +333,11 @@ class _GlowBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
-    final text = element.textContent;
-    if (text.isEmpty) return null;
+    final spans = _buildInlineSpans(element.children, parentStyle);
+    if (spans.isEmpty) return null;
     const glow = Color(0xFFFFD54F);
     return Text.rich(
       TextSpan(
-        text: text,
         style: (parentStyle ?? const TextStyle()).copyWith(
           color: glow,
           shadows: const [
@@ -258,6 +345,7 @@ class _GlowBuilder extends MarkdownElementBuilder {
             Shadow(color: Color(0x44FFB300), blurRadius: 14),
           ],
         ),
+        children: spans,
       ),
     );
   }
@@ -312,15 +400,11 @@ class _ColorSpanBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
-    final text = element.textContent;
     final color = _parse(element.attributes['color'] ?? '');
-    if (text.isEmpty) return null;
-    return Text.rich(
-      TextSpan(
-        text: text,
-        style: (parentStyle ?? const TextStyle()).copyWith(color: color),
-      ),
-    );
+    final spans = _buildInlineSpans(element.children,
+        (parentStyle ?? const TextStyle()).copyWith(color: color));
+    if (spans.isEmpty) return null;
+    return Text.rich(TextSpan(children: spans));
   }
 }
 
@@ -336,19 +420,15 @@ class _HighlightBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
-    final text = element.textContent;
-    if (text.isEmpty) return null;
     final bg = _parseColor(element.attributes['bg'] ?? '');
     final base = parentStyle ?? const TextStyle();
-    return Text.rich(
-      TextSpan(
-        text: text,
-        style: base.copyWith(
-          backgroundColor: bg,
-          color: bg != null ? _readableOn(bg) : base.color,
-        ),
-      ),
+    final style = base.copyWith(
+      backgroundColor: bg,
+      color: bg != null ? _readableOn(bg) : base.color,
     );
+    final spans = _buildInlineSpans(element.children, style);
+    if (spans.isEmpty) return null;
+    return Text.rich(TextSpan(children: spans));
   }
 
   Color _readableOn(Color bg) {
