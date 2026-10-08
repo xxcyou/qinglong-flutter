@@ -1652,6 +1652,12 @@ class ChatNotifier extends Notifier<ChatState> {
       );
       state = state.copyWith(
         queue: [...state.queue, queued],
+        // 用户已经发了新消息：旧的“中断继续”不再有意义，立刻清掉，
+        // 避免消息排队时还挂着旧任务的继续条，点了继续又回到旧上下文。
+        interruptedRunBySession: {
+          ...state.interruptedRunBySession,
+          sid: null,
+        },
       );
       run.inbox.add(
         AgentInboxMessage(
@@ -1667,15 +1673,23 @@ class ChatNotifier extends Notifier<ChatState> {
     }
     // 附件/模式已经交给 _sendNow 了，这里立刻清空待发条，不要等整轮跑完才消失。
     clearPendingImages();
-    // 上一次是被打断的：把中断前已执行的工具链直接带过去续轮，而不是开全新一轮。
+    // 用户主动新发消息时不再自动续旧中断任务：旧的“继续”只通过 ResumeStrip
+    // 明确点击才触发，避免新消息被旧上下文“顶掉”或失败后点继续仍回到旧任务。
+    state = state.copyWith(
+      interruptedRunBySession: {
+        ...state.interruptedRunBySession,
+        sid: null,
+      },
+      liveAgentEvents: state.currentSessionId == sid
+          ? const []
+          : state.liveAgentEvents,
+    );
     await _sendNow(
       promptText,
       sessionId: sid,
       images: images,
       displayText: visibleDisplay,
       modeLabels: modeLabels,
-      resumeEvents: _resumeEventsFromCancelled(sid),
-      resumeRoundId: _roundIdFromCancelled(sid),
     );
     // 这里不再无条件 drain：_sendNow 收尾时已经按"是否挂起"判断过一次。
     _pumpQueue(sid);
@@ -1699,6 +1713,10 @@ class ChatNotifier extends Notifier<ChatState> {
               modeText.isEmpty ? '' : (value.isEmpty ? '（仅挂载模式，未输入文字）' : value),
         ),
       ],
+      interruptedRunBySession: {
+        ...state.interruptedRunBySession,
+        state.currentSessionId: null,
+      },
     );
   }
 
@@ -1723,6 +1741,10 @@ class ChatNotifier extends Notifier<ChatState> {
           displayText: display,
         ),
       ],
+      interruptedRunBySession: {
+        ...state.interruptedRunBySession,
+        state.currentSessionId: null,
+      },
     );
   }
 
@@ -2422,6 +2444,24 @@ class ChatNotifier extends Notifier<ChatState> {
         last.isNotEmpty &&
         last.last.role == 'user' &&
         last.last.content == run.userInput;
+    // 继续时把上次遗留的“未发送成功”红字清掉：这次是真的重发，不再是失败态。
+    if (alreadyThere && state.currentSession != null) {
+      final session = state.currentSession!;
+      final msgs = [...session.messages];
+      final lastIdx = msgs.length - 1;
+      if (msgs[lastIdx].sendError.isNotEmpty) {
+        msgs[lastIdx] = msgs[lastIdx].copyWith(sendError: '');
+        _replaceSession(
+          AiSession(
+            id: session.id,
+            title: session.title,
+            messages: msgs,
+            createdAt: session.createdAt,
+            updatedAt: DateTime.now(),
+          ),
+        );
+      }
+    }
     if (_runs.containsKey(state.currentSessionId)) {
       enqueue(run.userInput);
       return;
