@@ -1531,7 +1531,12 @@ class _CodeBlockState extends State<_CodeBlock> {
         else
           HighlightView(
             _displayCode,
-            language: widget.language,
+            // highlight 0.7 在 language == null 时会直接抛 ArgumentError，
+            // 无语言围栏（AI 很常发）会整块渲染失败；这里回退到 plaintext。
+            language: (widget.language == null ||
+                    widget.language!.trim().isEmpty)
+                ? 'plaintext'
+                : widget.language,
             theme: theme,
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
             textStyle: const TextStyle(
