@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -72,6 +73,9 @@ class MarkdownMessage extends StatelessWidget {
       _GlowSyntax(),
       _ColorSyntax(),
       _HighlightSyntax(),
+      _NeonSyntax(),
+      _GradientSyntax(),
+      _FlashSyntax(),
     ],
   );
 
@@ -97,6 +101,9 @@ class MarkdownMessage extends StatelessWidget {
         'mark': _GlowBuilder(),
         'span': _ColorSpanBuilder(),
         'highlight': _HighlightBuilder(),
+        'neon': _NeonBuilder(),
+        'g': _GradientBuilder(),
+        'flash': _FlashBuilder(),
         'pre': codeBlockBuilder,
         'code': codeBlockBuilder,
         'functionPlot': _FunctionPlotBuilder(),
@@ -220,6 +227,65 @@ class _HighlightSyntax extends md.InlineSyntax {
   }
 }
 
+/// `{neon:cyan}文字{/neon}` → 指定颜色霓虹发光。
+class _NeonSyntax extends md.InlineSyntax {
+  _NeonSyntax() : super(r'\{neon:([^}\n]*)\}(.+?)\{/neon\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('neon', [md.Text(match.group(2) ?? '')])
+      ..attributes['color'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// `{g:red,yellow}文字{/g}` → 左右渐变。
+class _GradientSyntax extends md.InlineSyntax {
+  _GradientSyntax() : super(r'\{g:([^}\n]+)\}(.+?)\{/g\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('g', [md.Text(match.group(2) ?? '')])
+      ..attributes['colors'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// `{flash:red,yellow}文字{/flash}` → 闪烁动画。
+class _FlashSyntax extends md.InlineSyntax {
+  _FlashSyntax() : super(r'\{flash:([^}\n]+)\}(.+?)\{/flash\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('flash', [md.Text(match.group(2) ?? '')])
+      ..attributes['colors'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// 解析逗号分隔的颜色列表，如 `red,#00ffcc`。
+List<Color> _parseColorList(String raw) {
+  final colors = <Color>[];
+  for (final part in raw.split(',')) {
+    final c = _ColorSpanBuilder()._parse(part.trim());
+    if (c != null) colors.add(c);
+  }
+  if (colors.isEmpty) {
+    colors.addAll(const  [Color(0xFF00E5FF), Color(0xFFFF4081)]);
+  }
+  return colors;
+}
+
+/// 估算文本宽度，用于内嵌渐变时的 shader 横向长度。
+double _estimateTextWidth(String text, TextStyle? style) {
+  final count = text.runes.length;
+  final size = style?.fontSize ?? 14;
+  return math.max(20.0, count * size * 0.62);
+}
+
 /// 递归构建**扁平**内联 TextSpan。
 ///
 /// 不能返回嵌套 TextSpan 树：flutter_markdown 合并相邻文本时会把中间层
@@ -311,6 +377,53 @@ void _buildNodeSpans(md.Node node, TextStyle? parent, List<InlineSpan> out) {
           decorationColor: base.color,
         );
         break;
+      case 'neon':
+        final neonColor =
+            _ColorSpanBuilder()._parse(node.attributes['color'] ?? '') ??
+                const Color(0xFF00E5FF);
+        style = base.copyWith(
+          color: neonColor,
+          shadows: [
+            Shadow(color: neonColor.withValues(alpha: 0.9), blurRadius: 8),
+            Shadow(color: neonColor.withValues(alpha: 0.6), blurRadius: 16),
+            Shadow(color: neonColor.withValues(alpha: 0.3), blurRadius: 24),
+          ],
+        );
+        for (final child in _parseStyleNodes(node.textContent)) {
+          _buildNodeSpans(child, style, out);
+        }
+        return;
+      case 'g':
+        final gradientColors = _parseColorList(node.attributes['colors'] ?? '');
+        final parsed = _parseStyleNodes(node.textContent);
+        final childSpans = _buildInlineSpans(parsed, null);
+        for (final span in childSpans) {
+          if (span is TextSpan && span.text != null && span.text!.isNotEmpty) {
+            final paint = Paint()
+              ..shader = ui.Gradient.linear(
+                Offset.zero,
+                Offset(_estimateTextWidth(span.text!, base), 0),
+                gradientColors,
+              );
+            out.add(TextSpan(
+              text: span.text,
+              style: (span.style ?? const TextStyle()).copyWith(
+                foreground: paint,
+                shadows: span.style?.shadows,
+              ),
+            ));
+          } else {
+            out.add(span);
+          }
+        }
+        return;
+      case 'flash':
+        final flashColors = _parseColorList(node.attributes['colors'] ?? '');
+        style = base.copyWith(color: flashColors.first);
+        for (final child in _parseStyleNodes(node.textContent)) {
+          _buildNodeSpans(child, style, out);
+        }
+        return;
       default:
         style = parent;
         break;
@@ -454,6 +567,132 @@ class _HighlightBuilder extends MarkdownElementBuilder {
     // 简单的亮度判断：深底用浅字，浅底用深字。
     final luminance = 0.299 * bg.red + 0.587 * bg.green + 0.114 * bg.blue;
     return luminance > 150 ? const Color(0xFF1A1A1A) : Colors.white;
+  }
+}
+
+class _NeonBuilder extends MarkdownElementBuilder {
+  _NeonBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final neonColor =
+        _ColorSpanBuilder()._parse(element.attributes['color'] ?? '') ??
+            const Color(0xFF00E5FF);
+    final style = (parentStyle ?? const TextStyle()).copyWith(
+      color: neonColor,
+      shadows: [
+        Shadow(color: neonColor.withValues(alpha: 0.9), blurRadius: 8),
+        Shadow(color: neonColor.withValues(alpha: 0.6), blurRadius: 16),
+        Shadow(color: neonColor.withValues(alpha: 0.3), blurRadius: 24),
+      ],
+    );
+    final spans =
+        _buildInlineSpans(_parseStyleNodes(element.textContent), style);
+    if (spans.isEmpty) return null;
+    return Text.rich(TextSpan(children: spans));
+  }
+}
+
+class _GradientBuilder extends MarkdownElementBuilder {
+  _GradientBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final colors = _parseColorList(element.attributes['colors'] ?? '');
+    final spans =
+        _buildInlineSpans(_parseStyleNodes(element.textContent), parentStyle);
+    if (spans.isEmpty) return null;
+    return ShaderMask(
+      shaderCallback: (bounds) => LinearGradient(
+        colors: colors,
+        begin: Alignment.centerLeft,
+        end: Alignment.centerRight,
+      ).createShader(bounds),
+      blendMode: BlendMode.srcIn,
+      child: Text.rich(TextSpan(children: spans)),
+    );
+  }
+}
+
+class _FlashBuilder extends MarkdownElementBuilder {
+  _FlashBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final colors = _parseColorList(element.attributes['colors'] ?? '');
+    final nodes = _parseStyleNodes(element.textContent);
+    return _FlashText(
+      nodes: nodes,
+      baseStyle: parentStyle,
+      colors: colors,
+    );
+  }
+}
+
+class _FlashText extends StatefulWidget {
+  const _FlashText({
+    required this.nodes,
+    required this.baseStyle,
+    required this.colors,
+  });
+
+  final List<md.Node> nodes;
+  final TextStyle? baseStyle;
+  final List<Color> colors;
+
+  @override
+  State<_FlashText> createState() => _FlashTextState();
+}
+
+class _FlashTextState extends State<_FlashText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = (math.sin(_controller.value * math.pi * 2) + 1) / 2;
+        final flashColor =
+            Color.lerp(widget.colors.first, widget.colors.last, t) ??
+                widget.colors.first;
+        final base = widget.baseStyle ?? const TextStyle();
+        final style = base.copyWith(color: flashColor);
+        final spans = _buildInlineSpans(widget.nodes, style);
+        return Text.rich(TextSpan(children: spans));
+      },
+    );
   }
 }
 
