@@ -1409,6 +1409,13 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       _imageCache[key] = decoded;
       return decoded;
     } catch (e) {
+      // 原生解码失败（个别 ROM/特殊格式）时，收藏器（大图）退回 Flutter
+      // 自带的 JPEG/PNG/WebP/GIF 解码；缩略图不退回原图，避免大图列表卡顿。
+      if (!thumbnail) {
+        if (_imageCache.length > 400) _imageCache.clear();
+        _imageCache[key] = raw;
+        return raw;
+      }
       return null;
     }
   }

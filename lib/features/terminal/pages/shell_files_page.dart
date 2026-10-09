@@ -701,6 +701,33 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
             !e.isDirectory &&
             FileKinds.of(e.name).category == FileCategory.image)
         .toList();
+    // ADB 每张图都要 base64 拉一次，整目录预读会卡很久甚至“点了没反应”：
+    // 只先打开点击的这张，左右滑预留给本地/SSH。
+    if (state.scope == FileScope.adb) {
+      final b = await _notifier.readImageBytes(entry.path, thumbnail: false);
+      if ((b == null || b.isEmpty) || !mounted) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('这张图片无法解码打开')),
+          );
+        }
+        return;
+      }
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => ImageViewerPage(
+            imageBytes: [b],
+            imageNames: [entry.name],
+            initialIndex: 0,
+            title: entry.name,
+            subtitle: FileKinds.sizeText(entry.size),
+            onOpenExternal: null,
+          ),
+        ),
+      );
+      return;
+    }
+
     final bytesList = <Uint8List>[];
     final names = <String>[];
     for (final e in images) {
@@ -727,8 +754,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
           initialIndex: index < 0 ? 0 : index,
           title: entry.name,
           subtitle: FileKinds.sizeText(entry.size),
-          onOpenExternal: state.scope == FileScope.ssh ||
-                  state.scope == FileScope.adb
+          onOpenExternal: state.scope == FileScope.ssh
               ? null
               : () => _notifier.openExternal(
                     entry.path,
