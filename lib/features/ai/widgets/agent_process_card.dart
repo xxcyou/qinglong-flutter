@@ -484,6 +484,7 @@ class _TimelineRowState extends State<_TimelineRow> {
     'shell_write_binary',
     'shell_exec',
     'shell_script',
+    'ssh_exec',
     'editor_patch',
     'editor_insert',
     'editor_delete',

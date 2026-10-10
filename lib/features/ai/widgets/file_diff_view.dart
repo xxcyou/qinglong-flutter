@@ -50,6 +50,9 @@ class FileDiffView extends StatelessWidget {
     if (toolName == 'shell_exec' || toolName == 'shell_script') {
       return '本机命令';
     }
+    if (toolName == 'ssh_exec') {
+      return '远程命令';
+    }
     if (toolName.toLowerCase().contains('script') ||
         toolName.toLowerCase().contains('browser') ||
         toolName.toLowerCase().contains('scr')) {
@@ -362,6 +365,9 @@ class FileDiffView extends StatelessWidget {
     if (toolName == 'editor_write') return '全量覆盖';
     if (toolName == 'shell_write_binary') return '二进制覆盖';
     if (toolName == 'shell_archive_extract') return '解压';
+    if (toolName == 'ssh_exec') {
+      return '远程命令执行';
+    }
     if (toolName == 'shell_exec' || toolName == 'shell_script') {
       final cmd = args['command']?.toString().trimLeft() ?? '';
       if (cmd.startsWith('rm ') ||
@@ -783,7 +789,7 @@ static const Set<String> _shellCommands = {
               TextSpan(
                 children: isCommand
                     ? _highlightShell(line.text)
-                    : toolName == 'shell_exec' &&
+                    : (toolName == 'shell_exec' || toolName == 'ssh_exec') &&
                             line.type == _DiffLineType.context
                         ? _highlightOutput(line.text)
                         : [TextSpan(text: line.text)],
@@ -877,7 +883,9 @@ static const Set<String> _shellCommands = {
 
     // shell_exec / shell_script 没有结构化 diff 时，至少把命令/输出亮出来，
     // 不要再出现“没有可展示的文件内容”的白卡。
-    if (toolName == 'shell_exec' || toolName == 'shell_script') {
+    if (toolName == 'shell_exec' ||
+        toolName == 'shell_script' ||
+        toolName == 'ssh_exec') {
       final shell = _shellFallbackLines();
       if (shell.isNotEmpty) return shell;
     }
