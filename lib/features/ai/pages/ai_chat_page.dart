@@ -12,6 +12,7 @@ import '../../../core/llm/llm_config_provider.dart';
 import '../../../core/llm/llm_registry_provider.dart';
 import '../../../core/local_shell/proot_bridge.dart';
 import '../../../core/theme/glass.dart';
+import '../../../core/widgets/premium_logo.dart';
 import '../../../core/theme/theme_effects_controller.dart';
 import '../../../core/utils/formatter.dart';
 import '../../../core/utils/error_text.dart';
@@ -81,6 +82,14 @@ class AiChatPage extends ConsumerStatefulWidget {
 class _AiChatPageState extends ConsumerState<AiChatPage> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
+
+  /// 会话渐进渲染：进入旧话题先只画最新的 [_initialVisibleMessages] 条，
+  /// 更早的消息先用轻量占位符挡住，后台再每隔几帧往前补一批。
+  static const int _initialVisibleMessages = 30;
+  static const int _progressiveMessageBatch = 10;
+  int _visibleMessageStart = 0;
+  Timer? _progressiveMessageTimer;
+  String? _lastSessionId;
 
   /// 当前正在“引用追问”的消息下标；null=没有引用。
   int? _followUpIndex;
@@ -254,6 +263,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   void dispose() {
     _followUpFlashTimer?.cancel();
     _auditFlashTimer?.cancel();
+    _progressiveMessageTimer?.cancel();
     _controller.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
@@ -266,6 +276,40 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     // 160 逻辑像素的容差：手指刚好停在最后一条上也算"在底部"。
     final atBottom = pos.maxScrollExtent - pos.pixels <= 160;
     if (atBottom != _pinned) setState(() => _pinned = atBottom);
+  }
+
+  void _resetProgressiveMessages(int total) {
+    _progressiveMessageTimer?.cancel();
+    _visibleMessageStart = total > _initialVisibleMessages
+        ? total - _initialVisibleMessages
+        : 0;
+    if (_visibleMessageStart <= 0) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _progressiveMessageTimer?.cancel();
+      _progressiveMessageTimer = Timer.periodic(
+        const Duration(milliseconds: 40),
+        (_) {
+          if (!mounted) {
+            _progressiveMessageTimer?.cancel();
+            return;
+          }
+          final total = ref.read(chatProvider).messages.length;
+          if (_visibleMessageStart <= 0) {
+            _progressiveMessageTimer?.cancel();
+            return;
+          }
+          setState(() {
+            _visibleMessageStart = (_visibleMessageStart -
+                    _progressiveMessageBatch)
+                .clamp(0, total);
+          });
+          // 更早消息补进来会让上面变高，如果用户本来就贴在底部，
+          // 要把底部重新拉回来，别让视口悄悄漂走。
+          if (_pinned) _followTail();
+        },
+      );
+    });
   }
 
   /// 内容变了就跟到底。用 jumpTo 而不是动画：流式回复每秒改好几次
@@ -692,6 +736,9 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
 
   void _scrollToIndex(int index) {
     if (!mounted || !_scrollController.hasClients) return;
+    if (index < _visibleMessageStart) {
+      setState(() => _visibleMessageStart = index);
+    }
     final list = _scrollController.position;
     // 粗略估算：每条消息高度不一，这里直接把目标滚到可视区中央偏上。
     final rough = index * 96.0;
@@ -1673,6 +1720,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
       if (changed || streaming) _followTail();
     });
     final state = ref.watch(chatProvider);
+    // 切会话时在 build 阶段就设好“只画最新 N 条”，避免先整段渲染一帧再降级。
+    if (_lastSessionId != state.currentSessionId) {
+      _lastSessionId = state.currentSessionId;
+      _resetProgressiveMessages(state.messages.length);
+    }
     final notifier = ref.read(chatProvider.notifier);
     final scheme = Theme.of(context).colorScheme;
     // 附件与悬浮窗共用一份：composePrompt 也只认这一份。
@@ -1899,6 +1951,9 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                 itemCount: state.messages.length + extraCount,
                                 itemBuilder: (context, index) {
                                   if (index < state.messages.length) {
+                                    if (index < _visibleMessageStart) {
+                                      return const _EarlierMessagePlaceholder();
+                                    }
                                     final message = state.messages[index];
                                     final frozenBelow = _editMode &&
                                         _editIndex != null &&
@@ -2656,6 +2711,38 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   }
 }
 
+class _EarlierMessagePlaceholder extends StatelessWidget {
+  const _EarlierMessagePlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Text(
+              '更早的消息后台加载中…',
+              style: TextStyle(
+                fontSize: 11.5,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _WelcomeView extends StatelessWidget {
   const _WelcomeView({required this.onTap});
 
@@ -2678,22 +2765,7 @@ class _WelcomeView extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(20, 32, 20, 12),
       children: [
         Center(
-          child: Container(
-            width: 64,
-            height: 64,
-            decoration: BoxDecoration(
-              color: scheme.primaryContainer.withValues(alpha: 0.85),
-              shape: BoxShape.circle,
-            ),
-            child: ClipOval(
-              child: Image.asset(
-                'assets/images/app_icon.png',
-                width: 64,
-                height: 64,
-                fit: BoxFit.cover,
-              ),
-            ),
-          ),
+          child: const PremiumLogo(size: 64),
         ),
         const SizedBox(height: 10),
         const Center(

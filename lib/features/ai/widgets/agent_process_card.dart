@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -77,6 +78,14 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
       ) ||
       widget.highlightEventIndex != null;
 
+  /// 渐进渲染：先只画时间线末尾最新的一批，再后台逐步补上更早的步骤，
+  /// 避免旧会话一条消息几十上百个工具步骤一次性全渲染卡死。
+  static const int _progressiveBatchSize = 12;
+  int _visibleRows = 30;
+  Timer? _growTimer;
+
+  int get _totalRows => _rows.length;
+
   /// 时间线上真正要画的事件。
   ///
   /// toolStart 只在"还没拿到返回"时有价值：拿到 toolEnd 之后两行讲的是同一件事，
@@ -148,6 +157,47 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    if (widget.highlightEventIndex != null) {
+      _visibleRows = widget.events.length;
+    }
+    if (_expanded) _scheduleProgressiveGrow();
+  }
+
+  void _toggleExpanded() {
+    setState(() => _expanded = !_expanded);
+    if (_expanded) _scheduleProgressiveGrow();
+  }
+
+  void _scheduleProgressiveGrow() {
+    _growTimer?.cancel();
+    if (!_expanded) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_expanded) return;
+      _growTimer?.cancel();
+      _growTimer = Timer.periodic(
+        const Duration(milliseconds: 40),
+        (_) {
+          if (!mounted || !_expanded) {
+            _growTimer?.cancel();
+            return;
+          }
+          final total = _totalRows;
+          if (_visibleRows >= total) {
+            _growTimer?.cancel();
+            return;
+          }
+          setState(() {
+            _visibleRows = (_visibleRows + _progressiveBatchSize)
+                .clamp(0, total);
+          });
+        },
+      );
+    });
+  }
+
+  @override
   void didUpdateWidget(covariant AgentProcessCard oldWidget) {
     super.didUpdateWidget(oldWidget);
     final oldHasImage = oldWidget.events.any(
@@ -165,6 +215,10 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
         oldWidget.highlightEventIndex != widget.highlightEventIndex &&
         !_expanded) {
       _expanded = true;
+      _visibleRows = widget.events.length;
+    }
+    if (_expanded && oldWidget.events.length != widget.events.length) {
+      _scheduleProgressiveGrow();
     }
   }
 
@@ -187,7 +241,7 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
+            onTap: _toggleExpanded,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
               child: Row(
@@ -345,8 +399,39 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
     }
     final used = <String>{};
     final children = <Widget>[];
-    for (var i = 0; i < events.length; i++) {
-      final e = events[i];
+    // 渐进渲染：先画时间线末尾最新一批，更早的在后台逐步补上。
+    final start = _visibleRows >= events.length
+        ? 0
+        : events.length - _visibleRows;
+    if (start > 0) {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6, top: 2),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '更早的 $start 步过程后台加载中…',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    final visibleEvents = start == 0 ? events : events.sublist(start);
+    for (var i = 0; i < visibleEvents.length; i++) {
+      final e = visibleEvents[i];
       final group = e.group;
       if (group != null && group.isNotEmpty) {
         if (used.add(group)) {
@@ -372,7 +457,7 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
         children.add(
           _TimelineRow(
             event: e,
-            isLast: i == events.length - 1,
+            isLast: i == visibleEvents.length - 1,
             onOpenCanvas: widget.onOpenCanvas,
             highlighted: widget.highlightEventIndex != null &&
                 originalIndex == widget.highlightEventIndex,

@@ -915,9 +915,13 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       );
     // 无论是否当前页都预加载 HTML/CSS/JS：打开二级页时 WebView 已就绪，
     // 只有等 active 后把缓冲的特效一次性落到全局，避免 3~6 秒空窗。
-    // 启动放到首帧之后，避免 WebView 初始化/路由首帧抢同一帧。
+    // 启动放到首帧之后，再延迟一小段让主界面/渐变背景先画出来；
+    // HTML 动态背景属于“次要”增强，晚 800ms 加载用户感知不到，但能避免
+    // 旧主题大 HTML 把首帧和 Logo 一起卡住。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _load();
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (mounted) _load();
+      });
     });
   }
 
