@@ -1545,18 +1545,21 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
   }
 
   Future<void> _openDownloadFolder(BrowserDownload d) async {
-    final dir = await _engine.downloadsDirectory();
+    final container = ProviderScope.containerOf(context, listen: false);
+    final notifier = container.read(shellFilesProvider.notifier);
+    await notifier.switchScope(FileScope.app);
     if (!mounted) return;
+    // 不能直接用 path_provider 的绝对路径：它和原生 appRoots 可能不是同一套
+    // 规范化路径，会被“只允许访问 APP 自身目录”拦下来。这里从文件管理器
+    // 的 APP 根目录出发拼 browser_downloads，保证一定在允许范围内。
+    final appRoot = container.read(shellFilesProvider).path;
+    final dir = appRoot.isEmpty ? '/browser_downloads' : '$appRoot/browser_downloads';
     final safe = d.name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
     final done = File('$dir/$safe');
     final part = File('$dir/$safe.part');
     final file = !done.existsSync() && part.existsSync()
         ? part.path
         : done.path;
-    final container = ProviderScope.containerOf(context, listen: false);
-    final notifier = container.read(shellFilesProvider.notifier);
-    await notifier.switchScope(FileScope.app);
-    if (!mounted) return;
     await showBrowserDialog<void>(
       context: context,
       builder: (dialogContext, pop) => ClipRRect(
