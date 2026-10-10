@@ -27,6 +27,11 @@ class _HomeShellState extends ConsumerState<HomeShell>
   /// 启动页只应用一次：之后用户点导航栏就该由他说话。
   bool _startupApplied = false;
 
+  /// 已访问过的标签页。IndexedStack 默认会把 6 个页面全部 build+layout，
+  /// 终端/管理/设置页很重，首帧会被拖到 10 秒级。只构建访问过的页，
+  /// 首帧只画第一个标签，其余等用户切过去再建。
+  final Set<int> _visitedTabs = {0};
+
   /// 菜单是否伸出来。默认收起——菜单常驻太占地方，
   /// 手指从屏幕底边往上一拉就出来，点别处又收回去。
   bool _navOpen = false;
@@ -186,6 +191,12 @@ class _HomeShellState extends ConsumerState<HomeShell>
         ref.read(homeTabIndexProvider.notifier).state = index;
       });
     });
+    // 用户切到某个标签时，把它标记为“已访问”，懒加载它的页面。
+    ref.listenManual(homeTabIndexProvider, (previous, next) {
+      if (next >= 0 && next < _items.length && !_visitedTabs.contains(next)) {
+        setState(() => _visitedTabs.add(next));
+      }
+    });
   }
 
   static const _items = <_NavItem>[
@@ -196,6 +207,25 @@ class _HomeShellState extends ConsumerState<HomeShell>
     _NavItem(Icons.grid_view_outlined, Icons.grid_view, '管理'),
     _NavItem(Icons.settings_outlined, Icons.settings, '设置'),
   ];
+
+  Widget _pageFor(int index) {
+    switch (index) {
+      case 0:
+        return const CronListPage();
+      case 1:
+        return const PanelListPage();
+      case 2:
+        return const AiChatPage();
+      case 3:
+        return const TerminalPage();
+      case 4:
+        return const ModuleHubPage();
+      case 5:
+        return const SettingsPage();
+      default:
+        return const SizedBox.shrink();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -242,13 +272,11 @@ class _HomeShellState extends ConsumerState<HomeShell>
                     Expanded(
                       child: IndexedStack(
                         index: index,
-                        children: const [
-                          CronListPage(),
-                          PanelListPage(),
-                          AiChatPage(),
-                          TerminalPage(),
-                          ModuleHubPage(),
-                          SettingsPage(),
+                        children: [
+                          for (var i = 0; i < _items.length; i++)
+                            _visitedTabs.contains(i)
+                                ? _pageFor(i)
+                                : const SizedBox.shrink(),
                         ],
                       ),
                     ),
