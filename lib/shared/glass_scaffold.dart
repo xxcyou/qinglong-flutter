@@ -301,6 +301,7 @@ class GlassCard extends StatelessWidget {
                   Widget img = Image.file(
                     File(host),
                     fit: boxFit,
+                    cacheWidth: boundedImageWidth(context),
                     errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                   );
                   if (opacity < 1) {

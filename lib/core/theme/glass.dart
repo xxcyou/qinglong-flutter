@@ -15,7 +15,7 @@ import '../local_shell/proot_bridge.dart';
 
 /// 控制主题背景图解码尺寸：只按屏幕宽度缩放并封顶，避免启动时整张
 /// 超大 PNG/JPG 全尺寸解码，把主线程卡到 ANR/内存暴涨。
-int? _boundedImageWidth(BuildContext context, {int maxWidth = 2048}) {
+int? boundedImageWidth(BuildContext context, {int maxWidth = 2048}) {
   final width = MediaQuery.sizeOf(context).width *
       MediaQuery.devicePixelRatioOf(context);
   if (width <= 0) return null;
@@ -288,7 +288,7 @@ class GlassPanel extends StatelessWidget {
                   Widget img = Image.file(
                     File(host),
                     fit: boxFit,
-                    cacheWidth: _boundedImageWidth(context),
+                    cacheWidth: boundedImageWidth(context),
                     errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                   );
                   if (opacity < 1) {
@@ -798,7 +798,7 @@ class _GlassBackgroundView extends StatelessWidget {
                 return Image.file(
                   File(host),
                   fit: BoxFit.cover,
-                  cacheWidth: _boundedImageWidth(context),
+                  cacheWidth: boundedImageWidth(context),
                   errorBuilder: (_, __, ___) => DecoratedBox(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(

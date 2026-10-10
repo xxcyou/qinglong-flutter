@@ -42,9 +42,9 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
     ref.listenManual(currentPanelProvider, (previous, next) {
       configureDioForPanel(next);
     });
-    // 等首帧和焦点事件处理完再开始加载设置/主题/面板；主题加载期间由
-    // 启动 Logo 动画盖住，加载完再淡出进主界面，避免启动 ANR。
-    Future.delayed(const Duration(milliseconds: 1200), () async {
+    // 首帧渲染完（焦点事件已处理）再开始加载设置/主题/面板；
+    // 加载期间由启动 Logo 盖住，加载完淡出，既不复现启动 ANR，也不用多等 1.2 秒。
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       await ref.read(settingsProvider.notifier).load();
       await ref.read(themeProvider.notifier).load();
       ApiDebugLog.enabled = ref.read(settingsProvider).debugLogEnabled;

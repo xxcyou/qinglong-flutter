@@ -268,23 +268,43 @@ class ThemeNotifier extends Notifier<ThemeState> {
     String current,
   ) {
     if (current.isNotEmpty) return current;
-    for (final f in dir.listSync(recursive: true, followLinks: false)) {
-      if (f is! File) continue;
-      final path = f.path.replaceAll('\\', '/');
+    bool isImage(String path) {
       final lower = path.toLowerCase();
-      final inBg = lower.contains('/background/') ||
-          lower.contains('image/background') ||
-          lower.contains('背景');
-      if (!inBg) continue;
-      if (!(lower.endsWith('.png') ||
+      return lower.endsWith('.png') ||
           lower.endsWith('.jpg') ||
           lower.endsWith('.jpeg') ||
           lower.endsWith('.webp') ||
-          lower.endsWith('.gif'))) {
-        continue;
+          lower.endsWith('.gif');
+    }
+
+    // 只搜常见背景目录，避免启动时对整套主题包做递归整目录扫描，
+    // 把 Logo 时间拖长/主线程卡住。
+    const bgDirs = [
+      'background',
+      'images/background',
+      'image/background',
+      'assets/background',
+    ];
+    for (final rel in bgDirs) {
+      final sub = Directory('${dir.path}/$rel');
+      if (!sub.existsSync()) continue;
+      for (final f in sub.listSync(followLinks: false)) {
+        if (f is! File) continue;
+        final relFile = f.path.replaceAll('\\', '/');
+        if (isImage(relFile)) {
+          return '$packageGuest/$rel/${relFile.split('/').last}';
+        }
       }
-      final rel = f.path.substring(dir.path.length + 1).replaceAll('\\', '/');
-      return '$packageGuest/$rel';
+    }
+    // 退路：只扫 package 根目录一层，不再递归。
+    for (final f in dir.listSync(followLinks: false)) {
+      if (f is! File) continue;
+      final relFile = f.path.replaceAll('\\', '/');
+      final lower = relFile.toLowerCase();
+      if (isImage(relFile) &&
+          (lower.contains('background') || lower.contains('/bg'))) {
+        return '$packageGuest/${relFile.split('/').last}';
+      }
     }
     return null;
   }
