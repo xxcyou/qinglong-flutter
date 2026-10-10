@@ -1536,6 +1536,9 @@ class ProotBridge(private val context: Context) {
         "缓存" to context.cacheDir,
         ("外部文件" to context.getExternalFilesDir(null)).takeIf { it.second != null }
             ?.let { it.first to it.second!! },
+        // 允许文件管理器从 files/cache 继续上溯到 APP 自己的数据根目录。
+        ("数据根" to context.dataDir).takeIf { it != null }
+            ?.let { it.first to it.second!! },
     )
 
     private fun handleListAppFiles(call: MethodCall, result: MethodChannel.Result) {

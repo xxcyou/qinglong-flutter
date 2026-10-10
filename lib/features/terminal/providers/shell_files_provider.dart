@@ -131,9 +131,9 @@ class ShellFilesState {
   bool get isSelecting => selected.isNotEmpty;
 
   String get parentPath {
-    if (atRoot) return path;
+    if (path.isEmpty || path == '/') return path;
     final index = path.lastIndexOf('/');
-    if (index <= 0) return path;
+    if (index <= 0) return '/';
     final parent = path.substring(0, index);
     return parent.isEmpty ? '/' : parent;
   }
@@ -511,8 +511,9 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
   Future<void> refresh() => open(state.path);
 
   Future<void> goUp() async {
-    if (state.atRoot) return;
-    await open(state.parentPath);
+    final parent = state.parentPath;
+    if (parent == state.path) return;
+    await open(parent);
   }
 
   void setKeyword(String value) =>
