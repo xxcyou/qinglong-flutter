@@ -268,7 +268,8 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     if (!_scrollController.hasClients) return;
     final pos = _scrollController.position;
     // 160 逻辑像素的容差：手指刚好停在最后一条上也算"在底部"。
-    final atBottom = pos.maxScrollExtent - pos.pixels <= 160;
+    // 列表是 reverse 的，offset 0 就是底部。
+    final atBottom = pos.pixels <= 160;
     if (atBottom != _pinned) setState(() => _pinned = atBottom);
   }
 
@@ -286,9 +287,9 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     if (!_pinned) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) return;
-      final max = _scrollController.position.maxScrollExtent;
-      if ((max - _scrollController.position.pixels).abs() < 1) return;
-      _scrollController.jumpTo(max);
+      final px = _scrollController.position.pixels;
+      if (px.abs() < 1) return;
+      _scrollController.jumpTo(0);
     });
   }
 
@@ -705,8 +706,14 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   void _scrollToIndex(int index) {
     if (!mounted || !_scrollController.hasClients) return;
     final list = _scrollController.position;
-    // 粗略估算：每条消息高度不一，这里直接把目标滚到可视区中央偏上。
-    final rough = index * 96.0;
+    final state = ref.read(chatProvider);
+    final extraCount = (state.livePlan.isNotEmpty ? 1 : 0) +
+        (state.liveAgentEvents.isNotEmpty ? 1 : 0) +
+        (state.isLoading ? 1 : 0) +
+        1;
+    final total = state.messages.length + extraCount;
+    // reverse 列表里 offset 0 是底部，所以目标消息离底部越远 offset 越大。
+    final rough = (total - 1 - index) * 96.0;
     final target = (rough - list.viewportDimension * 0.35).clamp(
       0.0,
       list.maxScrollExtent,
@@ -1091,19 +1098,9 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   void _scrollToBottom() {
     if (!_scrollController.hasClients) return;
     _pinned = true;
-    // ListView.builder 的最大滚动范围是“边滚边算”的：第一次拿到的
-    // maxScrollExtent 经常偏小，直接滚过去会停在消息中间。
-    // 这里先跳到当前最大，再连续几帧追着增大的 max 继续跳，直到真正贴底。
-    _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-    for (var i = 0; i < 10; i++) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_scrollController.hasClients || !_pinned) return;
-        final max = _scrollController.position.maxScrollExtent;
-        final px = _scrollController.position.pixels;
-        if ((max - px).abs() > 1) {
-          _scrollController.jumpTo(max);
-        }
-      });
+    // 列表是 reverse 的，offset 0 永远是最新底部，不存在 maxScrollExtent 估算偏小的问题。
+    if (_scrollController.position.pixels > 0) {
+      _scrollController.jumpTo(0);
     }
   }
 
@@ -1921,10 +1918,16 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                   child: ListView.builder(
                                 key: _listKey,
                                 controller: _scrollController,
+                                reverse: true,
                                 padding:
                                     const EdgeInsets.fromLTRB(12, 12, 12, 4),
                                 itemCount: state.messages.length + extraCount,
-                                itemBuilder: (context, index) {
+                                itemBuilder: (context, builderIndex) {
+                                  final index =
+                                      state.messages.length +
+                                              extraCount -
+                                              1 -
+                                          builderIndex;
                                   if (index < state.messages.length) {
                                     final message = state.messages[index];
                                     final frozenBelow = _editMode &&
