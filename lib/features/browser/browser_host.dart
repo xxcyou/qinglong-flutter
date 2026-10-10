@@ -1577,12 +1577,26 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
           height: MediaQuery.sizeOf(dialogContext).height * 0.9,
           child: Material(
             color: Theme.of(dialogContext).colorScheme.surface.withValues(alpha: 0.94),
-            child: ShellFilesPage(
-              asSheet: true,
-              initialDir: dir,
-              initialSelectPath: file,
-              onClose: () => pop(),
-              closeIcon: Icons.close_rounded,
+            child: Navigator(
+              initialRoute: '/',
+              onGenerateRoute: (settings) {
+                if (settings.name == '/') {
+                  return MaterialPageRoute<void>(
+                    settings: settings,
+                    builder: (_) => ShellFilesPage(
+                      asSheet: true,
+                      initialDir: dir,
+                      initialSelectPath: file,
+                      onClose: () => pop(),
+                      closeIcon: Icons.close_rounded,
+                    ),
+                  );
+                }
+                return MaterialPageRoute<void>(
+                  settings: settings,
+                  builder: (_) => const Scaffold(body: SizedBox.shrink()),
+                );
+              },
             ),
           ),
         ),
