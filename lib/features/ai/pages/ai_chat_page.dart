@@ -83,12 +83,7 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
 
-  /// 会话渐进渲染：进入旧话题先只画最新的 [_initialVisibleMessages] 条，
-  /// 更早的消息先用轻量占位符挡住，后台再每隔几帧往前补一批。
-  static const int _initialVisibleMessages = 30;
-  static const int _progressiveMessageBatch = 10;
-  int _visibleMessageStart = 0;
-  Timer? _progressiveMessageTimer;
+  /// 上次进入的会话 id：切会话后首帧自动滚到最新一条。
   String? _lastSessionId;
 
   /// 当前正在“引用追问”的消息下标；null=没有引用。
@@ -263,7 +258,6 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   void dispose() {
     _followUpFlashTimer?.cancel();
     _auditFlashTimer?.cancel();
-    _progressiveMessageTimer?.cancel();
     _controller.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
@@ -279,36 +273,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   }
 
   void _resetProgressiveMessages(int total) {
-    _progressiveMessageTimer?.cancel();
-    _visibleMessageStart = total > _initialVisibleMessages
-        ? total - _initialVisibleMessages
-        : 0;
-    if (_visibleMessageStart <= 0) return;
+    // 只要进了会话，首帧后立刻跳到最新，用户不用从顶部一路滑下去。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _progressiveMessageTimer?.cancel();
-      _progressiveMessageTimer = Timer.periodic(
-        const Duration(milliseconds: 40),
-        (_) {
-          if (!mounted) {
-            _progressiveMessageTimer?.cancel();
-            return;
-          }
-          final total = ref.read(chatProvider).messages.length;
-          if (_visibleMessageStart <= 0) {
-            _progressiveMessageTimer?.cancel();
-            return;
-          }
-          setState(() {
-            _visibleMessageStart = (_visibleMessageStart -
-                    _progressiveMessageBatch)
-                .clamp(0, total);
-          });
-          // 更早消息补进来会让上面变高，如果用户本来就贴在底部，
-          // 要把底部重新拉回来，别让视口悄悄漂走。
-          if (_pinned) _followTail();
-        },
-      );
+      if (!mounted || !_scrollController.hasClients) return;
+      _pinned = true;
+      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
     });
   }
 
@@ -736,9 +705,6 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
 
   void _scrollToIndex(int index) {
     if (!mounted || !_scrollController.hasClients) return;
-    if (index < _visibleMessageStart) {
-      setState(() => _visibleMessageStart = index);
-    }
     final list = _scrollController.position;
     // 粗略估算：每条消息高度不一，这里直接把目标滚到可视区中央偏上。
     final rough = index * 96.0;
@@ -1951,9 +1917,6 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                 itemCount: state.messages.length + extraCount,
                                 itemBuilder: (context, index) {
                                   if (index < state.messages.length) {
-                                    if (index < _visibleMessageStart) {
-                                      return const _EarlierMessagePlaceholder();
-                                    }
                                     final message = state.messages[index];
                                     final frozenBelow = _editMode &&
                                         _editIndex != null &&
@@ -2706,38 +2669,6 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _EarlierMessagePlaceholder extends StatelessWidget {
-  const _EarlierMessagePlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          SizedBox(
-            width: 12,
-            height: 12,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-          const SizedBox(width: 10),
-          Flexible(
-            child: Text(
-              '更早的消息后台加载中…',
-              style: TextStyle(
-                fontSize: 11.5,
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }
