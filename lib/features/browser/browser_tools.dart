@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../ai/agent/external_tool.dart';
 import '../../core/local_shell/shell_lock.dart';
 import 'browser_engine.dart';
+import 'models/browser_download.dart';
 import 'models/browser_models.dart';
 
 /// 把浏览器内核包成 AI 工具。
@@ -1199,6 +1200,106 @@ class BrowserTools {
           if (url.trim().isEmpty) return '地址为空。';
           final mb = (args['max_mb'] as num?)?.toInt() ?? 6;
           return engine.download(url, maxBytes: mb * 1024 * 1024);
+        },
+      ),
+      ExternalTool(
+        name: 'browser_download_manager',
+        description: '管理浏览器下载器：新建、查看、暂停/继续、删除任务和文件、批量删除。'
+            '用户点击网页下载链接产生的任务也会出现在这里；'
+            '动作用 list/create/delete/pause/resume/delete_many。'
+            '下载文件在 APP 私有目录 browser_downloads 下，list 会给出本地路径。',
+        parameters: obj([
+          'action'
+        ], {
+          'action': {
+            'type': 'string',
+            'enum': [
+              'list',
+              'create',
+              'delete',
+              'delete_many',
+              'pause',
+              'resume',
+            ],
+          },
+          'url': {
+            'type': 'string',
+            'description': 'create 时必填：下载地址',
+          },
+          'name': {
+            'type': 'string',
+            'description': 'create 时可指定文件名，不填自动取链接文件名',
+          },
+          'id': {
+            'type': 'integer',
+            'description': 'delete/pause/resume 时必填：下载任务 id',
+          },
+          'ids': {
+            'type': 'array',
+            'items': {'type': 'integer'},
+            'description': 'delete_many 时必填：要删除的任务 id 列表',
+          },
+        }),
+        origin: origin,
+        isWrite: true,
+        invoke: (args) async {
+          final action = args['action']?.toString() ?? 'list';
+          switch (action) {
+            case 'list':
+              final list = List<BrowserDownload>.of(engine.downloads.value);
+              if (list.isEmpty) return '下载列表为空。';
+              final sb = StringBuffer()
+                ..writeln('共 ${list.length} 个下载：');
+              for (final d in list) {
+                final status = switch (d.status) {
+                  BrowserDownloadStatus.downloading => '下载中 ${(d.progress * 100).toStringAsFixed(0)}%',
+                  BrowserDownloadStatus.paused => '已暂停 ${(d.progress * 100).toStringAsFixed(0)}%',
+                  BrowserDownloadStatus.completed => '已完成',
+                  BrowserDownloadStatus.failed => '失败：${d.error ?? ''}',
+                };
+                sb.writeln('#${d.id} ${d.name} [$status]');
+                sb.writeln('  ${d.url}');
+                if (d.localPath != null) sb.writeln('  本地：${d.localPath}');
+              }
+              return sb.toString();
+
+            case 'create':
+              final url = args['url']?.toString() ?? '';
+              if (url.isEmpty) return 'create 需要 url。';
+              final name = args['name']?.toString();
+              await engine.startDownload(
+                url,
+                suggestedName: name == null || name.isEmpty ? null : name,
+              );
+              return '已创建下载任务：$url${name == null ? '' : '（$name）'}';
+
+            case 'delete':
+              final id = (args['id'] as num?)?.toInt();
+              if (id == null) return 'delete 需要 id。';
+              engine.deleteDownload(id);
+              return '已删除下载任务 #$id（含本地文件）。';
+
+            case 'delete_many':
+              final ids = (args['ids'] as List?)?.map((e) => (e as num).toInt());
+              if (ids == null || ids.isEmpty) return 'delete_many 需要 ids 列表。';
+              engine.deleteDownloads(ids);
+              return '已批量删除 ${ids.length} 个下载任务（含本地文件）。';
+
+            case 'pause':
+              final id = (args['id'] as num?)?.toInt();
+              if (id == null) return 'pause 需要 id。';
+              engine.pauseDownload(id);
+              return '已暂停下载任务 #$id。';
+
+            case 'resume':
+              final id = (args['id'] as num?)?.toInt();
+              if (id == null) return 'resume 需要 id。';
+              await engine.resumeDownload(id);
+              return '已恢复下载任务 #$id。';
+
+            default:
+              return '未知操作：$action';
+          }
         },
       ),
       ExternalTool(

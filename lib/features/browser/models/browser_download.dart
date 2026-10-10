@@ -44,4 +44,4 @@ class BrowserDownload {
   }
 }
 
-enum BrowserDownloadStatus { downloading, completed, failed }
+enum BrowserDownloadStatus { downloading, paused, completed, failed }

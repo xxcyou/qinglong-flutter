@@ -55,6 +55,7 @@ class ShellFilesPage extends ConsumerStatefulWidget {
     this.onClose,
     this.closeIcon,
     this.dragToAttachEnabled = false,
+    this.initialSelectPath,
   });
 
   /// 以底部面板形式出现时自带拖动把手与关闭按钮，不画返回箭头。
@@ -62,6 +63,9 @@ class ShellFilesPage extends ConsumerStatefulWidget {
 
   /// 在 AI 半屏面板里开启：长按文件/文件夹拖到 AI 正文区作为附件。
   final bool dragToAttachEnabled;
+
+  /// 打开后自动滚动并常亮选中该路径（下载完成后跳转定位用）。
+  final String? initialSelectPath;
 
   /// 在 AI 半屏文件面板里使用时，点文本/代码文件弹出悬浮编辑器，
   /// 而不是全屏跳转。
@@ -74,7 +78,10 @@ class ShellFilesPage extends ConsumerStatefulWidget {
   final IconData? closeIcon;
 
   /// 从终端页底部拉起文件管理。
-  static Future<void> showSheet(BuildContext context) {
+  static Future<void> showSheet(
+    BuildContext context, {
+    String? initialSelectPath,
+  }) {
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -93,12 +100,31 @@ class ShellFilesPage extends ConsumerStatefulWidget {
             child: Material(
               color:
                   Theme.of(context).colorScheme.surface.withValues(alpha: 0.86),
-              child: const ShellFilesPage(asSheet: true),
+              child: ShellFilesPage(
+                asSheet: true,
+                initialSelectPath: initialSelectPath,
+              ),
             ),
           ),
         ),
       ),
     );
+  }
+
+  /// 打开某个目录并定位选中指定文件（下载完成后“跳到文件”用）。
+  static Future<void> showDirAndSelect(
+    BuildContext context, {
+    required String dir,
+    required String file,
+  }) async {
+    final container = ProviderScope.containerOf(context, listen: false);
+    final notifier = container.read(shellFilesProvider.notifier);
+    await notifier.switchScope(FileScope.app);
+    await notifier.open(dir);
+    notifier.clearSelection();
+    notifier.toggleSelect(file);
+    if (!context.mounted) return;
+    return showSheet(context, initialSelectPath: file);
   }
 
   @override
@@ -112,11 +138,36 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
   /// 拖拽附件模式下的“多选”开关：开启后点条目直接勾选，
   /// 勾选多个后长按任一选中项，把整组一起拖到 AI 页。
   bool _attachMultiSelectMode = false;
+  final GlobalKey _highlightKey = GlobalKey();
+  bool _didScrollHighlight = false;
+  int _scrollHighlightAttempts = 0;
 
   @override
   void initState() {
     super.initState();
-    Future.microtask(() => ref.read(shellFilesProvider.notifier).open());
+    Future.microtask(() async {
+      await ref.read(shellFilesProvider.notifier).open();
+      if (mounted) _maybeScrollToHighlight();
+    });
+  }
+
+  void _maybeScrollToHighlight() {
+    if (_didScrollHighlight || widget.initialSelectPath == null) return;
+    if (_scrollHighlightAttempts >= 8) return;
+    _scrollHighlightAttempts++;
+    final ctx = _highlightKey.currentContext;
+    if (ctx != null) {
+      _didScrollHighlight = true;
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 350),
+        alignment: 0.3,
+      );
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _maybeScrollToHighlight();
+      });
+    }
   }
 
   @override
@@ -541,7 +592,10 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
             onMore: () => _showActions(entry),
             bytesResolver: (path) => _notifier.readImageBytes(path),
           );
-          if (!widget.dragToAttachEnabled) return tile;
+          final highlighted = entry.path == widget.initialSelectPath
+              ? KeyedSubtree(key: _highlightKey, child: tile)
+              : tile;
+          if (!widget.dragToAttachEnabled) return highlighted;
           final multi = state.selected.isNotEmpty &&
               state.selected.contains(entry.path)
               ? entries
@@ -554,7 +608,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
               scope: state.scope.name,
               entries: multi != null && multi.length > 1 ? multi : null,
             ),
-            child: tile,
+            child: highlighted,
           );
         },
       ),
@@ -591,7 +645,10 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                 : () => _showActions(entry),
             bytesResolver: (path) => _notifier.readImageBytes(path),
           );
-          if (!widget.dragToAttachEnabled) return tile;
+          final highlighted = entry.path == widget.initialSelectPath
+              ? KeyedSubtree(key: _highlightKey, child: tile)
+              : tile;
+          if (!widget.dragToAttachEnabled) return highlighted;
           final multi = state.selected.isNotEmpty &&
               state.selected.contains(entry.path)
               ? entries
@@ -604,7 +661,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
               scope: state.scope.name,
               entries: multi != null && multi.length > 1 ? multi : null,
             ),
-            child: tile,
+            child: highlighted,
           );
         },
       ),

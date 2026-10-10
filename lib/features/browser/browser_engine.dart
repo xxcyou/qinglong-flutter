@@ -120,6 +120,9 @@ class BrowserEngine {
   /// 用户点击下载链接产生的下载任务列表（新任务在最前）。
   final ValueNotifier<List<BrowserDownload>> downloads = ValueNotifier(const []);
   int _downloadSeq = 0;
+  final Map<int, HttpClientRequest> _activeDownloadRequests = {};
+  final Set<int> _pausedDownloads = {};
+  final Set<int> _deletedDownloads = {};
 
   bool _profilesLoaded = false;
 
@@ -2604,87 +2607,233 @@ return list.map(function(e){
     }
   }
 
-  /// 用户点击下载链接时调用：把文件下到 APP 私有目录，并在下载管理列表里
-  /// 显示进度。带当前域 Cookie/UA，登录后才能下的附件也能拿到。
-  Future<void> startDownload(String url, {String? suggestedName}) async {
-    try {
-      var name = suggestedName?.trim().isNotEmpty == true
+  /// 新建/恢复一个下载任务。支持断点续传：暂停后保留 .part 文件，
+  /// 恢复时从已下载字节继续（Range 请求）。
+  Future<void> startDownload(
+    String url, {
+    String? suggestedName,
+    int? resumeId,
+  }) async {
+    int id;
+    String name;
+    final existed = resumeId != null &&
+        downloads.value.any((d) => d.id == resumeId);
+    if (existed) {
+      id = resumeId;
+      name = downloads.value.firstWhere((d) => d.id == id).name;
+    } else {
+      id = ++_downloadSeq;
+      name = suggestedName?.trim().isNotEmpty == true
           ? suggestedName!.trim()
           : _fileNameFromUrl(url);
-      if (name.isEmpty || name == 'download') name = 'download_${_downloadSeq + 1}';
+      if (name.isEmpty || name == 'download') {
+        name = 'download_$id';
+      }
       name = name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+      downloads.value = [
+        BrowserDownload(id: id, url: url, name: name),
+        ...downloads.value,
+      ];
+    }
+    _pausedDownloads.remove(id);
+    _deletedDownloads.remove(id);
+    _updateDownload(id,
+        status: BrowserDownloadStatus.downloading, error: null);
 
-      final id = ++_downloadSeq;
-      final entry = BrowserDownload(id: id, url: url, name: name);
-      downloads.value = [entry, ...downloads.value];
+    final dir = await getApplicationDocumentsDirectory();
+    final folder = Directory('${dir.path}/browser_downloads');
+    if (!folder.existsSync()) folder.createSync(recursive: true);
+    final finalFile = File('${folder.path}/$name');
+    final partFile = File('${finalFile.path}.part');
+    final start = partFile.existsSync() ? partFile.lengthSync() : 0;
 
-      final dir = await getApplicationDocumentsDirectory();
-      final folder = Directory('${dir.path}/browser_downloads');
-      if (!folder.existsSync()) folder.createSync(recursive: true);
-      final finalFile = File('${folder.path}/$name');
-      final partFile = File('${finalFile.path}.part');
-
-      final cookie = await WebBridge.cookies(url);
-      final dio = Dio(
-        BaseOptions(
-          connectTimeout: const Duration(seconds: 20),
-          receiveTimeout: const Duration(seconds: 120),
-          followRedirects: true,
-          validateStatus: (_) => true,
-          responseType: ResponseType.bytes,
-        ),
-      );
-      dio.httpClientAdapter = IOHttpClientAdapter(
-        createHttpClient: () {
-          final client = HttpClient()
-            ..badCertificateCallback = (cert, host, port) =>
-                BrowserEngine.allowSelfSigned;
-          return client;
-        },
-      );
-      final headers = <String, String>{
-        'User-Agent': userAgentNotifier.value,
-        if (cookie.isNotEmpty) 'Cookie': cookie,
-      };
-      await dio.download(
-        url,
-        partFile.path,
-        options: Options(headers: headers),
-        onReceiveProgress: (received, total) {
-          final list = List<BrowserDownload>.of(downloads.value);
-          final idx = list.indexWhere((d) => d.id == id);
-          if (idx < 0) return;
-          list[idx] = list[idx].copyWith(
-            progress: total > 0 ? received / total : 0,
+    final cookie = await WebBridge.cookies(url);
+    final client = HttpClient()
+      ..badCertificateCallback = (cert, host, port) =>
+          BrowserEngine.allowSelfSigned;
+    try {
+      final request = await client.openUrl('GET', Uri.parse(url));
+      _activeDownloadRequests[id] = request;
+      request.headers.set('User-Agent', userAgentNotifier.value);
+      if (cookie.isNotEmpty) request.headers.set('Cookie', cookie);
+      if (start > 0) {
+        request.headers.set('Range', 'bytes=$start-');
+      }
+      final response = await request.close();
+      if (response.statusCode != 200 && response.statusCode != 206) {
+        throw Exception('HTTP ${response.statusCode}');
+      }
+      var resumeStart = start;
+      if (response.statusCode == 200 && resumeStart > 0) {
+        // 服务端不支持 Range：从头重下，不能把全量内容拼到残缺文件后面。
+        await partFile.writeAsBytes([], flush: true);
+        resumeStart = 0;
+      }
+      final total = response.contentLength >= 0
+          ? resumeStart + response.contentLength
+          : 0;
+      final raf = await partFile.open(mode: FileMode.append);
+      var received = resumeStart;
+      await for (final chunk in response) {
+        if (_deletedDownloads.contains(id)) {
+          await raf.close();
+          return;
+        }
+        if (_pausedDownloads.contains(id)) {
+          await raf.close();
+          _activeDownloadRequests.remove(id);
+          _updateDownload(id, status: BrowserDownloadStatus.paused);
+          return;
+        }
+        await raf.writeFrom(chunk);
+        received += chunk.length;
+        if (total > 0) {
+          _updateDownload(
+            id,
+            progress: received / total,
             receivedBytes: received,
             totalBytes: total,
           );
-          downloads.value = list;
-        },
-      );
+        }
+      }
+      await raf.close();
+      if (_deletedDownloads.contains(id)) return;
+      if (_pausedDownloads.contains(id)) {
+        _updateDownload(id, status: BrowserDownloadStatus.paused);
+        return;
+      }
       if (finalFile.existsSync()) finalFile.deleteSync();
       await partFile.rename(finalFile.path);
-      final list = List<BrowserDownload>.of(downloads.value);
-      final idx = list.indexWhere((d) => d.id == id);
-      if (idx >= 0) {
-        list[idx] = list[idx].copyWith(
-          status: BrowserDownloadStatus.completed,
-          progress: 1,
-          localPath: finalFile.path,
-        );
-      }
-      downloads.value = list;
+      _updateDownload(
+        id,
+        status: BrowserDownloadStatus.completed,
+        progress: 1,
+        receivedBytes: received,
+        totalBytes: received,
+        localPath: finalFile.path,
+      );
     } catch (e) {
-      final list = List<BrowserDownload>.of(downloads.value);
-      final idx = list.indexWhere((d) => d.id == _downloadSeq);
-      if (idx >= 0) {
-        list[idx] = list[idx].copyWith(
-          status: BrowserDownloadStatus.failed,
-          error: '$e',
-        );
+      if (_deletedDownloads.contains(id)) return;
+      if (_pausedDownloads.contains(id)) {
+        _updateDownload(id, status: BrowserDownloadStatus.paused);
+      } else {
+        _updateDownload(id,
+            status: BrowserDownloadStatus.failed, error: '$e');
       }
-      downloads.value = list;
+    } finally {
+      _activeDownloadRequests.remove(id);
+      client.close(force: true);
     }
+  }
+
+  void _updateDownload(
+    int id, {
+    BrowserDownloadStatus? status,
+    double? progress,
+    int? receivedBytes,
+    int? totalBytes,
+    String? localPath,
+    String? error,
+  }) {
+    final list = List<BrowserDownload>.of(downloads.value);
+    final idx = list.indexWhere((d) => d.id == id);
+    if (idx < 0) return;
+    list[idx] = list[idx].copyWith(
+      status: status,
+      progress: progress,
+      receivedBytes: receivedBytes,
+      totalBytes: totalBytes,
+      localPath: localPath,
+      error: error,
+    );
+    downloads.value = list;
+  }
+
+  /// 暂停下载。正在下载的会立即中断并保留 .part 临时文件。
+  void pauseDownload(int id) {
+    if (!downloads.value.any((d) => d.id == id)) return;
+    _pausedDownloads.add(id);
+    final req = _activeDownloadRequests[id];
+    if (req == null) {
+      _updateDownload(id, status: BrowserDownloadStatus.paused);
+      return;
+    }
+    try {
+      req.abort();
+    } catch (_) {}
+  }
+
+  /// 恢复暂停的下载（从上次断点继续）。
+  Future<void> resumeDownload(int id) async {
+    final list = downloads.value;
+    BrowserDownload? d;
+    for (final x in list) {
+      if (x.id == id) {
+        d = x;
+        break;
+      }
+    }
+    if (d == null || d.status != BrowserDownloadStatus.paused) return;
+    await startDownload(d.url, suggestedName: d.name, resumeId: id);
+  }
+
+  /// 删除下载任务，同时删除已下载文件和 .part 临时文件。
+  void deleteDownload(int id, {bool deleteFile = true}) {
+    BrowserDownload? d;
+    for (final x in downloads.value) {
+      if (x.id == id) {
+        d = x;
+        break;
+      }
+    }
+    if (d == null) return;
+    _deletedDownloads.add(id);
+    _pausedDownloads.remove(id);
+    final req = _activeDownloadRequests[id];
+    if (req != null) {
+      try {
+        req.abort();
+      } catch (_) {}
+    }
+    try {
+      final dir = getApplicationDocumentsDirectory();
+      // 同步删除前先取路径，文件删除放异步完成。
+      final path = d.localPath;
+      final safe = d.name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+      _removeFromDownloads(id);
+      unawaited(() async {
+        final folder = Directory('${(await dir).path}/browser_downloads');
+        if (deleteFile) {
+          if (path != null && File(path).existsSync()) {
+            File(path).deleteSync();
+          }
+          final part = File('${folder.path}/$safe.part');
+          final done = File('${folder.path}/$safe');
+          if (part.existsSync()) part.deleteSync();
+          if (done.existsSync()) done.deleteSync();
+        }
+      }());
+    } catch (_) {}
+  }
+
+  void _removeFromDownloads(int id) {
+    downloads.value =
+        downloads.value.where((d) => d.id != id).toList(growable: false);
+  }
+
+  /// 批量删除任务（默认连文件一起删）。
+  void deleteDownloads(Iterable<int> ids) {
+    for (final id in List<int>.of(ids)) {
+      deleteDownload(id);
+    }
+  }
+
+  /// 下载管理目录（APP 私有目录下的 browser_downloads）。
+  Future<String> downloadsDirectory() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final folder = Directory('${dir.path}/browser_downloads');
+    if (!folder.existsSync()) folder.createSync(recursive: true);
+    return folder.path;
   }
 
   String _fileNameFromUrl(String url) {
