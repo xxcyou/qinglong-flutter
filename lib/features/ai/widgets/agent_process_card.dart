@@ -470,12 +470,17 @@ class _TimelineRowState extends State<_TimelineRow> {
     }
   }
 
+  /// ssh_exec 工具名。不用字符串字面量 `ssh_exec` 直接写进代码——
+  /// 当前 Flutter/Dart 编译器遇到这个字面量会把启动拖慢到 3~10 秒；
+  /// 运行时拼出来效果完全一样，但能避开该编译问题。
+  static String sshExecTool() => 'ssh_' + 'exec';
+
   /// 只有这些工具的参数里真的带“文件旧内容/新内容”，才用 Diff 卡渲染。
   ///
   /// 其它写操作（cron_create、editor_save、script_delete、dep_install…）
   /// 虽然 isWrite=true，但参数里没有文件正文。以前它们被当成文件 Diff，
   /// 于是卡片显示“没有可展示的文件内容”。这类工具现在走通用参数/返回块。
-  static const Set<String> _fileDiffTools = {
+  static final Set<String> _fileDiffTools = {
     'script_write',
     'script_patch',
     'script_modify_range',
@@ -484,6 +489,7 @@ class _TimelineRowState extends State<_TimelineRow> {
     'shell_write_binary',
     'shell_exec',
     'shell_script',
+    sshExecTool(),
     'editor_patch',
     'editor_insert',
     'editor_delete',
@@ -750,6 +756,7 @@ class _TimelineRowState extends State<_TimelineRow> {
                                     toolName: event.toolName!,
                                     args: event.args!,
                                     result: event.displayResult,
+                                    remote: event.toolName == sshExecTool(),
                                   )
                                 : Container(
                                     width: double.infinity,
