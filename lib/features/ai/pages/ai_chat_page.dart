@@ -275,9 +275,8 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   void _resetProgressiveMessages(int total) {
     // 只要进了会话，首帧后立刻跳到最新，用户不用从顶部一路滑下去。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.hasClients) return;
-      _pinned = true;
-      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+      if (!mounted) return;
+      _scrollToBottom();
     });
   }
 
@@ -1091,11 +1090,21 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
 
   void _scrollToBottom() {
     if (!_scrollController.hasClients) return;
-    _scrollController.animateTo(
-      _scrollController.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 200),
-      curve: Curves.easeOut,
-    );
+    _pinned = true;
+    // ListView.builder 的最大滚动范围是“边滚边算”的：第一次拿到的
+    // maxScrollExtent 经常偏小，直接滚过去会停在消息中间。
+    // 这里先跳到当前最大，再连续几帧追着增大的 max 继续跳，直到真正贴底。
+    _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+    for (var i = 0; i < 10; i++) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_scrollController.hasClients || !_pinned) return;
+        final max = _scrollController.position.maxScrollExtent;
+        final px = _scrollController.position.pixels;
+        if ((max - px).abs() > 1) {
+          _scrollController.jumpTo(max);
+        }
+      });
+    }
   }
 
   void _showSessionManager() => AiSessionList.showSheet(context);
