@@ -869,7 +869,10 @@ class BrowserEngine {
     }
   }
 
-  BrowserEngine._();
+  BrowserEngine._() {
+    unawaited(_restoreDownloads());
+    downloads.addListener(_persistDownloads);
+  }
 
   static final BrowserEngine instance = BrowserEngine._();
 
@@ -2848,6 +2851,60 @@ return list.map(function(e){
     final folder = Directory('${dir.path}/browser_downloads');
     if (!folder.existsSync()) folder.createSync(recursive: true);
     return folder.path;
+  }
+
+  static const _downloadsKey = 'browser_downloads_v1';
+
+  Future<void> _restoreDownloads() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_downloadsKey);
+      if (raw == null || raw.isEmpty) return;
+      final data = jsonDecode(raw) as List;
+      final list = data
+          .map((e) => BrowserDownload.fromJson(
+              Map<String, dynamic>.from(e as Map)))
+          .toList();
+      if (list.isEmpty) return;
+      final dir = await getApplicationDocumentsDirectory();
+      final folder = '${dir.path}/browser_downloads';
+      var maxId = 0;
+      for (final d in list) {
+        if (d.id > maxId) maxId = d.id;
+        final safe = d.name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+        final part = File('$folder/$safe.part');
+        final done = File('$folder/$safe');
+        if (d.status == BrowserDownloadStatus.downloading) {
+          d.status = BrowserDownloadStatus.paused;
+        }
+        if (d.status == BrowserDownloadStatus.completed &&
+            !done.existsSync() &&
+            part.existsSync()) {
+          d.status = BrowserDownloadStatus.paused;
+        }
+        if ((d.status == BrowserDownloadStatus.paused ||
+                d.status == BrowserDownloadStatus.failed) &&
+            part.existsSync()) {
+          d.status = BrowserDownloadStatus.paused;
+          d.receivedBytes = part.lengthSync();
+          d.progress = d.totalBytes > 0
+              ? d.receivedBytes / d.totalBytes
+              : 0;
+        }
+      }
+      _downloadSeq = maxId;
+      downloads.value = list;
+    } catch (_) {}
+  }
+
+  Future<void> _persistDownloads() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _downloadsKey,
+        jsonEncode(downloads.value.map((d) => d.toJson()).toList()),
+      );
+    } catch (_) {}
   }
 
   String _fileNameFromUrl(String url) {

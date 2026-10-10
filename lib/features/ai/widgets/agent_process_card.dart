@@ -73,8 +73,16 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
   // 有文件写操作时自动展开执行过程，让用户第一时间看到 Diff；
   // 否则保持调用方给的初始状态（运行时/图片通常也是展开）。
   late bool _expanded = widget.initiallyExpanded ||
+      // 条件执行/流程函数（condition_exec）即使整体标记可写，也只是一串小步骤，
+      // 没有独立的 Diff/卡片，默认不自动展开；真正有文件写/图片等卡片的才展开。
       widget.events.any(
-        (e) => e.kind == AgentEventKind.toolEnd && e.isWrite,
+        (e) =>
+            e.kind == AgentEventKind.toolEnd &&
+            e.isWrite &&
+            e.toolName != 'condition_exec',
+      ) ||
+      widget.events.any(
+        (e) => e.kind == AgentEventKind.toolImage && e.imageDataUri != null,
       ) ||
       widget.highlightEventIndex != null;
 

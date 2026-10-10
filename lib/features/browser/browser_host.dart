@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -1547,7 +1548,11 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     final dir = await _engine.downloadsDirectory();
     if (!mounted) return;
     final safe = d.name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
-    final file = '$dir/$safe';
+    final done = File('$dir/$safe');
+    final part = File('$dir/$safe.part');
+    final file = !done.existsSync() && part.existsSync()
+        ? part.path
+        : done.path;
     final container = ProviderScope.containerOf(context, listen: false);
     final notifier = container.read(shellFilesProvider.notifier);
     await notifier.switchScope(FileScope.app);
