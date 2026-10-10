@@ -22,6 +22,7 @@ import 'browser_window.dart';
 import 'models/browser_profile.dart';
 import 'intercept_js.dart';
 import 'models/intercept_script.dart';
+import 'models/browser_download.dart';
 import 'models/browser_models.dart';
 import 'web_bridge.dart';
 import '../../shared/float_stack.dart';
@@ -115,6 +116,10 @@ class BrowserEngine {
   final ValueNotifier<List<BrowserHistoryEntry>> history = ValueNotifier([]);
 
   static const _maxHistory = 800;
+
+  /// 用户点击下载链接产生的下载任务列表（新任务在最前）。
+  final ValueNotifier<List<BrowserDownload>> downloads = ValueNotifier(const []);
+  int _downloadSeq = 0;
 
   bool _profilesLoaded = false;
 
@@ -1012,6 +1017,11 @@ class BrowserEngine {
                 scheme == 'javascript' ||
                 scheme == 'file' ||
                 scheme == 'blob') {
+              // 下载链接交给下载管理器，不让 WebView 把二进制当网页打开。
+              if (_looksLikeDownload(request.url)) {
+                unawaited(startDownload(request.url));
+                return NavigationDecision.prevent;
+              }
               return NavigationDecision.navigate;
             }
             return interceptExternalJump(
@@ -2570,6 +2580,121 @@ return list.map(function(e){
   return '[' + e.type + '] ' + e.size + 'B ' + e.ms + 'ms ' + e.url;
 }).join(String.fromCharCode(10)) || '（没有匹配的资源）';
 ''');
+
+  static const Set<String> _downloadExtensions = {
+    'apk', 'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz',
+    'exe', 'msi', 'dmg', 'iso', 'deb', 'rpm', 'jar', 'bin',
+  };
+
+  bool _looksLikeDownload(String url) {
+    final lower = url.toLowerCase();
+    if (lower.contains('download') ||
+        lower.contains('attachment') ||
+        lower.contains('response-content-disposition') ||
+        lower.contains('x-oss-process=') && lower.contains('attname')) {
+      return true;
+    }
+    try {
+      final path = Uri.parse(url).path;
+      final dot = path.lastIndexOf('.');
+      if (dot < 0 || dot == path.length - 1) return false;
+      return _downloadExtensions.contains(path.substring(dot + 1).toLowerCase());
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 用户点击下载链接时调用：把文件下到 APP 私有目录，并在下载管理列表里
+  /// 显示进度。带当前域 Cookie/UA，登录后才能下的附件也能拿到。
+  Future<void> startDownload(String url, {String? suggestedName}) async {
+    try {
+      var name = suggestedName?.trim().isNotEmpty == true
+          ? suggestedName!.trim()
+          : _fileNameFromUrl(url);
+      if (name.isEmpty || name == 'download') name = 'download_${_downloadSeq + 1}';
+      name = name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+
+      final id = ++_downloadSeq;
+      final entry = BrowserDownload(id: id, url: url, name: name);
+      downloads.value = [entry, ...downloads.value];
+
+      final dir = await getApplicationDocumentsDirectory();
+      final folder = Directory('${dir.path}/browser_downloads');
+      if (!folder.existsSync()) folder.createSync(recursive: true);
+      final finalFile = File('${folder.path}/$name');
+      final partFile = File('${finalFile.path}.part');
+
+      final cookie = await WebBridge.cookies(url);
+      final dio = Dio(
+        BaseOptions(
+          connectTimeout: const Duration(seconds: 20),
+          receiveTimeout: const Duration(seconds: 120),
+          followRedirects: true,
+          validateStatus: (_) => true,
+          responseType: ResponseType.bytes,
+        ),
+      );
+      dio.httpClientAdapter = IOHttpClientAdapter(
+        createHttpClient: () {
+          final client = HttpClient()
+            ..badCertificateCallback = (cert, host, port) =>
+                BrowserEngine.allowSelfSigned;
+          return client;
+        },
+      );
+      final headers = <String, String>{
+        'User-Agent': userAgentNotifier.value,
+        if (cookie.isNotEmpty) 'Cookie': cookie,
+      };
+      await dio.download(
+        url,
+        partFile.path,
+        options: Options(headers: headers),
+        onReceiveProgress: (received, total) {
+          final list = List<BrowserDownload>.of(downloads.value);
+          final idx = list.indexWhere((d) => d.id == id);
+          if (idx < 0) return;
+          list[idx] = list[idx].copyWith(
+            progress: total > 0 ? received / total : 0,
+            receivedBytes: received,
+            totalBytes: total,
+          );
+          downloads.value = list;
+        },
+      );
+      if (finalFile.existsSync()) finalFile.deleteSync();
+      await partFile.rename(finalFile.path);
+      final list = List<BrowserDownload>.of(downloads.value);
+      final idx = list.indexWhere((d) => d.id == id);
+      if (idx >= 0) {
+        list[idx] = list[idx].copyWith(
+          status: BrowserDownloadStatus.completed,
+          progress: 1,
+          localPath: finalFile.path,
+        );
+      }
+      downloads.value = list;
+    } catch (e) {
+      final list = List<BrowserDownload>.of(downloads.value);
+      final idx = list.indexWhere((d) => d.id == _downloadSeq);
+      if (idx >= 0) {
+        list[idx] = list[idx].copyWith(
+          status: BrowserDownloadStatus.failed,
+          error: '$e',
+        );
+      }
+      downloads.value = list;
+    }
+  }
+
+  String _fileNameFromUrl(String url) {
+    try {
+      final uri = Uri.parse(url);
+      final seg = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+      if (seg.isNotEmpty) return seg.last;
+    } catch (_) {}
+    return 'download';
+  }
 
   /// 把页面里的一个资源下载到 APP 私有目录，返回本地路径。
   ///

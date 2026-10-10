@@ -14,6 +14,7 @@ import '../../shared/editor_bus.dart';
 import '../../shared/float_stack.dart';
 import '../../shared/highlighting_code_controller.dart';
 import 'browser_engine.dart';
+import 'models/browser_download.dart';
 import 'browser_window.dart';
 import 'web_bridge.dart';
 import 'intercept_js.dart';
@@ -613,6 +614,7 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                       onOpenUrl: _openUrlFromPanel,
                     ),
                     7 => _ProfilePanel(engine: _engine),
+                    8 => _downloadList(),
                     _ => _scriptList(),
                   },
                 ),
@@ -833,6 +835,17 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                         _tabChip('历史', 6, Icons.history_outlined),
                         const SizedBox(width: 5),
                         _tabChip('快照', 7, Icons.account_tree_outlined),
+                        const SizedBox(width: 5),
+                        ValueListenableBuilder<List<BrowserDownload>>(
+                          valueListenable: _engine.downloads,
+                          builder: (context, list, _) => _tabChip(
+                            list.isEmpty
+                                ? '下载'
+                                : '下载 ${list.length}',
+                            8,
+                            Icons.download_outlined,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -1134,6 +1147,167 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
       backgroundColor: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
       side: BorderSide.none,
     );
+  }
+
+  Widget _downloadList() {
+    return ValueListenableBuilder<List<BrowserDownload>>(
+      valueListenable: _engine.downloads,
+      builder: (context, list, _) {
+        final scheme = Theme.of(context).colorScheme;
+        if (list.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.download_outlined,
+                    size: 42, color: scheme.onSurfaceVariant),
+                const SizedBox(height: 8),
+                Text(
+                  '下载列表是空的',
+                  style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '在网页里点下载链接会自动出现在这里',
+                  style:
+                      TextStyle(color: scheme.onSurfaceVariant, fontSize: 11.5),
+                ),
+              ],
+            ),
+          );
+        }
+        return ListView.builder(
+          padding: const EdgeInsets.all(10),
+          itemCount: list.length,
+          itemBuilder: (context, index) {
+            final d = list[index];
+            final isDone = d.status == BrowserDownloadStatus.completed;
+            final isFailed = d.status == BrowserDownloadStatus.failed;
+            final accent = isFailed
+                ? scheme.error
+                : isDone
+                    ? Colors.green.shade600
+                    : scheme.primary;
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              color: scheme.surfaceContainerHigh.withValues(alpha: 0.7),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+                child: Row(
+                  children: [
+                    Icon(
+                      isFailed
+                          ? Icons.error_outline
+                          : isDone
+                              ? Icons.check_circle_outline
+                              : Icons.downloading,
+                      color: accent,
+                      size: 28,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            d.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 13.5, fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            d.url,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 11, color: scheme.onSurfaceVariant),
+                          ),
+                          const SizedBox(height: 6),
+                          if (isFailed)
+                            Text(
+                              '下载失败：${d.error ?? '未知错误'}',
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 11.5, color: scheme.error),
+                            )
+                          else if (isDone)
+                            Text(
+                              d.localPath ?? '',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 11, color: scheme.onSurfaceVariant),
+                            )
+                          else
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(4),
+                              child: LinearProgressIndicator(
+                                value: d.progress > 0 ? d.progress : null,
+                                minHeight: 5,
+                                backgroundColor:
+                                    scheme.surfaceContainerHighest,
+                              ),
+                            ),
+                          if (!isDone && !isFailed && d.totalBytes > 0)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                '${(d.progress * 100).toStringAsFixed(0)}% '
+                                '(${_fmtBytes(d.receivedBytes)} / '
+                                '${_fmtBytes(d.totalBytes)})',
+                                style: TextStyle(
+                                    fontSize: 10.5,
+                                    color: scheme.onSurfaceVariant),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    if (isDone)
+                      IconButton(
+                        tooltip: '复制路径',
+                        icon: Icon(Icons.copy_outlined,
+                            size: 18, color: scheme.onSurfaceVariant),
+                        onPressed: () async {
+                          final path = d.localPath ?? '';
+                          await Clipboard.setData(ClipboardData(text: path));
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('已复制下载文件路径')),
+                            );
+                          }
+                        },
+                      )
+                    else
+                      IconButton(
+                        tooltip: '重新下载',
+                        icon: Icon(Icons.refresh_rounded,
+                            size: 18, color: scheme.onSurfaceVariant),
+                        onPressed: isFailed
+                            ? () => unawaited(
+                                _engine.startDownload(d.url, suggestedName: d.name))
+                            : null,
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  static String _fmtBytes(int v) {
+    if (v < 1024) return '$v B';
+    if (v < 1024 * 1024) return '${(v / 1024).toStringAsFixed(1)} KB';
+    if (v < 1024 * 1024 * 1024) {
+      return '${(v / 1024 / 1024).toStringAsFixed(1)} MB';
+    }
+    return '${(v / 1024 / 1024 / 1024).toStringAsFixed(2)} GB';
   }
 
   Widget _captureList() {
