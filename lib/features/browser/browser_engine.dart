@@ -2653,9 +2653,7 @@ return list.map(function(e){
 
   Future<void> _downloadWorker(int id, String url, String name) async {
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final folder = Directory('${dir.path}/browser_downloads');
-      if (!folder.existsSync()) folder.createSync(recursive: true);
+      final folder = await _downloadsFolder();
       final finalFile = File('${folder.path}/$name');
       final partFile = File('${finalFile.path}.part');
       // 一进任务就先把 .part 占位文件建出来：暂停/中断后用户在文件管理里
@@ -2850,20 +2848,53 @@ return list.map(function(e){
   }
 
   /// 下载管理目录（APP 私有目录下的 browser_downloads）。
-  Future<String> downloadsDirectory() async {
-    final dir = await getApplicationDocumentsDirectory();
-    final folder = Directory('${dir.path}/browser_downloads');
+  Future<String> downloadsDirectory() async =>
+      (await _downloadsFolder()).path;
+
+  /// 找到“文件管理器里能看到”的下载目录。
+  ///
+  /// 不用 path_provider 的 getApplicationDocumentsDirectory 直接拼：在部分
+  /// MIUI/多用户环境它返回的路径和原生 context.filesDir 不一致，导致文件
+  /// 真的写进去了，但文件管理里看不到，也续传不了。这里用 ProotBridge 的
+  /// APP 根目录（和文件管理器同一套原生目录）来拼，并把旧的 path_provider
+  /// 目录里的半成品迁移过来。
+  Future<Directory> _downloadsFolder() async {
+    Directory root;
+    try {
+      final bridge = ProotBridge();
+      final listing = await bridge.listAppFiles(path: '');
+      if (listing.roots.isNotEmpty) {
+        root = Directory(listing.roots.first);
+      } else {
+        root = Directory((await getApplicationDocumentsDirectory()).path);
+      }
+    } catch (_) {
+      root = Directory((await getApplicationDocumentsDirectory()).path);
+    }
+    final folder = Directory('${root.path}/browser_downloads');
     if (!folder.existsSync()) folder.createSync(recursive: true);
-    return folder.path;
+    // 迁移旧路径（path_provider 拼出来的 browser_downloads）里的文件。
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      final old = Directory('${docs.path}/browser_downloads');
+      if (old.existsSync() && old.path != folder.path) {
+        for (final f in old.listSync()) {
+          try {
+            final dest =
+                File('${folder.path}/${Uri.file(f.path).pathSegments.last}');
+            if (!dest.existsSync()) f.rename(dest.path);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    return folder;
   }
 
   static const _downloadsKey = 'browser_downloads_v1';
 
   Future<void> _ensureDownloadsDir() async {
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final folder = Directory('${dir.path}/browser_downloads');
-      if (!folder.existsSync()) folder.createSync(recursive: true);
+      await _downloadsFolder();
     } catch (_) {}
   }
 
@@ -2878,8 +2909,7 @@ return list.map(function(e){
               Map<String, dynamic>.from(e as Map)))
           .toList();
       if (list.isEmpty) return;
-      final dir = await getApplicationDocumentsDirectory();
-      final folder = '${dir.path}/browser_downloads';
+      final folder = (await _downloadsFolder()).path;
       var maxId = 0;
       for (final d in list) {
         if (d.id > maxId) maxId = d.id;
