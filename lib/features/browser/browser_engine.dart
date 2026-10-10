@@ -2657,7 +2657,10 @@ return list.map(function(e){
       if (!folder.existsSync()) folder.createSync(recursive: true);
       final finalFile = File('${folder.path}/$name');
       final partFile = File('${finalFile.path}.part');
-      final start = partFile.existsSync() ? partFile.lengthSync() : 0;
+      // 一进任务就先把 .part 占位文件建出来：暂停/中断后用户在文件管理里
+      // 一定能看到下载中的半成品，而不是“连文件都没有”。
+      if (!partFile.existsSync()) partFile.createSync(recursive: true);
+      final start = partFile.lengthSync();
 
       final cookie = await WebBridge.cookies(url);
       final client = HttpClient()
@@ -2882,10 +2885,12 @@ return list.map(function(e){
             part.existsSync()) {
           d.status = BrowserDownloadStatus.paused;
         }
-        if ((d.status == BrowserDownloadStatus.paused ||
-                d.status == BrowserDownloadStatus.failed) &&
-            part.existsSync()) {
+        if (d.status == BrowserDownloadStatus.paused ||
+            d.status == BrowserDownloadStatus.failed) {
           d.status = BrowserDownloadStatus.paused;
+          if (!part.existsSync()) {
+            part.createSync(recursive: true);
+          }
           d.receivedBytes = part.lengthSync();
           d.progress = d.totalBytes > 0
               ? d.receivedBytes / d.totalBytes
