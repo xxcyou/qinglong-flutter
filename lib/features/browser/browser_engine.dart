@@ -870,6 +870,7 @@ class BrowserEngine {
   }
 
   BrowserEngine._() {
+    unawaited(_ensureDownloadsDir());
     unawaited(_restoreDownloads());
     downloads.addListener(_persistDownloads);
   }
@@ -2857,6 +2858,14 @@ return list.map(function(e){
   }
 
   static const _downloadsKey = 'browser_downloads_v1';
+
+  Future<void> _ensureDownloadsDir() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final folder = Directory('${dir.path}/browser_downloads');
+      if (!folder.existsSync()) folder.createSync(recursive: true);
+    } catch (_) {}
+  }
 
   Future<void> _restoreDownloads() async {
     try {

@@ -557,19 +557,45 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
       state = state.copyWith(clearSearch: true, searching: false);
       return;
     }
-    if (state.scope == FileScope.app) {
-      state = state.copyWith(error: 'APP 目录暂不支持递归搜索');
-      return;
-    }
     state = state.copyWith(searching: true, clearError: true);
     try {
       final hits = state.scope == FileScope.ssh
           ? await _sshSearch(text)
-          : await _searchPython(text, matchContent: matchContent);
+          : state.scope == FileScope.app
+              ? await _appSearch(text)
+              : await _searchPython(text, matchContent: matchContent);
       state = state.copyWith(searchResults: hits, searching: false);
     } catch (e) {
       state = state.copyWith(searching: false, error: _message(e));
     }
+  }
+
+  /// APP 沙箱目录递归搜索：只搜文件名（原生没提供递归搜索，这里用
+  /// listAppFiles 自己逐层走，最多 12 层、返回前 200 条）。
+  Future<List<ShellFileEntry>> _appSearch(
+    String pattern, {
+    int limit = 200,
+  }) async {
+    final rx = RegExp(pattern);
+    final hits = <ShellFileEntry>[];
+    Future<void> walk(String dir, int depth) async {
+      if (depth > 12 || hits.length >= limit) return;
+      final listing = await _bridge.listAppFiles(path: dir);
+      for (final entry in listing.entries) {
+        if (hits.length >= limit) return;
+        if (rx.hasMatch(entry.name)) {
+          hits.add(entry);
+        }
+        if (entry.isDirectory && depth < 12) {
+          try {
+            await walk(entry.path, depth + 1);
+          } catch (_) {}
+        }
+      }
+    }
+
+    await walk(state.path, 0);
+    return hits;
   }
 
   /// SSH 远程目录递归搜索：只搜文件名（SFTP 不提供内容搜索）。
