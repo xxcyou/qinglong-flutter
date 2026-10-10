@@ -172,11 +172,11 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
       languageName: languageNameForPath('hook.js'),
     );
     _engine.externalJumpPrompt = _promptExternalJump;
-    // 预创建 WebView：为避免和启动首帧抢主线程（首帧卡 5~15 秒会触发 ANR），
-    // 延迟到首帧 3 秒后再挂载内核；用户/AI 在此之前打开网址时 ensure() 会自动
-    // 即时创建，不受影响。
+    // 预创建 WebView：为避免抢启动首帧和 Logo 动画（WebView 内核初始化会
+    // 连续占用主线程好几秒，正好把 Logo 卡住），延迟到首帧 12 秒后再挂载。
+    // 用户/AI 在此之前打开网址时 ensure() 会自动即时创建，不受影响。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Future.delayed(const Duration(seconds: 3), () {
+      Future.delayed(const Duration(seconds: 12), () {
         if (mounted) unawaited(_engine.ensure());
       });
     });
