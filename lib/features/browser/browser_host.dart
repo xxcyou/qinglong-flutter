@@ -1551,9 +1551,17 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     if (!mounted) return;
     // 不能直接用 path_provider 的绝对路径：它和原生 appRoots 可能不是同一套
     // 规范化路径，会被“只允许访问 APP 自身目录”拦下来。这里从文件管理器
-    // 的 APP 根目录出发拼 browser_downloads，保证一定在允许范围内。
-    final appRoot = container.read(shellFilesProvider).path;
-    final dir = appRoot.isEmpty ? '/browser_downloads' : '$appRoot/browser_downloads';
+    // 的 APP 根目录（roots 第一项 = 内部文件）出发拼 browser_downloads，
+    // 保证一定在允许范围内，也不会把当前已打开的 browser_downloads 再拼一层。
+    final shellState = container.read(shellFilesProvider);
+    final appRoot = shellState.roots.isNotEmpty
+        ? shellState.roots.first
+        : shellState.path;
+    final dir = appRoot.endsWith('browser_downloads')
+        ? appRoot
+        : appRoot.isEmpty
+            ? '/browser_downloads'
+            : '$appRoot/browser_downloads';
     final safe = d.name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
     final done = File('$dir/$safe');
     final part = File('$dir/$safe.part');
