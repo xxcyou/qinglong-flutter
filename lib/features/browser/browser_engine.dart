@@ -941,6 +941,11 @@ class BrowserEngine {
   /// 主框架导航失败后是否已自动重试过一次。
   bool _retriedFailedMainNav = false;
 
+  /// 是否已经至少成功加载过一个页面（包括启动预热页）。
+  /// 外部链接可能在刚启动、WebView 平台视图还没挂好时就进来；
+  /// 此时不能直接 loadRequest，必须先等 RepaintBoundary 有尺寸。
+  bool _everLoadedPage = false;
+
   static const _maxRequests = 300;
   static const _maxConsole = 200;
 
@@ -1036,6 +1041,7 @@ class BrowserEngine {
             }
           },
           onPageFinished: (url) async {
+            _everLoadedPage = true;
             loading.value = false;
             currentUrl.value = url;
             title.value = await _controller?.getTitle() ?? '';
@@ -1605,16 +1611,12 @@ class BrowserEngine {
   }
 
   Future<void> open(String url) async {
-    final firstBoot = _controller == null;
     final c = await ensure();
-    // 第一次 create 的 WebView 要等 Flutter 平台视图真正挂载后 loadRequest
-    // 才会生效；否则第一次打开会黑屏，第二次才正常。这里不是摸黑等固定时长，
-    // 而是轮询到 RepaintBoundary 已经出现在树上且有尺寸。
-    if (firstBoot) {
-      // 只等一两帧，让 BrowserView 的 controllerRevision 监听把 WebViewWidget
-      // 挂出来；不再轮询/等待几秒，保持“秒开”。
-      await WidgetsBinding.instance.endOfFrame;
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+    // 第一次真正加载前，必须等 Flutter 平台视图挂出来且有尺寸，否则
+    // loadRequest 会发给“还没准备好的 WebView”，表现就是外部链接/首次打开
+    // 转圈、白屏。启动预热页加载完成后 _everLoadedPage 为 true，这里直接跳过。
+    if (!_everLoadedPage) {
+      await _waitForWebViewAttached();
     }
     var target = url.trim();
     // 本地文件优先判断：AI 写了个 html 到工作目录，然后想让用户看效果。
@@ -1650,6 +1652,15 @@ class BrowserEngine {
         path.endsWith('.svg') ||
         path.endsWith('.pdf');
     return isPage && !t.contains(' ');
+  }
+
+  Future<void> _waitForWebViewAttached() async {
+    for (var i = 0; i < 40; i++) {
+      final ctx = webViewBoundaryKey.currentContext;
+      final box = ctx?.findRenderObject();
+      if (box is RenderBox && box.hasSize) return;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
   }
 
   /// 打开本地文件。返回真正加载的 file:// 地址。
