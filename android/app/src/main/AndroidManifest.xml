@@ -1,5 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- 访问手机内部存储：普通存储权限可覆盖的范围（Android 12L 及以下外部存储
+         需要 READ/WRITE；更高版本用媒体权限）。公共根目录在部分系统上仍受
+         分区存储限制，能读到多少由系统授权决定。 -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
     <application
         android:label="青龙AI"
         android:name="${applicationName}"

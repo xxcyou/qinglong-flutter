@@ -1539,6 +1539,8 @@ class ProotBridge(private val context: Context) {
         // 允许文件管理器从 files/cache 继续上溯到 APP 自己的数据根目录。
         ("数据根" to context.dataDir).takeIf { it != null }
             ?.let { it.first to it.second!! },
+        // 手机内部存储空间：普通文件权限/系统授权下能访问的公共存储根。
+        ("手机存储" to File("/storage/emulated/0")),
     )
 
     private fun handleListAppFiles(call: MethodCall, result: MethodChannel.Result) {
