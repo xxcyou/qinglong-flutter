@@ -953,6 +953,25 @@ class BrowserEngine {
   /// 建内核。重复调用无副作用。
   bool _scriptsLoaded = false;
   bool _swCaptureRegistered = false;
+  bool _warmUpStarted = false;
+
+  /// 启动预热：把 WebView 内核创建并挂载好，再加载一个空白的 about:blank，
+  /// 让平台视图真正完成初始化。之后 AI/用户打开真实网址时就是“二次打开”，
+  /// 不会出现第一次 loadRequest 发给还没准备好的 WebView 导致白屏/转圈。
+  Future<void> warmUp() async {
+    if (_warmUpStarted) return;
+    _warmUpStarted = true;
+    try {
+      final hadUrl = currentUrl.value.isNotEmpty;
+      final c = await ensure();
+      // 如果预热期间已经有人开始导航（AI 提前调用），就别用 about:blank 覆盖它。
+      if (!hadUrl && currentUrl.value.isEmpty) {
+        await c.loadRequest(Uri.parse('about:blank'));
+      }
+    } catch (e) {
+      Logger.e('browser', 'warmUp failed', e);
+    }
+  }
 
   Future<WebViewController> ensure() async {
     final existing = _controller;

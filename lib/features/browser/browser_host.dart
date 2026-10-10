@@ -176,7 +176,7 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     // 控制器已经 ready，不会出现“第一次 loadRequest 发给没准备好的 WebView”
     // 导致黑屏/转圈/地址空。这是最彻底的避免首开竞态的办法。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_engine.ensure());
+      unawaited(_engine.warmUp());
     });
     // WebView 第一次 created 后必须让 BrowserView 自己 setState 重建：
     // BrowserHost 外层重建不会穿透 OverlayEntry，只有这里的监听能保证
