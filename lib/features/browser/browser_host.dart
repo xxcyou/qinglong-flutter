@@ -172,11 +172,13 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
       languageName: languageNameForPath('hook.js'),
     );
     _engine.externalJumpPrompt = _promptExternalJump;
-    // 预创建 WebView：APP 启动就把内核挂载好，等 AI/用户真正打开网址时
-    // 控制器已经 ready，不会出现“第一次 loadRequest 发给没准备好的 WebView”
-    // 导致黑屏/转圈/地址空。这是最彻底的避免首开竞态的办法。
+    // 预创建 WebView：为避免和启动首帧抢主线程（首帧卡 5~15 秒会触发 ANR），
+    // 延迟到首帧 3 秒后再挂载内核；用户/AI 在此之前打开网址时 ensure() 会自动
+    // 即时创建，不受影响。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_engine.ensure());
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted) unawaited(_engine.ensure());
+      });
     });
     // WebView 第一次 created 后必须让 BrowserView 自己 setState 重建：
     // BrowserHost 外层重建不会穿透 OverlayEntry，只有这里的监听能保证

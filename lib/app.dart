@@ -42,7 +42,10 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
     ref.listenManual(currentPanelProvider, (previous, next) {
       configureDioForPanel(next);
     });
-    Future.microtask(() async {
+    // 首帧先画出来，再加载设置/主题/面板：这些加载里有 PRoot 路径解析、
+    // 主题包扫描等较重 IO，放到启动 Logo 展示完之后做，避免主线程卡住导致
+    // “黑屏半天 / 点击没反应 / ANR”。
+    Future.delayed(const Duration(milliseconds: 1200), () async {
       await ref.read(settingsProvider.notifier).load();
       await ref.read(themeProvider.notifier).load();
       ApiDebugLog.enabled = ref.read(settingsProvider).debugLogEnabled;
@@ -65,7 +68,9 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final themeState = ref.watch(themeProvider);
-    final splashReady = _minSplashDone && themeState.loaded;
+    // 启动 Logo 不依赖主题包扫描完成；默认主题先上，扫描完再无缝换肤，
+    // 避免主题包很大时用户对着黑屏/Logo 干等。
+    final splashReady = _minSplashDone;
     final showSplash = !_splashRemoved;
     final activeTheme = themeState.active;
     final router = ref.watch(routerProvider);

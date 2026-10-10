@@ -1586,6 +1586,11 @@ class _EffectWidgetState extends State<_EffectWidget>
         builder: (context, snap) {
           final host = snap.data ?? '';
           if (host.isNotEmpty) {
+            final imageWidth = MediaQuery.sizeOf(context).width *
+                MediaQuery.devicePixelRatioOf(context);
+            final cacheWidth = imageWidth <= 0
+                ? null
+                : imageWidth.ceil().clamp(1, 2048);
             return Image.file(
               File(host),
               fit: e.fit == 'fill'
@@ -1593,6 +1598,7 @@ class _EffectWidgetState extends State<_EffectWidget>
                   : e.fit == 'cover'
                       ? BoxFit.cover
                       : BoxFit.contain,
+              cacheWidth: cacheWidth,
               errorBuilder: (_, __, ___) => _iconOrText(e),
             );
           }
