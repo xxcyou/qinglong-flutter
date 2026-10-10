@@ -1556,7 +1556,6 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     final container = ProviderScope.containerOf(context, listen: false);
     final notifier = container.read(shellFilesProvider.notifier);
     await notifier.switchScope(FileScope.app);
-    await notifier.open(dir);
     if (!mounted) return;
     await showBrowserDialog<void>(
       context: context,
@@ -1569,6 +1568,7 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
             color: Theme.of(dialogContext).colorScheme.surface.withValues(alpha: 0.94),
             child: ShellFilesPage(
               asSheet: true,
+              initialDir: dir,
               initialSelectPath: file,
               onClose: () => pop(),
               closeIcon: Icons.close_rounded,

@@ -56,6 +56,7 @@ class ShellFilesPage extends ConsumerStatefulWidget {
     this.closeIcon,
     this.dragToAttachEnabled = false,
     this.initialSelectPath,
+    this.initialDir,
   });
 
   /// 以底部面板形式出现时自带拖动把手与关闭按钮，不画返回箭头。
@@ -66,6 +67,9 @@ class ShellFilesPage extends ConsumerStatefulWidget {
 
   /// 打开后自动滚动并常亮选中该路径（下载完成后跳转定位用）。
   final String? initialSelectPath;
+
+  /// 打开文件管理器时初始进入的目录；为空用当前 provider 目录。
+  final String? initialDir;
 
   /// 在 AI 半屏文件面板里使用时，点文本/代码文件弹出悬浮编辑器，
   /// 而不是全屏跳转。
@@ -146,7 +150,9 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
   void initState() {
     super.initState();
     Future.microtask(() async {
-      await ref.read(shellFilesProvider.notifier).open();
+      await ref
+          .read(shellFilesProvider.notifier)
+          .open(widget.initialDir ?? ref.read(shellFilesProvider).path);
       if (widget.initialSelectPath != null) {
         final notifier = ref.read(shellFilesProvider.notifier);
         notifier.clearSelection();
