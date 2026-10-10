@@ -2609,7 +2609,10 @@ return list.map(function(e){
 
   /// 新建/恢复一个下载任务。支持断点续传：暂停后保留 .part 文件，
   /// 恢复时从已下载字节继续（Range 请求）。
-  Future<void> startDownload(
+  ///
+  /// 返回的是任务 id，**立即返回**，不等待下载完成；下载在后台异步跑，
+  /// 进度通过 [downloads] 通知 UI/AI。
+  Future<int> startDownload(
     String url, {
     String? suggestedName,
     int? resumeId,
@@ -2640,89 +2643,100 @@ return list.map(function(e){
     _updateDownload(id,
         status: BrowserDownloadStatus.downloading, error: null);
 
-    final dir = await getApplicationDocumentsDirectory();
-    final folder = Directory('${dir.path}/browser_downloads');
-    if (!folder.existsSync()) folder.createSync(recursive: true);
-    final finalFile = File('${folder.path}/$name');
-    final partFile = File('${finalFile.path}.part');
-    final start = partFile.existsSync() ? partFile.lengthSync() : 0;
+    unawaited(_downloadWorker(id, url, name));
+    return id;
+  }
 
-    final cookie = await WebBridge.cookies(url);
-    final client = HttpClient()
-      ..badCertificateCallback = (cert, host, port) =>
-          BrowserEngine.allowSelfSigned;
+  Future<void> _downloadWorker(int id, String url, String name) async {
     try {
-      final request = await client.openUrl('GET', Uri.parse(url));
-      _activeDownloadRequests[id] = request;
-      request.headers.set('User-Agent', userAgentNotifier.value);
-      if (cookie.isNotEmpty) request.headers.set('Cookie', cookie);
-      if (start > 0) {
-        request.headers.set('Range', 'bytes=$start-');
-      }
-      final response = await request.close();
-      if (response.statusCode != 200 && response.statusCode != 206) {
-        throw Exception('HTTP ${response.statusCode}');
-      }
-      var resumeStart = start;
-      if (response.statusCode == 200 && resumeStart > 0) {
-        // 服务端不支持 Range：从头重下，不能把全量内容拼到残缺文件后面。
-        await partFile.writeAsBytes([], flush: true);
-        resumeStart = 0;
-      }
-      final total = response.contentLength >= 0
-          ? resumeStart + response.contentLength
-          : 0;
-      final raf = await partFile.open(mode: FileMode.append);
-      var received = resumeStart;
-      await for (final chunk in response) {
-        if (_deletedDownloads.contains(id)) {
-          await raf.close();
-          return;
+      final dir = await getApplicationDocumentsDirectory();
+      final folder = Directory('${dir.path}/browser_downloads');
+      if (!folder.existsSync()) folder.createSync(recursive: true);
+      final finalFile = File('${folder.path}/$name');
+      final partFile = File('${finalFile.path}.part');
+      final start = partFile.existsSync() ? partFile.lengthSync() : 0;
+
+      final cookie = await WebBridge.cookies(url);
+      final client = HttpClient()
+        ..badCertificateCallback = (cert, host, port) =>
+            BrowserEngine.allowSelfSigned;
+      try {
+        final request = await client.openUrl('GET', Uri.parse(url));
+        _activeDownloadRequests[id] = request;
+        request.headers.set('User-Agent', userAgentNotifier.value);
+        if (cookie.isNotEmpty) request.headers.set('Cookie', cookie);
+        if (start > 0) {
+          request.headers.set('Range', 'bytes=$start-');
         }
+        final response = await request.close();
+        if (response.statusCode != 200 && response.statusCode != 206) {
+          throw Exception('HTTP ${response.statusCode}');
+        }
+        var resumeStart = start;
+        if (response.statusCode == 200 && resumeStart > 0) {
+          // 服务端不支持 Range：从头重下，不能把全量内容拼到残缺文件后面。
+          await partFile.writeAsBytes([], flush: true);
+          resumeStart = 0;
+        }
+        final total = response.contentLength >= 0
+            ? resumeStart + response.contentLength
+            : 0;
+        final raf = await partFile.open(mode: FileMode.append);
+        var received = resumeStart;
+        await for (final chunk in response) {
+          if (_deletedDownloads.contains(id)) {
+            await raf.close();
+            return;
+          }
+          if (_pausedDownloads.contains(id)) {
+            await raf.close();
+            _activeDownloadRequests.remove(id);
+            _updateDownload(id, status: BrowserDownloadStatus.paused);
+            return;
+          }
+          await raf.writeFrom(chunk);
+          received += chunk.length;
+          if (total > 0) {
+            _updateDownload(
+              id,
+              progress: received / total,
+              receivedBytes: received,
+              totalBytes: total,
+            );
+          }
+        }
+        await raf.close();
+        if (_deletedDownloads.contains(id)) return;
         if (_pausedDownloads.contains(id)) {
-          await raf.close();
-          _activeDownloadRequests.remove(id);
           _updateDownload(id, status: BrowserDownloadStatus.paused);
           return;
         }
-        await raf.writeFrom(chunk);
-        received += chunk.length;
-        if (total > 0) {
-          _updateDownload(
-            id,
-            progress: received / total,
-            receivedBytes: received,
-            totalBytes: total,
-          );
+        if (finalFile.existsSync()) finalFile.deleteSync();
+        await partFile.rename(finalFile.path);
+        _updateDownload(
+          id,
+          status: BrowserDownloadStatus.completed,
+          progress: 1,
+          receivedBytes: received,
+          totalBytes: received,
+          localPath: finalFile.path,
+        );
+      } catch (e) {
+        if (_deletedDownloads.contains(id)) return;
+        if (_pausedDownloads.contains(id)) {
+          _updateDownload(id, status: BrowserDownloadStatus.paused);
+        } else {
+          _updateDownload(id,
+              status: BrowserDownloadStatus.failed, error: '$e');
         }
+      } finally {
+        _activeDownloadRequests.remove(id);
+        client.close(force: true);
       }
-      await raf.close();
-      if (_deletedDownloads.contains(id)) return;
-      if (_pausedDownloads.contains(id)) {
-        _updateDownload(id, status: BrowserDownloadStatus.paused);
-        return;
-      }
-      if (finalFile.existsSync()) finalFile.deleteSync();
-      await partFile.rename(finalFile.path);
-      _updateDownload(
-        id,
-        status: BrowserDownloadStatus.completed,
-        progress: 1,
-        receivedBytes: received,
-        totalBytes: received,
-        localPath: finalFile.path,
-      );
     } catch (e) {
-      if (_deletedDownloads.contains(id)) return;
-      if (_pausedDownloads.contains(id)) {
-        _updateDownload(id, status: BrowserDownloadStatus.paused);
-      } else {
-        _updateDownload(id,
-            status: BrowserDownloadStatus.failed, error: '$e');
-      }
-    } finally {
+      _updateDownload(id,
+          status: BrowserDownloadStatus.failed, error: '$e');
       _activeDownloadRequests.remove(id);
-      client.close(force: true);
     }
   }
 

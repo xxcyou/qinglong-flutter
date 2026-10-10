@@ -147,6 +147,11 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
     super.initState();
     Future.microtask(() async {
       await ref.read(shellFilesProvider.notifier).open();
+      if (widget.initialSelectPath != null) {
+        final notifier = ref.read(shellFilesProvider.notifier);
+        notifier.clearSelection();
+        notifier.toggleSelect(widget.initialSelectPath!);
+      }
       if (mounted) _maybeScrollToHighlight();
     });
   }

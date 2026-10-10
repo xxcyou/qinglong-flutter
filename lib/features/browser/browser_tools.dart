@@ -1267,11 +1267,11 @@ class BrowserTools {
               final url = args['url']?.toString() ?? '';
               if (url.isEmpty) return 'create 需要 url。';
               final name = args['name']?.toString();
-              await engine.startDownload(
+              final id = await engine.startDownload(
                 url,
                 suggestedName: name == null || name.isEmpty ? null : name,
               );
-              return '已创建下载任务：$url${name == null ? '' : '（$name）'}';
+              return '已异步创建下载任务 #$id：$url${name == null ? '' : '（$name）'}（后台下载中，可用 browser_download_manager list 查进度）';
 
             case 'delete':
               final id = (args['id'] as num?)?.toInt();

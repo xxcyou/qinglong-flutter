@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../core/theme/glass.dart';
@@ -15,6 +16,7 @@ import '../../shared/float_stack.dart';
 import '../../shared/highlighting_code_controller.dart';
 import 'browser_engine.dart';
 import '../terminal/pages/shell_files_page.dart';
+import '../terminal/providers/shell_files_provider.dart';
 import 'models/browser_download.dart';
 import 'browser_window.dart';
 import 'web_bridge.dart';
@@ -1276,41 +1278,38 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                               ? scheme.primaryContainer.withValues(alpha: 0.45)
                               : scheme.surfaceContainerHigh.withValues(alpha: 0.7),
                           child: Padding(
-                            padding: const EdgeInsets.fromLTRB(6, 8, 8, 8),
-                            child: Row(
+                            padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                if (_downloadSelectMode)
-                                  IconButton(
-                                    icon: Icon(
-                                      isSelected
-                                          ? Icons.check_circle_rounded
-                                          : Icons.radio_button_unchecked_rounded,
-                                      color: isSelected ? scheme.primary : null,
-                                    ),
-                                    onPressed: () =>
-                                        _toggleDownloadSelect(d.id),
-                                  )
-                                else
-                                  Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                                    child: Icon(
-                                      isFailed
-                                          ? Icons.error_outline
-                                          : isPaused
-                                              ? Icons.pause_circle_outline
-                                              : isDone
-                                                  ? Icons.check_circle_outline
-                                                  : Icons.downloading,
-                                      color: accent,
-                                      size: 26,
-                                    ),
-                                  ),
-                                const SizedBox(width: 4),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
+                                Row(
+                                  children: [
+                                    if (_downloadSelectMode)
+                                      IconButton(
+                                        icon: Icon(
+                                          isSelected
+                                              ? Icons.check_circle_rounded
+                                              : Icons.radio_button_unchecked_rounded,
+                                          color: isSelected ? scheme.primary : null,
+                                        ),
+                                        onPressed: () =>
+                                            _toggleDownloadSelect(d.id),
+                                      )
+                                    else
+                                      Icon(
+                                        isFailed
+                                            ? Icons.error_outline
+                                            : isPaused
+                                                ? Icons.pause_circle_outline
+                                                : isDone
+                                                    ? Icons.check_circle_outline
+                                                    : Icons.downloading,
+                                        color: accent,
+                                        size: 22,
+                                      ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
                                         d.name,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
@@ -1318,18 +1317,42 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                                             fontSize: 13.5,
                                             fontWeight: FontWeight.w600),
                                       ),
-                                      const SizedBox(height: 3),
-                                      Text(
-                                        d.url,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(
-                                            fontSize: 11,
-                                            color: scheme.onSurfaceVariant),
+                                    ),
+                                    if (!_downloadSelectMode) ...[
+                                      IconButton(
+                                        tooltip: '复制下载链接',
+                                        visualDensity: VisualDensity.compact,
+                                        icon: const Icon(Icons.link_rounded,
+                                            size: 18),
+                                        onPressed: () => _copyDownloadLink(d),
                                       ),
-                                      const SizedBox(height: 6),
-                                      if (isFailed)
-                                        Text(
+                                      IconButton(
+                                        tooltip: '删除任务和文件',
+                                        visualDensity: VisualDensity.compact,
+                                        icon: const Icon(
+                                            Icons.delete_outline_rounded,
+                                            size: 18),
+                                        onPressed: () => _deleteDownloadTask(d),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 2, right: 2),
+                                  child: Text(
+                                    d.url,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        fontSize: 11,
+                                        color: scheme.onSurfaceVariant),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 2, right: 2),
+                                  child: isFailed
+                                      ? Text(
                                           '下载失败：${d.error ?? '未知错误'}',
                                           maxLines: 2,
                                           overflow: TextOverflow.ellipsis,
@@ -1337,51 +1360,101 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                                               fontSize: 11.5,
                                               color: scheme.error),
                                         )
-                                      else if (isDone)
-                                        Text(
-                                          d.localPath ?? '',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                              fontSize: 11,
-                                              color: scheme.onSurfaceVariant),
+                                      : isDone
+                                          ? Text(
+                                              d.localPath ?? '',
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: scheme.onSurfaceVariant),
+                                            )
+                                          : isPaused
+                                              ? Text(
+                                                  '已暂停 · ${_fmtBytes(d.receivedBytes)}'
+                                                  '${d.totalBytes > 0 ? ' / ${_fmtBytes(d.totalBytes)}' : ''}'
+                                                  ' · ${(d.progress * 100).toStringAsFixed(0)}%',
+                                                  style: TextStyle(
+                                                      fontSize: 11,
+                                                      color:
+                                                          scheme.onSurfaceVariant),
+                                                )
+                                              : Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                    ClipRRect(
+                                                      borderRadius:
+                                                          BorderRadius.circular(4),
+                                                      child:
+                                                          LinearProgressIndicator(
+                                                        value: d.progress > 0
+                                                            ? d.progress
+                                                            : null,
+                                                        minHeight: 5,
+                                                        backgroundColor: scheme
+                                                            .surfaceContainerHighest,
+                                                      ),
+                                                    ),
+                                                    if (d.totalBytes > 0)
+                                                      Padding(
+                                                        padding: const EdgeInsets
+                                                            .only(top: 4),
+                                                        child: Text(
+                                                          '${(d.progress * 100).toStringAsFixed(0)}% '
+                                                          '(${_fmtBytes(d.receivedBytes)} / '
+                                                          '${_fmtBytes(d.totalBytes)})',
+                                                          style: TextStyle(
+                                                              fontSize: 10.5,
+                                                              color: scheme
+                                                                  .onSurfaceVariant),
+                                                        ),
+                                                      ),
+                                                  ],
+                                                ),
+                                ),
+                                if (!_downloadSelectMode) ...[
+                                  const SizedBox(height: 8),
+                                  Wrap(
+                                    spacing: 4,
+                                    runSpacing: 4,
+                                    children: [
+                                      if (d.status ==
+                                          BrowserDownloadStatus.downloading)
+                                        _downloadActionChip(
+                                          label: '暂停',
+                                          icon: Icons.pause_rounded,
+                                          onTap: () =>
+                                              _engine.pauseDownload(d.id),
                                         )
-                                      else if (isPaused)
-                                        Text(
-                                          '已暂停 · ${_fmtBytes(d.receivedBytes)}'
-                                          '${d.totalBytes > 0 ? ' / ${_fmtBytes(d.totalBytes)}' : ''}'
-                                          ' · ${(d.progress * 100).toStringAsFixed(0)}%',
-                                          style: TextStyle(
-                                              fontSize: 11,
-                                              color: scheme.onSurfaceVariant),
+                                      else if (d.status ==
+                                          BrowserDownloadStatus.paused)
+                                        _downloadActionChip(
+                                          label: '继续',
+                                          icon: Icons.play_arrow_rounded,
+                                          onTap: () => unawaited(
+                                              _engine.resumeDownload(d.id)),
                                         )
-                                      else
-                                        ClipRRect(
-                                          borderRadius: BorderRadius.circular(4),
-                                          child: LinearProgressIndicator(
-                                            value: d.progress > 0 ? d.progress : null,
-                                            minHeight: 5,
-                                            backgroundColor:
-                                                scheme.surfaceContainerHighest,
-                                          ),
+                                      else if (d.status ==
+                                          BrowserDownloadStatus.failed)
+                                        _downloadActionChip(
+                                          label: '重试',
+                                          icon: Icons.refresh_rounded,
+                                          onTap: () => unawaited(_engine
+                                              .startDownload(d.url,
+                                                  suggestedName: d.name)),
                                         ),
-                                      if (!isDone && !isFailed && d.totalBytes > 0)
-                                        Padding(
-                                          padding: const EdgeInsets.only(top: 4),
-                                          child: Text(
-                                            '${(d.progress * 100).toStringAsFixed(0)}% '
-                                            '(${_fmtBytes(d.receivedBytes)} / '
-                                            '${_fmtBytes(d.totalBytes)})',
-                                            style: TextStyle(
-                                                fontSize: 10.5,
-                                                color: scheme.onSurfaceVariant),
-                                          ),
+                                      if (d.status !=
+                                          BrowserDownloadStatus.downloading)
+                                        _downloadActionChip(
+                                          label: '打开目录',
+                                          icon: Icons.folder_open_rounded,
+                                          onTap: () => unawaited(
+                                              _openDownloadFolder(d)),
                                         ),
                                     ],
                                   ),
-                                ),
-                                if (!_downloadSelectMode)
-                                  _downloadItemActions(d),
+                                ],
                               ],
                             ),
                           ),
@@ -1395,46 +1468,20 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     );
   }
 
-  Widget _downloadItemActions(BrowserDownload d) {
-    return Wrap(
-      spacing: 2,
-      children: [
-        IconButton(
-          tooltip: '复制下载链接',
-          icon: const Icon(Icons.link_rounded, size: 18),
-          onPressed: () => _copyDownloadLink(d),
-        ),
-        if (d.status == BrowserDownloadStatus.downloading)
-          IconButton(
-            tooltip: '暂停',
-            icon: const Icon(Icons.pause_rounded, size: 20),
-            onPressed: () => _engine.pauseDownload(d.id),
-          )
-        else if (d.status == BrowserDownloadStatus.paused)
-          IconButton(
-            tooltip: '继续',
-            icon: const Icon(Icons.play_arrow_rounded, size: 20),
-            onPressed: () => unawaited(_engine.resumeDownload(d.id)),
-          )
-        else if (d.status == BrowserDownloadStatus.failed)
-          IconButton(
-            tooltip: '重试',
-            icon: const Icon(Icons.refresh_rounded, size: 19),
-            onPressed: () => unawaited(
-                _engine.startDownload(d.url, suggestedName: d.name)),
-          ),
-        if (d.status != BrowserDownloadStatus.downloading)
-          IconButton(
-            tooltip: '打开所在目录',
-            icon: const Icon(Icons.folder_open_rounded, size: 19),
-            onPressed: () => unawaited(_openDownloadFolder(d)),
-          ),
-        IconButton(
-          tooltip: '删除任务和文件',
-          icon: const Icon(Icons.delete_outline_rounded, size: 19),
-          onPressed: () => _deleteDownloadTask(d),
-        ),
-      ],
+  Widget _downloadActionChip({
+    required String label,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return ActionChip(
+      label: Text(label, style: const TextStyle(fontSize: 11.5)),
+      avatar: Icon(icon, size: 15),
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      backgroundColor: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+      side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.3)),
+      onPressed: onTap,
     );
   }
 
@@ -1500,10 +1547,30 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     final dir = await _engine.downloadsDirectory();
     if (!mounted) return;
     final safe = d.name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
-    await ShellFilesPage.showDirAndSelect(
-      context,
-      dir: dir,
-      file: '$dir/$safe',
+    final file = '$dir/$safe';
+    final container = ProviderScope.containerOf(context, listen: false);
+    final notifier = container.read(shellFilesProvider.notifier);
+    await notifier.switchScope(FileScope.app);
+    await notifier.open(dir);
+    if (!mounted) return;
+    await showBrowserDialog<void>(
+      context: context,
+      builder: (dialogContext, pop) => ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: SizedBox(
+          width: MediaQuery.sizeOf(dialogContext).width * 0.94,
+          height: MediaQuery.sizeOf(dialogContext).height * 0.9,
+          child: Material(
+            color: Theme.of(dialogContext).colorScheme.surface.withValues(alpha: 0.94),
+            child: ShellFilesPage(
+              asSheet: true,
+              initialSelectPath: file,
+              onClose: () => pop(),
+              closeIcon: Icons.close_rounded,
+            ),
+          ),
+        ),
+      ),
     );
   }
 
