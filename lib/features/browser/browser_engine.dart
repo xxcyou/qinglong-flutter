@@ -510,7 +510,9 @@ class BrowserEngine {
     if (_controller == null || !isReady) return const {};
     try {
       final raw = await evalSync(
-        "JSON.stringify(Object.fromEntries(Object.entries(localStorage)))",
+        "(function(){ try { return JSON.stringify("
+        "Object.fromEntries(Object.entries(localStorage))); }"
+        " catch(e){ return '{}'; } })()",
       );
       if (raw.trim().isEmpty || raw.trim() == 'null') return const {};
       final decoded = jsonDecode(raw);
@@ -964,9 +966,14 @@ class BrowserEngine {
     try {
       final hadUrl = currentUrl.value.isNotEmpty;
       final c = await ensure();
-      // 如果预热期间已经有人开始导航（AI 提前调用），就别用 about:blank 覆盖它。
+      // 如果预热期间已经有人开始导航（AI 提前调用），就别覆盖它。
+      // 用带 baseUrl 的空 HTML 预热：origin 是 https://warmup.local，
+      // localStorage 可正常访问，不会像 about:blank 那样抛 SecurityError。
       if (!hadUrl && currentUrl.value.isEmpty) {
-        await c.loadRequest(Uri.parse('about:blank'));
+        await c.loadHtmlString(
+          '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body></body></html>',
+          baseUrl: 'https://warmup.local/',
+        );
       }
     } catch (e) {
       Logger.e('browser', 'warmUp failed', e);
