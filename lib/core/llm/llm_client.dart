@@ -822,11 +822,15 @@ class LlmClient {
         ...config.extraHeaders,
       };
 
+  /// AI 消息网络波动自动重试次数上限：超时/网络抖动/5xx/429 最多重试 3 次。
+  /// 手动停止（CancelToken）和 App 被杀不算网络故障，不进入重试。
+  static const int maxAutoRetries = 3;
+
   static Future<LlmResponse> complete({
     required LlmConfig config,
     required List<LlmMessage> messages,
     List<LlmFunctionSpec>? tools,
-    int maxRetries = 2,
+    int maxRetries = maxAutoRetries,
     CancelToken? cancelToken,
     void Function(LlmDelta delta)? onDelta,
   }) async {
