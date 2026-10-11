@@ -707,9 +707,43 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
     );
   }
 
+  Future<void> _openPath(String path) async {
+    // 手机公共存储根：Android 11+ 没有“所有文件访问”授权时只能列出目录，
+    // 看不到文件。先进授权引导，避免用户误以为文件丢了。
+    if ((path.startsWith('/storage/emulated/0/') || path == '/storage/emulated/0') &&
+        !await ProotBridge().hasAllFilesAccess()) {
+      if (!mounted) return;
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('需要“所有文件访问”权限'),
+          content: const Text(
+            'Android 11 以上查看手机公共存储里的文件，需要先在系统设置里'
+            '开启“所有文件访问”。当前普通权限只能看到文件夹，看不到文件。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('去开启'),
+            ),
+          ],
+        ),
+      );
+      if (go == true && mounted) {
+        await ProotBridge().openAllFilesAccess();
+      }
+      return;
+    }
+    await _notifier.open(path);
+  }
+
   Future<void> _open(ShellFileEntry entry) async {
     if (entry.isDirectory) {
-      await _notifier.open(entry.path);
+      await _openPath(entry.path);
       return;
     }
     final kind = FileKinds.of(entry.name);
@@ -1232,6 +1266,39 @@ class _PathBarState extends State<_PathBar> {
     }
   }
 
+  Future<void> _openRoot(String path) async {
+    if ((path.startsWith('/storage/emulated/0/') ||
+            path == '/storage/emulated/0') &&
+        !await ProotBridge().hasAllFilesAccess()) {
+      if (!mounted) return;
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('需要“所有文件访问”权限'),
+          content: const Text(
+            'Android 11 以上查看手机公共存储里的文件，需要先在系统设置里'
+            '开启“所有文件访问”。当前普通权限只能看到文件夹，看不到文件。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('去开启'),
+            ),
+          ],
+        ),
+      );
+      if (go == true && mounted) {
+        await ProotBridge().openAllFilesAccess();
+      }
+      return;
+    }
+    await notifier.open(path);
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1249,7 +1316,7 @@ class _PathBarState extends State<_PathBar> {
                 IconButton(
                   tooltip: '上一级',
                   visualDensity: VisualDensity.compact,
-                  onPressed: state.atRoot ? null : notifier.goUp,
+                  onPressed: notifier.goUp,
                   icon: const Icon(Icons.arrow_upward, size: 20),
                 ),
                 Expanded(
@@ -1380,7 +1447,7 @@ class _PathBarState extends State<_PathBar> {
                         ),
                         selected: state.path == state.roots[i] ||
                             state.path.startsWith('${state.roots[i]}/'),
-                        onSelected: (_) => notifier.open(state.roots[i]),
+                        onSelected: (_) => _openRoot(widget.state.roots[i]),
                       ),
                     ),
                 ],
