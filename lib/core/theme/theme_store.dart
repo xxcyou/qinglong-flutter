@@ -15,6 +15,7 @@ class ThemeState {
     this.themes = const [],
     this.activeId = '',
     this.loaded = false,
+    this.revision = 0,
   });
 
   final List<ThemeConfig> themes;
@@ -22,6 +23,10 @@ class ThemeState {
   /// 当前应用的主题 id。
   final String activeId;
   final bool loaded;
+
+  /// 每次 apply 自增：根背景 WebView 拿它当 key，应用主题后强制重建，
+  /// 让主题 JS 的组件特效/发光立即重新运行，不用重启。
+  final int revision;
 
   ThemeConfig? get active {
     for (final t in themes) {
@@ -41,11 +46,13 @@ class ThemeState {
     List<ThemeConfig>? themes,
     String? activeId,
     bool? loaded,
+    int? revision,
   }) {
     return ThemeState(
       themes: themes ?? this.themes,
       activeId: activeId ?? this.activeId,
       loaded: loaded ?? this.loaded,
+      revision: revision ?? this.revision,
     );
   }
 }
@@ -373,7 +380,7 @@ class ThemeNotifier extends Notifier<ThemeState> {
   /// 应用某个主题（只改 activeId，不删别的方案）。
   Future<void> apply(String id) async {
     if (state.byId(id) == null) return;
-    state = state.copyWith(activeId: id);
+    state = state.copyWith(activeId: id, revision: state.revision + 1);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(activeKey, id);
   }

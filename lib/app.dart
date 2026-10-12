@@ -10,6 +10,7 @@ import 'core/theme/font_settings_scope.dart';
 import 'core/theme/glass.dart';
 import 'core/theme/theme_effects_controller.dart';
 import 'core/theme/startup_splash.dart';
+import 'core/theme/theme_glow_controller.dart';
 import 'core/theme/theme_store.dart';
 import 'features/ai/floating/ai_dock_overlay.dart';
 import 'features/browser/browser_host.dart';
@@ -45,6 +46,7 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
     Future.microtask(() async {
       await ref.read(settingsProvider.notifier).load();
       await ref.read(themeProvider.notifier).load();
+      await ThemeGlowController.instance.load();
       ApiDebugLog.enabled = ref.read(settingsProvider).debugLogEnabled;
       // 提供商总表要在设置之后读：第一次启动时它会把老的单份 AI 配置
       // （llmBaseUrl / 那把全局 Key / 模型缓存）迁移成一家提供商，
@@ -102,8 +104,12 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
           children: [
             // 全局唯一主题背景层：所有页面共享一个 WebView/光斑层，
             // 切页/返回不创建销毁 WebView，导航秒开秒退。
-            const Positioned.fill(
-              key: ValueKey('app-theme-bg'),
+            // key 带上 activeId + revision：应用主题时强制重建背景 WebView，
+            // 让新主题的 JS 特效/组件发光立即重跑，不用重启。
+            Positioned.fill(
+              key: ValueKey(
+                'app-theme-bg-${themeState.activeId}-${themeState.revision}',
+              ),
               child: IgnorePointer(child: ThemeBackgroundLayer()),
             ),
             // key 必不可少：这个 Stack 的孩子个数会变（child 可能为 null），
