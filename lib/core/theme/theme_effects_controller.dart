@@ -398,12 +398,8 @@ class ThemeEffectsController extends ChangeNotifier {
   Timer? _effectFlushTimer;
   final Map<String, ComponentStyle> _styles = {};
 
-  /// 用户主动覆盖的全局组件风格（与主题包 JS 无关，重启/切主题后仍保留）。
-  /// 在 [componentStyleFor] 里最后叠加：用户设过的发光数值压过主题 JS。
-  ComponentStyle? _userStyle;
-
   /// 当前主题包 controller.js 里的组件风格（zip 内配置），
-  /// 比主题 JS 运行时 styleComponent 低一层，但会被用户全局设置再压过。
+  /// 主题包发光由这里统一控制。
   ComponentStyle? _themeStyle;
 
   /// guest 图片路径 -> host 文件路径缓存：同一动画帧里多个特效引用同一张图时，
@@ -487,16 +483,6 @@ class ThemeEffectsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 设置用户全局风格覆盖（如发光设置页的发光大小/外发光）。
-  void setUserStyle(ComponentStyle? style) {
-    if (identical(_userStyle, style)) {
-      if (style == null) return;
-      // 非同一实例也要 notify，让界面立即刷新。
-    }
-    _userStyle = style;
-    notifyListeners();
-  }
-
   ComponentStyle? componentStyleFor(String page, String type, int index) {
     final base = _styles[_styleKey(page, type, index)] ??
         _styles[_styleRuleKey(null, type, index)] ??
@@ -506,11 +492,8 @@ class ThemeEffectsController extends ChangeNotifier {
         _styles[_styleRuleKey(null, type, null)] ??
         _styles[_styleRuleKey(page, null, null)] ??
         _styles[_styleRuleKey(null, null, null)];
-    var resolved = base;
     final theme = _themeStyle;
-    if (theme != null) resolved = theme.merge(resolved);
-    final user = _userStyle;
-    return user == null ? resolved : user.merge(resolved);
+    return theme == null ? base : theme.merge(base);
   }
 
   /// 存储一条可作用于未来组件的样式规则：

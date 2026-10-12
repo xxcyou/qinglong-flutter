@@ -10,7 +10,6 @@ import 'core/theme/font_settings_scope.dart';
 import 'core/theme/glass.dart';
 import 'core/theme/theme_effects_controller.dart';
 import 'core/theme/startup_splash.dart';
-import 'core/theme/theme_glow_controller.dart';
 import 'core/theme/theme_store.dart';
 import 'features/ai/floating/ai_dock_overlay.dart';
 import 'features/browser/browser_host.dart';
@@ -51,7 +50,6 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
       await ref.read(settingsProvider.notifier).load();
       await ref.read(themeProvider.notifier).load();
       _applyThemeStyle(ref.read(themeProvider).active);
-      await ThemeGlowController.instance.load();
       ApiDebugLog.enabled = ref.read(settingsProvider).debugLogEnabled;
       // 提供商总表要在设置之后读：第一次启动时它会把老的单份 AI 配置
       // （llmBaseUrl / 那把全局 Key / 模型缓存）迁移成一家提供商，
