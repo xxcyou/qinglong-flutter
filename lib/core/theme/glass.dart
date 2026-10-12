@@ -348,54 +348,68 @@ class GlassPanel extends StatelessWidget {
           );
         }
 
-        final glow = style?.glowColor != null
-            ? [
-                BoxShadow(
-                  color: (style!.glowColor ?? Colors.transparent)
-                      .withValues(alpha: style.glowOpacity ?? 0.6),
-                  blurRadius: style.glowRadius ?? 12,
-                  spreadRadius: 0,
-                ),
-              ]
-            : const <BoxShadow>[];
+        final gs = style;
+        final glowColor = gs?.glowColor;
+        final hasOuterGlow = glowColor != null &&
+            (gs?.glowOpacity ?? 0.6) > 0 &&
+            (gs?.glowRadius ?? 12) > 0;
 
         return ComponentAnchorTracker(
           type: 'panel',
           index: anchorIndex,
-          child: Opacity(
-            opacity: (style?.opacity ?? 1).clamp(0.0, 1.0),
-            child: Container(
-              margin: margin,
-              decoration: BoxDecoration(
-                borderRadius: br,
-                boxShadow: [
-                  BoxShadow(
-                    color: effectiveShadowColor.withValues(
-                        alpha: effectiveShadowOpacity),
-                    blurRadius: effectiveShadowBlur,
-                    offset: Offset(0, effectiveShadowOffsetY),
-                  ),
-                  BoxShadow(
-                    color: scheme.primary.withValues(
-                      alpha: scheme.brightness == Brightness.dark ? 0.10 : 0.06,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              if (hasOuterGlow && gs != null)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: CustomPaint(
+                      painter: _OuterGlowPainter(
+                        glowColor: glowColor,
+                        glowOpacity: gs.glowOpacity ?? 0.6,
+                        glowRadius: gs.glowRadius ?? 12,
+                        cornerRadius: br.topLeft.x,
+                      ),
                     ),
-                    blurRadius: effectiveShadowY * 3,
-                    spreadRadius: -effectiveShadowY,
                   ),
-                  ...glow,
-                ],
-              ),
-              child: ClipRRect(
-                borderRadius: br,
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(
-                    sigmaX: effectiveBlur,
-                    sigmaY: effectiveBlur,
+                ),
+              Opacity(
+                opacity: (style?.opacity ?? 1).clamp(0.0, 1.0),
+                child: Container(
+                  margin: margin,
+                  decoration: BoxDecoration(
+                    borderRadius: br,
+                    boxShadow: [
+                      BoxShadow(
+                        color: effectiveShadowColor.withValues(
+                            alpha: effectiveShadowOpacity),
+                        blurRadius: effectiveShadowBlur,
+                        offset: Offset(0, effectiveShadowOffsetY),
+                      ),
+                      BoxShadow(
+                        color: scheme.primary.withValues(
+                          alpha: scheme.brightness == Brightness.dark
+                              ? 0.10
+                              : 0.06,
+                        ),
+                        blurRadius: effectiveShadowY * 3,
+                        spreadRadius: -effectiveShadowY,
+                      ),
+                    ],
                   ),
-                  child: content,
+                  child: ClipRRect(
+                    borderRadius: br,
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(
+                        sigmaX: effectiveBlur,
+                        sigmaY: effectiveBlur,
+                      ),
+                      child: content,
+                    ),
+                  ),
                 ),
               ),
-            ),
+            ],
           ),
         );
       },
@@ -404,6 +418,48 @@ class GlassPanel extends StatelessWidget {
 
   Widget _padded(Widget child) =>
       padding == null ? child : Padding(padding: padding!, child: child);
+}
+
+/// 组件外发光绘制器：直接沿圆角边框画一条高斯模糊描边。
+///
+/// 用 Stack(clipBehavior: Clip.none) 挂在组件底下，光晕可以画到边框外侧，
+/// 不再依赖 BoxShadow 被父布局裁剪/误看成内发光。
+class _OuterGlowPainter extends CustomPainter {
+  const _OuterGlowPainter({
+    required this.glowColor,
+    required this.glowOpacity,
+    required this.glowRadius,
+    required this.cornerRadius,
+  });
+
+  final Color glowColor;
+  final double glowOpacity;
+  final double glowRadius;
+  final double cornerRadius;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty || glowRadius <= 0) return;
+    final rr = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      Radius.circular(cornerRadius),
+    );
+    canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = glowRadius * 2
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, glowRadius)
+        ..color = glowColor.withValues(alpha: glowOpacity.clamp(0.0, 1.0)),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _OuterGlowPainter oldDelegate) =>
+      oldDelegate.glowColor != glowColor ||
+      oldDelegate.glowOpacity != glowOpacity ||
+      oldDelegate.glowRadius != glowRadius ||
+      oldDelegate.cornerRadius != cornerRadius;
 }
 
 /// 顶部玻璃标题条：替代 AppBar，内容从状态栏下方开始，没有"额头"色块。
