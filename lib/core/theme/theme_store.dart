@@ -221,6 +221,17 @@ class ThemeNotifier extends Notifier<ThemeState> {
           e.key.toString(): e.value.toString(),
     };
 
+    // 主题包组件风格：controller.js 里写 componentStyle / styles / glow 均可。
+    // 典型：componentStyle: { glowColor:'#00D4FF', glowRadius:16, glowOpacity:0.8,
+    //        innerGlow:{color:'#7DF9FF', radius:8, opacity:0.5} }
+    final rawComponentStyle = data['componentStyle'] is Map
+        ? Map<String, dynamic>.from(data['componentStyle'] as Map)
+        : (data['styles'] is Map
+            ? Map<String, dynamic>.from(data['styles'] as Map)
+            : (data['glow'] is Map
+                ? Map<String, dynamic>.from(data['glow'] as Map)
+                : const <String, dynamic>{}));
+
     var backgroundImage = data['backgroundImage']?.toString() ?? '';
     var backgroundHtml = '';
     final htmlCandidates = [
@@ -266,6 +277,7 @@ class ThemeNotifier extends Notifier<ThemeState> {
       colors: colors,
       effects: effects,
       typography: typography,
+      componentStyle: rawComponentStyle,
     );
   }
 

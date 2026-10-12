@@ -43,9 +43,14 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
     ref.listenManual(currentPanelProvider, (previous, next) {
       configureDioForPanel(next);
     });
+    // 主题包 ZIP 里的组件风格（controller.js componentStyle）随主题切换立即生效。
+    ref.listenManual(themeProvider, (previous, next) {
+      _applyThemeStyle(next.active);
+    });
     Future.microtask(() async {
       await ref.read(settingsProvider.notifier).load();
       await ref.read(themeProvider.notifier).load();
+      _applyThemeStyle(ref.read(themeProvider).active);
       await ThemeGlowController.instance.load();
       ApiDebugLog.enabled = ref.read(settingsProvider).debugLogEnabled;
       // 提供商总表要在设置之后读：第一次启动时它会把老的单份 AI 配置
@@ -55,6 +60,16 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
       await ref.read(panelListProvider.notifier).load();
       configureDioForPanel(ref.read(currentPanelProvider));
     });
+  }
+
+  void _applyThemeStyle(ThemeConfig? theme) {
+    if (theme == null || theme.componentStyle.isEmpty) {
+      ThemeEffectsController.instance.setThemeStyle(null);
+      return;
+    }
+    ThemeEffectsController.instance.setThemeStyle(
+      ThemeEffectBridge.parseComponentStyle({'style': theme.componentStyle}),
+    );
   }
 
   void _finishSplash() {

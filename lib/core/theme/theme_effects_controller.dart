@@ -402,6 +402,10 @@ class ThemeEffectsController extends ChangeNotifier {
   /// 在 [componentStyleFor] 里最后叠加：用户设过的发光数值压过主题 JS。
   ComponentStyle? _userStyle;
 
+  /// 当前主题包 controller.js 里的组件风格（zip 内配置），
+  /// 比主题 JS 运行时 styleComponent 低一层，但会被用户全局设置再压过。
+  ComponentStyle? _themeStyle;
+
   /// guest 图片路径 -> host 文件路径缓存：同一动画帧里多个特效引用同一张图时，
   /// 不再重复走 ProotBridge.hostPath 异步链路。
   final Map<String, String> _imageHostCache = {};
@@ -477,6 +481,12 @@ class ThemeEffectsController extends ChangeNotifier {
       '${page ?? '*'} | ${type ?? '*'} | ${index?.toString() ?? '*'}'
           .replaceAll(' ', '');
 
+  /// 设置主题包自带组件风格（来自 zip / controller.js）。
+  void setThemeStyle(ComponentStyle? style) {
+    _themeStyle = style;
+    notifyListeners();
+  }
+
   /// 设置用户全局风格覆盖（如发光设置页的发光大小/外发光）。
   void setUserStyle(ComponentStyle? style) {
     if (identical(_userStyle, style)) {
@@ -496,8 +506,11 @@ class ThemeEffectsController extends ChangeNotifier {
         _styles[_styleRuleKey(null, type, null)] ??
         _styles[_styleRuleKey(page, null, null)] ??
         _styles[_styleRuleKey(null, null, null)];
+    var resolved = base;
+    final theme = _themeStyle;
+    if (theme != null) resolved = theme.merge(resolved);
     final user = _userStyle;
-    return user == null ? base : user.merge(base);
+    return user == null ? resolved : user.merge(resolved);
   }
 
   /// 存储一条可作用于未来组件的样式规则：
@@ -1139,6 +1152,23 @@ class ThemeInnerDecorPainter extends CustomPainter {
     }
     final paint = Paint();
     final sides = _sides(style.innerGlowSide);
+    // 全边内发光：直接沿圆角边框画一条高斯模糊描边，紧密跟随圆角弧度，
+    // 不再用“整条矩形渐变 + 圆角裁剪”导致角上看起来像直角光。
+    if (sides.length == 4) {
+      final rr = RRect.fromRectAndRadius(
+        Offset.zero & size,
+        Radius.circular(cornerRadius),
+      );
+      canvas.drawRRect(
+        rr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = band * 2
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, band)
+          ..color = color.withValues(alpha: opacity.clamp(0.0, 1.0)),
+      );
+      return;
+    }
     void face(String side) {
       switch (side) {
         case 'top':
