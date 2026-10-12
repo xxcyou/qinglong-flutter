@@ -1136,10 +1136,8 @@ class ThemeInnerDecorPainter extends CustomPainter {
   /// 内发光也要贴合组件形状：圆/椭圆用椭圆路径，圆角矩形用 RRect。
   Path _edgePath(Size size) {
     final rect = Offset.zero & size;
-    final minSide = size.shortestSide;
-    final fullyRounded = cornerRadius >= minSide / 2 - 0.5;
-    final shape = glowShape == 'oval' ||
-        (glowShape == 'auto' && fullyRounded);
+    // 组件是圆角矩形就按圆角矩形发光；只有显式传 oval 才用椭圆/圆形光。
+    final shape = glowShape == 'oval';
     final path = Path();
     if (shape) {
       path.addOval(rect);

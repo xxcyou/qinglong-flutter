@@ -454,9 +454,8 @@ class _OuterGlowPainter extends CustomPainter {
     final sharp = glowSharpness.clamp(0.0, 1.0);
     final blur = glowRadius * (1 - sharp);
     final strokeWidth = glowRadius * (1.4 + 0.6 * (1 - sharp));
-    final minSide = size.shortestSide;
-    final fullyRounded = cornerRadius >= minSide / 2 - 0.5;
-    final shape = glowShape == 'oval' || (glowShape == 'auto' && fullyRounded);
+    // 组件是圆角矩形就按圆角矩形发光；只有显式传 oval 才用椭圆/圆形光。
+    final shape = glowShape == 'oval';
     final Path path = Path();
     if (shape) {
       path.addOval(rect);
