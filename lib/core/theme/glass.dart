@@ -312,6 +312,9 @@ class GlassPanel extends StatelessWidget {
                               painter: ThemeInnerDecorPainter(
                                 style: style,
                                 cornerRadius: br.topLeft.x,
+                                glowShape: style.glowShape,
+                                glowSharpness:
+                                    style.innerGlowSharpness ?? 0,
                               ),
                             ),
                           ),
@@ -368,6 +371,8 @@ class GlassPanel extends StatelessWidget {
                         glowColor: glowColor,
                         glowOpacity: gs.glowOpacity ?? 0.6,
                         glowRadius: gs.glowRadius ?? 12,
+                        glowSharpness: gs.glowSharpness ?? 0,
+                        glowShape: gs.glowShape,
                         cornerRadius: br.topLeft.x,
                       ),
                     ),
@@ -429,27 +434,45 @@ class _OuterGlowPainter extends CustomPainter {
     required this.glowColor,
     required this.glowOpacity,
     required this.glowRadius,
+    required this.glowSharpness,
+    required this.glowShape,
     required this.cornerRadius,
   });
 
   final Color glowColor;
   final double glowOpacity;
   final double glowRadius;
+  final double glowSharpness;
+  final String glowShape;
   final double cornerRadius;
 
   @override
   void paint(Canvas canvas, Size size) {
     if (size.isEmpty || glowRadius <= 0) return;
-    final rr = RRect.fromRectAndRadius(
-      Offset.zero & size,
-      Radius.circular(cornerRadius),
-    );
-    canvas.drawRRect(
-      rr,
+    final rect = Offset.zero & size;
+    // 锐化：sharpness=0 全模糊，1 几乎不 blur。
+    final sharp = glowSharpness.clamp(0.0, 1.0);
+    final blur = glowRadius * (1 - sharp);
+    final strokeWidth = glowRadius * (1.4 + 0.6 * (1 - sharp));
+    final minSide = size.shortestSide;
+    final fullyRounded = cornerRadius >= minSide / 2 - 0.5;
+    final shape = glowShape == 'oval' || (glowShape == 'auto' && fullyRounded);
+    final Path path = Path();
+    if (shape) {
+      path.addOval(rect);
+    } else if (glowShape == 'rect') {
+      path.addRect(rect);
+    } else {
+      path.addRRect(
+        RRect.fromRectAndRadius(rect, Radius.circular(cornerRadius)),
+      );
+    }
+    canvas.drawPath(
+      path,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = glowRadius * 2
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, glowRadius)
+        ..strokeWidth = strokeWidth
+        ..maskFilter = blur > 0.5 ? MaskFilter.blur(BlurStyle.normal, blur) : null
         ..color = glowColor.withValues(alpha: glowOpacity.clamp(0.0, 1.0)),
     );
   }
@@ -459,6 +482,8 @@ class _OuterGlowPainter extends CustomPainter {
       oldDelegate.glowColor != glowColor ||
       oldDelegate.glowOpacity != glowOpacity ||
       oldDelegate.glowRadius != glowRadius ||
+      oldDelegate.glowSharpness != glowSharpness ||
+      oldDelegate.glowShape != glowShape ||
       oldDelegate.cornerRadius != cornerRadius;
 }
 

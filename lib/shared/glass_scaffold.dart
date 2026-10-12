@@ -337,6 +337,8 @@ class GlassCard extends StatelessWidget {
                     painter: ThemeInnerDecorPainter(
                       style: style,
                       cornerRadius: br.topLeft.x,
+                      glowShape: style.glowShape,
+                      glowSharpness: style.innerGlowSharpness ?? 0,
                     ),
                   ),
                 ),
