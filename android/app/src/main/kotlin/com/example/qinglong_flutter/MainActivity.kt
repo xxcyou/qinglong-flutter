@@ -28,6 +28,13 @@ class MainActivity : FlutterActivity() {
 
     private var externalChannel: MethodChannel? = null
 
+    companion object {
+        /// APP 主 Activity 是否在前台。悬浮窗服务停止时用它决定要不要给
+        /// 共享 engine 发 appIsPaused，避免 APP 还开着却被暂停渲染。
+        @Volatile
+        var isResumed: Boolean = false
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // 用户可能不是点通知、而是直接从桌面图标回到 APP。此时悬浮窗服务
         // 的 FlutterView 仍挂在共享 engine 上，FlutterActivity 再挂一个会抛
@@ -106,13 +113,9 @@ class MainActivity : FlutterActivity() {
             openOverlaySettings()
             return false
         }
-        // 先把 Activity 的 FlutterView 从引擎上摘下来，避免和悬浮窗服务
-        // 同时挂两个 surface；再启动服务并退到后台。
-        Handler(Looper.getMainLooper()).postDelayed({
-            detachFromFlutterEngine()
-            ExternalOverlayService.start(this, bounds)
-            if (!isFinishing) finish()
-        }, 120)
+        // 多 View 模式：Activity 的 FlutterView 继续渲染 APP 页面，服务再把
+        // 同一个 engine 挂到系统覆盖窗口上渲染悬浮层。不 detach、不 finish。
+        ExternalOverlayService.start(this, bounds)
         return true
     }
 
@@ -158,6 +161,16 @@ class MainActivity : FlutterActivity() {
     private var pendingUrl: String? = null
     private var openChannel: MethodChannel? = null
     private var openHandlerReady = false
+
+    override fun onResume() {
+        super.onResume()
+        isResumed = true
+    }
+
+    override fun onPause() {
+        isResumed = false
+        super.onPause()
+    }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)

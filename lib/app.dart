@@ -11,9 +11,8 @@ import 'core/theme/glass.dart';
 import 'core/theme/theme_effects_controller.dart';
 import 'core/theme/startup_splash.dart';
 import 'core/theme/theme_store.dart';
-import 'features/external/external_float_shell.dart';
+import 'features/ai/floating/ai_dock_provider.dart';
 import 'features/external/external_overlay_controller.dart';
-import 'features/floating/app_float_layer.dart';
 import 'features/panels/providers/panel_list_provider.dart';
 import 'features/settings/providers/settings_provider.dart';
 import 'router.dart';
@@ -42,6 +41,14 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
     ref.listenManual(currentPanelProvider, (previous, next) {
       configureDioForPanel(next);
     });
+    // AI 悬浮球开关 = APP 外悬浮总开关：所有悬浮窗都只在系统覆盖窗口里渲染。
+    // 主 APP 的 View 只画页面，不再挂 AppFloatLayer，所以不存在内外两份。
+    ref.listenManual(aiDockProvider, (previous, next) {
+      _syncExternalOverlay(next.visible);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _syncExternalOverlay(ref.read(aiDockProvider).visible);
+    });
     // 主题包 ZIP 里的组件风格（controller.js componentStyle）随主题切换立即生效。
     ref.listenManual(themeProvider, (previous, next) {
       _applyThemeStyle(next.active);
@@ -68,6 +75,24 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
     ThemeEffectsController.instance.setThemeStyle(
       ThemeEffectBridge.parseComponentStyle({'style': theme.componentStyle}),
     );
+  }
+
+  Future<void> _syncExternalOverlay(bool visible) async {
+    if (!mounted) return;
+    final controller = ExternalOverlayController.instance;
+    if (visible) {
+      if (controller.active.value) return;
+      if (!controller.supported) return;
+      final media = MediaQuery.of(context);
+      await controller.enable(
+        media,
+        initialBounds: aiBubbleRect(media, ref.read(aiDockProvider)),
+        requestPermission: false,
+      );
+    } else {
+      if (!controller.active.value) return;
+      await controller.disable();
+    }
   }
 
   void _finishSplash() {
@@ -112,73 +137,53 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
       // 悬浮 AI 挂在 Navigator 之上：push 出去的脚本页、日志页也能随手问 AI。
       // GlassFlowDriver 包住整棵树：它只旁听指针/滚动事件，用来把背景光斑
       // "推"起来（空闲时背景一帧都不画，实测省下一整个核）。
-      builder: (context, child) => ValueListenableBuilder<bool>(
-        valueListenable: ExternalOverlayController.instance.active,
-        builder: (context, externalActive, _) {
-          if (externalActive) {
-            return const ExternalFloatShell();
-          }
-          return GlassFlowDriver(
-        child: Stack(
-          children: [
-            // 全局唯一主题背景层：所有页面共享一个 WebView/光斑层，
-            // 切页/返回不创建销毁 WebView，导航秒开秒退。
-            // key 带上 activeId + revision：应用主题时强制重建背景 WebView，
-            // 让新主题的 JS 特效/组件发光立即重跑，不用重启。
-            Positioned.fill(
-              key: ValueKey(
-                'app-theme-bg-${themeState.activeId}-${themeState.revision}',
-              ),
-              child: IgnorePointer(child: ThemeBackgroundLayer()),
-            ),
-            // key 必不可少：这个 Stack 的孩子个数会变（child 可能为 null），
-            // 没 key 就按下标配对，Element 会被挪到别的槽位上去——
-            // home_shell 里同样的坑造成过"菜单出来了却点不动"。
-            if (child != null)
+      builder: (context, child) {
+        return GlassFlowDriver(
+          child: Stack(
+            children: [
+              // 全局唯一主题背景层：所有页面共享一个 WebView/光斑层，
+              // 切页/返回不创建销毁 WebView，导航秒开秒退。
+              // key 带上 activeId + revision：应用主题时强制重建背景 WebView，
+              // 让新主题的 JS 特效/组件发光立即重跑，不用重启。
               Positioned.fill(
-                key: const ValueKey('app-router'),
-                // 标记根上已有全局背景，页面里的 GlassBackdrop 直接透传，
-                // 不再为每个二级页新建一套背景 WebView。
-                child: ThemeBackgroundScope(
-                  child: FontSettingsScope(
-                    settings: settings,
-                    theme: activeTheme,
-                    child: child,
+                key: ValueKey(
+                  'app-theme-bg-${themeState.activeId}-${themeState.revision}',
+                ),
+                child: IgnorePointer(child: ThemeBackgroundLayer()),
+              ),
+              // key 必不可少：这个 Stack 的孩子个数会变（child 可能为 null），
+              // 没 key 就按下标配对，Element 会被挪到别的槽位上去——
+              // home_shell 里同样的坑造成过"菜单出来了却点不动"。
+              if (child != null)
+                Positioned.fill(
+                  key: const ValueKey('app-router'),
+                  // 标记根上已有全局背景，页面里的 GlassBackdrop 直接透传，
+                  // 不再为每个二级页新建一套背景 WebView。
+                  child: ThemeBackgroundScope(
+                    child: FontSettingsScope(
+                      settings: settings,
+                      theme: activeTheme,
+                      child: child,
+                    ),
                   ),
                 ),
+              // 全局特效覆盖层：主题 DSHTheme.effect 绘制这里，位于导航层之上。
+              const Positioned.fill(
+                key: ValueKey('app-theme-effects'),
+                child: ThemeEffectsLayer(),
               ),
-            // 全局特效覆盖层：主题 DSHTheme.effect 绘制这里，位于导航层之上。
-            const Positioned.fill(
-              key: ValueKey('app-theme-effects'),
-              child: ThemeEffectsLayer(),
-            ),
-            // 两个悬浮窗的上下顺序由 FloatStack 在运行时决定：新弹出的置前、
-            // 点谁谁置前。写死顺序的话总有一个永远被压住——压住的那个就点不到了
-            // （浏览器压着聊天窗时点聊天窗只会点到网页，反之会挡住人机验证）。
-            //
-            // 外面这层 Positioned.fill 不能省：Stack 的非定位子节点拿到的是
-            // 松约束，而里面那层 Stack 的孩子全是 Positioned.fill（没有任何
-            // 非定位子节点），于是它会把自己缩成 0×0，两个悬浮窗一起消失。
-            //
-            // 两个宿主都始终挂在树上（只是换顺序）：WebView 一旦被摘下来，
-            // 页面里的定时器和 CF 挑战脚本就断了，票白拿。
-            const Positioned.fill(
-              key: ValueKey('app-floats'),
-              child: AppFloatLayer(),
-            ),
-            if (showSplash)
-              Positioned.fill(
-                key: const ValueKey('startup-splash'),
-                child: StartupSplash(
-                  ready: splashReady,
-                  onFinished: _finishSplash,
+              if (showSplash)
+                Positioned.fill(
+                  key: const ValueKey('startup-splash'),
+                  child: StartupSplash(
+                    ready: splashReady,
+                    onFinished: _finishSplash,
+                  ),
                 ),
-              ),
-          ],
-        ),
-      );
-        },
-      ),
+            ],
+          ),
+        );
+      },
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalWidgetsLocalizations.delegate,

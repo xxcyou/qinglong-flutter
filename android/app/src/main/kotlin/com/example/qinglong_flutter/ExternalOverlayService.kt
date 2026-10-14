@@ -198,9 +198,13 @@ class ExternalOverlayService : Service() {
         val view = flutterView
         flutterView = null
         if (view != null) {
-            try {
-                engine?.lifecycleChannel?.appIsPaused()
-            } catch (_: Exception) {
+            // APP 主 Activity 还在前台时不能暂停共享 engine，否则主界面
+            // 也跟着停渲染。只有 APP 已经退到后台才需要发 appIsPaused。
+            if (!MainActivity.isResumed) {
+                try {
+                    engine?.lifecycleChannel?.appIsPaused()
+                } catch (_: Exception) {
+                }
             }
             try {
                 view.detachFromFlutterEngine()
@@ -253,8 +257,13 @@ class ExternalOverlayService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val stopIntent = Intent(this, ExternalOverlayService::class.java).apply {
-            action = ACTION_STOP
+        // 点通知要回 APP，不是关悬浮窗。关闭悬浮窗走设置页开关/返回 APP。
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            )
         }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -262,7 +271,7 @@ class ExternalOverlayService : Service() {
             } else {
                 0
             }
-        val pending = PendingIntent.getService(this, 0x514C, stopIntent, flags)
+        val pending = PendingIntent.getActivity(this, 0x514C, openIntent, flags)
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
         } else {

@@ -131,19 +131,43 @@ class ExternalOverlayController {
   ///
   /// [media] 必须是主 APP 的全屏 MediaQuery；进入后 FlutterView 会被原生
   /// 缩小到悬浮窗并集，但 Dart 侧仍用这份全屏尺寸做坐标系。
-  Future<bool> enable(MediaQueryData media) async {
+  Future<bool>? _enableInFlight;
+
+  Future<bool> enable(
+    MediaQueryData media, {
+    Rect? initialBounds,
+    bool requestPermission = true,
+  }) {
+    final inFlight = _enableInFlight;
+    if (inFlight != null) return inFlight;
+    final future = _enable(
+      media,
+      initialBounds: initialBounds,
+      requestPermission: requestPermission,
+    );
+    _enableInFlight = future;
+    return future.whenComplete(() {
+      if (identical(_enableInFlight, future)) _enableInFlight = null;
+    });
+  }
+
+  Future<bool> _enable(
+    MediaQueryData media, {
+    Rect? initialBounds,
+    bool requestPermission = true,
+  }) async {
     if (!supported || _busy) return false;
     _busy = true;
     try {
       noteFullScreen(media);
       final permission = await isPermissionGranted();
       if (!permission) {
-        await openPermissionSettings();
+        // 冷启动同步不能自动拉起系统设置页；只有用户亲手拨开关时才请求。
+        if (requestPermission) await openPermissionSettings();
         return false;
       }
-      final initial = _lastKnownBounds.isEmpty
-          ? Rect.fromLTWH(0, 0, media.size.width, media.size.height)
-          : _lastKnownBounds;
+      final fallback = initialBounds ?? Rect.fromLTWH(0, 0, 1, 1);
+      final initial = _lastKnownBounds.isEmpty ? fallback : _lastKnownBounds;
       final sticky = _stickyWindow(initial);
       bounds.value = sticky;
       active.value = true;

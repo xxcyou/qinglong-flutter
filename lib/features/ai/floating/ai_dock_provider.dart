@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -86,6 +87,28 @@ class AiContextChip {
     if (trimmed.length <= max) return trimmed;
     return '${trimmed.substring(0, max)}\n…（已截断，共 ${trimmed.length} 字符）';
   }
+}
+
+/// 悬浮球的屏幕矩形。主 APP 已经不再挂 [AppFloatLayer]，外部悬浮窗服务
+/// 启动时需要先用它给原生窗口一个很小的初始 bounds，否则会先铺满全屏挡住
+/// 桌面触摸。几何公式必须和 `AppFloatLayer._visibleBounds` 一致。
+Rect aiBubbleRect(MediaQueryData media, AiDockState dock) {
+  const bubble = 56.0;
+  final size = media.size;
+  final safeTop = media.padding.top;
+  final safeBottom = media.padding.bottom;
+  final minY = safeTop + 8;
+  final maxY = size.height - safeBottom - 110 - bubble;
+  final left =
+      (dock.dx * (size.width - bubble)).clamp(4.0, size.width - bubble - 4);
+  var top =
+      (minY + dock.dy * (maxY - minY)).clamp(minY, maxY < minY ? minY : maxY);
+  final keyboard = media.viewInsets.bottom;
+  if (dock.quickOpen && keyboard > 0) {
+    final limit = size.height - keyboard - 8 - bubble;
+    if (top > limit) top = limit < minY ? minY : limit;
+  }
+  return Rect.fromLTWH(left, top, bubble, bubble);
 }
 
 class AiDockState {
