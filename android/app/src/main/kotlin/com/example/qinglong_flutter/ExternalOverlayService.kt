@@ -62,6 +62,14 @@ class ExternalOverlayService : Service() {
             instance?.applyBounds(bounds)
         }
 
+        /// APP 从桌面图标直接回到前台时调用：只把悬浮窗视图摘掉，不再二次
+        /// startActivity，避免 Activity 和悬浮窗同时挂同一个 engine。
+        fun detachForAppReturn() {
+            val service = instance ?: return
+            service.hideOverlay(openApp = false)
+            service.stopSelf()
+        }
+
         fun stop(context: Context) {
             instance?.let {
                 it.hideOverlay(openApp = true)

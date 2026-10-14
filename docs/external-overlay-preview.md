@@ -19,6 +19,13 @@
       所以 AI 球 / AI 对话窗 / 浏览器窗与 APP 内是同一份状态和同一套 UI。
 - [x] 悬浮窗并集 bounds 上报：原生覆盖窗口只包住可见悬浮窗，
       窗口外触摸继续落到下面 APP。
+- [x] 终端 / SSH 终端 / 容器日志 / 容器文件窗从页面 `OverlayEntry` 改为
+      `AppFloatLayer` 常驻宿主（`FloatingTerminalHost` / `SshFloatingHostLayer`），
+      内外悬浮模式共用同一份窗口状态。
+- [x] 画布窗 bounds 纳入上报；终端/SSH 窗自己维护的 `Offset+Size` 通过
+      `FloatBoundsRegistry` 上报。
+- [x] 从桌面图标直接回 APP 时先摘掉服务侧 FlutterView，修复
+      “specified child already has a parent” 崩溃。
 
 ## 架构
 
@@ -45,9 +52,10 @@ ExternalOverlayService ─FlutterView───┘
 
 ## 待办（Phase 2+）
 
-- [ ] 终端悬浮窗（`FloatingTerminal` / `SshFloatingHost`）接入 `AppFloatLayer`：
-      目前它们依赖页面内 `OverlayEntry`，外部模式下页面不渲染，需要改成常驻宿主。
-- [ ] 画布窗、快问结果窗、悬浮编辑器的 bounds 精确上报与外部显示。
+- [x] 终端悬浮窗（`FloatingTerminal` / `SshFloatingHost`）接入 `AppFloatLayer`。
+- [x] 画布窗 bounds 上报；快问输入条/结果窗已有宽松包围盒。
+- [ ] 悬浮编辑器（`showFloatingCodeEditor`）等瞬时 Overlay 的外部行为。
 - [ ] 键盘/输入法在覆盖窗口中的焦点与 `adjustResize` 行为验证。
 - [ ] 权限被拒、服务被系统回收、旋转/分屏、多显示器场景。
+- [ ] 快问结果窗 bounds 精确化。
 - [ ] 通知常驻与「返回 APP」交互打磨。

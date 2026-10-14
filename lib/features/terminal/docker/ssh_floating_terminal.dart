@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../floating/float_bounds_registry.dart';
+
 import '../widgets/ssh_terminal_view.dart';
 import 'ssh_floating_host.dart';
 
@@ -31,6 +33,7 @@ class SshFloatingTerminal {
           SshFloatingHost.close(id);
           _ids.remove(id);
         },
+        boundsId: 'ssh-float-$id',
       ),
     );
     _ids.add(id);
@@ -53,8 +56,10 @@ class SshFloatingTerminalWindow extends StatefulWidget {
     required this.onFocus,
     required this.onMinimize,
     required this.onClose,
+    required this.boundsId,
   });
 
+  final Object boundsId;
   final String sessionId;
   final String containerId;
   final String? title;
@@ -68,6 +73,12 @@ class SshFloatingTerminalWindow extends StatefulWidget {
 }
 
 class _SshFloatingTerminalWindowState extends State<SshFloatingTerminalWindow> {
+  @override
+  void dispose() {
+    FloatBoundsRegistry.remove(widget.boundsId);
+    super.dispose();
+  }
+
   Offset _pos = const Offset(24, 90);
   Size _size = const Size(380, 280);
 
@@ -79,6 +90,7 @@ class _SshFloatingTerminalWindowState extends State<SshFloatingTerminalWindow> {
     final left = _pos.dx.clamp(0.0, media.size.width - width - 8);
     final top = _pos.dy.clamp(MediaQuery.paddingOf(context).top,
         media.size.height - height - 8);
+    FloatBoundsRegistry.report(widget.boundsId, Rect.fromLTWH(left, top, width, height));
     final shell = "docker exec -it '${widget.containerId.replaceAll("'", "'\\''")}' /bin/sh -l";
     return Stack(
       fit: StackFit.expand,

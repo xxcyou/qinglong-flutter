@@ -29,6 +29,10 @@ class MainActivity : FlutterActivity() {
     private var externalChannel: MethodChannel? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 用户可能不是点通知、而是直接从桌面图标回到 APP。此时悬浮窗服务
+        // 的 FlutterView 仍挂在共享 engine 上，FlutterActivity 再挂一个会抛
+        // “child already has a parent”。先把服务视图摘掉再走 super。
+        ExternalOverlayService.detachForAppReturn()
         super.onCreate(savedInstanceState)
         consumeViewIntent(intent)
         // 高刷屏不锁 60：把窗口首选模式指到设备支持的最高刷新率，

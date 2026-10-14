@@ -10,30 +10,70 @@ import 'providers/shell_files_provider.dart';
 import 'providers/terminal_session_provider.dart';
 import 'terminal_palettes.dart';
 import '../../../shared/mono_text.dart';
+import '../floating/float_bounds_registry.dart';
 
 /// 悬浮窗终端：在文件管理器当前目录上浮一层，方便用户直接在该目录跑命令。
+///
+/// 这里不做 OverlayEntry 插入，而是由常驻的 [FloatingTerminalHost] 渲染在
+/// [AppFloatLayer] 里。这样 APP 外悬浮模式（页面不渲染）下终端窗也仍然存在，
+/// 和 APP 内是同一份窗口状态。
 class FloatingTerminal {
-  static OverlayEntry? _entry;
+  FloatingTerminal._();
 
-  static bool get isOpen => _entry != null;
+  static final ValueNotifier<int> revision = ValueNotifier<int>(0);
+  static bool _open = false;
+  static String _cwd = '';
+  static int _session = 0;
 
+  static bool get isOpen => _open;
+
+  static String get cwd => _cwd;
+  static int get sessionKey => _session;
+
+  /// 兼容旧调用点：`context` 不再用于找 Overlay，保留签名避免改动页面。
   static void show(
     BuildContext context, {
     String? cwd,
   }) {
-    if (_entry != null) return;
-    final overlay = Overlay.of(context, rootOverlay: true);
-    final entry = OverlayEntry(
-      builder: (_) => FloatingTerminalWindow(
-        cwd: cwd ?? fileManagerCwd.value,
-        onClose: () {
-          _entry?.remove();
-          _entry = null;
-        },
-      ),
+    final next = cwd ?? fileManagerCwd.value;
+    if (_open && next == _cwd) {
+      revision.value++;
+      return;
+    }
+    _cwd = next;
+    _open = true;
+    _session++;
+    revision.value++;
+  }
+
+  static void hide() {
+    if (!_open) return;
+    _open = false;
+    revision.value++;
+  }
+}
+
+/// 常驻终端宿主：挂在 [AppFloatLayer] 中。
+class FloatingTerminalHost extends StatelessWidget {
+  const FloatingTerminalHost({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: FloatingTerminal.revision,
+      builder: (context, _, __) {
+        if (!FloatingTerminal.isOpen) return const SizedBox.shrink();
+        return Stack(
+          children: [
+            FloatingTerminalWindow(
+              key: ValueKey('floating-terminal-${FloatingTerminal.sessionKey}'),
+              cwd: FloatingTerminal.cwd,
+              onClose: FloatingTerminal.hide,
+            ),
+          ],
+        );
+      },
     );
-    _entry = entry;
-    overlay.insert(entry);
   }
 }
 
@@ -79,11 +119,14 @@ class _FloatingTerminalWindowState
 
   @override
   void dispose() {
+    FloatBoundsRegistry.remove(_terminalBoundsKey);
     _eventsSubscription?.cancel();
     if (_terminalId > 0) _bridge.stopTerminal(_terminalId);
     _focusNode.dispose();
     super.dispose();
   }
+
+  static const _terminalBoundsKey = 'floating-terminal';
 
   Future<void> _start() async {
     try {
@@ -148,6 +191,10 @@ class _FloatingTerminalWindowState
     final left = _pos.dx.clamp(0.0, media.size.width - width - 8);
     final top = _pos.dy.clamp(MediaQuery.paddingOf(context).top,
         media.size.height - height - 8);
+    FloatBoundsRegistry.report(
+      _terminalBoundsKey,
+      Rect.fromLTWH(left, top, width, height),
+    );
     return Positioned(
       left: left,
       top: top,

@@ -5,10 +5,14 @@ import '../../shared/float_stack.dart';
 import '../ai/floating/ai_dock_overlay.dart';
 import '../ai/floating/ai_dock_provider.dart';
 import '../ai/providers/chat_provider.dart';
+import '../ai/models/canvas_window.dart';
 import '../browser/browser_engine.dart';
 import '../browser/browser_host.dart';
 import '../browser/browser_window.dart';
 import '../external/external_overlay_controller.dart';
+import '../terminal/docker/ssh_floating_host.dart';
+import '../terminal/floating_terminal.dart';
+import 'float_bounds_registry.dart';
 
 /// 全局悬浮窗层：AI 悬浮球/聊天窗 + 浏览器窗。
 ///
@@ -27,6 +31,7 @@ class AppFloatLayer extends ConsumerWidget {
         FloatStack.instance,
         BrowserWindow.instance,
         BrowserEngine.instance.visible,
+        FloatBoundsRegistry.revision,
       ]),
       builder: (context, _) {
         _reportBounds(context, ref);
@@ -43,6 +48,16 @@ class AppFloatLayer extends ConsumerWidget {
                   key: ValueKey('float-browser'),
                   child: BrowserHost(),
                 ),
+            // 终端 / SSH 浮现窗：旧实现是 OverlayEntry，外部模式下页面不渲染
+            // 就会消失；现在常驻在这里，内外一致。
+            const Positioned.fill(
+              key: ValueKey('float-terminal'),
+              child: FloatingTerminalHost(),
+            ),
+            const Positioned.fill(
+              key: ValueKey('float-ssh'),
+              child: SshFloatingHostLayer(),
+            ),
             // 悬浮球永远画在两个窗口之上：浏览器一最大化就盖住整块屏幕，
             // 气泡要是跟着聊天窗沉下去，用户就没有任何入口能把 AI 叫回来。
             const Positioned.fill(
@@ -128,6 +143,19 @@ class AppFloatLayer extends ConsumerWidget {
       left = left.clamp(safeArea.left, size.width - safeArea.right - w);
       top = top.clamp(safeArea.top, size.height - safeArea.bottom - h);
       add(Rect.fromLTWH(left, top, w, h));
+
+      // 画布窗：与 AiDockOverlay._canvasWindow 同一套几何公式，
+      // 否则多窗口时外悬浮窗覆盖层会裁掉画布。
+      for (final win in dock.canvasWindows) {
+        final cw = (win.w * field.width)
+            .clamp(CanvasWindow.minW * field.width, field.width);
+        final ch = (win.h * field.height)
+            .clamp(CanvasWindow.minH * field.height, field.height);
+        final cl = (28 + win.x * field.width).clamp(8.0, size.width - cw - 8);
+        final ct = (safeTop + 6 + win.y * field.height)
+            .clamp(safeTop + 4, size.height - safeBottom - ch - 4);
+        add(Rect.fromLTWH(cl, ct, cw, ch));
+      }
     }
 
     // 浏览器窗：把隐藏时的屏幕外矩形排除。
@@ -165,6 +193,9 @@ class AppFloatLayer extends ConsumerWidget {
         add(Rect.fromLTWH(left, top, w, h));
       }
     }
+
+    // 终端/SSH 等自己维护 Offset+Size 的窗口。
+    add(FloatBoundsRegistry.union);
 
     // 留一点余量给发光/阴影，避免光晕被覆盖窗口边缘切掉。
     return (union ?? Rect.fromLTWH(0, 0, 1, 1)).inflate(10);

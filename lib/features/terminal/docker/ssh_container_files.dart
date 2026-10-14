@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+
+import '../../floating/float_bounds_registry.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../shared/code_editor_page.dart';
@@ -43,6 +45,7 @@ class SshFloatingFiles {
           SshFloatingHost.close(id);
           _ids.remove(id);
         },
+        boundsId: 'ssh-float-$id',
       ),
     );
     _ids.add(id);
@@ -70,8 +73,10 @@ class SshFloatingFilesWindow extends StatefulWidget {
     required this.onFocus,
     required this.onMinimize,
     required this.onClose,
+    required this.boundsId,
   });
 
+  final Object boundsId;
   final String sessionId;
   final String containerId;
   final String? title;
@@ -84,6 +89,12 @@ class SshFloatingFilesWindow extends StatefulWidget {
 }
 
 class _SshFloatingFilesWindowState extends State<SshFloatingFilesWindow> {
+  @override
+  void dispose() {
+    FloatBoundsRegistry.remove(widget.boundsId);
+    super.dispose();
+  }
+
   Offset _pos = const Offset(32, 100);
   Size _size = const Size(420, 360);
 
@@ -95,6 +106,7 @@ class _SshFloatingFilesWindowState extends State<SshFloatingFilesWindow> {
     final left = _pos.dx.clamp(0.0, media.size.width - width - 8);
     final top = _pos.dy.clamp(MediaQuery.paddingOf(context).top,
         media.size.height - height - 8);
+    FloatBoundsRegistry.report(widget.boundsId, Rect.fromLTWH(left, top, width, height));
     return Stack(
       fit: StackFit.expand,
       children: [

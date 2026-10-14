@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
 
-/// SSH 容器悬浮窗总控：多个悬浮窗共用同一个 OverlayEntry。
+import '../../floating/float_bounds_registry.dart';
+
+/// SSH 容器悬浮窗总控：所有容器终端/日志/文件窗共用同一份常驻列表。
 /// 支持：点击置顶、最小化成小方块。
 /// 所有窗口都保留在树里（Offstage），因此终端会话/路径/文件状态不会丢。
+///
+/// 和 [FloatingTerminal] 一样，不再往页面 OverlayEntry 插入，而是由
+/// [SshFloatingHostLayer] 渲染在 [AppFloatLayer] 中，APP 外悬浮模式下也常驻。
 class SshFloatingHost {
   SshFloatingHost._();
 
   static final List<_HostedWindow> _windows = [];
-  static OverlayEntry? _entry;
+  static final ValueNotifier<int> revision = ValueNotifier<int>(0);
   static int _counter = 0;
 
   /// 注册一个悬浮窗，返回稳定 id。
@@ -27,48 +32,7 @@ class SshFloatingHost {
       key: UniqueKey(),
       builder: builder,
     ));
-    final overlay = Overlay.of(context, rootOverlay: true);
-    if (_entry == null) {
-      late final OverlayEntry entry;
-      entry = OverlayEntry(
-        builder: (context) => Stack(
-          children: [
-            for (final w in _windows)
-              KeyedSubtree(
-                key: w.key,
-                child: Offstage(
-                  offstage: w.minimized,
-                  child: w.builder(context),
-                ),
-              ),
-            if (_windows.any((w) => w.minimized))
-              Positioned(
-                left: 8,
-                right: 8,
-                bottom: 8,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      for (final w in _windows.where((w) => w.minimized))
-                        _MinimizeCube(
-                          title: w.title,
-                          icon: w.icon,
-                          onTap: () => expand(w.id),
-                        ),
-                      const SizedBox(width: 8),
-                    ],
-                  ),
-                ),
-              ),
-          ],
-        ),
-      );
-      _entry = entry;
-      overlay.insert(entry);
-    } else {
-      _entry!.markNeedsBuild();
-    }
+    revision.value++;
     return id;
   }
 
@@ -78,7 +42,7 @@ class SshFloatingHost {
     if (i < 0 || i == _windows.length - 1) return;
     final w = _windows.removeAt(i);
     _windows.add(w);
-    _entry?.markNeedsBuild();
+    revision.value++;
   }
 
   /// 最小化成小方块。
@@ -86,7 +50,8 @@ class SshFloatingHost {
     final w = _windows.where((x) => x.id == id).firstOrNull;
     if (w == null || w.minimized) return;
     w.minimized = true;
-    _entry?.markNeedsBuild();
+    FloatBoundsRegistry.setEnabled('ssh-float-$id', false);
+    revision.value++;
   }
 
   /// 从小方块恢复显示，并置顶。
@@ -94,8 +59,9 @@ class SshFloatingHost {
     final w = _windows.where((x) => x.id == id).firstOrNull;
     if (w == null) return;
     w.minimized = false;
+    FloatBoundsRegistry.setEnabled('ssh-float-$id', true);
     // 先强制刷新再置顶，避免目标本来就是最后一个时 focus 提前 return 不刷新。
-    _entry?.markNeedsBuild();
+    revision.value++;
     focus(id);
   }
 
@@ -108,7 +74,7 @@ class SshFloatingHost {
         expanded.add(w.id);
       }
     }
-    _entry?.markNeedsBuild();
+    revision.value++;
     return expanded;
   }
 
@@ -119,7 +85,7 @@ class SshFloatingHost {
         w.minimized = false;
       }
     }
-    _entry?.markNeedsBuild();
+    revision.value++;
   }
 
   /// 关闭某个悬浮窗。
@@ -127,12 +93,8 @@ class SshFloatingHost {
     final i = _windows.indexWhere((w) => w.id == id);
     if (i < 0) return;
     _windows.removeAt(i);
-    if (_windows.isEmpty) {
-      _entry?.remove();
-      _entry = null;
-      return;
-    }
-    _entry?.markNeedsBuild();
+    FloatBoundsRegistry.setEnabled('ssh-float-$id', false);
+    revision.value++;
   }
 }
 
@@ -153,6 +115,54 @@ class _HostedWindow {
   bool minimized = false;
   final Key key;
   final WidgetBuilder builder;
+}
+
+/// 常驻 SSH 悬浮窗宿主：挂在 [AppFloatLayer] 中。
+class SshFloatingHostLayer extends StatelessWidget {
+  const SshFloatingHostLayer({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: SshFloatingHost.revision,
+      builder: (context, _, __) {
+        final windows = SshFloatingHost._windows;
+        if (windows.isEmpty) return const SizedBox.shrink();
+        return Stack(
+          children: [
+            for (final w in windows)
+              KeyedSubtree(
+                key: w.key,
+                child: Offstage(
+                  offstage: w.minimized,
+                  child: w.builder(context),
+                ),
+              ),
+            if (windows.any((w) => w.minimized))
+              Positioned(
+                left: 8,
+                right: 8,
+                bottom: 8,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      for (final w in windows.where((w) => w.minimized))
+                        _MinimizeCube(
+                          title: w.title,
+                          icon: w.icon,
+                          onTap: () => SshFloatingHost.expand(w.id),
+                        ),
+                      const SizedBox(width: 8),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
 }
 
 class _MinimizeCube extends StatelessWidget {
