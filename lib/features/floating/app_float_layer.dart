@@ -13,6 +13,7 @@ import '../external/external_overlay_controller.dart';
 import '../terminal/docker/ssh_floating_host.dart';
 import '../terminal/floating_terminal.dart';
 import 'attachment_float_host.dart';
+import 'file_picker_float_host.dart';
 import 'float_bounds_registry.dart';
 
 /// 全局悬浮窗层：AI 悬浮球/聊天窗 + 浏览器窗。
@@ -24,20 +25,18 @@ class AppFloatLayer extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // 监听会改变窗口几何的状态，让 bounds 上报及时更新。
-    ref.watch(aiDockProvider);
-    ref.watch(chatProvider);
+    // 只监听 z 序变化。浏览器/终端/AI 各自在自己的宿主里监听自己的几何，
+    // 这样拖浏览器时不会整层重建，AI 悬浮球自然就不会跟着闪。
     return AnimatedBuilder(
-      animation: Listenable.merge([
-        FloatStack.instance,
-        BrowserWindow.instance,
-        BrowserEngine.instance.visible,
-        FloatBoundsRegistry.revision,
-      ]),
+      animation: FloatStack.instance,
       builder: (context, _) {
-        _reportBounds(context, ref);
         return Stack(
           children: [
+            // 单独的几何上报器：它自己监听几何变化，重建只影响自己。
+            const Positioned.fill(
+              key: ValueKey('float-bounds-reporter'),
+              child: _FloatBoundsReporter(),
+            ),
             // 所有独立悬浮窗按 FloatStack 顺序绘制：点到谁，谁置顶。
             // 终端/SSH/附件不再固定压在某一个宿主上，浏览器也不再“困在 AI 里”。
             for (final id in FloatStack.instance.order)
@@ -62,10 +61,15 @@ class AppFloatLayer extends ConsumerWidget {
               key: ValueKey('float-bubble'),
               child: AiBubbleHost(),
             ),
-            // 附件/图片预览：独立悬浮窗，最上层。
+            // 附件/图片预览：独立悬浮窗。
             const Positioned.fill(
               key: ValueKey('float-attachment'),
               child: AttachmentFloatHost(),
+            ),
+            // 文件/附件选择器：独立悬浮窗，最上层。
+            const Positioned.fill(
+              key: ValueKey('float-file-picker'),
+              child: FilePickerFloatHost(),
             ),
           ],
         );
@@ -73,12 +77,32 @@ class AppFloatLayer extends ConsumerWidget {
     );
   }
 
-  void _reportBounds(BuildContext context, WidgetRef ref) {
-    final media = MediaQuery.of(context);
-    final rect = _visibleBounds(media, ref);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      ExternalOverlayController.instance.noteBounds(rect);
-    });
+}
+
+/// 单独监听“会影响窗口并集”的状态，只重建这个零尺寸 widget，避免拖浏览器
+/// 时整层 `AppFloatLayer` 重建导致 AI 悬浮球闪烁。
+class _FloatBoundsReporter extends ConsumerWidget {
+  const _FloatBoundsReporter();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    ref.watch(aiDockProvider);
+    ref.watch(chatProvider);
+    return AnimatedBuilder(
+      animation: Listenable.merge([
+        BrowserWindow.instance,
+        BrowserEngine.instance.visible,
+        FloatBoundsRegistry.revision,
+      ]),
+      builder: (context, _) {
+        final media = MediaQuery.of(context);
+        final rect = _visibleBounds(media, ref);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          ExternalOverlayController.instance.noteBounds(rect);
+        });
+        return const SizedBox.shrink();
+      },
+    );
   }
 
   Rect _visibleBounds(MediaQueryData media, WidgetRef ref) {

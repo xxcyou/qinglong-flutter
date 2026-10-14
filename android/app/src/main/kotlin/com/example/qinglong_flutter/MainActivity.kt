@@ -35,6 +35,7 @@ class MainActivity : FlutterActivity() {
         ExternalOverlayService.detachForAppReturn()
         super.onCreate(savedInstanceState)
         consumeViewIntent(intent)
+        maybeEnterExternalForPreview(intent, savedInstanceState)
         // 高刷屏不锁 60：把窗口首选模式指到设备支持的最高刷新率，
         // 让 Flutter 层和 WebView 的 HTML 动画都能吃满 120/144/240Hz。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -84,22 +85,7 @@ class MainActivity : FlutterActivity() {
                         openOverlaySettings()
                         result.success(null)
                     }
-                    "enter" -> {
-                        if (!canDrawOverlays()) {
-                            openOverlaySettings()
-                            result.success(false)
-                            return@setMethodCallHandler
-                        }
-                        val bounds = call.toRectF()
-                        result.success(true)
-                        // 先把 Activity 的 FlutterView 从引擎上摘下来，避免和
-                        // 悬浮窗服务同时挂两个 surface；再启动服务并退到后台。
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            detachFromFlutterEngine()
-                            ExternalOverlayService.start(this, bounds)
-                            finish()
-                        }, 120)
-                    }
+                    "enter" -> result.success(enterExternalOverlay(call.toRectF()))
                     "updateBounds" -> {
                         ExternalOverlayService.updateBounds(this, call.toRectF())
                         result.success(null)
@@ -112,6 +98,37 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+    }
+
+    /// 进入外部悬浮模式。返回 false 表示没有系统悬浮窗权限（并已拉起设置页）。
+    private fun enterExternalOverlay(bounds: android.graphics.RectF): Boolean {
+        if (!canDrawOverlays()) {
+            openOverlaySettings()
+            return false
+        }
+        // 先把 Activity 的 FlutterView 从引擎上摘下来，避免和悬浮窗服务
+        // 同时挂两个 surface；再启动服务并退到后台。
+        Handler(Looper.getMainLooper()).postDelayed({
+            detachFromFlutterEngine()
+            ExternalOverlayService.start(this, bounds)
+            if (!isFinishing) finish()
+        }, 120)
+        return true
+    }
+
+    /// 预览分支自动化测试入口：`am start ... --ez qinglong_preview_enter_external true`。
+    /// 正式发布前应删除；不影响正常用户路径。
+    private fun maybeEnterExternalForPreview(intent: Intent?, saved: Bundle?) {
+        if (saved != null) return
+        if (intent?.getBooleanExtra("qinglong_preview_enter_external", false) != true) return
+        val dm = resources.displayMetrics
+        val left = intent.getFloatExtra("left", 0f)
+        val top = intent.getFloatExtra("top", dm.heightPixels / 3f)
+        val right = intent.getFloatExtra("right", dm.widthPixels.toFloat())
+        val bottom = intent.getFloatExtra("bottom", dm.heightPixels * 2f / 3f)
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!isFinishing) enterExternalOverlay(android.graphics.RectF(left, top, right, bottom))
+        }, 800)
     }
 
     private fun MethodCall.toRectF(): android.graphics.RectF {

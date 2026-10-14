@@ -2183,14 +2183,11 @@ class _WindowState extends ConsumerState<_Window> {
   /// 挑一个本地文件当附件。选择器是路由弹窗，必须借根 Navigator 的 context：
   /// 悬浮层在 Navigator 之上，用自己的 context 弹出来会被窗口自己盖住。
   Future<void> _pickFile(BuildContext context, WidgetRef ref) async {
-    final navContext = appNavigatorKey.currentContext;
-    if (navContext == null || !navContext.mounted) return;
     final notifier = ref.read(aiDockProvider.notifier);
-    // 选择器是路由弹窗，活在 Navigator 里，也就是**这一层的下面**——
-    // 聊天窗会压在它上面，重叠区域的点击还会被聊天窗吃掉。
-    // 所以挑文件期间先把窗口收起来，选完（或取消）再回来。
+    // 选择器现在自己就是常驻悬浮窗，不再依赖 appNavigatorKey；外部悬浮模式
+    // 下也能弹出来。收起聊天窗只是为了给选择器腾位置。
     notifier.close();
-    final picked = await LocalFilePicker.pick(navContext);
+    final picked = await LocalFilePicker.pick(context);
     if (picked == null) {
       notifier.open();
       return;

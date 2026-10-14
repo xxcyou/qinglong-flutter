@@ -18,9 +18,14 @@ class AttachmentFloatHost extends StatelessWidget {
       valueListenable: AttachmentPreviewController.instance.state,
       builder: (context, state, _) {
         if (state == null) return const SizedBox.shrink();
-        return _AttachmentWindow(
-          key: state.key,
-          state: state,
+        // _AttachmentWindow 内部返回 Positioned，必须直接挂在 Stack 下。
+        return Stack(
+          children: [
+            _AttachmentWindow(
+              key: state.key,
+              state: state,
+            ),
+          ],
         );
       },
     );
