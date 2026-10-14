@@ -5,6 +5,7 @@ import '../../../core/cache/cache_cleaner.dart';
 import '../../../shared/glass_scaffold.dart';
 import '../../../core/llm/llm_registry_provider.dart';
 import '../../ai/floating/ai_dock_provider.dart';
+import '../../external/external_overlay_controller.dart';
 import '../../ai/providers/chat_provider.dart';
 import '../providers/settings_provider.dart';
 import 'ai_settings_page.dart';
@@ -219,6 +220,8 @@ class SettingsPage extends ConsumerWidget {
               );
             },
           ),
+          const SizedBox(height: 8),
+          _ExternalOverlayCard(),
           const SectionLabel('终端'),
           GlassCard(
             child: Row(
@@ -620,6 +623,67 @@ class _StepperCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+
+/// APP 外悬浮窗预览开关。
+///
+/// 这是预览分支能力：开启后会把当前引擎的 FlutterView 交给系统悬浮窗服务，
+/// 主 APP 退到后台，悬浮球/聊天窗继续显示在其它 APP 上层。
+class _ExternalOverlayCard extends StatelessWidget {
+  const _ExternalOverlayCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = ExternalOverlayController.instance;
+    return ValueListenableBuilder<bool>(
+      valueListenable: controller.active,
+      builder: (context, active, _) {
+        return GlassCard(
+          child: Row(
+            children: [
+              const Icon(Icons.picture_in_picture_alt_rounded),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'APP 外悬浮窗（预览）',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      '把悬浮球/悬浮窗显示在其它 APP 上层；需要系统悬浮窗权限',
+                      style: TextStyle(fontSize: 12.5),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: active,
+                onChanged: (value) async {
+                  if (value) {
+                    final media = MediaQuery.of(context);
+                    final ok = await controller.enable(media);
+                    if (!ok && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('需要先在系统设置里允许“显示在其他应用上层”'),
+                        ),
+                      );
+                    }
+                  } else {
+                    await controller.disable();
+                  }
+                },
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

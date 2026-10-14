@@ -11,12 +11,12 @@ import 'core/theme/glass.dart';
 import 'core/theme/theme_effects_controller.dart';
 import 'core/theme/startup_splash.dart';
 import 'core/theme/theme_store.dart';
-import 'features/ai/floating/ai_dock_overlay.dart';
-import 'features/browser/browser_host.dart';
+import 'features/external/external_float_shell.dart';
+import 'features/external/external_overlay_controller.dart';
+import 'features/floating/app_float_layer.dart';
 import 'features/panels/providers/panel_list_provider.dart';
 import 'features/settings/providers/settings_provider.dart';
 import 'router.dart';
-import 'shared/float_stack.dart';
 
 /// 应用根组件：主题、语言、路由全部挂载在这里。
 class QingLongApp extends ConsumerStatefulWidget {
@@ -112,7 +112,13 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
       // 悬浮 AI 挂在 Navigator 之上：push 出去的脚本页、日志页也能随手问 AI。
       // GlassFlowDriver 包住整棵树：它只旁听指针/滚动事件，用来把背景光斑
       // "推"起来（空闲时背景一帧都不画，实测省下一整个核）。
-      builder: (context, child) => GlassFlowDriver(
+      builder: (context, child) => ValueListenableBuilder<bool>(
+        valueListenable: ExternalOverlayController.instance.active,
+        builder: (context, externalActive, _) {
+          if (externalActive) {
+            return const ExternalFloatShell();
+          }
+          return GlassFlowDriver(
         child: Stack(
           children: [
             // 全局唯一主题背景层：所有页面共享一个 WebView/光斑层，
@@ -156,32 +162,9 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
             //
             // 两个宿主都始终挂在树上（只是换顺序）：WebView 一旦被摘下来，
             // 页面里的定时器和 CF 挑战脚本就断了，票白拿。
-            Positioned.fill(
-              key: const ValueKey('app-floats'),
-              child: AnimatedBuilder(
-                animation: FloatStack.instance,
-                builder: (context, _) => Stack(
-                  children: [
-                    for (final id in FloatStack.instance.order)
-                      if (id == FloatStack.ai)
-                        const Positioned.fill(
-                          key: ValueKey('float-ai'),
-                          child: AiDockHost(),
-                        )
-                      else
-                        const Positioned.fill(
-                          key: ValueKey('float-browser'),
-                          child: BrowserHost(),
-                        ),
-                    // 悬浮球永远画在两个窗口之上：浏览器一最大化就盖住整块屏幕，
-                    // 气泡要是跟着聊天窗沉下去，用户就没有任何入口能把 AI 叫回来。
-                    const Positioned.fill(
-                      key: ValueKey('float-bubble'),
-                      child: AiBubbleHost(),
-                    ),
-                  ],
-                ),
-              ),
+            const Positioned.fill(
+              key: ValueKey('app-floats'),
+              child: AppFloatLayer(),
             ),
             if (showSplash)
               Positioned.fill(
@@ -193,6 +176,8 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
               ),
           ],
         ),
+      );
+        },
       ),
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
