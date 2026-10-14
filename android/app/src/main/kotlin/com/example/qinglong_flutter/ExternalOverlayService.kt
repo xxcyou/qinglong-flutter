@@ -253,8 +253,13 @@ class ExternalOverlayService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val stopIntent = Intent(this, ExternalOverlayService::class.java).apply {
-            action = ACTION_STOP
+        // 点通知要回 APP，不是关悬浮窗。
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            )
         }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -262,7 +267,7 @@ class ExternalOverlayService : Service() {
             } else {
                 0
             }
-        val pending = PendingIntent.getService(this, 0x514C, stopIntent, flags)
+        val pending = PendingIntent.getActivity(this, 0x514C, openIntent, flags)
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
         } else {

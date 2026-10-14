@@ -204,7 +204,7 @@ class SettingsPage extends ConsumerWidget {
                           ),
                           SizedBox(height: 2),
                           Text(
-                            '点开聊天窗；长按伸出快问输入框（隐藏只能在这里关）',
+                            '点开聊天窗；长按伸出快问输入框。开启后悬浮球/悬浮窗显示在系统上层（APP 外悬浮）',
                             style: TextStyle(fontSize: 12.5),
                           ),
                         ],
@@ -221,7 +221,6 @@ class SettingsPage extends ConsumerWidget {
             },
           ),
           const SizedBox(height: 8),
-          _ExternalOverlayCard(),
           const SectionLabel('终端'),
           GlassCard(
             child: Row(
@@ -652,53 +651,6 @@ Future<void> _setBubbleAndExternal(
       const SnackBar(
         content: Text('需要先在系统设置里允许“显示在其他应用上层”'),
       ),
-    );
-  }
-}
-
-class _ExternalOverlayCard extends ConsumerWidget {
-  const _ExternalOverlayCard();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final controller = ExternalOverlayController.instance;
-    final dock = ref.watch(aiDockProvider);
-    return ValueListenableBuilder<bool>(
-      valueListenable: controller.active,
-      builder: (context, active, _) {
-        // 开关状态跟悬浮球绑定；外悬浮实际没起来时（比如权限被拒）仍显示关，
-        // 但再次切换会重新走授权流程。
-        final value = dock.visible && active;
-        return GlassCard(
-          child: Row(
-            children: [
-              const Icon(Icons.picture_in_picture_alt_rounded),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'APP 外悬浮窗（预览）',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    SizedBox(height: 2),
-                    Text(
-                      '与 AI 悬浮球开关绑定；开启后悬浮球/悬浮窗显示在其它 APP 上层',
-                      style: TextStyle(fontSize: 12.5),
-                    ),
-                  ],
-                ),
-              ),
-              Switch(
-                value: value,
-                onChanged: (next) =>
-                    _setBubbleAndExternal(context, ref, next),
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 }
