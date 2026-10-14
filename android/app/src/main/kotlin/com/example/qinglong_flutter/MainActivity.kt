@@ -70,8 +70,21 @@ class MainActivity : FlutterActivity() {
         val url = intent.dataString ?: return
         pendingUrl = url
         if (openHandlerReady && openChannel != null) {
-            openChannel?.invokeMethod("openUrl", url)
-            pendingUrl = null
+            // 只有 Dart 侧确认收到才清 pending；二次跳转/引擎重建时丢包也能靠
+            // getPendingUrl 补取，避免“第二次打开没链接”。
+            openChannel?.invokeMethod("openUrl", url, object : MethodChannel.Result {
+                override fun success(result: Any?) {
+                    if (pendingUrl == url) pendingUrl = null
+                }
+
+                override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+                    // 保留 pendingUrl，下一次 getPendingUrl 仍能拿到。
+                }
+
+                override fun notImplemented() {
+                    // 保留 pendingUrl。
+                }
+            })
         }
     }
 
