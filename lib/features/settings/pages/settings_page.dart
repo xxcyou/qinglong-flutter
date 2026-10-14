@@ -212,8 +212,8 @@ class SettingsPage extends ConsumerWidget {
                     ),
                     Switch(
                       value: dock.visible,
-                      onChanged: (_) =>
-                          ref.read(aiDockProvider.notifier).toggleVisible(),
+                      onChanged: (value) =>
+                          _setBubbleAndExternal(context, ref, value),
                     ),
                   ],
                 ),
@@ -632,15 +632,43 @@ class _StepperCard extends StatelessWidget {
 ///
 /// 这是预览分支能力：开启后会把当前引擎的 FlutterView 交给系统悬浮窗服务，
 /// 主 APP 退到后台，悬浮球/聊天窗继续显示在其它 APP 上层。
-class _ExternalOverlayCard extends StatelessWidget {
+/// 悬浮球与 APP 外悬浮窗绑定：关悬浮球就关外悬浮；开悬浮球就开外悬浮。
+/// 权限被拒时保留 APP 内悬浮球，并提示去系统设置授权。
+Future<void> _setBubbleAndExternal(
+  BuildContext context,
+  WidgetRef ref,
+  bool visible,
+) async {
+  final controller = ExternalOverlayController.instance;
+  if (!visible) {
+    ref.read(aiDockProvider.notifier).hide();
+    await controller.disable();
+    return;
+  }
+  ref.read(aiDockProvider.notifier).show();
+  final ok = await controller.enable(MediaQuery.of(context));
+  if (!ok && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('需要先在系统设置里允许“显示在其他应用上层”'),
+      ),
+    );
+  }
+}
+
+class _ExternalOverlayCard extends ConsumerWidget {
   const _ExternalOverlayCard();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final controller = ExternalOverlayController.instance;
+    final dock = ref.watch(aiDockProvider);
     return ValueListenableBuilder<bool>(
       valueListenable: controller.active,
       builder: (context, active, _) {
+        // 开关状态跟悬浮球绑定；外悬浮实际没起来时（比如权限被拒）仍显示关，
+        // 但再次切换会重新走授权流程。
+        final value = dock.visible && active;
         return GlassCard(
           child: Row(
             children: [
@@ -656,29 +684,16 @@ class _ExternalOverlayCard extends StatelessWidget {
                     ),
                     SizedBox(height: 2),
                     Text(
-                      '把悬浮球/悬浮窗显示在其它 APP 上层；需要系统悬浮窗权限',
+                      '与 AI 悬浮球开关绑定；开启后悬浮球/悬浮窗显示在其它 APP 上层',
                       style: TextStyle(fontSize: 12.5),
                     ),
                   ],
                 ),
               ),
               Switch(
-                value: active,
-                onChanged: (value) async {
-                  if (value) {
-                    final media = MediaQuery.of(context);
-                    final ok = await controller.enable(media);
-                    if (!ok && context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('需要先在系统设置里允许“显示在其他应用上层”'),
-                        ),
-                      );
-                    }
-                  } else {
-                    await controller.disable();
-                  }
-                },
+                value: value,
+                onChanged: (next) =>
+                    _setBubbleAndExternal(context, ref, next),
               ),
             ],
           ),

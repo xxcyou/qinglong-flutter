@@ -12,6 +12,7 @@ import '../browser/browser_window.dart';
 import '../external/external_overlay_controller.dart';
 import '../terminal/docker/ssh_floating_host.dart';
 import '../terminal/floating_terminal.dart';
+import 'attachment_float_host.dart';
 import 'float_bounds_registry.dart';
 
 /// 全局悬浮窗层：AI 悬浮球/聊天窗 + 浏览器窗。
@@ -37,32 +38,34 @@ class AppFloatLayer extends ConsumerWidget {
         _reportBounds(context, ref);
         return Stack(
           children: [
+            // 所有独立悬浮窗按 FloatStack 顺序绘制：点到谁，谁置顶。
+            // 终端/SSH/附件不再固定压在某一个宿主上，浏览器也不再“困在 AI 里”。
             for (final id in FloatStack.instance.order)
-              if (id == FloatStack.ai)
-                const Positioned.fill(
-                  key: ValueKey('float-ai'),
-                  child: AiDockHost(),
-                )
-              else
-                const Positioned.fill(
-                  key: ValueKey('float-browser'),
-                  child: BrowserHost(),
+              if (id != FloatStack.attachment)
+                Positioned.fill(
+                  key: ValueKey('float-$id'),
+                  child: Listener(
+                    behavior: HitTestBehavior.translucent,
+                    onPointerDown: (_) => FloatStack.instance.raise(id),
+                    child: switch (id) {
+                      FloatStack.ai => const AiDockHost(),
+                      FloatStack.browser => const BrowserHost(),
+                      FloatStack.terminal => const FloatingTerminalHost(),
+                      FloatStack.ssh => const SshFloatingHostLayer(),
+                      _ => const SizedBox.shrink(),
+                    },
+                  ),
                 ),
-            // 终端 / SSH 浮现窗：旧实现是 OverlayEntry，外部模式下页面不渲染
-            // 就会消失；现在常驻在这里，内外一致。
-            const Positioned.fill(
-              key: ValueKey('float-terminal'),
-              child: FloatingTerminalHost(),
-            ),
-            const Positioned.fill(
-              key: ValueKey('float-ssh'),
-              child: SshFloatingHostLayer(),
-            ),
-            // 悬浮球永远画在两个窗口之上：浏览器一最大化就盖住整块屏幕，
+            // 悬浮球永远画在普通悬浮窗之上：浏览器一最大化就盖住整块屏幕，
             // 气泡要是跟着聊天窗沉下去，用户就没有任何入口能把 AI 叫回来。
             const Positioned.fill(
               key: ValueKey('float-bubble'),
               child: AiBubbleHost(),
+            ),
+            // 附件/图片预览：独立悬浮窗，最上层。
+            const Positioned.fill(
+              key: ValueKey('float-attachment'),
+              child: AttachmentFloatHost(),
             ),
           ],
         );
@@ -197,7 +200,9 @@ class AppFloatLayer extends ConsumerWidget {
     // 终端/SSH 等自己维护 Offset+Size 的窗口。
     add(FloatBoundsRegistry.union);
 
-    // 留一点余量给发光/阴影，避免光晕被覆盖窗口边缘切掉。
-    return (union ?? Rect.fromLTWH(0, 0, 1, 1)).inflate(10);
+    // 留足余量给阴影/外发光：原生覆盖窗口是矩形的，余量不够时圆角阴影
+    // 会被窗口边缘切出直角（看起来就是“阴影有棱角”）。这里按逻辑像素
+    // 给约 36 的边距，覆盖默认 boxShadow(≈24) + 外发光。
+    return (union ?? Rect.fromLTWH(0, 0, 1, 1)).inflate(36);
   }
 }
