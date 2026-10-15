@@ -83,6 +83,19 @@ WindowManager.addView(TYPE_APPLICATION_OVERLAY)
 如果将来要“APP 前台也同时在桌面显示系统悬浮窗”，需要升级到支持多
 `FlutterView` 的 embedding/多 Engine + 状态桥，那是另一个阶段的工作。
 
+## 防止“刚开开关就退后台”丢悬浮球
+
+`ARM` 只起准备态前台服务，真正挂 view 由 `onStop` 的 `ATTACH` 触发。
+如果用户开完开关立刻按 Home，`onStop` 可能在 service `onCreate` 之前执行：
+此时从后台再 `startForegroundService(ACTION_ATTACH)` 会被 Android 12+ 拦截，
+悬浮球就一直不出现。服务现在把这种请求记到 `pendingAttach`，等先前
+`ACTION_ARM` 的启动流程走到 `onStartCommand` 时补挂；`detach`/`disarm`
+会清掉这个待处理请求。日志 tag：`QinglongOverlay`。
+
+另外，外部模式刚切过去时 view 可能先报告一帧空并集。Dart 侧在
+`active=true` 时收到空并集不再立即收成 1×1，而是保持当前窗口，避免
+“窗口先缩没、首帧又迟到”导致悬浮球消失；非空并集到来后正常更新。
+
 ## 关掉悬浮窗后的窗口收回
 
 原生覆盖窗口是“悬浮窗并集 + 10 逻辑像素阴影余量”。为避免拖动时窗口每帧

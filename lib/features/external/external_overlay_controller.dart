@@ -123,8 +123,15 @@ class ExternalOverlayController {
   }
 
   Rect _stickyWindow(Rect desired) {
-    // 没有任何可见悬浮窗：立刻把原生窗口收成空窗口，别再占桌面触摸。
+    // 没有任何可见悬浮窗。外部模式下“AI 悬浮球开关”一定是开着的，
+    // 悬浮球必然可见；这里收到空并集只可能是切 view 瞬间布局尚未完成。
+    // 若立刻收成 1x1，之后首帧一旦因 ROM 原因迟到，悬浮球就彻底消失。
+    // 所以外部模式下空并集直接保持当前窗口，等非空并集到来再正常更新。
     if (desired.isEmpty) {
+      final current = _windowBounds;
+      if (active.value && current != null && !current.isEmpty) {
+        return current;
+      }
       _cancelPendingShrink();
       _windowBounds = Rect.zero;
       return Rect.zero;

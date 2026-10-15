@@ -13,6 +13,7 @@ import android.graphics.RectF
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.SurfaceHolder
@@ -56,8 +57,16 @@ class ExternalOverlayService : Service() {
         private const val EXTRA_RIGHT = "right"
         private const val EXTRA_BOTTOM = "bottom"
 
+        private const val TAG = "QinglongOverlay"
+
         @Volatile
         private var instance: ExternalOverlayService? = null
+
+        /// service 还没创建完时收到的 ATTACH 请求。等 ACTION_ARM 启动完成
+        /// 后在 onStartCommand 里补挂，避免“刚开开关就按 Home”时后台启动
+        /// 前台服务被系统拦截，导致悬浮球一直不出现。
+        @Volatile
+        private var pendingAttach: RectF? = null
 
         /// 准备态服务：起前台服务，但先不挂覆盖窗口 view。
         fun arm(context: Context, bounds: RectF) {
@@ -65,6 +74,7 @@ class ExternalOverlayService : Service() {
                 action = ACTION_ARM
                 putBounds(bounds)
             }
+            Log.i(TAG, "arm: startForegroundService bounds=$bounds")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
@@ -79,28 +89,41 @@ class ExternalOverlayService : Service() {
         fun attach(context: Context, bounds: RectF) {
             val service = instance
             if (service != null) {
+                Log.i(TAG, "attach: service ready, bounds=$bounds")
                 service.applyBounds(bounds)
                 service.attachOverlay()
                 return
             }
+            // service 还没起来：记下请求，并尝试用 ACTION_ATTACH 启动一次。
+            // 如果此刻 APP 已在后台、系统拦截了后台 FGS 启动，这次 start
+            // 会抛异常；但先前 ARM 的启动仍在进行，ACTION_ARM 处理时会
+            // 发现 pendingAttach 并补挂，悬浮球不会丢。
+            pendingAttach = RectF(bounds)
+            Log.i(TAG, "attach: service not ready, pending bounds=$bounds")
             val intent = Intent(context, ExternalOverlayService::class.java).apply {
                 action = ACTION_ATTACH
                 putBounds(bounds)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "attach: start service from background failed: $e")
             }
         }
 
         /// 摘掉覆盖窗口，但服务继续准备着。由 MainActivity.onStart（回前台）调用。
         fun detach() {
+            pendingAttach = null
             instance?.detachOverlay()
         }
 
         /// 关闭能力：摘窗口 + 停服务。
         fun disarm(context: Context) {
+            pendingAttach = null
             instance?.let {
                 it.detachOverlay()
                 it.stopSelf()
@@ -151,6 +174,7 @@ class ExternalOverlayService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        Log.i(TAG, "service onCreate")
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
     }
@@ -165,9 +189,16 @@ class ExternalOverlayService : Service() {
             ACTION_ARM -> {
                 // 准备态：只更新 bounds，不挂 view。
                 intent.readBounds()?.let { bounds = it }
+                pendingAttach?.let { pending ->
+                    Log.i(TAG, "ARM consumed pendingAttach bounds=$pending")
+                    pendingAttach = null
+                    bounds = pending
+                    attachOverlay()
+                }
             }
             ACTION_ATTACH -> {
                 intent.readBounds()?.let { bounds = it }
+                pendingAttach = null
                 attachOverlay()
             }
             ACTION_DETACH -> detachOverlay()
