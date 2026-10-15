@@ -215,3 +215,15 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
    动画互相打架。现在 `_FloatBoundsReporter` 检测 insets 变化时先告诉
    `ExternalOverlayController` 处于“IME 动画中”，期间只缓存最新 bounds；
    insets 稳定 220ms 后再一次性应用最终 bounds，动画期间窗口不再抖动。
+
+## 悬浮球形状与“点输入框时气泡冒出来”
+
+- 贴边收起状态以前是 24×44 的圆角小标签，现在改成 44×44 圆形
+  （`_DockedBubble` radius 22），未贴边时仍是原来的 56×56 圆球。
+- `AppFloatLayer` 里每个悬浮层的全屏 `Listener` 以前用
+  `HitTestBehavior.translucent`，导致点 AI 输入框时所有层的 Listener
+  都进入 hit test 并依次 `FloatStack.raise(id)`，AI 被挤下顶层，
+  `AiBubbleLayer` 的 `hideBall` 条件失效，隐藏的气泡就冒出来。
+  现在改成 `HitTestBehavior.deferToChild`，只有真正被点到的悬浮层才
+  raise。另外 Dart 输入框拿到焦点时会再强制 `raise(FloatStack.ai)`
+  兜底，点键盘/输入框不会再让气泡冒出来。

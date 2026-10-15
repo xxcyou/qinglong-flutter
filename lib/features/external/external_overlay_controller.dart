@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../../shared/float_stack.dart';
+
 /// APP 外系统悬浮窗（预览）控制器。
 ///
 /// 真正的窗口由 Android 前台服务用 [WindowManager] 承载，Flutter 这边只负责：
@@ -341,6 +343,11 @@ class ExternalOverlayController {
   void _syncImeFocus() {
     if (!active.value) return;
     final next = _hasEditableFocus();
+    if (next) {
+      // 输入框拿到焦点时强制把 AI 层置顶：键盘弹出/点按过程中如果
+      // 别的悬浮层被误 raise，气泡会从聊天窗下面冒出来。
+      FloatStack.instance.raise(FloatStack.ai);
+    }
     if (next == _imeFocus) return;
     _imeFocus = next;
     try {

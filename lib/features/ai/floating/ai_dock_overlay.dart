@@ -857,7 +857,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     final docked = !dock.quickOpen &&
         !dock.expanded &&
         (dock.dx <= 0.03 || dock.dx >= 0.97);
-    const dockedTabWidth = 24.0;
+    const dockedTabWidth = 44.0;
     const dockedTabHeight = 44.0;
     final renderLeft =
         docked ? (onRight ? size.width - dockedTabWidth - 2.0 : 2.0) : left;
@@ -1593,23 +1593,23 @@ class _DockedBubble extends StatelessWidget {
                 ? '$unread'
                 : null;
     return SizedBox(
-      width: 24,
+      width: 44,
       height: 44,
       child: Stack(
         clipBehavior: Clip.none,
         children: [
           GlassPanel(
-            radius: 14,
+            radius: 22,
             blur: 14,
             shadowY: 3,
             child: SizedBox(
-              width: 24,
+              width: 44,
               height: 44,
               child: Center(
                 child: busy
                     ? SizedBox(
-                        width: 13,
-                        height: 13,
+                        width: 18,
+                        height: 18,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
                           color: scheme.primary,
@@ -1617,7 +1617,7 @@ class _DockedBubble extends StatelessWidget {
                       )
                     : Icon(
                         Icons.auto_awesome,
-                        size: 15,
+                        size: 19,
                         color: pending ? scheme.error : scheme.primary,
                       ),
               ),

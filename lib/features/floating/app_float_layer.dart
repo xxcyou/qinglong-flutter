@@ -66,7 +66,10 @@ class AppFloatLayer extends ConsumerWidget {
                   Positioned.fill(
                     key: ValueKey('float-$id'),
                     child: Listener(
-                      behavior: HitTestBehavior.translucent,
+                      // 必须 deferToChild：translucent 会让每个全屏 Listener
+                      // 都进入 hit test，点 AI 输入框时浏览器/终端/SSH/附件
+                      // 也一起 raise，AI 被挤下顶层，隐藏的气泡就会冒出来。
+                      behavior: HitTestBehavior.deferToChild,
                       onPointerDown: (_) => FloatStack.instance.raise(id),
                       child: switch (id) {
                         FloatStack.ai => const AiDockHost(),
