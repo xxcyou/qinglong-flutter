@@ -239,3 +239,6 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
 - 图片附件改为先经原生 `decodeImage(maxDimension: 1280)` 解码缩小，
   再以 PNG data URI 传给模型。原图直接 base64 在相机大图/HEIC 上会
   让内存峰值翻倍并被系统杀掉，表现就是点图片后悬浮窗消失。
+
+- 图片类型识别补上 HEIC/HEIF/AVIF/TIFF：这些扩展名以前落到“未知二进制”，
+  点选后走文本附件路径必然失败；现在统一按图片处理并交给原生解码缩图。

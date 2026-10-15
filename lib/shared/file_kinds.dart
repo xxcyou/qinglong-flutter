@@ -442,6 +442,36 @@ class FileKinds {
       icon: Icons.image_rounded,
       color: Color(0xFFEC407A),
     ),
+    'heic': FileKind(
+      category: FileCategory.image,
+      label: 'HEIC 图片',
+      icon: Icons.image_rounded,
+      color: Color(0xFFEC407A),
+    ),
+    'heif': FileKind(
+      category: FileCategory.image,
+      label: 'HEIF 图片',
+      icon: Icons.image_rounded,
+      color: Color(0xFFEC407A),
+    ),
+    'avif': FileKind(
+      category: FileCategory.image,
+      label: 'AVIF 图片',
+      icon: Icons.image_rounded,
+      color: Color(0xFFEC407A),
+    ),
+    'tif': FileKind(
+      category: FileCategory.image,
+      label: 'TIFF 图片',
+      icon: Icons.image_rounded,
+      color: Color(0xFFEC407A),
+    ),
+    'tiff': FileKind(
+      category: FileCategory.image,
+      label: 'TIFF 图片',
+      icon: Icons.image_rounded,
+      color: Color(0xFFEC407A),
+    ),
     'ico': FileKind(
       category: FileCategory.image,
       label: '图标',
@@ -768,6 +798,15 @@ class FileKinds {
         return 'image/gif';
       case 'webp':
         return 'image/webp';
+      case 'heic':
+        return 'image/heic';
+      case 'heif':
+        return 'image/heif';
+      case 'avif':
+        return 'image/avif';
+      case 'tif':
+      case 'tiff':
+        return 'image/tiff';
       case 'svg':
         return 'image/svg+xml';
       case 'pdf':
