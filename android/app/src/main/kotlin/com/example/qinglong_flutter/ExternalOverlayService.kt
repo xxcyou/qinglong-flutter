@@ -489,30 +489,6 @@ class ExternalOverlayService : Service() {
         return event.rawY >= screenHeight - imeBottom
     }
 
-    /// showSoftInput 有时会在窗口还没真正拿到焦点时失败（尤其是从别的
-    /// 应用切回悬浮窗、第一次点输入框）。这里连续重试几次，每次先
-    /// requestFocus，直到 imeFocused 被置回 false 或键盘已经显示。
-    private fun showSoftInputWithRetry(
-        view: FlutterView,
-        imm: InputMethodManager?,
-        attempt: Int,
-    ) {
-        if (!imeFocused) return
-        try {
-            imm?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
-        } catch (_: Exception) {
-        }
-        if (attempt >= 4) return
-        view.postDelayed({
-            if (!imeFocused) return@postDelayed
-            try {
-                view.requestFocus()
-                showSoftInputWithRetry(view, imm, attempt + 1)
-            } catch (_: Exception) {
-            }
-        }, 150L + attempt * 150L)
-    }
-
     /// 切换覆盖窗口的 IME 焦点。
     ///
     /// 默认带 FLAG_NOT_FOCUSABLE：不抢其他应用的输入法。只有悬浮窗里的
@@ -539,7 +515,31 @@ class ExternalOverlayService : Service() {
         if (focused) {
             try {
                 view.requestFocus()
-                showSoftInputWithRetry(view, imm, 0)
+                // 键盘动画期间不要再反复 requestFocus/showSoftInput，
+                // 否则系统会不断重启弹出动画，看起来就是“一点一点卡上来”。
+                // 第一次等窗口焦点稳定后请求；只在 450ms 后还没弹出来时
+                // 补一次，之后不再打扰。
+                view.postDelayed({
+                    if (!imeFocused) return@postDelayed
+                    try {
+                        imm?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+                    } catch (_: Exception) {
+                    }
+                }, 90)
+                view.postDelayed({
+                    if (!imeFocused) return@postDelayed
+                    val active = try {
+                        imm?.isActive(view) == true
+                    } catch (_: Exception) {
+                        false
+                    }
+                    if (!active) {
+                        try {
+                            imm?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+                        } catch (_: Exception) {
+                        }
+                    }
+                }, 480)
             } catch (_: Exception) {
             }
         } else {

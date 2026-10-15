@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -101,15 +103,33 @@ class AppFloatLayer extends ConsumerWidget {
 
 /// 单独监听“会影响窗口并集”的状态，只重建这个零尺寸 widget，避免拖浏览器
 /// 时整层 `AppFloatLayer` 重建导致 AI 悬浮球闪烁。
-class _FloatBoundsReporter extends ConsumerWidget {
+class _FloatBoundsReporter extends ConsumerStatefulWidget {
   const _FloatBoundsReporter();
 
+  @override
+  ConsumerState<_FloatBoundsReporter> createState() =>
+      _FloatBoundsReporterState();
+}
+
+class _FloatBoundsReporterState extends ConsumerState<_FloatBoundsReporter> {
   /// 阴影/外发光留在窗口内的余量。越大阴影越完整，但透明区域也会
   /// 吃掉桌面触摸；这里取一个较小折中值。
   static const double _shadowMargin = 2.0;
 
+  double _lastKeyboardInset = 0;
+  Timer? _keyboardSettle;
+
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  void dispose() {
+    _keyboardSettle?.cancel();
+    // 悬浮层被移除（例如切回 APP 前台）时，清掉动画中状态，避免
+    // controller 一直停留在“键盘动画中”而丢后续 bounds。
+    ExternalOverlayController.instance.setImeAnimating(false);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     ref.watch(aiDockProvider);
     ref.watch(chatProvider);
     return AnimatedBuilder(
@@ -120,6 +140,19 @@ class _FloatBoundsReporter extends ConsumerWidget {
       ]),
       builder: (context, _) {
         final media = MediaQuery.of(context);
+        // 键盘弹出/收起时 viewInsets 每帧都在变；通知 controller 先别把
+        // 每帧的并集都 updateViewLayout 到原生窗口，否则原生窗口 relayout
+        // 会和 IME 动画互相打架，键盘看起来一卡一卡往上挪。等 insets
+        // 稳定 220ms 后，再一次性下发最终 bounds。
+        final keyboard = media.viewInsets.bottom;
+        if (keyboard != _lastKeyboardInset) {
+          _lastKeyboardInset = keyboard;
+          ExternalOverlayController.instance.setImeAnimating(true);
+          _keyboardSettle?.cancel();
+          _keyboardSettle = Timer(const Duration(milliseconds: 220), () {
+            ExternalOverlayController.instance.setImeAnimating(false);
+          });
+        }
         final rect = _visibleBounds(media, ref);
         WidgetsBinding.instance.addPostFrameCallback((_) {
           ExternalOverlayController.instance.noteBounds(rect);

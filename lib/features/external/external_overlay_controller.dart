@@ -54,6 +54,13 @@ class ExternalOverlayController {
   bool _imeFocus = false;
   bool _imeFocusListenerAttached = false;
 
+  /// 键盘弹出/收起动画期间，MediaQuery.viewInsets.bottom 每帧都在变；
+  /// 如果每帧都把新的并集发给原生 updateViewLayout，原生窗口会跟着
+  /// 键盘动画反复 relayout，动画看起来一卡一卡。这里在 insets 变化时
+  /// 只缓存最新 bounds，等键盘稳定 220ms 后再一次性下发。
+  bool _imeAnimating = false;
+  Rect? _pendingImeBounds;
+
   /// 进入外部模式前的完整屏幕尺寸/安全区，用于悬浮 FlutterView 内部
   /// 仍然按“全屏坐标系”布局原有悬浮窗。
   Size fullScreenSize = Size.zero;
@@ -120,6 +127,26 @@ class ExternalOverlayController {
   /// 等退后台挂 view 的那一刻必须拿到同一份几何，悬浮球位置才不会跳。
   void noteBounds(Rect desired) {
     _lastKnownBounds = desired;
+    if (_imeAnimating) {
+      _pendingImeBounds = desired;
+      return;
+    }
+    _applyBounds(desired);
+  }
+
+  /// 键盘动画开始/结束。结束（或停止变化 220ms）时，把动画期间缓存的
+  /// 最终 bounds 一次性应用，避免动画过程中反复 relayout。
+  void setImeAnimating(bool animating) {
+    if (_imeAnimating == animating) return;
+    _imeAnimating = animating;
+    if (!animating) {
+      final pending = _pendingImeBounds;
+      _pendingImeBounds = null;
+      if (pending != null) _applyBounds(pending);
+    }
+  }
+
+  void _applyBounds(Rect desired) {
     final next = _stickyWindow(desired);
     if (next == bounds.value) return;
     bounds.value = next;
@@ -324,6 +351,8 @@ class ExternalOverlayController {
   void _resetImeFocus() {
     _imeFocus = false;
     _detachImeFocusListener();
+    _imeAnimating = false;
+    _pendingImeBounds = null;
     try {
       _channel.invokeMethod<void>('setImeFocus', false);
     } catch (_) {}

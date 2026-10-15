@@ -199,3 +199,19 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
 - 直接点浏览器地址栏 → 第一次触摸释放覆盖窗 IME 并把焦点交给浏览器
   `UrlInputView`，再点一次键盘正常弹出；
 - 回到悬浮窗输入框 → `setImeFocus=true` 可再次弹出。
+
+## 键盘弹起卡顿（一点一点上来）
+
+两个原因：
+
+1. 原生 `showSoftInputWithRetry` 以前每 150ms 调一次
+   `requestFocus()` + `showSoftInput()`，IME 弹出动画进行到一半时又被
+   requestFocus/重新请求，动画被不断重启，看起来就是分几步卡上来。
+   现在改成：`requestFocus()` 一次，90ms 后 `showSoftInput()` 一次，
+   480ms 后仅在 `imm.isActive(view) == false` 时补一次，之后不再打扰。
+2. 键盘动画期间 `MediaQuery.viewInsets.bottom` 每帧都在变，而
+   `_FloatBoundsReporter` 会据此每帧重新计算悬浮窗并集并调用原生
+   `updateViewLayout`；原生窗口跟着键盘动画每帧 relayout，和 IME
+   动画互相打架。现在 `_FloatBoundsReporter` 检测 insets 变化时先告诉
+   `ExternalOverlayController` 处于“IME 动画中”，期间只缓存最新 bounds；
+   insets 稳定 220ms 后再一次性应用最终 bounds，动画期间窗口不再抖动。
