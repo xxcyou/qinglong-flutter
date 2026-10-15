@@ -40,6 +40,16 @@ class ExternalOverlayController {
   /// 当前上报给原生的窗口矩形（逻辑像素）。
   final ValueNotifier<Rect> bounds = ValueNotifier<Rect>(Rect.zero);
 
+  /// 覆盖窗口切换后的补帧信号。
+  ///
+  /// 单引擎换 view 时，Dart 侧 `active=true` 已经重建了悬浮层，但部分
+  /// ROM 上引擎不会主动把这一帧提交到新的 SurfaceView；结果窗口有了、
+  /// 内容却是透明的。切换后连续几秒主动 scheduleFrame，并让 shell 改变
+  /// 一个肉眼不可见的透明度属性，确保帧真的被画到新 surface 上。
+  final ValueNotifier<int> frameTick = ValueNotifier<int>(0);
+
+  Timer? _frameTickTimer;
+
   /// 进入外部模式前的完整屏幕尺寸/安全区，用于悬浮 FlutterView 内部
   /// 仍然按“全屏坐标系”布局原有悬浮窗。
   Size fullScreenSize = Size.zero;
@@ -229,6 +239,32 @@ class ExternalOverlayController {
     } catch (_) {}
   }
 
+  /// 切换前后连续补帧 3 秒：surface 创建时间不稳定，固定延时踢一次
+  /// 可能落在 surface 就绪之前；持续 scheduleFrame 能覆盖大部分 ROM。
+  void _pumpOverlayFrames() {
+    _frameTickTimer?.cancel();
+    void tick() {
+      frameTick.value++;
+      WidgetsBinding.instance.ensureVisualUpdate();
+      WidgetsBinding.instance.scheduleFrame();
+      WidgetsBinding.instance.platformDispatcher.scheduleFrame();
+    }
+
+    tick();
+    const delays = <int>[80, 200, 450, 900, 1600, 2400];
+    var index = 0;
+    void scheduleNext() {
+      if (index >= delays.length) return;
+      _frameTickTimer = Timer(Duration(milliseconds: delays[index]), () {
+        tick();
+        index++;
+        scheduleNext();
+      });
+    }
+
+    scheduleNext();
+  }
+
   Map<String, double> _physicalArgs(Rect rect) {
     final ratio = devicePixelRatio <= 0 ? 1.0 : devicePixelRatio;
     return {
@@ -241,7 +277,17 @@ class ExternalOverlayController {
 
   Future<dynamic> _onNativeCall(MethodCall call) async {
     if (call.method == 'modeChanged') {
-      active.value = call.arguments == true;
+      final next = call.arguments == true;
+      active.value = next;
+      if (next) {
+        _pumpOverlayFrames();
+      } else {
+        _frameTickTimer?.cancel();
+        _frameTickTimer = null;
+      }
+    } else if (call.method == 'surfaceReady') {
+      // 覆盖窗口的 surface 真正创建/重建完成，再补一轮帧。
+      if (active.value) _pumpOverlayFrames();
     } else if (call.method == 'boundsChanged') {
       // 原生没有主动改 bounds 的需求，预留。
     }

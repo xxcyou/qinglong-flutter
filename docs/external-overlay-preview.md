@@ -87,10 +87,17 @@ WindowManager.addView(TYPE_APPLICATION_OVERLAY)
 
 部分 ROM/设备上，覆盖窗口里的 `FlutterSurfaceView` 虽然 `surface` 已创建、
 engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表现是桌面
-上看不到悬浮球，必须手动点一下才出现。服务在 `addView` 后约 250ms/900ms
-向 view 的透明留白角落（物理 `(2,2)`，窗口并集有 48 逻辑像素内边距）发送
-一对合成 `ACTION_DOWN/ACTION_UP`，触发 Flutter 的帧调度；该坐标不会命中
-任何悬浮窗，不会产生可见点击。
+上看不到悬浮球/悬浮窗，窗口却是透明的。这里的处理：
+
+- 原生 `SurfaceView.surfaceCreated` 时通过 method channel 通知 Dart
+  `surfaceReady`；Dart 收到后执行一轮约 3 秒的补帧
+  （`scheduleFrame` + `ensureVisualUpdate` + `platformDispatcher.scheduleFrame`），
+  并让 `ExternalFloatShell` 在 `1.0 / 0.999` 透明度之间切换，产生真实的
+  绘制变更，强制引擎把内容画到新 surface 上。
+- `modeChanged=true` 时也会先补一轮帧，覆盖 surface 已经就绪的正常情况。
+- 服务在挂载后还会向窗口透明留白角落（物理 `(2,2)`，窗口并集外有 10 逻辑
+  像素阴影余量）发一对合成 `ACTION_DOWN/ACTION_UP` 作为兜底；该坐标不会
+  命中任何悬浮窗，不会产生可见点击。
 
 ## 坐标与触摸
 

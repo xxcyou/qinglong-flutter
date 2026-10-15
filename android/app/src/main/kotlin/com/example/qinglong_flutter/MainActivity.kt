@@ -40,6 +40,10 @@ class MainActivity : FlutterActivity() {
     /// AI 悬浮球开关是否打开（用户是否要“缩后台也继续显示”）。
     private var externalArmed = false
 
+    /// Activity 是否至少 resume 过一次。用于区分“启动早期 isResumed 还是
+    /// false”和“用户真的把 APP 退到后台后 arm”，避免前者误挂覆盖窗口。
+    private var hasResumed = false
+
     /// 原生覆盖窗口最后一次使用的几何；Dart 侧每次并集变化都会同步过来。
     private var lastBounds = RectF(0f, 0f, 72f, 72f)
 
@@ -86,6 +90,7 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         isResumed = true
+        hasResumed = true
         // 某些机型 onStart 里 view 还不可用，onResume 再兜一次。
         if (!ExternalOverlayService.isOverlayAttached() &&
             activityFlutterView?.isAttachedToFlutterEngine == false
@@ -195,9 +200,17 @@ class MainActivity : FlutterActivity() {
         return try {
             ExternalOverlayService.arm(this, bounds)
             externalArmed = true
-            // 这里只“准备”服务；真正挂覆盖窗口由 onStop（用户缩后台）触发。
-            // 不要在 arm 时立刻 attach：APP 启动早期 isResumed 还是 false，
-            // 会把覆盖窗口错误地提前挂到前台。
+            // 正常情况下这里只“准备”服务，真正挂窗口由 onStop 触发。
+            // 但如果 arm 发生得比 onStop 还晚（启动早期自动 arm / 刚切后台），
+            // Activity 已经 stop 过了，必须在这里补挂一次；用 hasResumed 判断
+            // “已经 resume 过但现在不在前台”，避免启动早期 isResumed=false 时误挂。
+            if (hasResumed && !isResumed) {
+                try {
+                    activityFlutterView?.detachFromFlutterEngine()
+                } catch (_: Exception) {
+                }
+                ExternalOverlayService.attach(this, bounds)
+            }
             true
         } catch (_: Exception) {
             externalArmed = false

@@ -15,6 +15,8 @@ import android.os.IBinder
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.WindowManager
 import io.flutter.embedding.android.FlutterView
 import io.flutter.embedding.android.RenderMode
@@ -238,11 +240,12 @@ class ExternalOverlayService : Service() {
             layoutParams = params
             wm.addView(view, params)
             notifyDartMode(true)
+            val attachedView = view
+            installSurfaceKick(attachedView, shared)
 
             // 部分 ROM 上覆盖窗口的 SurfaceView 首帧不会自动上屏：
             // 在窗口角落发一个合成触摸，踢一下引擎的帧调度。坐标 (2,2)
             // 落在悬浮窗并集的透明留白里，不会点到任何悬浮窗。
-            val attachedView = view
             attachedView.postDelayed({
                 try {
                     shared.lifecycleChannel.appIsResumed()
@@ -266,6 +269,46 @@ class ExternalOverlayService : Service() {
             }
             flutterView = null
             layoutParams = null
+        }
+    }
+
+    /// SurfaceView 的 surface 是异步创建的：固定延时踢帧可能在 surface
+    /// 就绪前就跑了（比如挂载时屏幕刚好熄灭/锁屏）。这里直接监听
+    /// surfaceCreated，surface 一就绪就踢首帧，之后屏幕再亮也能补上。
+    private fun installSurfaceKick(view: FlutterView, shared: FlutterEngine) {
+        try {
+            var surfaceView: SurfaceView? = null
+            for (i in 0 until view.childCount) {
+                val child = view.getChildAt(i)
+                if (child is SurfaceView) {
+                    surfaceView = child
+                    break
+                }
+            }
+            val target = surfaceView ?: return
+            val holder = target.holder
+            holder.addCallback(object : SurfaceHolder.Callback {
+                override fun surfaceCreated(h: SurfaceHolder) {
+                    // 让 Dart 侧重新补帧：surface 可能在屏幕重新点亮后才创建，
+                    // 此时最初的补帧窗口已经过去。
+                    notifyDartSurfaceReady()
+                    view.postDelayed({ kickFirstFrame(view) }, 100)
+                    view.postDelayed({ kickFirstFrame(view) }, 600)
+                }
+
+                override fun surfaceChanged(h: SurfaceHolder, format: Int, width: Int, height: Int) {
+                    try {
+                        shared.lifecycleChannel.appIsResumed()
+                    } catch (_: Exception) {
+                    }
+                }
+
+                override fun surfaceDestroyed(h: SurfaceHolder) {}
+            })
+            if (holder.surface?.isValid == true) {
+                view.postDelayed({ kickFirstFrame(view) }, 100)
+            }
+        } catch (_: Exception) {
         }
     }
 
@@ -339,6 +382,17 @@ class ExternalOverlayService : Service() {
     private fun width(): Int = bounds.width().toInt().coerceAtLeast(1)
 
     private fun height(): Int = bounds.height().toInt().coerceAtLeast(1)
+
+    private fun notifyDartSurfaceReady() {
+        val e = engine ?: return
+        try {
+            MethodChannel(
+                e.dartExecutor.binaryMessenger,
+                "qinglong/external_overlay",
+            ).invokeMethod("surfaceReady", null)
+        } catch (_: Exception) {
+        }
+    }
 
     private fun notifyDartMode(active: Boolean) {
         val e = engine ?: return
