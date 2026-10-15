@@ -73,7 +73,7 @@ class ExternalOverlayController {
 
   /// 窗口缩小阈值（逻辑像素面积）；扩大立即生效，面积缩小超过该值才收回，
   /// 避免拖动时窗口每帧抖动，同时保证关掉悬浮窗后窗口能立刻缩回去。
-  static const double _shrinkArea = 24 * 24;
+  static const double _shrinkArea = 16 * 16;
 
   Timer? _boundsDebounce;
   Timer? _shrinkDebounce;
