@@ -76,13 +76,16 @@ class AppFloatLayer extends ConsumerWidget {
       },
     );
   }
-
 }
 
 /// 单独监听“会影响窗口并集”的状态，只重建这个零尺寸 widget，避免拖浏览器
 /// 时整层 `AppFloatLayer` 重建导致 AI 悬浮球闪烁。
 class _FloatBoundsReporter extends ConsumerWidget {
   const _FloatBoundsReporter();
+
+  /// 阴影/外发光留在窗口内的余量。越大阴影越完整，但透明区域也会
+  /// 吃掉桌面触摸；这里取一个较小折中值。
+  static const double _shadowMargin = 10.0;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -125,8 +128,8 @@ class _FloatBoundsReporter extends ConsumerWidget {
       final maxY = size.height - safeBottom - 110 - bubble;
       final left =
           (dock.dx * (size.width - bubble)).clamp(4.0, size.width - bubble - 4);
-      var top =
-          (minY + dock.dy * (maxY - minY)).clamp(minY, maxY < minY ? minY : maxY);
+      var top = (minY + dock.dy * (maxY - minY))
+          .clamp(minY, maxY < minY ? minY : maxY);
       final keyboard = media.viewInsets.bottom;
       if (dock.quickOpen && keyboard > 0) {
         final limit = size.height - keyboard - 8 - bubble;
@@ -198,11 +201,11 @@ class _FloatBoundsReporter extends ConsumerWidget {
         final topKeep = safeTop + 4;
         final bottomInset =
             safeBottom > gesture.bottom ? safeBottom : gesture.bottom;
-        final bottomKeep =
-            (bottomInset > keepOut ? bottomInset : keepOut) + 4;
+        final bottomKeep = (bottomInset > keepOut ? bottomInset : keepOut) + 4;
         final fieldLeft = leftKeep;
         final fieldTop = topKeep;
-        final fieldW = (size.width - leftKeep - rightKeep).clamp(1.0, size.width);
+        final fieldW =
+            (size.width - leftKeep - rightKeep).clamp(1.0, size.width);
         final fieldH =
             (size.height - topKeep - bottomKeep).clamp(1.0, size.height);
         final w = (win.w * fieldW).clamp(BrowserWindow.minW * fieldW, fieldW);
@@ -224,9 +227,13 @@ class _FloatBoundsReporter extends ConsumerWidget {
     // 终端/SSH 等自己维护 Offset+Size 的窗口。
     add(FloatBoundsRegistry.union);
 
-    // 留足余量给阴影/外发光：原生覆盖窗口是矩形的，余量不够时圆角阴影
-    // 会被窗口边缘切出直角（看起来就是“阴影有棱角”）。这里按逻辑像素
-    // 给约 36 的边距，覆盖默认 boxShadow(≈24) + 外发光。
-    return (union ?? Rect.fromLTWH(0, 0, 1, 1)).inflate(36);
+    // 没有可见悬浮窗时返回空矩形，让原生把覆盖窗口收成空/1x1，
+    // 不再挡住桌面滑动。
+    final visible = union;
+    if (visible == null || visible.isEmpty) return Rect.zero;
+
+    // 只留很小的阴影/外发光余量：原生窗口是矩形的，透明区域也会吃掉
+    // 桌面触摸；余量太大时悬浮球旁边一大片区域会无法点击/滑动。
+    return visible.inflate(_shadowMargin);
   }
 }

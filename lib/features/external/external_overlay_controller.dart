@@ -57,10 +57,12 @@ class ExternalOverlayController {
   ///
   /// 如果每帧都按悬浮窗并集去改原生窗口，拖浏览器时窗口会不停移动/缩放，
   /// 同一窗口里的 AI 悬浮球就会跟着抖。这里改成：窗口只在内容接近边缘时
-  /// 扩张，内容缩进去一大截后才收缩；小幅拖动完全不碰原生窗口。
+  /// 扩张，内容缩回超过回差后才收缩；小幅拖动完全不碰原生窗口；
+  /// 全部关闭时立即收成空窗口，不再占桌面触摸。
   Rect? _windowBounds;
-  static const double _windowMargin = 48;
-  static const double _shrinkMargin = 120;
+
+  /// 缩小窗口时的回差；扩大立即生效，缩回超过该值才执行，避免抖动。
+  static const double _shrinkSlack = 16;
 
   Timer? _boundsDebounce;
   Future<bool>? _enableInFlight;
@@ -108,25 +110,29 @@ class ExternalOverlayController {
   }
 
   Rect _stickyWindow(Rect desired) {
-    final padded = desired.inflate(_windowMargin);
+    // 没有任何可见悬浮窗：立刻把原生窗口收成空窗口，别再占桌面触摸。
+    if (desired.isEmpty) {
+      _windowBounds = Rect.zero;
+      return Rect.zero;
+    }
     final current = _windowBounds;
     if (current == null || current.isEmpty) {
-      _windowBounds = padded;
-      return padded;
+      _windowBounds = desired;
+      return desired;
     }
     final needsGrow = !current.contains(desired.topLeft) ||
         !current.contains(desired.bottomRight);
     if (needsGrow) {
-      _windowBounds = current.expandToInclude(padded);
+      _windowBounds = current.expandToInclude(desired);
       return _windowBounds!;
     }
-    final canShrink = current.left <= desired.left - _shrinkMargin &&
-        current.top <= desired.top - _shrinkMargin &&
-        current.right >= desired.right + _shrinkMargin &&
-        current.bottom >= desired.bottom + _shrinkMargin;
+    final canShrink = current.left <= desired.left - _shrinkSlack &&
+        current.top <= desired.top - _shrinkSlack &&
+        current.right >= desired.right + _shrinkSlack &&
+        current.bottom >= desired.bottom + _shrinkSlack;
     if (canShrink) {
-      _windowBounds = padded;
-      return padded;
+      _windowBounds = desired;
+      return desired;
     }
     return current;
   }
@@ -136,7 +142,7 @@ class ExternalOverlayController {
     _boundsDebounce = Timer(const Duration(milliseconds: 60), () {
       if (!active.value && !armed.value) return;
       final r = bounds.value;
-      if (r.isEmpty) return;
+      // 空窗口也要发给原生：否则关掉悬浮窗后旧的大窗口会一直占着触摸。
       _channel
           .invokeMethod<void>('updateBounds', _physicalArgs(r))
           .catchError((_) {});

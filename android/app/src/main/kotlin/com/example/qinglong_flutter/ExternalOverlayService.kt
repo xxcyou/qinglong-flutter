@@ -190,19 +190,26 @@ class ExternalOverlayService : Service() {
             @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
         }
+        val empty = isEmptyBounds(bounds)
+        var flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+        if (empty) {
+            // 没有可见悬浮窗时窗口收到 1x1，并且整窗不可触摸，
+            // 连那 1 个像素也不会挡住桌面。
+            flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        }
         return WindowManager.LayoutParams(
-            width(),
-            height(),
+            if (empty) 1 else width(),
+            if (empty) 1 else height(),
             type,
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            flags,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = bounds.left.toInt()
-            y = bounds.top.toInt()
+            x = if (empty) 0 else bounds.left.toInt()
+            y = if (empty) 0 else bounds.top.toInt()
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
     }
@@ -305,15 +312,29 @@ class ExternalOverlayService : Service() {
     private fun applyBounds(next: RectF) {
         bounds = next
         val params = layoutParams ?: return
-        params.x = next.left.toInt()
-        params.y = next.top.toInt()
-        params.width = width()
-        params.height = height()
+        if (isEmptyBounds(next)) {
+            // 全部悬浮窗都关了：窗口缩到 1x1 且不可触摸，桌面触摸全部穿透。
+            params.x = 0
+            params.y = 0
+            params.width = 1
+            params.height = 1
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        } else {
+            params.x = next.left.toInt()
+            params.y = next.top.toInt()
+            params.width = width()
+            params.height = height()
+            params.flags = params.flags and
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        }
         try {
             windowManager?.updateViewLayout(flutterView, params)
         } catch (_: Exception) {
         }
     }
+
+    private fun isEmptyBounds(rect: RectF): Boolean =
+        rect.width() < 1f || rect.height() < 1f
 
     private fun width(): Int = bounds.width().toInt().coerceAtLeast(1)
 
