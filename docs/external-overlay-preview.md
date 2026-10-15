@@ -227,3 +227,15 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
   现在改成 `HitTestBehavior.deferToChild`，只有真正被点到的悬浮层才
   raise。另外 Dart 输入框拿到焦点时会再强制 `raise(FloatStack.ai)`
   兜底，点键盘/输入框不会再让气泡冒出来。
+
+## 浏览器冒球与图片附件失败
+
+- 聊天窗展开时不再显示悬浮球（`hideBall = !dock.visible || dock.expanded`）。
+  打开浏览器/终端/输入法时，AI 不再抢顶层，隐藏的球也不会冒出来；
+  这些窗口都有自己的收起/关闭按钮，不再依赖球作为唤回入口。
+- 附件选择：`_pickFile` 先把聊天窗收起来，所以现在用 `try/finally`
+  保证取消、图片不支持、读图失败、附件异常等所有路径都会重新
+  `notifier.open()`，不会再出现“选了文件 → 悬浮窗直接消失”。
+- 图片附件改为先经原生 `decodeImage(maxDimension: 1280)` 解码缩小，
+  再以 PNG data URI 传给模型。原图直接 base64 在相机大图/HEIC 上会
+  让内存峰值翻倍并被系统杀掉，表现就是点图片后悬浮窗消失。

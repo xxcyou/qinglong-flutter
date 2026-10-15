@@ -65,12 +65,19 @@ Future<AiImageAttachment?> readPickedImage(PickedLocalFile picked) async {
       path: picked.path,
       scope: picked.scope,
     );
-    final bytes = await File(host).readAsBytes();
+    final raw = await File(host).readAsBytes();
+    if (raw.isEmpty) return null;
+    // 原图直接 base64 会有两个问题：
+    //  - 相机原图动辄十几 MB，data URI 会让内存峰值翻倍，悬浮窗/服务
+    //    容易被系统直接杀掉，表现就是"点图片后悬浮窗消失、附件失败"；
+    //  - HEIC/HEIF 等格式 Flutter 引擎不认，预览和模型都可能失败。
+    // 统一交给原生 BitmapFactory 解码并缩到 1280 以内，再以 PNG 回传。
+    final bytes = await bridge.decodeImage(raw, maxDimension: 1280);
     if (bytes.isEmpty) return null;
     return AiImageAttachment(
       name: picked.name,
-      mime: picked.mime,
-      dataUri: 'data:${picked.mime};base64,${base64Encode(bytes)}',
+      mime: 'image/png',
+      dataUri: 'data:image/png;base64,${base64Encode(bytes)}',
       path: picked.path,
       scope: picked.scope,
     );
@@ -706,7 +713,6 @@ class _Tile extends StatelessWidget {
     );
   }
 }
-
 
 /// 一次文件选择悬浮窗请求。
 class FilePickerFloatRequest {

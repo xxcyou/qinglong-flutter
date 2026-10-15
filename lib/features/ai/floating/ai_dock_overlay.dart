@@ -512,10 +512,10 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     return AnimatedBuilder(
       animation: FloatStack.instance,
       builder: (context, _) {
-        // 展开且在最上面时不画气泡（窗口本身就是入口，再画一个多余）。
-        // 但"展开却被浏览器压住"时必须画出来——那是唤回聊天窗的唯一入口。
-        final hideBall = !dock.visible ||
-            (dock.expanded && FloatStack.instance.isTop(FloatStack.ai));
+        // 只要聊天窗还在展开，就不画气泡：输入框、浏览器、终端都能自己
+        // 点到/收起，气泡再冒出来反而像 bug（用户反馈打开浏览器时会冒球）。
+        // 气泡只在聊天窗收起时作为唯一入口显示。
+        final hideBall = !dock.visible || dock.expanded;
         return Material(
           type: MaterialType.transparency,
           child: Stack(
@@ -2180,82 +2180,90 @@ class _WindowState extends ConsumerState<_Window> {
     );
   }
 
-  /// 挑一个本地文件当附件。选择器是路由弹窗，必须借根 Navigator 的 context：
-  /// 悬浮层在 Navigator 之上，用自己的 context 弹出来会被窗口自己盖住。
+  /// 统一弹提示：外部悬浮窗模式下根 Navigator 有可能没有 ScaffoldMessenger，
+  /// 或者 context 已经卸载，提示失败不能反过来打断附件流程。
+  void _toast(String message,
+      {Duration duration = const Duration(seconds: 2)}) {
+    final ctx = appNavigatorKey.currentContext;
+    if (ctx == null || !ctx.mounted) return;
+    try {
+      ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
+        SnackBar(content: Text(message), duration: duration),
+      );
+    } catch (_) {
+      // 纯提示，失败就算了。
+    }
+  }
+
+  /// 挑一个本地文件当附件。选择器是常驻悬浮窗，APP 内外都能用。
+  ///
+  /// 挑一个本地文件当附件。选择器是常驻悬浮窗，APP 内外都能用。
+  ///
+  /// 关键约束：进来先把聊天窗收起来腾位置，所以任何一条路径（取消、
+  /// 图片不支持、读图失败、附件异常）都必须把聊天窗重新 open，否则用户
+  /// 看到的就是"选了文件 → 悬浮窗直接消失"。
   Future<void> _pickFile(BuildContext context, WidgetRef ref) async {
     final notifier = ref.read(aiDockProvider.notifier);
-    // 选择器现在自己就是常驻悬浮窗，不再依赖 appNavigatorKey；外部悬浮模式
-    // 下也能弹出来。收起聊天窗只是为了给选择器腾位置。
     notifier.close();
-    final picked = await LocalFilePicker.pick(context);
+    PickedLocalFile? picked;
+    try {
+      picked = await LocalFilePicker.pick(context);
+    } catch (e) {
+      notifier.open();
+      _toast('打开文件选择器失败：$e');
+      return;
+    }
     if (picked == null) {
       notifier.open();
       return;
     }
     if (picked.mime.toLowerCase().startsWith('image/')) {
-      final registry = ref.read(llmRegistryProvider);
-      final activeProvider = registry.active;
-      final currentModel = ref.read(chatProvider).selectedModel.isNotEmpty
-          ? ref.read(chatProvider).selectedModel
-          : activeProvider.defaultModel;
-      final mainSupportsImage =
-          activeProvider.capabilitiesFor(currentModel).supportsImage;
-      if (!mainSupportsImage &&
-          (registry.visionModel.trim().isEmpty ||
-              registry.visionProviderId.isEmpty)) {
-        notifier.open();
-        final toastContext = appNavigatorKey.currentContext;
-        if (toastContext != null && toastContext.mounted) {
-          ScaffoldMessenger.of(toastContext).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  '当前主模型不支持图片，且没有设置图片识别模型。去「设置 → AI → 图片识别模型」配置，或在模型能力里给主模型勾选“支持图片”。'),
-              duration: Duration(seconds: 3),
-            ),
+      try {
+        final registry = ref.read(llmRegistryProvider);
+        final activeProvider = registry.active;
+        final currentModel = ref.read(chatProvider).selectedModel.isNotEmpty
+            ? ref.read(chatProvider).selectedModel
+            : activeProvider.defaultModel;
+        final mainSupportsImage =
+            activeProvider.capabilitiesFor(currentModel).supportsImage;
+        if (!mainSupportsImage &&
+            (registry.visionModel.trim().isEmpty ||
+                registry.visionProviderId.isEmpty)) {
+          _toast(
+            '当前主模型不支持图片，且没有设置图片识别模型。去「设置 → AI → 图片识别模型」配置，或在模型能力里给主模型勾选“支持图片”。',
+            duration: const Duration(seconds: 3),
           );
+          return;
         }
-        return;
-      }
-      final image = await readPickedImage(picked);
-      if (image == null) {
-        notifier.open();
-        final toastContext = appNavigatorKey.currentContext;
-        if (toastContext != null && toastContext.mounted) {
-          ScaffoldMessenger.of(toastContext).showSnackBar(
-            SnackBar(content: Text('图片读取失败：${picked.path}')),
-          );
+        final image = await readPickedImage(picked);
+        if (image == null) {
+          _toast('图片读取失败：${picked.path}');
+          return;
         }
+        ref.read(chatProvider.notifier).addPendingImage(image);
+        _toast('已附上图片 ${picked.name}', duration: const Duration(seconds: 1));
         return;
+      } catch (e) {
+        _toast('图片附加失败：$e');
+        return;
+      } finally {
+        if (!ref.read(aiDockProvider).expanded) notifier.open();
       }
-      ref.read(chatProvider.notifier).addPendingImage(image);
-      notifier.open();
-      final toastContext = appNavigatorKey.currentContext;
-      if (toastContext != null && toastContext.mounted) {
-        ScaffoldMessenger.of(toastContext).showSnackBar(
-          SnackBar(
-            content: Text('已附上图片 ${picked.name}'),
-            duration: const Duration(seconds: 1),
-          ),
-        );
-      }
-      return;
     }
     // pushFile(open: true) 会把窗口重新展开，附件已经在输入框上方了。
-    final label = notifier.pushFile(
-      path: picked.path,
-      name: picked.name,
-      content: picked.content,
-      language: picked.language,
-      truncated: picked.truncated,
-    );
-    final toastContext = appNavigatorKey.currentContext;
-    if (toastContext == null || !toastContext.mounted) return;
-    ScaffoldMessenger.of(toastContext).showSnackBar(
-      SnackBar(
-        content: Text('已附上 $label'),
-        duration: const Duration(seconds: 1),
-      ),
-    );
+    try {
+      final label = notifier.pushFile(
+        path: picked.path,
+        name: picked.name,
+        content: picked.content,
+        language: picked.language,
+        truncated: picked.truncated,
+      );
+      _toast('已附上 $label', duration: const Duration(seconds: 1));
+    } catch (e) {
+      notifier.open();
+      _toast('附件失败：$e');
+    }
   }
 
   void _approvalMenu(BuildContext context, WidgetRef ref) {
