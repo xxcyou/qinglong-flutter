@@ -93,4 +93,48 @@ void main() {
     expect(withoutIme.rect.top, 400);
     expect(withoutIme.rect.height, 370);
   });
+
+
+  test('球旁边的状态文字没有内容时不占原生触摸区域', () {
+    final rect = aiBubbleStatusLabelRect(
+      size: const Size(400, 800),
+      left: 344,
+      top: 300,
+      status: '',
+    );
+    expect(rect, isNull);
+  });
+
+  test('球在右边时状态文字向左展开，矩形包住整行', () {
+    final rect = aiBubbleStatusLabelRect(
+      size: const Size(400, 800),
+      left: 344,
+      top: 300,
+      status: '正在调用工具',
+    )!;
+    expect(rect.right, lessThanOrEqualTo(344));
+    expect(rect.width, 220);
+    expect(rect.height, 18);
+  });
+
+  test('球在左边时状态文字向右展开', () {
+    final rect = aiBubbleStatusLabelRect(
+      size: const Size(400, 800),
+      left: 0,
+      top: 300,
+      status: '思考中',
+    )!;
+    expect(rect.left, 60);
+    expect(rect.width, 220);
+  });
+
+  test('侧面空间太窄放不下状态文字时不额外占区域', () {
+    final rect = aiBubbleStatusLabelRect(
+      size: const Size(100, 800),
+      left: 50,
+      top: 300,
+      status: '思考中',
+    );
+    expect(rect, isNull);
+  });
 }

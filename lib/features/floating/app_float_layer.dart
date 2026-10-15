@@ -13,6 +13,7 @@ import '../browser/browser_engine.dart';
 import '../browser/browser_host.dart';
 import '../browser/browser_window.dart';
 import '../external/external_overlay_controller.dart';
+import '../home/home_navigation_provider.dart';
 import '../terminal/docker/ssh_floating_host.dart';
 import '../terminal/floating_terminal.dart';
 import 'attachment_float_host.dart';
@@ -135,6 +136,8 @@ class _FloatBoundsReporterState extends ConsumerState<_FloatBoundsReporter> {
   Widget build(BuildContext context) {
     ref.watch(aiDockProvider);
     ref.watch(chatProvider);
+    // AI 页会隐藏球旁边的状态文字；切页时也要重算原生窗口并集。
+    ref.watch(homeTabIndexProvider);
     return AnimatedBuilder(
       animation: Listenable.merge([
         BrowserWindow.instance,
@@ -199,7 +202,38 @@ class _FloatBoundsReporterState extends ConsumerState<_FloatBoundsReporter> {
           top -= shift;
         }
       }
-      add(Rect.fromLTWH(left, top, bubble, bubble));
+      // 收起贴边时球实际只有 44×44，按真实渲染矩形上报，避免多占触摸区。
+      final onRight = left + bubble / 2 > size.width / 2;
+      final docked = !dock.quickOpen &&
+          !dock.expanded &&
+          (dock.dx <= 0.03 || dock.dx >= 0.97);
+      const dockedTabWidth = 44.0;
+      const dockedTabHeight = 44.0;
+      final renderLeft =
+          docked ? (onRight ? size.width - dockedTabWidth - 2.0 : 2.0) : left;
+      final renderTop = docked ? top + (bubble - dockedTabHeight) / 2 : top;
+      add(Rect.fromLTWH(
+        renderLeft,
+        renderTop,
+        docked ? dockedTabWidth : bubble,
+        docked ? dockedTabHeight : bubble,
+      ));
+
+      // 球旁边的思考/工具文字：和 AiBubbleLayer 用完全相同的显示条件与
+      // 几何。原生覆盖窗必须把它算进并集，否则桌面级只会露出一点点内容。
+      // 没文字时返回 null，不额外占触摸区域。
+      final onAiPage = ref.read(homeTabIndexProvider) == 2;
+      final status = (dock.expanded || onAiPage || dock.quickOpen)
+          ? ''
+          : aiBubbleStatusText(ref.read(chatProvider));
+      final labelRect = aiBubbleStatusLabelRect(
+        size: size,
+        left: renderLeft,
+        top: renderTop,
+        status: status,
+      );
+      if (labelRect != null) add(labelRect);
+
       // 快问输入条/结果窗大致贴着悬浮球展开，给个宽松的包围盒，
       // 避免窗口被原生覆盖层裁掉；真正的精确 bounds 后续再细化。
       if (dock.quickOpen) {

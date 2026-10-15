@@ -85,8 +85,69 @@ import 'ai_dock_provider.dart';
       }
     }
   }
+
   top = top.clamp(safeArea.top, size.height - safeArea.bottom - h);
   return (rect: Rect.fromLTWH(left, top, w, h), field: field);
+}
+
+/// 悬浮球旁边那行“正在思考/调用工具”的文字；空串表示不显示。
+///
+/// 被 [_AiBubbleLayerState] 和 [_FloatBoundsReporter] 共用：前者画字，
+/// 后者算原生覆盖窗要多大，避免桌面级只露出一点点。
+String aiBubbleStatusText(ChatState chat) {
+  // 挂起等回答时 isLoading 是 false，但这恰恰是最需要提示的时刻：
+  // 收起状态下提问窗不画出来，球也不转，用户完全不知道 AI 在等他说话——
+  // 看着就是“问了一次就卡住了”。
+  if (chat.pendingQuestion != null) return '等你回答';
+  if (chat.pendingPlan.isNotEmpty) return '等你确认';
+  if (!chat.isLoading) return '';
+  if (chat.liveTool.isNotEmpty) return chat.liveTool;
+  // 思考/正文都显示**正在流的原文尾巴**，让这行字自己动起来。
+  if (chat.liveReasoning.isNotEmpty) return statusTail(chat.liveReasoning);
+  if (chat.liveContent.isNotEmpty) return statusTail(chat.liveContent);
+  final events = chat.liveAgentEvents;
+  if (events.isNotEmpty) {
+    return switch (events.last.kind) {
+      AgentEventKind.thinking => '思考中',
+      AgentEventKind.answer => '答复中',
+      AgentEventKind.toolStart => events.last.toolName ?? '调用工具',
+      AgentEventKind.toolImage => '显示图片',
+      AgentEventKind.toolEnd => '处理结果',
+      AgentEventKind.taskPlan => '规划任务',
+      AgentEventKind.canvas => '生成卡片',
+      AgentEventKind.workflowStep => '条件执行',
+      AgentEventKind.question => '等你回答',
+      AgentEventKind.planPending => '等你确认',
+      AgentEventKind.error => '出错了',
+      AgentEventKind.done => '收尾',
+    };
+  }
+  return '处理中';
+}
+
+/// 状态文字这一行的矩形；没有文字或空间太窄时返回 null。
+///
+/// 几何必须和 [_AiBubbleLayerState._statusLabel] 完全一致，这样原生覆盖窗
+/// 的并集才能正好包住文字，桌面级不再被裁成一点点。
+Rect? aiBubbleStatusLabelRect({
+  required Size size,
+  required double left,
+  required double top,
+  required String status,
+}) {
+  if (status.isEmpty) return null;
+  const bubble = 56.0;
+  const labelHeight = 18.0;
+  final onRight = left + bubble / 2 > size.width / 2;
+  final room = onRight ? left - 8 : size.width - (left + bubble) - 8;
+  final width = room.clamp(0.0, 220.0);
+  if (width < 56) return null;
+  return Rect.fromLTWH(
+    onRight ? left - width - 4 : left + bubble + 4,
+    top + (bubble - labelHeight) / 2,
+    width,
+    labelHeight,
+  );
 }
 
 /// 悬浮 AI 的宿主。
@@ -875,7 +936,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     final onAiPage = ref.watch(homeTabIndexProvider) == 2;
     final status = (dock.expanded || onAiPage || dock.quickOpen)
         ? ''
-        : _statusText(chatState);
+        : aiBubbleStatusText(chatState);
 
     // 球贴右边 → 输入条往左长；贴左边 → 往右长。永远往空的那一侧伸。
     final onRight = left + bubble / 2 > size.width / 2;
@@ -1014,7 +1075,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     final expanded = dock.quickExpand;
     final running = dock.quickBusy;
     // 正在跑：框里用灰字显示思考尾巴 / 正在调的工具。这就是"进度条"。
-    final live = running ? _statusText(chat) : '';
+    final live = running ? aiBubbleStatusText(chat) : '';
     final hint = running
         ? (live.isEmpty ? '正在处理…' : live)
         : (chat.isLoading ? 'AI 正忙，问了会排队' : '问一句，结果弹小窗');
@@ -1343,18 +1404,23 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     required double top,
     required String text,
   }) {
-    const bubble = 56.0;
+    // 几何和 _FloatBoundsReporter 共用：原生覆盖窗按同一个矩形扩张，
+    // 桌面级才不会被裁得只剩一点点。
+    final rect = aiBubbleStatusLabelRect(
+      size: size,
+      left: left,
+      top: top,
+      status: text,
+    );
+    if (rect == null) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
     // 球贴右边 → 字往左长；贴左边 → 字往右长。
-    final onRight = left + bubble / 2 > size.width / 2;
-    final room = onRight ? left - 8 : size.width - (left + bubble) - 8;
-    final width = room.clamp(0.0, 220.0);
-    if (width < 56) return const SizedBox.shrink();
+    final onRight = left + 56.0 / 2 > size.width / 2;
     return Positioned(
-      left: onRight ? left - width - 4 : left + bubble + 4,
-      // 和球垂直居中：球 56 高，这行字 18 高。
-      top: top + (bubble - 18) / 2,
-      width: width,
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
       child: IgnorePointer(
         // 这里显示的是**思考原文的尾巴**，不是"思考中"三个字。
         //
@@ -1364,7 +1430,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
         // 卡住了一眼就能看出来——比一个恒定的"思考中"有用得多。
         child: _StatusTail(
           text: text,
-          width: width,
+          width: rect.width,
           alignRight: onRight,
           style: TextStyle(
             fontSize: 11.5,
@@ -1386,40 +1452,6 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     );
   }
 
-  /// 现在在干什么，压成一小段话。
-  ///
-  /// 优先级：正在调的工具 > 思考 > 正在答 > 最近一步的类型。都没有就返回空串
-  /// （空串 = 这一行不显示）。
-  String _statusText(ChatState chat) {
-    // 挂起等回答时 isLoading 是 false，但这恰恰是最需要提示的时刻：
-    // 收起状态下提问窗不画出来，球也不转，用户完全不知道 AI 在等他说话——
-    // 看着就是"问了一次就卡住了"。
-    if (chat.pendingQuestion != null) return '等你回答';
-    if (chat.pendingPlan.isNotEmpty) return '等你确认';
-    if (!chat.isLoading) return '';
-    if (chat.liveTool.isNotEmpty) return chat.liveTool;
-    // 思考/正文都显示**正在流的原文尾巴**，让这行字自己动起来。
-    if (chat.liveReasoning.isNotEmpty) return statusTail(chat.liveReasoning);
-    if (chat.liveContent.isNotEmpty) return statusTail(chat.liveContent);
-    final events = chat.liveAgentEvents;
-    if (events.isNotEmpty) {
-      return switch (events.last.kind) {
-        AgentEventKind.thinking => '思考中',
-        AgentEventKind.answer => '答复中',
-        AgentEventKind.toolStart => events.last.toolName ?? '调用工具',
-        AgentEventKind.toolImage => '显示图片',
-        AgentEventKind.toolEnd => '处理结果',
-        AgentEventKind.taskPlan => '规划任务',
-        AgentEventKind.canvas => '生成卡片',
-        AgentEventKind.workflowStep => '条件执行',
-        AgentEventKind.question => '等你回答',
-        AgentEventKind.planPending => '等你确认',
-        AgentEventKind.error => '出错了',
-        AgentEventKind.done => '收尾',
-      };
-    }
-    return '处理中';
-  }
 }
 
 /// 取一段流式文字的尾巴，压成能塞进一行的样子。
