@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.RectF
 import android.os.Build
 import android.os.IBinder
@@ -310,7 +311,10 @@ class ExternalOverlayService : Service() {
             gravity = Gravity.TOP or Gravity.START
             x = if (empty) 0 else bounds.left.toInt()
             y = if (empty) 0 else bounds.top.toInt()
-            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+            // 覆盖窗口的位置/大小完全由 Dart bounds 控制。用 ADJUST_RESIZE
+            // 时系统会同时改窗口尺寸，和 Dart 的键盘上移/收窄互相打架，
+            // 表现就是输入法一卡一卡、输入框反而被盖住。这里只让 Dart 处理。
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
         }
     }
 
@@ -489,6 +493,64 @@ class ExternalOverlayService : Service() {
         return event.rawY >= screenHeight - imeBottom
     }
 
+    /// 覆盖窗口不会像普通 Activity 那样把键盘高度透传给 Flutter 的
+    /// MediaQuery.viewInsets（尤其 windowSoftInputMode=ADJUST_NOTHING 时）。
+    /// 这里把系统 Insets 里的 IME 高度直接发给 Dart，让悬浮窗能据此上移/收窄，
+    /// 否则键盘弹起来后输入框会一直被盖住。
+    private fun sendImeHeight() {
+        val view = flutterView ?: return
+        var height = 0
+        var source = "none"
+        // 首选当前 view 的 rootWindowInsets（覆盖窗口也能拿到 IME insets）。
+        try {
+            val insets = view.rootWindowInsets
+            val root = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                insets?.getInsets(WindowInsets.Type.ime())?.bottom ?: 0
+            } else {
+                @Suppress("DEPRECATION")
+                insets?.systemWindowInsetBottom ?: 0
+            }
+            if (root > 0) {
+                height = root
+                source = "root"
+            }
+        } catch (_: Exception) {
+        }
+        // 次选 WindowMetrics：某些 ROM 不把 IME insets 挂到覆盖窗口的
+        // rootWindowInsets 上，但当前窗口 metrics 仍带着。
+        if (height <= 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val metrics = windowManager?.currentWindowMetrics
+                val wm = metrics?.windowInsets
+                    ?.getInsets(WindowInsets.Type.ime())?.bottom ?: 0
+                if (wm > 0) {
+                    height = wm
+                    source = "metrics"
+                }
+            } catch (_: Exception) {
+            }
+        }
+        // 最后兜底：可视区域差值（ADJUST_NOTHING 时通常为 0，但普通
+        // 窗口模式下可用）。
+        if (height <= 0) {
+            try {
+                val visible = Rect()
+                view.getWindowVisibleDisplayFrame(visible)
+                val candidate = view.height - visible.bottom
+                if (candidate > view.height * 0.15) {
+                    height = candidate
+                    source = "visible"
+                }
+            } catch (_: Exception) {
+            }
+        }
+        Log.i(TAG, "sendImeHeight=$height source=$source viewH=${view.height}")
+        try {
+            methodChannel?.invokeMethod("imeHeight", height)
+        } catch (_: Exception) {
+        }
+    }
+
     /// 切换覆盖窗口的 IME 焦点。
     ///
     /// 默认带 FLAG_NOT_FOCUSABLE：不抢其他应用的输入法。只有悬浮窗里的
@@ -525,6 +587,7 @@ class ExternalOverlayService : Service() {
                         imm?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
                     } catch (_: Exception) {
                     }
+                    sendImeHeight()
                 }, 90)
                 view.postDelayed({
                     if (!imeFocused) return@postDelayed
@@ -539,7 +602,12 @@ class ExternalOverlayService : Service() {
                         } catch (_: Exception) {
                         }
                     }
+                    sendImeHeight()
                 }, 480)
+                // 键盘动画大约 250~350ms；等稳定后再报几次最终高度，
+                // 兼容低端机/第三方输入法弹出较慢的情况。
+                view.postDelayed({ if (imeFocused) sendImeHeight() }, 900)
+                view.postDelayed({ if (imeFocused) sendImeHeight() }, 1500)
             } catch (_: Exception) {
             }
         } else {
@@ -547,6 +615,10 @@ class ExternalOverlayService : Service() {
             // 下次点悬浮窗输入框时不会再发 setImeFocus(true)。
             try {
                 methodChannel?.invokeMethod("imeReleased", null)
+            } catch (_: Exception) {
+            }
+            try {
+                methodChannel?.invokeMethod("imeHeight", 0)
             } catch (_: Exception) {
             }
             try {

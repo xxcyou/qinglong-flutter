@@ -42,6 +42,13 @@ class ExternalOverlayController {
   /// 当前上报给原生的窗口矩形（逻辑像素）。
   final ValueNotifier<Rect> bounds = ValueNotifier<Rect>(Rect.zero);
 
+  /// 原生上报的键盘高度（逻辑像素）。
+  ///
+  /// 系统覆盖窗口的 Flutter view 不一定能拿到 `viewInsets`（ADJUST_NOTHING
+  /// 时尤其明显），所以由原生从 WindowInsets 里量出来发过来；Shell 会把它
+  /// 合并进 MediaQuery.viewInsets，悬浮窗就能像普通页面一样避让键盘。
+  final ValueNotifier<double> imeHeight = ValueNotifier<double>(0);
+
   /// 覆盖窗口切换后的补帧信号。
   ///
   /// 单引擎换 view 时，Dart 侧 `active=true` 已经重建了悬浮层，但部分
@@ -414,12 +421,19 @@ class ExternalOverlayController {
         _frameTickTimer = null;
         _cancelPendingShrink();
         _resetImeFocus();
+        imeHeight.value = 0;
       }
     } else if (call.method == 'surfaceReady') {
       // 覆盖窗口的 surface 真正创建/重建完成，再补一轮帧。
       if (active.value) _pumpOverlayFrames();
     } else if (call.method == 'boundsChanged') {
       // 原生没有主动改 bounds 的需求，预留。
+    } else if (call.method == 'imeHeight') {
+      // 原生传物理像素，这里换算成逻辑像素；<1px 的抖动忽略。
+      final raw = (call.arguments as num?)?.toDouble() ?? 0;
+      final ratio = devicePixelRatio <= 0 ? 1.0 : devicePixelRatio;
+      final next = raw <= 0 ? 0.0 : raw / ratio;
+      if ((imeHeight.value - next).abs() > 0.5) imeHeight.value = next;
     } else if (call.method == 'imeReleased') {
       // 原生因 Home/点击其他应用/失焦主动释放了 IME；同步清掉 Dart 侧
       // 焦点状态，下次再点悬浮窗输入框才会重新走 setImeFocus(true)。

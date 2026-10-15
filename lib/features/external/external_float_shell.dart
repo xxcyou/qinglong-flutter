@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../floating/app_float_layer.dart';
@@ -23,7 +25,11 @@ class ExternalFloatShell extends StatelessWidget {
       }
     }
     return AnimatedBuilder(
-      animation: Listenable.merge([controller.bounds, controller.frameTick]),
+      animation: Listenable.merge([
+        controller.bounds,
+        controller.frameTick,
+        controller.imeHeight,
+      ]),
       builder: (context, _) {
         final bounds = controller.bounds.value;
         final tick = controller.frameTick.value;
@@ -53,6 +59,14 @@ class ExternalFloatShell extends StatelessWidget {
                       padding: controller.fullScreenPadding,
                       viewPadding: controller.fullScreenViewPadding,
                       systemGestureInsets: controller.systemGestureInsets,
+                      // 原生量出来的键盘高度并入 viewInsets：覆盖窗口自己
+                      // 不一定会把 IME insets 透传给 Flutter。
+                      viewInsets: base.viewInsets.copyWith(
+                        bottom: math.max(
+                          base.viewInsets.bottom,
+                          controller.imeHeight.value,
+                        ),
+                      ),
                     ),
                     child: const AppFloatLayer(),
                   ),

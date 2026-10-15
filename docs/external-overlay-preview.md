@@ -153,7 +153,7 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
 - [ ] 多窗口方案：每个悬浮窗一个原生窗口，彻底避免并集矩形挡住
       悬浮窗之间的桌面区域（当前单窗口方案已收紧到 10px 阴影余量）。
 - [ ] 悬浮编辑器（`showFloatingCodeEditor`）等瞬时 Overlay 的外部行为。
-- [ ] 键盘/输入法在覆盖窗口中的焦点与 `adjustResize` 行为验证。
+- [x] 键盘/输入法在覆盖窗口中的焦点与键盘高度避让验证。
 - [ ] 权限被拒、服务被系统回收、旋转/分屏、多显示器场景。
 - [ ] 快问结果窗 bounds 精确化。
 - [ ] 通知常驻与「返回 APP」交互打磨。
@@ -180,9 +180,9 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
 - 覆盖窗参数默认带 `FLAG_NOT_FOCUSABLE`，并新增
   `FLAG_WATCH_OUTSIDE_TOUCH`；
 - 悬浮窗里的输入框拿到 Dart 焦点时，Dart 调 `setImeFocus(true)`，原生
-  清掉 `FLAG_NOT_FOCUSABLE`、`requestFocus()`，并用
-  `showSoftInputWithRetry` 连续重试 `showSoftInput`（从别的应用切回来时
-  窗口焦点可能晚到）；
+  清掉 `FLAG_NOT_FOCUSABLE`，`requestFocus()` 一次，90ms 后
+  `showSoftInput()` 一次；480ms 后仅在 `imm.isActive(view) == false`
+  时补一次，避免反复重启 IME 弹出动画；
 - Dart 焦点离开时调 `setImeFocus(false)`，原生恢复
   `FLAG_NOT_FOCUSABLE`、隐藏键盘、清 view 焦点；
 - 用户按 Home / 最近任务 / 锁屏时，系统发
@@ -200,21 +200,29 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
   `UrlInputView`，再点一次键盘正常弹出；
 - 回到悬浮窗输入框 → `setImeFocus=true` 可再次弹出。
 
-## 键盘弹起卡顿（一点一点上来）
+## 键盘弹起卡顿 / 输入框被键盘盖住
 
-两个原因：
+四个原因和处理：
 
-1. 原生 `showSoftInputWithRetry` 以前每 150ms 调一次
-   `requestFocus()` + `showSoftInput()`，IME 弹出动画进行到一半时又被
-   requestFocus/重新请求，动画被不断重启，看起来就是分几步卡上来。
-   现在改成：`requestFocus()` 一次，90ms 后 `showSoftInput()` 一次，
-   480ms 后仅在 `imm.isActive(view) == false` 时补一次，之后不再打扰。
+1. 原生以前每 150ms 调一次 `requestFocus()` + `showSoftInput()`，IME
+   弹出动画进行到一半时又被重新请求，动画被不断重启，看起来就是分几步
+   卡上来。现在改成：`requestFocus()` 一次，90ms 后 `showSoftInput()`
+   一次，480ms 后仅在 `imm.isActive(view) == false` 时补一次。
 2. 键盘动画期间 `MediaQuery.viewInsets.bottom` 每帧都在变，而
    `_FloatBoundsReporter` 会据此每帧重新计算悬浮窗并集并调用原生
    `updateViewLayout`；原生窗口跟着键盘动画每帧 relayout，和 IME
    动画互相打架。现在 `_FloatBoundsReporter` 检测 insets 变化时先告诉
    `ExternalOverlayController` 处于“IME 动画中”，期间只缓存最新 bounds；
-   insets 稳定 220ms 后再一次性应用最终 bounds，动画期间窗口不再抖动。
+   insets 稳定 220ms 后再一次性应用最终 bounds。
+3. 覆盖窗口的 `windowSoftInputMode` 从 `ADJUST_RESIZE` 改为
+   `ADJUST_NOTHING`：窗口位置/大小完全由 Dart bounds 控制，系统不再
+   同时改窗口尺寸，避免“原生 resize × Dart 位置锁”互相打架。
+4. 覆盖窗口的 Flutter view 不一定会把 IME insets 透传给
+   `MediaQuery.viewInsets`。原生在 `setImeFocus(true)` 后从
+   `rootWindowInsets`（兜底 `WindowMetrics` / 可视区域差值）量出键盘
+   高度，通过 `imeHeight` 方法发回 Dart；`ExternalFloatShell` 把它并入
+   `MediaQuery.viewInsets`，所有悬浮窗（AI 聊天、快问条、浏览器、终端、
+   SSH）都会按键盘高度上移 + 必要时收窄，输入行始终在键盘上方。
 
 ## 悬浮球形状与“点输入框时气泡冒出来”
 
@@ -242,3 +250,7 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
 
 - 图片类型识别补上 HEIC/HEIF/AVIF/TIFF：这些扩展名以前落到“未知二进制”，
   点选后走文本附件路径必然失败；现在统一按图片处理并交给原生解码缩图。
+- 快问输入条的附件按钮以前借 `appNavigatorKey.currentContext` 打开选择器；
+  外部悬浮模式下根 Navigator 可能为空，点击直接 return，表现就是“点附件
+  没反应”。现在改用当前 widget 的 `context`，并给打开失败/取消都加了兜底，
+  文件选择器本身也已经是常驻悬浮窗，APP 内外都能弹。

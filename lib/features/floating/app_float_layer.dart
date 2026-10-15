@@ -217,12 +217,15 @@ class _FloatBoundsReporterState extends ConsumerState<_FloatBoundsReporter> {
       );
       final w = (dock.ww * field.width)
           .clamp(AiDockState.minW * field.width, field.width);
-      final h = (dock.wh * field.height)
+      var h = (dock.wh * field.height)
           .clamp(AiDockState.minH * field.height, field.height);
       var left = safeArea.left + dock.wx * field.width;
       var top = safeArea.top + dock.wy * field.height;
       final keyboard = media.viewInsets.bottom;
+      final minH = AiDockState.minH * field.height;
       if (keyboard > 0) {
+        final maxH = size.height - keyboard - 8 - safeArea.top;
+        if (h > maxH) h = maxH < minH ? minH : maxH;
         final limit = size.height - keyboard - 8 - h;
         if (top > limit) top = limit;
         if (top < safeArea.top) top = safeArea.top;

@@ -187,10 +187,20 @@ class _FloatingTerminalWindowState
     final scheme = Theme.of(context).colorScheme;
     final media = MediaQuery.of(context);
     final width = (_size.width).clamp(220.0, media.size.width - 16);
-    final height = (_size.height).clamp(160.0, media.size.height - 120);
+    var height = (_size.height).clamp(160.0, media.size.height - 120);
     final left = _pos.dx.clamp(0.0, media.size.width - width - 8);
-    final top = _pos.dy.clamp(MediaQuery.paddingOf(context).top,
-        media.size.height - height - 8);
+    final minTop = MediaQuery.paddingOf(context).top;
+    var top = _pos.dy.clamp(minTop, media.size.height - height - 8);
+    // 终端输入行在窗口最下面；键盘弹起时整窗上移并适当收窄，
+    // 否则输入行会被键盘盖住。
+    final keyboard = media.viewInsets.bottom;
+    if (keyboard > 0) {
+      final maxH = media.size.height - keyboard - 8 - minTop;
+      if (height > maxH) height = maxH < 160.0 ? 160.0 : maxH;
+      final limit = media.size.height - keyboard - 8 - height;
+      if (top > limit) top = limit;
+      if (top < minTop) top = minTop;
+    }
     FloatBoundsRegistry.report(
       _terminalBoundsKey,
       Rect.fromLTWH(left, top, width, height),

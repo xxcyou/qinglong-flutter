@@ -1185,22 +1185,34 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
   /// 挑一个本地文件挂到快问附件行。
   ///
   /// 只记路径/名字，不读正文：AI 自己会调 `read_file`/`cat` 去看。
-  /// 选择器是路由弹窗，需要借根 Navigator 的 context（和聊天窗同一个坑）。
+  /// 选择器现在自己是常驻悬浮窗，不再依赖根 Navigator；外部悬浮模式下
+  /// `appNavigatorKey.currentContext` 可能为空，以前这里会直接 return，
+  /// 表现就是"点快问附件没反应"。用当前 widget 的 context 即可。
   Future<void> _pickQuickFile(BuildContext context) async {
-    final navContext = appNavigatorKey.currentContext;
-    if (navContext == null || !navContext.mounted) return;
     final notifier = ref.read(aiDockProvider.notifier);
-    final picked = await LocalFilePicker.pick(navContext);
+    PickedLocalFile? picked;
+    try {
+      picked = await LocalFilePicker.pick(context);
+    } catch (e) {
+      _quickToast('打开文件选择器失败：$e');
+      return;
+    }
     if (picked == null || !mounted) return;
     notifier.addQuickFile(path: picked.path, name: picked.name);
-    final toastContext = appNavigatorKey.currentContext;
-    if (toastContext == null || !toastContext.mounted) return;
-    ScaffoldMessenger.of(toastContext).showSnackBar(
-      SnackBar(
-        content: Text('已附上 ${picked.name}（只发路径，AI 自己读）'),
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    _quickToast('已附上 ${picked.name}（只发路径，AI 自己读）');
+  }
+
+  /// 快问条里的提示：外部悬浮模式可能没有 ScaffoldMessenger，失败就静默。
+  void _quickToast(String message) {
+    final ctx = appNavigatorKey.currentContext;
+    if (ctx == null || !ctx.mounted) return;
+    try {
+      ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+      );
+    } catch (_) {
+      // 纯提示，失败就算了。
+    }
   }
 
   /// 把快问问题 + 附件路径拼成最终提问。
