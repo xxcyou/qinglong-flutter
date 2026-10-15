@@ -244,5 +244,31 @@ void main() {
       expect(dock.canvasWindows, hasLength(1));
       expect(dock.quickOpen, isTrue);
     });
+
+    test('ui_c 画布窗独立存活：收起快问条、隐藏悬浮球都不消失', () {
+      final c = boot();
+      final n = c.read(aiDockProvider.notifier);
+      n.toggleQuickAsk();
+      n.showCanvas(const AiCanvas(
+        id: 'c1',
+        title: '游戏',
+        html: '<h1>x</h1>',
+        window: 'game',
+      ));
+      expect(c.read(aiDockProvider).canvasWindows, hasLength(1));
+
+      // 收回快问输入条：窗口还在，位置/内容不受影响。
+      n.closeQuickAsk();
+      expect(c.read(aiDockProvider).quickOpen, isFalse);
+      expect(c.read(aiDockProvider).canvasWindows, hasLength(1));
+
+      // 隐藏悬浮球：画布窗仍独立留着，直到自己关。
+      n.hide();
+      expect(c.read(aiDockProvider).visible, isFalse);
+      expect(c.read(aiDockProvider).canvasWindows, hasLength(1));
+
+      n.closeCanvas('game');
+      expect(c.read(aiDockProvider).canvasWindows, isEmpty);
+    });
   });
 }

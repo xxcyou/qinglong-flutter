@@ -8,7 +8,6 @@ import '../../shared/float_stack.dart';
 import '../ai/floating/ai_dock_overlay.dart';
 import '../ai/floating/ai_dock_provider.dart';
 import '../ai/providers/chat_provider.dart';
-import '../ai/models/canvas_window.dart';
 import '../browser/browser_engine.dart';
 import '../browser/browser_host.dart';
 import '../browser/browser_window.dart';
@@ -239,29 +238,12 @@ class _FloatBoundsReporterState extends ConsumerState<_FloatBoundsReporter> {
       if (dock.quickOpen) {
         add(Rect.fromLTWH(4, top - 74, size.width - 8, 140));
       }
-      if (dock.quickResults.isNotEmpty) {
-        add(Rect.fromLTWH(4, safeTop + 8, size.width - 8, size.height * 0.5));
-      }
     }
 
     // AI 聊天窗。几何和 AiDockOverlay 共用同一个函数，确保内外一致。
     if (dock.expanded) {
       final geometry = aiChatGeometry(media, dock);
-      final field = geometry.field;
       add(geometry.rect);
-
-      // 画布窗：与 AiDockOverlay._canvasWindow 同一套几何公式，
-      // 否则多窗口时外悬浮窗覆盖层会裁掉画布。
-      for (final win in dock.canvasWindows) {
-        final cw = (win.w * field.width)
-            .clamp(CanvasWindow.minW * field.width, field.width);
-        final ch = (win.h * field.height)
-            .clamp(CanvasWindow.minH * field.height, field.height);
-        final cl = (28 + win.x * field.width).clamp(8.0, size.width - cw - 8);
-        final ct = (safeTop + 6 + win.y * field.height)
-            .clamp(safeTop + 4, size.height - safeBottom - ch - 4);
-        add(Rect.fromLTWH(cl, ct, cw, ch));
-      }
     }
 
     // 浏览器窗：把隐藏时的屏幕外矩形排除。
@@ -300,7 +282,9 @@ class _FloatBoundsReporterState extends ConsumerState<_FloatBoundsReporter> {
       }
     }
 
-    // 终端/SSH 等自己维护 Offset+Size 的窗口。
+    // 终端/SSH，以及 AI 快问结果窗 / ui_c 画布窗 / 提问窗等自己维护
+    // 尺寸的窗口：它们通过 FloatBoundsReporter 上报真实全局矩形，这里
+    // 直接并入并集，每个悬浮窗都不会被别的窗口大小限制/裁掉。
     add(FloatBoundsRegistry.union);
 
     // 没有可见悬浮窗时返回空矩形，让原生把覆盖窗口收成空/1x1，

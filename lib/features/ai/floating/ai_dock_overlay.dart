@@ -33,6 +33,7 @@ import '../widgets/agent_process_card.dart';
 import '../widgets/markdown_message.dart';
 import '../widgets/pending_image_bar.dart';
 import '../../../shared/image_preview_overlay.dart';
+import '../../floating/float_bounds_registry.dart';
 import 'ai_dock_provider.dart';
 
 /// 聊天窗几何：聊天窗本身和画布窗共用同一块 field。
@@ -317,12 +318,15 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
               ? null
               : safeBottom + 16 + media.viewInsets.bottom,
           width: size.width - 28,
-          child: _QuestionWindow(
-            question: question,
-            onAnswer: (answer) {
-              _pinned = true;
-              ref.read(chatProvider.notifier).send(answer);
-            },
+          child: FloatBoundsReporter(
+            id: 'ai-question-${question.id}',
+            child: _QuestionWindow(
+              question: question,
+              onAnswer: (answer) {
+                _pinned = true;
+                ref.read(chatProvider.notifier).send(answer);
+              },
+            ),
           ),
         ),
       // 画布窗口：不限个数，顺序即层级（点哪个哪个抬到最上）。
@@ -358,26 +362,29 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
       height: h,
       child: Listener(
         onPointerDown: (_) => notifier.raiseCanvas(win.name),
-        child: _CanvasWindow(
-          canvas: win.canvas,
-          chromeless: win.chromeless,
-          field: field,
-          onMove: (dx, dy) => notifier.moveCanvasBy(win.name, dx, dy),
-          onResize: ({
-            double dLeft = 0,
-            double dTop = 0,
-            double dRight = 0,
-            double dBottom = 0,
-          }) =>
-              notifier.resizeCanvas(
-            win.name,
-            dLeft: dLeft,
-            dTop: dTop,
-            dRight: dRight,
-            dBottom: dBottom,
+        child: FloatBoundsReporter(
+          id: 'ai-canvas-${win.name}',
+          child: _CanvasWindow(
+            canvas: win.canvas,
+            chromeless: win.chromeless,
+            field: field,
+            onMove: (dx, dy) => notifier.moveCanvasBy(win.name, dx, dy),
+            onResize: ({
+              double dLeft = 0,
+              double dTop = 0,
+              double dRight = 0,
+              double dBottom = 0,
+            }) =>
+                notifier.resizeCanvas(
+              win.name,
+              dLeft: dLeft,
+              dTop: dTop,
+              dRight: dRight,
+              dBottom: dBottom,
+            ),
+            onCommit: notifier.commitLayout,
+            onClose: () => notifier.closeCanvas(win.name),
           ),
-          onCommit: notifier.commitLayout,
-          onClose: () => notifier.closeCanvas(win.name),
         ),
       ),
     );
@@ -586,9 +593,16 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
       if (previous == null) return;
       _syncQuickLive(previous, next);
     });
-    // 球藏了但结果窗还开着：结果窗要留下。它是用户主动问出来的东西，
-    // 顺手关个球就把答案一起弄没了才叫难受。
-    if (!dock.visible && dock.quickResults.isEmpty) {
+    // 每个悬浮窗独立存活：球藏了、快问输入条收了，已经弹出的结果窗/
+    // ui_c 画布窗/提问窗都要留下，直到用户自己关掉它们。
+    final showQuickExtras = !dock.expanded;
+    final hasQuickQuestion =
+        showQuickExtras && chatState.pendingQuestion != null;
+    final hasQuickCanvas = showQuickExtras && dock.canvasWindows.isNotEmpty;
+    if (!dock.visible &&
+        dock.quickResults.isEmpty &&
+        !hasQuickQuestion &&
+        !hasQuickCanvas) {
       return const SizedBox.shrink();
     }
     return AnimatedBuilder(
@@ -606,15 +620,16 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
               if (!hideBall) ..._build(context, dock),
               // 结果窗画在球下面（球永远点得到），但在别的悬浮窗之上。
               ..._quickResultWindows(context, dock),
-              // 快问模式下，模型抛出的问题直接浮在屏幕上方回答，不展开完整窗。
-              if (dock.quickOpen && chatState.pendingQuestion != null)
+              // 模型抛出的问题直接浮在屏幕上方回答；快问输入条是否收起
+              // 不影响它，每个窗口自己关自己。
+              if (hasQuickQuestion)
                 _quickQuestionWindow(
                   context,
                   dock,
                   chatState.pendingQuestion!,
                 ),
-              // 快问模式下的 ui_c 画布窗：多个一起浮，不切去完整悬浮窗。
-              if (dock.quickOpen) ..._quickCanvasWindows(context, dock),
+              // ui_c 画布窗：多个一起浮，不切去完整悬浮窗，也不随快问条消失。
+              if (hasQuickCanvas) ..._quickCanvasWindows(context, dock),
             ],
           ),
         );
@@ -656,24 +671,27 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
                 FloatStack.instance.raise(FloatStack.ai);
                 notifier.raiseQuickResult(win.id);
               },
-              child: _QuickResultCard(
-                win: win,
-                field: field,
-                onMove: (dx, dy) => notifier.moveQuickResultBy(win.id, dx, dy),
-                onResize: ({
-                  double dLeft = 0,
-                  double dTop = 0,
-                  double dRight = 0,
-                  double dBottom = 0,
-                }) =>
-                    notifier.resizeQuickResult(
-                  win.id,
-                  dLeft: dLeft,
-                  dTop: dTop,
-                  dRight: dRight,
-                  dBottom: dBottom,
+              child: FloatBoundsReporter(
+                id: 'quick-result-${win.id}',
+                child: _QuickResultCard(
+                  win: win,
+                  field: field,
+                  onMove: (dx, dy) => notifier.moveQuickResultBy(win.id, dx, dy),
+                  onResize: ({
+                    double dLeft = 0,
+                    double dTop = 0,
+                    double dRight = 0,
+                    double dBottom = 0,
+                  }) =>
+                      notifier.resizeQuickResult(
+                    win.id,
+                    dLeft: dLeft,
+                    dTop: dTop,
+                    dRight: dRight,
+                    dBottom: dBottom,
+                  ),
+                  onClose: () => notifier.closeQuickResult(win.id),
                 ),
-                onClose: () => notifier.closeQuickResult(win.id),
               ),
             ),
           );
@@ -718,26 +736,29 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
             height: h,
             child: Listener(
               onPointerDown: (_) => notifier.raiseCanvas(win.name),
-              child: _CanvasWindow(
-                canvas: win.canvas,
-                chromeless: win.chromeless,
-                field: field,
-                onMove: (dx, dy) => notifier.moveCanvasBy(win.name, dx, dy),
-                onResize: ({
-                  double dLeft = 0,
-                  double dTop = 0,
-                  double dRight = 0,
-                  double dBottom = 0,
-                }) =>
-                    notifier.resizeCanvas(
-                  win.name,
-                  dLeft: dLeft,
-                  dTop: dTop,
-                  dRight: dRight,
-                  dBottom: dBottom,
+              child: FloatBoundsReporter(
+                id: 'quick-canvas-${win.name}',
+                child: _CanvasWindow(
+                  canvas: win.canvas,
+                  chromeless: win.chromeless,
+                  field: field,
+                  onMove: (dx, dy) => notifier.moveCanvasBy(win.name, dx, dy),
+                  onResize: ({
+                    double dLeft = 0,
+                    double dTop = 0,
+                    double dRight = 0,
+                    double dBottom = 0,
+                  }) =>
+                      notifier.resizeCanvas(
+                    win.name,
+                    dLeft: dLeft,
+                    dTop: dTop,
+                    dRight: dRight,
+                    dBottom: dBottom,
+                  ),
+                  onCommit: notifier.commitLayout,
+                  onClose: () => notifier.closeCanvas(win.name),
                 ),
-                onCommit: notifier.commitLayout,
-                onClose: () => notifier.closeCanvas(win.name),
               ),
             ),
           );
@@ -813,9 +834,12 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
       width: size.width - 28,
       child: Material(
         type: MaterialType.transparency,
-        child: _QuestionWindow(
-          question: question,
-          onAnswer: _answerQuickQuestion,
+        child: FloatBoundsReporter(
+          id: 'quick-question-${question.id}',
+          child: _QuestionWindow(
+            question: question,
+            onAnswer: _answerQuickQuestion,
+          ),
         ),
       ),
     );

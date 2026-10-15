@@ -244,6 +244,21 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
 - 对应单测：`test/ai_chat_geometry_test.dart` 覆盖无文字、左/右展开、
   空间不足四种情况。
 
+## 每个悬浮窗彼此独立（ui_c / 结果窗 / 提问窗）
+
+快问输入条模式下调用的 ui_c 画布窗，之前只在 `dock.quickOpen` 时渲染，
+原生 bounds 也没算它的矩形，所以看起来被快问输入条大小限制/裁掉。
+
+- AI 工具窗不再挂在快问条的生命周期上：收起快问条、隐藏悬浮球后，
+  已经弹出的 ui_c 画布窗、结果窗、提问窗都继续留着，直到用户自己关。
+- 每个窗口的位置/尺寸仍存在各自的 `CanvasWindow` / `QuickResultWindow`
+  里，拖动、缩放、关闭只改自己那一份，互不影响。
+- 新增 `FloatBoundsReporter`：包在结果窗/画布窗/提问窗外面，用真实
+  RenderBox 上报全局矩形；`_FloatBoundsReporter` 的原生并集自动包住每个
+  窗口，不再靠另一层窗口的尺寸。APP 外模式下会加回 Shell 的平移量，
+  坐标仍是全屏逻辑坐标。
+- 没有窗口时 `FloatBoundsReporter` dispose 会移除登记，原生窗口随之收回。
+
 ## 悬浮球形状与“点输入框时气泡冒出来”
 
 - 贴边收起状态以前是 24×44 的圆角小标签，现在改成 44×44 圆形
