@@ -11,6 +11,7 @@ import 'core/theme/glass.dart';
 import 'core/theme/theme_effects_controller.dart';
 import 'core/theme/startup_splash.dart';
 import 'core/theme/theme_store.dart';
+import 'features/ai/floating/ai_dock_provider.dart';
 import 'features/external/external_float_shell.dart';
 import 'features/external/external_overlay_controller.dart';
 import 'features/floating/app_float_layer.dart';
@@ -42,6 +43,19 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
     ref.listenManual(currentPanelProvider, (previous, next) {
       configureDioForPanel(next);
     });
+    // AI 悬浮球开关 = APP 外悬浮总开关。这里只“准备”服务，不切窗口、不
+    // finish APP；等系统把 APP 退到后台，原生再挂覆盖窗口，悬浮层原位续显。
+    ref.listenManual(aiDockProvider, (previous, next) {
+      if (next.visible) {
+        _ensureExternalArmed();
+      } else {
+        ExternalOverlayController.instance.disable();
+      }
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (ref.read(aiDockProvider).visible) _ensureExternalArmed();
+    });
     // 主题包 ZIP 里的组件风格（controller.js componentStyle）随主题切换立即生效。
     ref.listenManual(themeProvider, (previous, next) {
       _applyThemeStyle(next.active);
@@ -68,6 +82,13 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
     ThemeEffectsController.instance.setThemeStyle(
       ThemeEffectBridge.parseComponentStyle({'style': theme.componentStyle}),
     );
+  }
+
+  Future<void> _ensureExternalArmed() async {
+    if (!mounted) return;
+    final controller = ExternalOverlayController.instance;
+    if (controller.armed.value) return;
+    await controller.ensureArmed(MediaQuery.of(context));
   }
 
   void _finishSplash() {

@@ -14,6 +14,14 @@ class ExternalFloatShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final controller = ExternalOverlayController.instance;
+    // 原生服务被直接拉起（自动化测试/进程重建）时，主 APP 还没机会调用
+    // enable；从隐式 view 反推一次全屏尺寸，保证还是全屏坐标系布局。
+    if (controller.fullScreenSize.isEmpty) {
+      final implicit = WidgetsBinding.instance.platformDispatcher.implicitView;
+      if (implicit != null) {
+        controller.noteFullScreen(MediaQueryData.fromView(implicit));
+      }
+    }
     return ValueListenableBuilder<Rect>(
       valueListenable: controller.bounds,
       builder: (context, bounds, _) {

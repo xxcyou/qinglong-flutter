@@ -2,6 +2,7 @@ package com.example.qinglong_flutter
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.RectF
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -9,11 +10,19 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterView
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        /// APP 主 Activity 是否在前台。服务摘/挂 view 时用它决定要不要给
+        /// 共享 engine 补发 lifecycle 状态。
+        @Volatile
+        var isResumed: Boolean = false
+    }
+
     /// 作为默认浏览器收到 ACTION_VIEW 时，Flutter 会把 URL 当成 GoRouter
     /// 的 initialRoute 去匹配，导致 “no routes for location: https://...”。
     /// 这里强制从首页启动；URL 走 qinglong/open_url 通道交给内置浏览器。
@@ -28,12 +37,27 @@ class MainActivity : FlutterActivity() {
 
     private var externalChannel: MethodChannel? = null
 
+    /// AI 悬浮球开关是否打开（用户是否要“缩后台也继续显示”）。
+    private var externalArmed = false
+
+    /// 原生覆盖窗口最后一次使用的几何；Dart 侧每次并集变化都会同步过来。
+    private var lastBounds = RectF(0f, 0f, 72f, 72f)
+
+    /// FlutterActivity 自己创建的那个 FlutterView。APP 退后台时把它从 engine
+    /// 上摘下来、回前台再挂回去；同一时刻只挂一个 view，engine 渲染才稳定。
+    private var activityFlutterView: FlutterView? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 用户可能不是点通知、而是直接从桌面图标回到 APP。此时悬浮窗服务
-        // 的 FlutterView 仍挂在共享 engine 上，FlutterActivity 再挂一个会抛
-        // “child already has a parent”。先把服务视图摘掉再走 super。
-        ExternalOverlayService.detachForAppReturn()
+        // 进程/Activity 重建时，覆盖窗口可能还挂在共享 engine 上；先摘掉，
+        // 避免 FlutterActivity 再挂 view 时抛 “child already has a parent”。
+        ExternalOverlayService.detach()
         super.onCreate(savedInstanceState)
+        activityFlutterView =
+            findViewById<FlutterView>(FlutterActivity.FLUTTER_VIEW_ID)
+        // Activity 被系统重建时字段会重置；只要准备态服务还在，就说明用户
+        // 上次开着 APP 外悬浮，继续沿用，不要漏掉退后台的 attach。
+        externalArmed = ExternalOverlayService.isRunning()
+        ExternalOverlayService.currentBounds()?.let { lastBounds = it }
         consumeViewIntent(intent)
         maybeEnterExternalForPreview(intent, savedInstanceState)
         // 高刷屏不锁 60：把窗口首选模式指到设备支持的最高刷新率，
@@ -45,6 +69,59 @@ class MainActivity : FlutterActivity() {
                 params.preferredDisplayModeId = mode.modeId
                 window.attributes = params
             }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // 回前台：先把覆盖窗口的 view 摘掉，再把 Activity 的 view 挂回 engine。
+        if (ExternalOverlayService.isOverlayAttached()) {
+            ExternalOverlayService.detach()
+        }
+        // 不管覆盖窗口有没有挂成功，Activity 的 view 都必须回到 engine；
+        // 否则 attach 失败一次会让整个 APP 黑屏。
+        reattachActivityView()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        isResumed = true
+        // 某些机型 onStart 里 view 还不可用，onResume 再兜一次。
+        if (!ExternalOverlayService.isOverlayAttached() &&
+            activityFlutterView?.isAttachedToFlutterEngine == false
+        ) {
+            reattachActivityView()
+        }
+    }
+
+    override fun onPause() {
+        isResumed = false
+        super.onPause()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!externalArmed || isChangingConfigurations) return
+        // 用户自己把 APP 缩到后台：把 Activity view 摘下来，让前台服务把
+        // 同一个 engine 挂到系统覆盖窗口上，悬浮层原位继续显示。
+        try {
+            activityFlutterView?.detachFromFlutterEngine()
+        } catch (_: Exception) {
+        }
+        try {
+            ExternalOverlayService.attach(this, lastBounds)
+        } catch (_: Exception) {
+            // 极端情况下（权限被系统回收/后台启动前台服务被拦）不 crash，
+            // 回前台时 onStart 会把 Activity 的 view 重新挂回去。
+        }
+    }
+
+    private fun reattachActivityView() {
+        val view = activityFlutterView ?: return
+        if (view.isAttachedToFlutterEngine) return
+        try {
+            view.attachToFlutterEngine(SharedFlutterEngine.get(this))
+        } catch (_: Exception) {
         }
     }
 
@@ -85,13 +162,20 @@ class MainActivity : FlutterActivity() {
                         openOverlaySettings()
                         result.success(null)
                     }
-                    "enter" -> result.success(enterExternalOverlay(call.toRectF()))
+                    "arm" -> result.success(armExternal(call.toRectF()))
+                    "disarm" -> {
+                        disarmExternal()
+                        result.success(null)
+                    }
+                    // 旧协议保留：不再 finish Activity，等用户自己缩后台。
+                    "enter" -> result.success(armExternal(call.toRectF()))
                     "updateBounds" -> {
-                        ExternalOverlayService.updateBounds(this, call.toRectF())
+                        lastBounds = call.toRectF()
+                        ExternalOverlayService.updateBounds(this, lastBounds)
                         result.success(null)
                     }
                     "exit" -> {
-                        ExternalOverlayService.stop(this)
+                        disarmExternal()
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -100,24 +184,34 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /// 进入外部悬浮模式。返回 false 表示没有系统悬浮窗权限（并已拉起设置页）。
-    private fun enterExternalOverlay(bounds: android.graphics.RectF): Boolean {
+    /// 打开“缩后台也显示”的能力：只起准备态前台服务，不挂 view、不 finish。
+    /// 返回 false 表示没有系统悬浮窗权限（并已拉起设置页）。
+    private fun armExternal(bounds: RectF): Boolean {
         if (!canDrawOverlays()) {
             openOverlaySettings()
             return false
         }
-        // 先把 Activity 的 FlutterView 从引擎上摘下来，避免和悬浮窗服务
-        // 同时挂两个 surface；再启动服务并退到后台。
-        Handler(Looper.getMainLooper()).postDelayed({
-            detachFromFlutterEngine()
-            ExternalOverlayService.start(this, bounds)
-            if (!isFinishing) finish()
-        }, 120)
-        return true
+        lastBounds = bounds
+        return try {
+            ExternalOverlayService.arm(this, bounds)
+            externalArmed = true
+            // 这里只“准备”服务；真正挂覆盖窗口由 onStop（用户缩后台）触发。
+            // 不要在 arm 时立刻 attach：APP 启动早期 isResumed 还是 false，
+            // 会把覆盖窗口错误地提前挂到前台。
+            true
+        } catch (_: Exception) {
+            externalArmed = false
+            false
+        }
+    }
+
+    private fun disarmExternal() {
+        externalArmed = false
+        ExternalOverlayService.disarm(this)
     }
 
     /// 预览分支自动化测试入口：`am start ... --ez qinglong_preview_enter_external true`。
-    /// 正式发布前应删除；不影响正常用户路径。
+    /// arm 之后主动 moveTaskToBack，模拟用户按 Home；正式发布前应删除。
     private fun maybeEnterExternalForPreview(intent: Intent?, saved: Bundle?) {
         if (saved != null) return
         if (intent?.getBooleanExtra("qinglong_preview_enter_external", false) != true) return
@@ -127,16 +221,20 @@ class MainActivity : FlutterActivity() {
         val right = intent.getFloatExtra("right", dm.widthPixels.toFloat())
         val bottom = intent.getFloatExtra("bottom", dm.heightPixels * 2f / 3f)
         Handler(Looper.getMainLooper()).postDelayed({
-            if (!isFinishing) enterExternalOverlay(android.graphics.RectF(left, top, right, bottom))
+            if (isFinishing) return@postDelayed
+            val bounds = RectF(left, top, right, bottom)
+            if (armExternal(bounds)) {
+                moveTaskToBack(true)
+            }
         }, 800)
     }
 
-    private fun MethodCall.toRectF(): android.graphics.RectF {
+    private fun MethodCall.toRectF(): RectF {
         val left = argument<Double>("left")?.toFloat() ?: 0f
         val top = argument<Double>("top")?.toFloat() ?: 0f
         val width = argument<Double>("width")?.toFloat() ?: 0f
         val height = argument<Double>("height")?.toFloat() ?: 0f
-        return android.graphics.RectF(left, top, left + width, top + height)
+        return RectF(left, top, left + width, top + height)
     }
 
     private fun canDrawOverlays(): Boolean =

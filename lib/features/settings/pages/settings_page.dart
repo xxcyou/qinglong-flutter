@@ -627,12 +627,11 @@ class _StepperCard extends StatelessWidget {
 }
 
 
-/// APP 外悬浮窗预览开关。
+/// AI 悬浮球开关 = APP 外悬浮总开关。
 ///
-/// 这是预览分支能力：开启后会把当前引擎的 FlutterView 交给系统悬浮窗服务，
-/// 主 APP 退到后台，悬浮球/聊天窗继续显示在其它 APP 上层。
-/// 悬浮球与 APP 外悬浮窗绑定：关悬浮球就关外悬浮；开悬浮球就开外悬浮。
-/// 权限被拒时保留 APP 内悬浮球，并提示去系统设置授权。
+/// 开启后不会强制 APP 退后台，也不重启 APP：前台时悬浮球/悬浮窗照常画在
+/// APP 内；用户自己把 APP 缩到后台时，原生才把同一个 view 挂到系统覆盖
+/// 窗口上，悬浮层原位继续显示。权限被拒时 APP 内悬浮球仍然可用。
 Future<void> _setBubbleAndExternal(
   BuildContext context,
   WidgetRef ref,
@@ -649,7 +648,7 @@ Future<void> _setBubbleAndExternal(
   if (!ok && context.mounted) {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('需要先在系统设置里允许“显示在其他应用上层”'),
+        content: Text('已开启 APP 内悬浮球；要缩到后台也显示，请在系统设置允许“显示在其他应用上层”'),
       ),
     );
   }

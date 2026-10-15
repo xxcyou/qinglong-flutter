@@ -18,12 +18,24 @@ class ExternalOverlayController {
     _channel.setMethodCallHandler(_onNativeCall);
   }
 
-  static final ExternalOverlayController instance = ExternalOverlayController._();
+  static final ExternalOverlayController instance =
+      ExternalOverlayController._();
 
-  static const MethodChannel _channel = MethodChannel('qinglong/external_overlay');
+  static const MethodChannel _channel =
+      MethodChannel('qinglong/external_overlay');
 
-  /// 是否处于 APP 外悬浮模式。
+  /// 是否处于 APP 外悬浮模式（系统覆盖窗口正在显示）。
+  ///
+  /// 它由原生在悬浮窗 view attach/detach 时通过 `modeChanged` 通知：
+  /// APP 在前台时 active=false（悬浮层画在 APP 内），缩到后台后 active=true
+  /// （同一个 engine 的 view 交给系统覆盖窗口，悬浮层继续画在桌面上）。
   final ValueNotifier<bool> active = ValueNotifier<bool>(false);
+
+  /// 用户是否开启“APP 外悬浮”（AI 悬浮球开关）。
+  ///
+  /// 开启后原生会先跑起前台服务但不挂 view；等 APP 真正退到后台，
+  /// 再把 view 挂到系统覆盖窗口上，所以不会强制 APP 最小化/重启。
+  final ValueNotifier<bool> armed = ValueNotifier<bool>(false);
 
   /// 当前上报给原生的窗口矩形（逻辑像素）。
   final ValueNotifier<Rect> bounds = ValueNotifier<Rect>(Rect.zero);
@@ -51,7 +63,7 @@ class ExternalOverlayController {
   static const double _shrinkMargin = 120;
 
   Timer? _boundsDebounce;
-  bool _busy = false;
+  Future<bool>? _enableInFlight;
 
   bool get supported => defaultTargetPlatform == TargetPlatform.android;
 
@@ -79,17 +91,20 @@ class ExternalOverlayController {
     fullScreenPadding = media.padding;
     fullScreenViewPadding = media.viewPadding;
     systemGestureInsets = media.systemGestureInsets;
-    devicePixelRatio = media.devicePixelRatio <= 0 ? 1.0 : media.devicePixelRatio;
+    devicePixelRatio =
+        media.devicePixelRatio <= 0 ? 1.0 : media.devicePixelRatio;
   }
 
   /// 由悬浮层在每一帧后上报可见窗口并集。
+  ///
+  /// 不管当前在前台还是后台都要缓存/上报：前台时原生服务已经在跑（准备态），
+  /// 等退后台挂 view 的那一刻必须拿到同一份几何，悬浮球位置才不会跳。
   void noteBounds(Rect desired) {
     _lastKnownBounds = desired;
-    if (!active.value) return;
     final next = _stickyWindow(desired);
     if (next == bounds.value) return;
     bounds.value = next;
-    _scheduleNativeBoundsUpdate();
+    if (active.value || armed.value) _scheduleNativeBoundsUpdate();
   }
 
   Rect _stickyWindow(Rect desired) {
@@ -119,57 +134,92 @@ class ExternalOverlayController {
   void _scheduleNativeBoundsUpdate() {
     _boundsDebounce?.cancel();
     _boundsDebounce = Timer(const Duration(milliseconds: 60), () {
-      if (!active.value) return;
+      if (!active.value && !armed.value) return;
       final r = bounds.value;
       if (r.isEmpty) return;
-      _channel.invokeMethod<void>('updateBounds', _physicalArgs(r))
+      _channel
+          .invokeMethod<void>('updateBounds', _physicalArgs(r))
           .catchError((_) {});
     });
   }
 
-  /// 进入 APP 外悬浮模式。
+  /// 开启“APP 外悬浮”能力（AI 悬浮球开关）。
   ///
-  /// [media] 必须是主 APP 的全屏 MediaQuery；进入后 FlutterView 会被原生
-  /// 缩小到悬浮窗并集，但 Dart 侧仍用这份全屏尺寸做坐标系。
-  Future<bool> enable(MediaQueryData media) async {
-    if (!supported || _busy) return false;
-    _busy = true;
+  /// 只负责：检查系统权限、记录全屏尺寸、让原生起一个准备态前台服务。
+  /// **不会** finish Activity，也不会立刻切到悬浮窗；等 APP 自己退到后台，
+  /// 原生再 attach 覆盖窗口，悬浮层原位继续显示。
+  Future<bool> enable(
+    MediaQueryData media, {
+    Rect? initialBounds,
+    bool requestPermission = true,
+  }) {
+    final inFlight = _enableInFlight;
+    if (inFlight != null) return inFlight;
+    final future = _enable(
+      media,
+      initialBounds: initialBounds,
+      requestPermission: requestPermission,
+    );
+    _enableInFlight = future;
+    return future.whenComplete(() {
+      if (identical(_enableInFlight, future)) _enableInFlight = null;
+    });
+  }
+
+  Future<bool> _enable(
+    MediaQueryData media, {
+    Rect? initialBounds,
+    bool requestPermission = true,
+  }) async {
+    if (!supported) return false;
     try {
       noteFullScreen(media);
-      final permission = await isPermissionGranted();
-      if (!permission) {
+      var permission = await isPermissionGranted();
+      if (!permission && requestPermission) {
+        // 只有用户亲手拨开关才拉起系统授权页；启动时静默同步不打扰。
         await openPermissionSettings();
-        return false;
+        permission = await isPermissionGranted();
       }
-      final initial = _lastKnownBounds.isEmpty
-          ? Rect.fromLTWH(0, 0, media.size.width, media.size.height)
-          : _lastKnownBounds;
-      final sticky = _stickyWindow(initial);
+      if (!permission) return false;
+      final fallback = initialBounds ??
+          (_lastKnownBounds.isEmpty
+              ? Rect.fromLTWH(
+                  media.size.width - 88,
+                  media.size.height * 0.55,
+                  72,
+                  72,
+                )
+              : _lastKnownBounds);
+      final sticky = _stickyWindow(fallback);
       bounds.value = sticky;
-      active.value = true;
-      final ok =
-          await _channel.invokeMethod<bool>('enter', _physicalArgs(initial)) ??
-              false;
-      if (!ok) {
-        active.value = false;
-        return false;
-      }
+      final ok = await _channel.invokeMethod<bool>(
+            'arm',
+            _physicalArgs(sticky),
+          ) ??
+          false;
+      if (!ok) return false;
+      armed.value = true;
       return true;
     } catch (_) {
-      active.value = false;
       return false;
-    } finally {
-      _busy = false;
     }
   }
 
-  /// 退出 APP 外悬浮模式（从 APP 内调用；悬浮通知里的“返回 APP”由原生触发）。
+  /// 启动时静默同步：如果用户上次开着 AI 悬浮球、系统权限也在，就直接
+  /// 把准备态服务拉起来。权限没给就安静地留在 APP 内悬浮，不弹设置页。
+  Future<bool> ensureArmed(MediaQueryData media) {
+    return enable(media, requestPermission: false);
+  }
+
+  /// 关闭“APP 外悬浮”能力：飘在桌面上的覆盖窗口如果正在显示，先摘掉，
+  /// 再停掉准备态服务；APP 内悬浮球是否隐藏由调用方决定。
   Future<void> disable() async {
     if (!supported) return;
+    armed.value = false;
     active.value = false;
     _windowBounds = null;
     try {
-      await _channel.invokeMethod<void>('exit');
+      await _channel.invokeMethod<void>('disarm');
     } catch (_) {}
   }
 
