@@ -40,12 +40,14 @@ void main() {
     controller.active.value = true;
     controller.fullScreenSize = const Size(400, 800);
     controller.bounds.value = const Rect.fromLTWH(100, 200, 300, 400);
+    controller.appliedBounds.value = const Rect.fromLTWH(100, 200, 300, 400);
     FloatBoundsRegistry.remove(id);
     addTearDown(() {
       FloatBoundsRegistry.remove(id);
       controller.active.value = false;
       controller.fullScreenSize = Size.zero;
       controller.bounds.value = Rect.zero;
+      controller.appliedBounds.value = Rect.zero;
     });
 
     await tester.pumpWidget(

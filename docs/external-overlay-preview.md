@@ -244,6 +244,29 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
 - 对应单测：`test/ai_chat_geometry_test.dart` 覆盖无文字、左/右展开、
   空间不足四种情况。
 
+## 拖动流畅：原生窗口与 Shell 坐标同步
+
+拖动悬浮窗时“疯狂闪、像有排斥力、错位”，根因是两条链路不同步：
+
+- Dart 一改 `bounds`，`ExternalFloatShell` 立刻按新原点平移内容；
+- 原生 `updateViewLayout` 走 60ms 防抖，拖动时每一帧 grow 都会重置这个
+  防抖，原生窗口可能整段拖动都停在旧位置。
+
+于是内容已经按新坐标排好、原生窗口还停在旧位置，窗口就被裁/错位，松手
+后原生才追上来，看起来就是“被推回去又弹回来”。
+
+修复：
+
+- **grow 立即下发**：`_applyBounds` 判断是扩大时直接 `updateBounds`，不再
+  等 60ms；缩小仍保留防抖，避免关窗/缩放动画时抖动。
+- **新增 `appliedBounds`**：原生 `updateViewLayout` 完成后回
+  `boundsApplied`（物理像素），`ExternalFloatShell` 用原生**真正应用**的
+  矩形做平移，而不是 Dart 刚写下的目标值。
+- `FloatBoundsReporter` 也用 `appliedBounds.topLeft` 换算全屏坐标，避免
+  “Dart 已知、原生未知”阶段产生反馈振荡。
+- 相关单测：扩大时立即发出 `updateBounds`、`appliedBounds` 只在原生回传
+  后更新。
+
 ## 每个悬浮窗彼此独立（ui_c / 结果窗 / 提问窗）
 
 快问输入条模式下调用的 ui_c 画布窗，之前只在 `dock.quickOpen` 时渲染，

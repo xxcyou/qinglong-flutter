@@ -662,6 +662,18 @@ class ExternalOverlayService : Service() {
         }
         try {
             windowManager?.updateViewLayout(flutterView, params)
+            // 回传“原生真正应用”的位置/尺寸（物理像素）。Dart Shell 用
+            // appliedBounds 切换坐标，避免 Dart 已重排、原生窗口还没挪
+            // 造成的拖动错位/闪动。
+            methodChannel?.invokeMethod(
+                "boundsApplied",
+                mapOf(
+                    "left" to params.x.toDouble(),
+                    "top" to params.y.toDouble(),
+                    "width" to params.width.toDouble(),
+                    "height" to params.height.toDouble(),
+                ),
+            )
         } catch (_: Exception) {
         }
     }

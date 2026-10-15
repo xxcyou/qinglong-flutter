@@ -42,6 +42,14 @@ class ExternalOverlayController {
   /// 当前上报给原生的窗口矩形（逻辑像素）。
   final ValueNotifier<Rect> bounds = ValueNotifier<Rect>(Rect.zero);
 
+  /// 原生**实际应用**的窗口矩形（逻辑像素）。
+  ///
+  /// Shell 的平移必须跟这个值走，不能跟 [bounds]：Dart 侧一改 bounds
+  /// 就重排，而原生 updateViewLayout 是异步的，两者错开一帧就会在拖动时
+  /// 产生“窗口闪来闪去/像有排斥力”的错位。原生 updateViewLayout 后回
+  /// `boundsApplied`，Shell 再切坐标，两边始终对齐。
+  final ValueNotifier<Rect> appliedBounds = ValueNotifier<Rect>(Rect.zero);
+
   /// 原生上报的键盘高度（逻辑像素）。
   ///
   /// 系统覆盖窗口的 Flutter view 不一定能拿到 `viewInsets`（ADJUST_NOTHING
@@ -156,10 +164,25 @@ class ExternalOverlayController {
   }
 
   void _applyBounds(Rect desired) {
+    final previous = bounds.value;
     final next = _stickyWindow(desired);
-    if (next == bounds.value) return;
+    if (next == previous) return;
+    final grown = next.left < previous.left ||
+        next.top < previous.top ||
+        next.right > previous.right ||
+        next.bottom > previous.bottom;
     bounds.value = next;
-    if (active.value || armed.value) _scheduleNativeBoundsUpdate();
+    if (!active.value && !armed.value) return;
+    // 扩大在桌面模式下必须立即下发：拖动时如果还走 60ms 防抖，每一帧的
+    // grow 都会重置定时器，Shell 已经按新坐标重排、原生窗口却还停在旧
+    // 位置，看起来就是窗口疯狂闪动、像在被推回去。ARM（APP 内准备态）
+    // 不显示覆盖窗，沿用防抖即可，避免每帧发消息。
+    if (grown && active.value) {
+      _boundsDebounce?.cancel();
+      _sendNativeBoundsNow();
+    } else {
+      _scheduleNativeBoundsUpdate();
+    }
   }
 
   Rect _stickyWindow(Rect desired) {
@@ -230,13 +253,17 @@ class ExternalOverlayController {
   void _scheduleNativeBoundsUpdate() {
     _boundsDebounce?.cancel();
     _boundsDebounce = Timer(const Duration(milliseconds: 60), () {
-      if (!active.value && !armed.value) return;
-      final r = bounds.value;
-      // 空窗口也要发给原生：否则关掉悬浮窗后旧的大窗口会一直占着触摸。
-      _channel
-          .invokeMethod<void>('updateBounds', _physicalArgs(r))
-          .catchError((_) {});
+      _sendNativeBoundsNow();
     });
+  }
+
+  /// 立刻把当前 bounds 下发给原生；空窗口也要发，否则旧的大窗口会一直
+  /// 占着桌面触摸。
+  void _sendNativeBoundsNow() {
+    if (!active.value && !armed.value) return;
+    _channel
+        .invokeMethod<void>('updateBounds', _physicalArgs(bounds.value))
+        .catchError((_) {});
   }
 
   /// 开启“APP 外悬浮”能力（AI 悬浮球开关）。
@@ -413,6 +440,9 @@ class ExternalOverlayController {
       final next = call.arguments == true;
       active.value = next;
       if (next) {
+        // attach 时原生用当前 bounds，先乐观对齐；随后 boundsApplied 会
+        // 用真实值纠正。这样首帧不会因为 appliedBounds=0 而整体错位。
+        appliedBounds.value = bounds.value;
         _pumpOverlayFrames();
         _attachImeFocusListener();
         WidgetsBinding.instance.addPostFrameCallback((_) => _syncImeFocus());
@@ -422,10 +452,26 @@ class ExternalOverlayController {
         _cancelPendingShrink();
         _resetImeFocus();
         imeHeight.value = 0;
+        appliedBounds.value = Rect.zero;
       }
     } else if (call.method == 'surfaceReady') {
       // 覆盖窗口的 surface 真正创建/重建完成，再补一轮帧。
       if (active.value) _pumpOverlayFrames();
+    } else if (call.method == 'boundsApplied') {
+      // 原生 updateViewLayout 真正生效后回传物理矩形，换算回逻辑像素。
+      final args = (call.arguments as Map?)?.cast<String, dynamic>();
+      final ratio = devicePixelRatio <= 0 ? 1.0 : devicePixelRatio;
+      if (args == null) return null;
+      final left = (args['left'] as num?)?.toDouble() ?? 0;
+      final top = (args['top'] as num?)?.toDouble() ?? 0;
+      final width = (args['width'] as num?)?.toDouble() ?? 0;
+      final height = (args['height'] as num?)?.toDouble() ?? 0;
+      appliedBounds.value = Rect.fromLTWH(
+        left / ratio,
+        top / ratio,
+        width / ratio,
+        height / ratio,
+      );
     } else if (call.method == 'boundsChanged') {
       // 原生没有主动改 bounds 的需求，预留。
     } else if (call.method == 'imeHeight') {

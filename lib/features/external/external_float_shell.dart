@@ -27,11 +27,12 @@ class ExternalFloatShell extends StatelessWidget {
     return AnimatedBuilder(
       animation: Listenable.merge([
         controller.bounds,
+        controller.appliedBounds,
         controller.frameTick,
         controller.imeHeight,
       ]),
       builder: (context, _) {
-        final bounds = controller.bounds.value;
+        final bounds = controller.appliedBounds.value;
         final tick = controller.frameTick.value;
         final base = MediaQuery.of(context);
         // 正常从 APP 内进入时已经有全屏信息；极端情况（服务直接拉起引擎/

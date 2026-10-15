@@ -86,9 +86,10 @@ class _FloatBoundsReporterState extends State<FloatBoundsReporter> {
     final controller = ExternalOverlayController.instance;
     // APP 外模式下 Shell 把整层 AppFloatLayer 平移了 -bounds.topLeft；
     // 加回来后方登记的是“全屏逻辑坐标”，和 _visibleBounds 里其它窗口一致。
-    final shift = controller.active.value && !controller.fullScreenSize.isEmpty
-        ? controller.bounds.value.topLeft
-        : Offset.zero;
+    final shift =
+        controller.active.value && controller.fullScreenSize.width > 0
+            ? controller.appliedBounds.value.topLeft
+            : Offset.zero;
     FloatBoundsRegistry.report(widget.id, (local + shift) & box.size);
   }
 
