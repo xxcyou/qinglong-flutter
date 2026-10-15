@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/theme/theme_visual.dart';
 import '../../shared/float_stack.dart';
 import '../ai/floating/ai_dock_overlay.dart';
 import '../ai/floating/ai_dock_provider.dart';
@@ -25,55 +26,75 @@ class AppFloatLayer extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // 悬浮层不需要阴影：桌面覆盖窗是按并集裁剪的，阴影会被裁掉一截反而
+    // 像一圈硬边；同时阴影余量会扩大覆盖窗口、吃掉桌面触摸。这里给悬浮层
+    // 单独套一份 glassShadowOpacity=0 的主题，不影响 APP 其它菜单/面板。
+    final baseTheme = Theme.of(context);
+    final hasVisual = baseTheme.extension<ThemeVisual>() != null;
+    final floatTheme = hasVisual
+        ? baseTheme.copyWith(
+            extensions: [
+              for (final e in baseTheme.extensions.values)
+                if (e is ThemeVisual)
+                  e.copyWith(glassShadowOpacity: 0, glassShadowY: 0)
+                else
+                  e,
+            ],
+          )
+        : baseTheme;
+
     // 只监听 z 序变化。浏览器/终端/AI 各自在自己的宿主里监听自己的几何，
     // 这样拖浏览器时不会整层重建，AI 悬浮球自然就不会跟着闪。
-    return AnimatedBuilder(
-      animation: FloatStack.instance,
-      builder: (context, _) {
-        return Stack(
-          children: [
-            // 单独的几何上报器：它自己监听几何变化，重建只影响自己。
-            const Positioned.fill(
-              key: ValueKey('float-bounds-reporter'),
-              child: _FloatBoundsReporter(),
-            ),
-            // 所有独立悬浮窗按 FloatStack 顺序绘制：点到谁，谁置顶。
-            // 终端/SSH/附件不再固定压在某一个宿主上，浏览器也不再“困在 AI 里”。
-            for (final id in FloatStack.instance.order)
-              if (id != FloatStack.attachment)
-                Positioned.fill(
-                  key: ValueKey('float-$id'),
-                  child: Listener(
-                    behavior: HitTestBehavior.translucent,
-                    onPointerDown: (_) => FloatStack.instance.raise(id),
-                    child: switch (id) {
-                      FloatStack.ai => const AiDockHost(),
-                      FloatStack.browser => const BrowserHost(),
-                      FloatStack.terminal => const FloatingTerminalHost(),
-                      FloatStack.ssh => const SshFloatingHostLayer(),
-                      _ => const SizedBox.shrink(),
-                    },
+    return Theme(
+      data: floatTheme,
+      child: AnimatedBuilder(
+        animation: FloatStack.instance,
+        builder: (context, _) {
+          return Stack(
+            children: [
+              // 单独的几何上报器：它自己监听几何变化，重建只影响自己。
+              const Positioned.fill(
+                key: ValueKey('float-bounds-reporter'),
+                child: _FloatBoundsReporter(),
+              ),
+              // 所有独立悬浮窗按 FloatStack 顺序绘制：点到谁，谁置顶。
+              // 终端/SSH/附件不再固定压在某一个宿主上，浏览器也不再“困在 AI 里”。
+              for (final id in FloatStack.instance.order)
+                if (id != FloatStack.attachment)
+                  Positioned.fill(
+                    key: ValueKey('float-$id'),
+                    child: Listener(
+                      behavior: HitTestBehavior.translucent,
+                      onPointerDown: (_) => FloatStack.instance.raise(id),
+                      child: switch (id) {
+                        FloatStack.ai => const AiDockHost(),
+                        FloatStack.browser => const BrowserHost(),
+                        FloatStack.terminal => const FloatingTerminalHost(),
+                        FloatStack.ssh => const SshFloatingHostLayer(),
+                        _ => const SizedBox.shrink(),
+                      },
+                    ),
                   ),
-                ),
-            // 悬浮球永远画在普通悬浮窗之上：浏览器一最大化就盖住整块屏幕，
-            // 气泡要是跟着聊天窗沉下去，用户就没有任何入口能把 AI 叫回来。
-            const Positioned.fill(
-              key: ValueKey('float-bubble'),
-              child: AiBubbleHost(),
-            ),
-            // 附件/图片预览：独立悬浮窗。
-            const Positioned.fill(
-              key: ValueKey('float-attachment'),
-              child: AttachmentFloatHost(),
-            ),
-            // 文件/附件选择器：独立悬浮窗，最上层。
-            const Positioned.fill(
-              key: ValueKey('float-file-picker'),
-              child: FilePickerFloatHost(),
-            ),
-          ],
-        );
-      },
+              // 悬浮球永远画在普通悬浮窗之上：浏览器一最大化就盖住整块屏幕，
+              // 气泡要是跟着聊天窗沉下去，用户就没有任何入口能把 AI 叫回来。
+              const Positioned.fill(
+                key: ValueKey('float-bubble'),
+                child: AiBubbleHost(),
+              ),
+              // 附件/图片预览：独立悬浮窗。
+              const Positioned.fill(
+                key: ValueKey('float-attachment'),
+                child: AttachmentFloatHost(),
+              ),
+              // 文件/附件选择器：独立悬浮窗，最上层。
+              const Positioned.fill(
+                key: ValueKey('float-file-picker'),
+                child: FilePickerFloatHost(),
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 }
@@ -85,7 +106,7 @@ class _FloatBoundsReporter extends ConsumerWidget {
 
   /// 阴影/外发光留在窗口内的余量。越大阴影越完整，但透明区域也会
   /// 吃掉桌面触摸；这里取一个较小折中值。
-  static const double _shadowMargin = 10.0;
+  static const double _shadowMargin = 2.0;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {

@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.RectF
@@ -17,8 +19,10 @@ import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.SurfaceHolder
+import android.view.WindowInsets
 import android.view.SurfaceView
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import io.flutter.embedding.android.FlutterView
 import io.flutter.embedding.android.RenderMode
 import io.flutter.embedding.android.TransparencyMode
@@ -41,6 +45,24 @@ import io.flutter.plugin.common.MethodChannel
 /// 因为 engine / Dart isolate / Riverpod Provider 还是同一份，悬浮窗和 APP 内
 /// 状态天然一致，位置也不会因为切前后台而变化。
 class ExternalOverlayService : Service() {
+    /// 带 ACTION_OUTSIDE 监听的 FlutterView：覆盖窗口带
+    /// FLAG_WATCH_OUTSIDE_TOUCH，用户点击覆盖窗以外的区域（其他 APP）时，
+    /// 这里能收到 ACTION_OUTSIDE，从而立刻释放 IME 焦点，避免一直占着
+    /// 输入法。点在底部键盘区域的 outside 事件要忽略，否则会把自己刚弹
+    /// 出来的键盘关掉。
+    private class OverlayFlutterView(context: Context) :
+        FlutterView(context, RenderMode.surface, TransparencyMode.transparent) {
+
+        var onOutsideTouch: ((MotionEvent) -> Unit)? = null
+
+        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+            if (event.action == MotionEvent.ACTION_OUTSIDE) {
+                onOutsideTouch?.invoke(event)
+            }
+            return super.dispatchTouchEvent(event)
+        }
+    }
+
     companion object {
         private const val CHANNEL_ID = "qinglong_external_overlay"
         private const val NOTIFICATION_ID = 0x514C
@@ -157,6 +179,11 @@ class ExternalOverlayService : Service() {
             instance?.applyBounds(bounds)
         }
 
+        /// 悬浮窗里的输入框获得/失去焦点时切换覆盖窗口的 IME 焦点。
+        fun setImeFocus(focused: Boolean) {
+            instance?.applyImeFocus(focused)
+        }
+
         private fun Intent.putBounds(bounds: RectF) {
             putExtra(EXTRA_LEFT, bounds.left)
             putExtra(EXTRA_TOP, bounds.top)
@@ -171,12 +198,50 @@ class ExternalOverlayService : Service() {
     private var layoutParams: WindowManager.LayoutParams? = null
     private var bounds = RectF(0f, 0f, 72f, 72f)
 
+    /// 为了让悬浮窗里的输入框弹键盘而临时获得焦点；默认 false。
+    private var imeFocused = false
+    private var methodChannel: MethodChannel? = null
+
+    /// Home/最近任务/锁屏时，系统会发 CLOSE_SYSTEM_DIALOGS；此时必须立刻
+    /// 释放覆盖窗口的 IME 焦点，否则 TYPE_APPLICATION_OVERLAY 会一直压在
+    /// 其他应用上面，用户点其他应用的输入法也弹不出来。
+    private val systemDialogReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_CLOSE_SYSTEM_DIALOGS,
+                Intent.ACTION_SCREEN_OFF -> {
+                    if (imeFocused) {
+                        Log.i(TAG, "release IME focus: ${intent.action}")
+                        applyImeFocus(false)
+                    }
+                }
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
         Log.i(TAG, "service onCreate")
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
+        try {
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
+                addAction(Intent.ACTION_SCREEN_OFF)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(
+                    systemDialogReceiver,
+                    filter,
+                    Context.RECEIVER_NOT_EXPORTED,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(systemDialogReceiver, filter)
+            }
+        } catch (_: Exception) {
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -227,7 +292,9 @@ class ExternalOverlayService : Service() {
         var flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
         if (empty) {
             // 没有可见悬浮窗时窗口收到 1x1，并且整窗不可触摸，
             // 连那 1 个像素也不会挡住桌面。
@@ -252,13 +319,30 @@ class ExternalOverlayService : Service() {
             applyBounds(bounds)
             return
         }
-        var view: FlutterView? = null
+        var view: OverlayFlutterView? = null
         try {
             val shared = SharedFlutterEngine.get(this)
             engine = shared
-            view = FlutterView(this, RenderMode.surface, TransparencyMode.transparent)
-            view.setBackgroundColor(Color.TRANSPARENT)
-            view.attachToFlutterEngine(shared)
+            try {
+                methodChannel = MethodChannel(
+                    shared.dartExecutor.binaryMessenger,
+                    "qinglong/external_overlay",
+                )
+            } catch (_: Exception) {
+            }
+            val overlayView = OverlayFlutterView(this)
+            view = overlayView
+            overlayView.onOutsideTouch = { event ->
+                if (imeFocused) {
+                    Log.i(TAG, "outside touch y=${event.rawY}")
+                    if (!isTouchOnIme(event)) {
+                        Log.i(TAG, "release IME focus: outside touch")
+                        applyImeFocus(false)
+                    }
+                }
+            }
+            overlayView.setBackgroundColor(Color.TRANSPARENT)
+            overlayView.attachToFlutterEngine(shared)
             // APP 退到后台时 engine 可能被 LifecycleChannel 暂停；悬浮窗要动起来。
             try {
                 shared.lifecycleChannel.appIsResumed()
@@ -361,6 +445,7 @@ class ExternalOverlayService : Service() {
     }
 
     private fun detachOverlay() {
+        if (imeFocused) applyImeFocus(false)
         val view = flutterView
         flutterView = null
         if (view != null) {
@@ -383,6 +468,98 @@ class ExternalOverlayService : Service() {
         layoutParams = null
     }
 
+    /// 判断 ACTION_OUTSIDE 是否落在底部输入法区域。IME 窗口的
+    /// window insets 在 API 30+ 用 WindowInsets.Type.ime()，老系统用
+    /// systemWindowInsetBottom。点在键盘上不能释放焦点。
+    private fun isTouchOnIme(event: MotionEvent): Boolean {
+        val view = flutterView ?: return false
+        val screenHeight = resources.displayMetrics.heightPixels
+        val imeBottom = try {
+            val insets = view.rootWindowInsets
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                insets?.getInsets(WindowInsets.Type.ime())?.bottom ?: 0
+            } else {
+                @Suppress("DEPRECATION")
+                insets?.systemWindowInsetBottom ?: 0
+            }
+        } catch (_: Exception) {
+            0
+        }
+        if (imeBottom <= 0) return false
+        return event.rawY >= screenHeight - imeBottom
+    }
+
+    /// showSoftInput 有时会在窗口还没真正拿到焦点时失败（尤其是从别的
+    /// 应用切回悬浮窗、第一次点输入框）。这里连续重试几次，每次先
+    /// requestFocus，直到 imeFocused 被置回 false 或键盘已经显示。
+    private fun showSoftInputWithRetry(
+        view: FlutterView,
+        imm: InputMethodManager?,
+        attempt: Int,
+    ) {
+        if (!imeFocused) return
+        try {
+            imm?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+        } catch (_: Exception) {
+        }
+        if (attempt >= 4) return
+        view.postDelayed({
+            if (!imeFocused) return@postDelayed
+            try {
+                view.requestFocus()
+                showSoftInputWithRetry(view, imm, attempt + 1)
+            } catch (_: Exception) {
+            }
+        }, 150L + attempt * 150L)
+    }
+
+    /// 切换覆盖窗口的 IME 焦点。
+    ///
+    /// 默认带 FLAG_NOT_FOCUSABLE：不抢其他应用的输入法。只有悬浮窗里的
+    /// 输入框拿到 Dart 焦点时才清掉该 flag、requestFocus 并 showSoftInput；
+    /// 焦点离开或被别的应用抢走时立刻恢复。
+    private fun applyImeFocus(focused: Boolean) {
+        imeFocused = focused
+        Log.i(TAG, "setImeFocus=$focused")
+        val view = flutterView ?: return
+        val params = layoutParams ?: return
+        val nextFlags = if (focused) {
+            params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+        } else {
+            params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        }
+        if (nextFlags != params.flags) {
+            params.flags = nextFlags
+            try {
+                windowManager?.updateViewLayout(view, params)
+            } catch (_: Exception) {
+            }
+        }
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+        if (focused) {
+            try {
+                view.requestFocus()
+                showSoftInputWithRetry(view, imm, 0)
+            } catch (_: Exception) {
+            }
+        } else {
+            // 通知 Dart 清掉输入焦点，否则 Dart 侧 _imeFocus 还是 true，
+            // 下次点悬浮窗输入框时不会再发 setImeFocus(true)。
+            try {
+                methodChannel?.invokeMethod("imeReleased", null)
+            } catch (_: Exception) {
+            }
+            try {
+                imm?.hideSoftInputFromWindow(view.windowToken, 0)
+            } catch (_: Exception) {
+            }
+            try {
+                view.clearFocus()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     private fun applyBounds(next: RectF) {
         bounds = next
         val params = layoutParams ?: return
@@ -392,7 +569,9 @@ class ExternalOverlayService : Service() {
             params.y = 0
             params.width = 1
             params.height = 1
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            params.flags = params.flags or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
         } else {
             params.x = next.left.toInt()
             params.y = next.top.toInt()
@@ -400,6 +579,14 @@ class ExternalOverlayService : Service() {
             params.height = height()
             params.flags = params.flags and
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            // 有内容时按当前 IME 状态决定是否可聚焦。
+            if (imeFocused) {
+                params.flags = params.flags and
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+            } else {
+                params.flags = params.flags or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            }
         }
         try {
             windowManager?.updateViewLayout(flutterView, params)
@@ -481,6 +668,10 @@ class ExternalOverlayService : Service() {
     }
 
     override fun onDestroy() {
+        try {
+            unregisterReceiver(systemDialogReceiver)
+        } catch (_: Exception) {
+        }
         detachOverlay()
         instance = null
         super.onDestroy()

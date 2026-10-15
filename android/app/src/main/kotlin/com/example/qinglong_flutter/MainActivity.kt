@@ -179,6 +179,10 @@ class MainActivity : FlutterActivity() {
                         ExternalOverlayService.updateBounds(this, lastBounds)
                         result.success(null)
                     }
+                    "setImeFocus" -> {
+                        ExternalOverlayService.setImeFocus(call.arguments == true)
+                        result.success(null)
+                    }
                     "exit" -> {
                         disarmExternal()
                         result.success(null)

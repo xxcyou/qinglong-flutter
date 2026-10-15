@@ -1548,7 +1548,7 @@ class _Bubble extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: pending ? scheme.error : scheme.primary,
                   borderRadius: BorderRadius.circular(10),
-                  boxShadow: Glass.shadow(scheme, y: 2),
+                  boxShadow: const <BoxShadow>[],
                 ),
                 child: Text(
                   badge,
@@ -1633,7 +1633,7 @@ class _DockedBubble extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: pending ? scheme.error : scheme.primary,
                   borderRadius: BorderRadius.circular(9),
-                  boxShadow: Glass.shadow(scheme, y: 2),
+                  boxShadow: const <BoxShadow>[],
                 ),
                 child: Text(
                   badge,

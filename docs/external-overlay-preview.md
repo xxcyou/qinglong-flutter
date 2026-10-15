@@ -158,3 +158,44 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
 - [ ] 快问结果窗 bounds 精确化。
 - [ ] 通知常驻与「返回 APP」交互打磨。
 - [ ] 预览自动化 hook（`qinglong_preview_enter_external`）在正式发布前删除。
+
+## 悬浮层阴影移除
+
+桌面覆盖窗是按所有可见悬浮窗的并集矩形裁剪的，阴影/外发光超出并集的部分
+会被系统切掉，看起来反而像硬边；阴影余量还会扩大覆盖窗、吃掉桌面触摸。
+现在：
+
+- `AppFloatLayer` 单独套一份 `ThemeVisual(glassShadowOpacity: 0,
+  glassShadowY: 0)` 的主题，只影响悬浮层，不影响 APP 内其他菜单/面板；
+- `GlassPanel` 在 `glassShadowOpacity <= 0` 时完全不画 boxShadow；
+- 悬浮球上的角标阴影也去掉了；
+- 几何上报器的阴影余量从 10 降到 2 逻辑像素，覆盖窗更贴内容，
+  悬浮球窗口从 228px 收到 180px（1200×2608 / DPR 3 实测）。
+
+## 输入法焦点：默认不抢，输入时才聚焦
+
+`TYPE_APPLICATION_OVERLAY` 窗口默认是 focusable 的，会一直压在桌面/其他
+应用上面抢走 IME 焦点，导致其他应用点输入框弹不出键盘。现在的策略：
+
+- 覆盖窗参数默认带 `FLAG_NOT_FOCUSABLE`，并新增
+  `FLAG_WATCH_OUTSIDE_TOUCH`；
+- 悬浮窗里的输入框拿到 Dart 焦点时，Dart 调 `setImeFocus(true)`，原生
+  清掉 `FLAG_NOT_FOCUSABLE`、`requestFocus()`，并用
+  `showSoftInputWithRetry` 连续重试 `showSoftInput`（从别的应用切回来时
+  窗口焦点可能晚到）；
+- Dart 焦点离开时调 `setImeFocus(false)`，原生恢复
+  `FLAG_NOT_FOCUSABLE`、隐藏键盘、清 view 焦点；
+- 用户按 Home / 最近任务 / 锁屏时，系统发
+  `ACTION_CLOSE_SYSTEM_DIALOGS` / `ACTION_SCREEN_OFF`，Service 收到后
+  立刻释放 IME 焦点；
+- 用户点悬浮窗以外的其他应用区域时，`ACTION_OUTSIDE` 到达
+  `OverlayFlutterView`，同样释放 IME 焦点；点在底部键盘区域的 outside
+  事件会忽略（键盘键按下不会收到 outside，实测不会误释放）；
+- 原生释放 IME 后通过 `imeReleased` 通知 Dart 清掉 `_imeFocus` 并
+  `unfocus()`，这样下次再点悬浮窗输入框还能重新聚焦、重新弹键盘。
+
+设备回归（build 120/121，1200×2608）：
+- 悬浮窗输入框 → 键盘正常弹出，IME served view 是 Flutter 覆盖窗；
+- 直接点浏览器地址栏 → 第一次触摸释放覆盖窗 IME 并把焦点交给浏览器
+  `UrlInputView`，再点一次键盘正常弹出；
+- 回到悬浮窗输入框 → `setImeFocus=true` 可再次弹出。

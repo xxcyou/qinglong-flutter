@@ -50,6 +50,10 @@ class ExternalOverlayController {
 
   Timer? _frameTickTimer;
 
+  /// 当前覆盖窗口是否为了让悬浮窗内的输入框弹键盘而临时获得焦点。
+  bool _imeFocus = false;
+  bool _imeFocusListenerAttached = false;
+
   /// 进入外部模式前的完整屏幕尺寸/安全区，用于悬浮 FlutterView 内部
   /// 仍然按“全屏坐标系”布局原有悬浮窗。
   Size fullScreenSize = Size.zero;
@@ -274,8 +278,54 @@ class ExternalOverlayController {
     armed.value = false;
     active.value = false;
     _windowBounds = null;
+    _frameTickTimer?.cancel();
+    _frameTickTimer = null;
+    _cancelPendingShrink();
+    _resetImeFocus();
     try {
       await _channel.invokeMethod<void>('disarm');
+    } catch (_) {}
+  }
+
+  /// 覆盖窗口默认 FLAG_NOT_FOCUSABLE，不抢其他应用的输入法焦点；
+  /// 只有悬浮窗里的输入框拿到 Dart 焦点时，才临时让原生窗口可聚焦并
+  /// 主动 showSoftInput。焦点离开后立刻恢复不可聚焦，其他应用才能正常
+  /// 点出输入法。
+  void _attachImeFocusListener() {
+    if (_imeFocusListenerAttached) return;
+    _imeFocusListenerAttached = true;
+    FocusManager.instance.addListener(_syncImeFocus);
+  }
+
+  void _detachImeFocusListener() {
+    if (!_imeFocusListenerAttached) return;
+    _imeFocusListenerAttached = false;
+    FocusManager.instance.removeListener(_syncImeFocus);
+  }
+
+  bool _hasEditableFocus() {
+    final node = FocusManager.instance.primaryFocus;
+    if (node == null) return false;
+    final ctx = node.context;
+    if (ctx == null) return false;
+    return ctx.findAncestorStateOfType<EditableTextState>() != null;
+  }
+
+  void _syncImeFocus() {
+    if (!active.value) return;
+    final next = _hasEditableFocus();
+    if (next == _imeFocus) return;
+    _imeFocus = next;
+    try {
+      _channel.invokeMethod<void>('setImeFocus', next);
+    } catch (_) {}
+  }
+
+  void _resetImeFocus() {
+    _imeFocus = false;
+    _detachImeFocusListener();
+    try {
+      _channel.invokeMethod<void>('setImeFocus', false);
     } catch (_) {}
   }
 
@@ -321,16 +371,24 @@ class ExternalOverlayController {
       active.value = next;
       if (next) {
         _pumpOverlayFrames();
+        _attachImeFocusListener();
+        WidgetsBinding.instance.addPostFrameCallback((_) => _syncImeFocus());
       } else {
         _frameTickTimer?.cancel();
         _frameTickTimer = null;
         _cancelPendingShrink();
+        _resetImeFocus();
       }
     } else if (call.method == 'surfaceReady') {
       // 覆盖窗口的 surface 真正创建/重建完成，再补一轮帧。
       if (active.value) _pumpOverlayFrames();
     } else if (call.method == 'boundsChanged') {
       // 原生没有主动改 bounds 的需求，预留。
+    } else if (call.method == 'imeReleased') {
+      // 原生因 Home/点击其他应用/失焦主动释放了 IME；同步清掉 Dart 侧
+      // 焦点状态，下次再点悬浮窗输入框才会重新走 setImeFocus(true)。
+      _imeFocus = false;
+      FocusManager.instance.primaryFocus?.unfocus();
     }
     return null;
   }

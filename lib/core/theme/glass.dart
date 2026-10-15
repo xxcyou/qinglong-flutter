@@ -191,10 +191,15 @@ class GlassPanel extends StatelessWidget {
             style?.shadowColor ?? visual?.shadowColor ?? Colors.black;
         // 阴影上限：主题里 glassShadowOpacity 默认 0.42，在悬浮窗/桌面上
         // 看起来太重；这里统一压到柔和范围，用户仍可通过主题微调但不会刺眼。
-        final effectiveShadowOpacity = (style?.shadowOpacity ??
-                (visual?.glassShadowOpacity ??
-                    (scheme.brightness == Brightness.dark ? 0.34 : 0.10)))
-            .clamp(0.0, 0.22);
+        // 悬浮层通过主题把 glassShadowOpacity 设成 0，此时无视组件样式，
+        // 彻底不画阴影（桌面覆盖窗按并集裁剪，有阴影反而会被切出硬边）。
+        final shadowDisabled = (visual?.glassShadowOpacity ?? 1) <= 0;
+        final effectiveShadowOpacity = shadowDisabled
+            ? 0.0
+            : (style?.shadowOpacity ??
+                    (visual?.glassShadowOpacity ??
+                        (scheme.brightness == Brightness.dark ? 0.34 : 0.10)))
+                .clamp(0.0, 0.22);
         final effectiveShadowBlur =
             style?.shadowBlur ?? (effectiveShadowY * 2.0);
         final effectiveShadowOffsetY =
@@ -387,23 +392,26 @@ class GlassPanel extends StatelessWidget {
                   margin: margin,
                   decoration: BoxDecoration(
                     borderRadius: br,
-                    boxShadow: [
-                      BoxShadow(
-                        color: effectiveShadowColor.withValues(
-                            alpha: effectiveShadowOpacity),
-                        blurRadius: effectiveShadowBlur,
-                        offset: Offset(0, effectiveShadowOffsetY),
-                      ),
-                      BoxShadow(
-                        color: scheme.primary.withValues(
-                          alpha: scheme.brightness == Brightness.dark
-                              ? 0.05
-                              : 0.03,
-                        ),
-                        blurRadius: effectiveShadowY * 2.6,
-                        spreadRadius: -effectiveShadowY,
-                      ),
-                    ],
+                    boxShadow: effectiveShadowOpacity <= 0
+                        ? const <BoxShadow>[]
+                        : [
+                            BoxShadow(
+                              color: effectiveShadowColor.withValues(
+                                  alpha: effectiveShadowOpacity),
+                              blurRadius: effectiveShadowBlur,
+                              offset: Offset(0, effectiveShadowOffsetY),
+                            ),
+                            if (effectiveShadowY > 0)
+                              BoxShadow(
+                                color: scheme.primary.withValues(
+                                  alpha: scheme.brightness == Brightness.dark
+                                      ? 0.05
+                                      : 0.03,
+                                ),
+                                blurRadius: effectiveShadowY * 2.6,
+                                spreadRadius: -effectiveShadowY,
+                              ),
+                          ],
                   ),
                   child: ClipRRect(
                     borderRadius: br,
