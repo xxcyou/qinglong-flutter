@@ -71,7 +71,7 @@ class ThemeVisual extends ThemeExtension<ThemeVisual> {
           config.effect('glassBorderOpacity', dark ? 0.16 : 0.78),
       glassShadowY: config.effect('glassShadowY', 8),
       glassShadowOpacity:
-          config.effect('glassShadowOpacity', dark ? 0.42 : 0.14),
+          config.effect('glassShadowOpacity', dark ? 0.20 : 0.10),
       glassRadius: config.effect('glassRadius', 22),
       cardRadius: config.effect('cardRadius', 16),
       floatingDepth: config.effect('floatingDepth', 4),

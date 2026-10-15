@@ -102,13 +102,13 @@ class Glass {
     final dark = scheme.brightness == Brightness.dark;
     return [
       BoxShadow(
-        color: Colors.black.withValues(alpha: dark ? 0.42 : 0.14),
-        blurRadius: y * 2.2,
-        offset: Offset(0, y),
+        color: Colors.black.withValues(alpha: dark ? 0.26 : 0.10),
+        blurRadius: y * 2.0,
+        offset: Offset(0, y * 0.8),
       ),
       BoxShadow(
-        color: scheme.primary.withValues(alpha: dark ? 0.10 : 0.06),
-        blurRadius: y * 3,
+        color: scheme.primary.withValues(alpha: dark ? 0.06 : 0.04),
+        blurRadius: y * 2.6,
         spreadRadius: -y,
       ),
     ];
@@ -189,12 +189,16 @@ class GlassPanel extends StatelessWidget {
             : (style?.borderWidth ?? borderWidth);
         final effectiveShadowColor =
             style?.shadowColor ?? visual?.shadowColor ?? Colors.black;
-        final effectiveShadowOpacity = style?.shadowOpacity ??
-            (visual?.glassShadowOpacity ??
-                (scheme.brightness == Brightness.dark ? 0.34 : 0.10));
+        // 阴影上限：主题里 glassShadowOpacity 默认 0.42，在悬浮窗/桌面上
+        // 看起来太重；这里统一压到柔和范围，用户仍可通过主题微调但不会刺眼。
+        final effectiveShadowOpacity = (style?.shadowOpacity ??
+                (visual?.glassShadowOpacity ??
+                    (scheme.brightness == Brightness.dark ? 0.34 : 0.10)))
+            .clamp(0.0, 0.22);
         final effectiveShadowBlur =
-            style?.shadowBlur ?? (effectiveShadowY * 2.2);
-        final effectiveShadowOffsetY = style?.shadowOffsetY ?? effectiveShadowY;
+            style?.shadowBlur ?? (effectiveShadowY * 2.0);
+        final effectiveShadowOffsetY =
+            style?.shadowOffsetY ?? (effectiveShadowY * 0.8);
         // 液体玻璃默认要透：主题没显式给 fillOpacity 时，自动压到半透明，
         // 否则原来的不透明 colors/纯色会把“液态”直接盖成一块实心板。
         final defaultLiquidFill = liquidActive ? 0.55 : null;
@@ -313,8 +317,7 @@ class GlassPanel extends StatelessWidget {
                                 style: style,
                                 cornerRadius: br.topLeft.x,
                                 glowShape: style.glowShape,
-                                glowSharpness:
-                                    style.innerGlowSharpness ?? 0,
+                                glowSharpness: style.innerGlowSharpness ?? 0,
                               ),
                             ),
                           ),
@@ -394,10 +397,10 @@ class GlassPanel extends StatelessWidget {
                       BoxShadow(
                         color: scheme.primary.withValues(
                           alpha: scheme.brightness == Brightness.dark
-                              ? 0.10
-                              : 0.06,
+                              ? 0.05
+                              : 0.03,
                         ),
-                        blurRadius: effectiveShadowY * 3,
+                        blurRadius: effectiveShadowY * 2.6,
                         spreadRadius: -effectiveShadowY,
                       ),
                     ],
@@ -471,7 +474,8 @@ class _OuterGlowPainter extends CustomPainter {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = strokeWidth
-        ..maskFilter = blur > 0.5 ? MaskFilter.blur(BlurStyle.normal, blur) : null
+        ..maskFilter =
+            blur > 0.5 ? MaskFilter.blur(BlurStyle.normal, blur) : null
         ..color = glowColor.withValues(alpha: glowOpacity.clamp(0.0, 1.0)),
     );
   }

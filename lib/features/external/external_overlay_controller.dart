@@ -71,10 +71,13 @@ class ExternalOverlayController {
   /// 全部关闭时立即收成空窗口，不再占桌面触摸。
   Rect? _windowBounds;
 
-  /// 缩小窗口时的回差；扩大立即生效，缩回超过该值才执行，避免抖动。
-  static const double _shrinkSlack = 16;
+  /// 窗口缩小阈值（逻辑像素面积）；扩大立即生效，面积缩小超过该值才收回，
+  /// 避免拖动时窗口每帧抖动，同时保证关掉悬浮窗后窗口能立刻缩回去。
+  static const double _shrinkArea = 24 * 24;
 
   Timer? _boundsDebounce;
+  Timer? _shrinkDebounce;
+  Rect? _pendingShrink;
   Future<bool>? _enableInFlight;
 
   bool get supported => defaultTargetPlatform == TargetPlatform.android;
@@ -122,29 +125,59 @@ class ExternalOverlayController {
   Rect _stickyWindow(Rect desired) {
     // 没有任何可见悬浮窗：立刻把原生窗口收成空窗口，别再占桌面触摸。
     if (desired.isEmpty) {
+      _cancelPendingShrink();
       _windowBounds = Rect.zero;
       return Rect.zero;
     }
     final current = _windowBounds;
     if (current == null || current.isEmpty) {
+      _cancelPendingShrink();
       _windowBounds = desired;
       return desired;
     }
-    final needsGrow = !current.contains(desired.topLeft) ||
-        !current.contains(desired.bottomRight);
+    // 不能直接用 Rect.contains 判断左下/右下边界：它是右/下开区间，
+    // 悬浮球本身贴着旧窗口右下角时会被误判成“需要扩大”，于是窗口
+    // 永远收不回去（关掉悬浮窗后那片区域还是挡桌面）。这里逐边比较。
+    final needsGrow = desired.left < current.left ||
+        desired.top < current.top ||
+        desired.right > current.right ||
+        desired.bottom > current.bottom;
     if (needsGrow) {
+      _cancelPendingShrink();
       _windowBounds = current.expandToInclude(desired);
       return _windowBounds!;
     }
-    final canShrink = current.left <= desired.left - _shrinkSlack &&
-        current.top <= desired.top - _shrinkSlack &&
-        current.right >= desired.right + _shrinkSlack &&
-        current.bottom >= desired.bottom + _shrinkSlack;
-    if (canShrink) {
-      _windowBounds = desired;
-      return desired;
+    // desired 已在 current 内：面积缩小得足够多才收回窗口。收窗口会重置
+    // FlutterView 的尺寸并让所有悬浮层重新布局，所以加 200ms 防抖：
+    // 关闭/缩放动画期间持续变化会不断重置定时器，等画面稳定后再一次性收回，
+    // 既不会裁剪动画，也不会在拖动时抖动。
+    final currentArea = current.width * current.height;
+    final desiredArea = desired.width * desired.height;
+    if (currentArea - desiredArea > _shrinkArea) {
+      _pendingShrink = desired;
+      _shrinkDebounce?.cancel();
+      _shrinkDebounce = Timer(const Duration(milliseconds: 200), () {
+        final target = _pendingShrink;
+        _pendingShrink = null;
+        _shrinkDebounce = null;
+        if (target == null) return;
+        // 注意：这里不能因为当前未 armed 就跳过——_windowBounds/bounds 是
+        // 进入外部模式时复用的缓存，必须始终收到正确的小窗口，否则用户
+        // 之后打开开关、退后台时又会用旧的大矩形。
+        _windowBounds = target;
+        bounds.value = target;
+        if (active.value || armed.value) _scheduleNativeBoundsUpdate();
+      });
+      return current;
     }
+    _cancelPendingShrink();
     return current;
+  }
+
+  void _cancelPendingShrink() {
+    _pendingShrink = null;
+    _shrinkDebounce?.cancel();
+    _shrinkDebounce = null;
   }
 
   void _scheduleNativeBoundsUpdate() {
@@ -284,6 +317,7 @@ class ExternalOverlayController {
       } else {
         _frameTickTimer?.cancel();
         _frameTickTimer = null;
+        _cancelPendingShrink();
       }
     } else if (call.method == 'surfaceReady') {
       // 覆盖窗口的 surface 真正创建/重建完成，再补一轮帧。

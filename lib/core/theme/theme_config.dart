@@ -286,8 +286,8 @@ class ThemeConfig {
   static const Map<String, double> defaultEffects = {
     'glassBlur': 26,
     'glassBorderOpacity': 0.16,
-    'glassShadowY': 8,
-    'glassShadowOpacity': 0.42,
+    'glassShadowY': 6,
+    'glassShadowOpacity': 0.20,
     'glassRadius': 22,
     'cardRadius': 16,
     'floatingDepth': 4,

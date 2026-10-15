@@ -83,6 +83,22 @@ WindowManager.addView(TYPE_APPLICATION_OVERLAY)
 如果将来要“APP 前台也同时在桌面显示系统悬浮窗”，需要升级到支持多
 `FlutterView` 的 embedding/多 Engine + 状态桥，那是另一个阶段的工作。
 
+## 关掉悬浮窗后的窗口收回
+
+原生覆盖窗口是“悬浮窗并集 + 10 逻辑像素阴影余量”。为避免拖动时窗口每帧
+抖动，扩大立即生效，缩小做了 200ms 防抖（面积缩小超过 `24*24` 才考虑）；
+关闭/缩放动画结束后窗口会一次性收回到剩余悬浮窗的并集。全部悬浮窗关闭时
+不走防抖，立即上报空矩形，原生收成 1×1 且带 `FLAG_NOT_TOUCHABLE`，完全
+不挡桌面。判断“是否需要扩大”不能使用 `Rect.contains`（右/下是开区间），
+否则悬浮球贴着旧窗口右下角时永远收不回去。
+
+## 阴影强度
+
+主题默认 `glassShadowOpacity` 从 `0.42` 降到 `0.20`、`glassShadowY` 从 8
+降到 6；`GlassPanel` 对阴影透明度再统一 `clamp(0.0, 0.22)`，`Glass.shadow`
+的黑影/主色光晕也同步减弱。这样悬浮球和悬浮窗在桌面/APP 内的阴影都不会
+再“压”出一圈很重的黑边。
+
 ## 覆盖窗口首帧
 
 部分 ROM/设备上，覆盖窗口里的 `FlutterSurfaceView` 虽然 `surface` 已创建、
