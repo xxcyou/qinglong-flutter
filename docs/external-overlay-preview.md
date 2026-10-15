@@ -221,8 +221,13 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
    `MediaQuery.viewInsets`。原生在 `setImeFocus(true)` 后从
    `rootWindowInsets`（兜底 `WindowMetrics` / 可视区域差值）量出键盘
    高度，通过 `imeHeight` 方法发回 Dart；`ExternalFloatShell` 把它并入
-   `MediaQuery.viewInsets`，所有悬浮窗（AI 聊天、快问条、浏览器、终端、
-   SSH）都会按键盘高度上移 + 必要时收窄，输入行始终在键盘上方。
+   `MediaQuery.viewInsets`。
+5. **只在会被盖住时才移**：AI 聊天窗、快问条、浏览器、终端、SSH 都先
+   判断自己的输入区域底边有没有越过键盘顶边——越过了才上移最小必要
+   距离，上方空间不够再收窄；输入框本来就在键盘上方（比如聊天窗拖到
+   上半屏、快问球本来就在高处）则保持原地，键盘收起后自动恢复原几何。
+   AI 聊天窗几何抽成公共函数 `aiChatGeometry`，APP 内外/画布/原生 bounds
+   共用同一套结果，避免“内部移了、原生外框没移”的错位。
 
 ## 悬浮球形状与“点输入框时气泡冒出来”
 

@@ -35,6 +35,60 @@ import '../widgets/pending_image_bar.dart';
 import '../../../shared/image_preview_overlay.dart';
 import 'ai_dock_provider.dart';
 
+/// 聊天窗几何：聊天窗本身和画布窗共用同一块 field。
+///
+/// 关键点：键盘弹起时不是无脑整窗上移，而是只看聊天窗底部的输入行
+/// 有没有被键盘盖住——被盖住才上移，移不动的部分再从底部收窄；
+/// 输入行本来就在键盘上方时（比如用户把聊天窗拖到了上半屏）保持原地。
+({Rect rect, Size field}) aiChatGeometry(
+  MediaQueryData media,
+  AiDockState dock,
+) {
+  final size = media.size;
+  final safeTop = media.padding.top;
+  final safeBottom = media.padding.bottom;
+  // 左右留 28 逻辑像素：系统返回手势占据屏幕两侧约 24dp，
+  // 窗口边缘落进去的话，用户想拉边框会被识别成“返回”，边框就捏不动。
+  final safeArea = EdgeInsets.only(
+    left: 28,
+    right: 28,
+    top: safeTop + 6,
+    bottom: safeBottom + 6,
+  );
+  final field = Size(
+    size.width - safeArea.horizontal,
+    size.height - safeArea.vertical,
+  );
+  final w = (dock.ww * field.width)
+      .clamp(AiDockState.minW * field.width, field.width);
+  var h = (dock.wh * field.height)
+      .clamp(AiDockState.minH * field.height, field.height);
+  var left = safeArea.left + dock.wx * field.width;
+  var top = safeArea.top + dock.wy * field.height;
+  left = left.clamp(safeArea.left, size.width - safeArea.right - w);
+  top = top.clamp(safeArea.top, size.height - safeArea.bottom - h);
+
+  final keyboard = media.viewInsets.bottom;
+  if (keyboard > 0) {
+    final imeTop = size.height - keyboard - 8;
+    // 输入行在聊天窗底部；只要窗口底边不越过键盘顶边，就完全不动。
+    final delta = (top + h) - imeTop;
+    if (delta > 0) {
+      final maxShift = top - safeArea.top;
+      final shift = delta < maxShift ? delta : maxShift;
+      top -= shift;
+      final remaining = delta - shift;
+      if (remaining > 0) {
+        final minH = AiDockState.minH * field.height;
+        final shrunk = h - remaining;
+        h = shrunk < minH ? minH : shrunk;
+      }
+    }
+  }
+  top = top.clamp(safeArea.top, size.height - safeArea.bottom - h);
+  return (rect: Rect.fromLTWH(left, top, w, h), field: field);
+}
+
 /// 悬浮 AI 的宿主。
 ///
 /// 悬浮层挂在 `MaterialApp.builder` 里（这样 push 出去的页面也盖得住），
@@ -270,41 +324,8 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
 
   /// 聊天窗与它所在的可用区域。提问窗要靠它避让，所以必须算在一处，
   /// 两边各算一遍迟早会不一致。
-  ({Rect rect, Size field}) _chatGeometry(BuildContext context) {
-    final media = MediaQuery.of(context);
-    final size = media.size;
-    final safeTop = media.padding.top;
-    final safeBottom = media.padding.bottom;
-    final dock = ref.read(aiDockProvider);
-    // 左右留 28 逻辑像素：系统返回手势占据屏幕两侧约 24dp，
-    // 窗口边缘落进去的话，用户想拉边框会被识别成"返回"，边框就捏不动。
-    final safeArea = EdgeInsets.only(
-      left: 28,
-      right: 28,
-      top: safeTop + 6,
-      bottom: safeBottom + 6,
-    );
-    final field = Size(
-      size.width - safeArea.horizontal,
-      size.height - safeArea.vertical,
-    );
-    final w = (dock.ww * field.width)
-        .clamp(AiDockState.minW * field.width, field.width);
-    final h = (dock.wh * field.height)
-        .clamp(AiDockState.minH * field.height, field.height);
-    var left = safeArea.left + dock.wx * field.width;
-    var top = safeArea.top + dock.wy * field.height;
-    // 键盘弹起时整窗上移，保证输入框可见（不缩小窗口，避免布局跳动）。
-    final keyboard = media.viewInsets.bottom;
-    if (keyboard > 0) {
-      final limit = size.height - keyboard - 8 - h;
-      if (top > limit) top = limit;
-      if (top < safeArea.top) top = safeArea.top;
-    }
-    left = left.clamp(safeArea.left, size.width - safeArea.right - w);
-    top = top.clamp(safeArea.top, size.height - safeArea.bottom - h);
-    return (rect: Rect.fromLTWH(left, top, w, h), field: field);
-  }
+  ({Rect rect, Size field}) _chatGeometry(BuildContext context) =>
+      aiChatGeometry(MediaQuery.of(context), ref.read(aiDockProvider));
 
   Widget _build(BuildContext context, AiDockState dock) {
     // 半屏浮动窗：可拖动、可按边缩放，下层页面依然能滚能点。
@@ -827,12 +848,19 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
         (dock.dx * (size.width - bubble)).clamp(4.0, size.width - bubble - 4);
     var top =
         (minY + dock.dy * (maxY - minY)).clamp(minY, maxY < minY ? minY : maxY);
-    // 快问条伸出来时键盘会顶上来：球在下半屏的话，输入条直接被键盘盖住，
-    // 用户看不见自己打的字。这时把球（和它身上的输入条）抬到键盘上面。
+    // 快问条伸出来时键盘会顶上来：只在输入条真的会被键盘盖住时才把球
+    // 抬到键盘上方；输入条本来就在上半屏时保持原地，不整层乱动。
     final keyboard = media.viewInsets.bottom;
     if (dock.quickOpen && keyboard > 0) {
-      final limit = size.height - keyboard - 8 - bubble;
-      if (top > limit) top = limit < minY ? minY : limit;
+      // 输入面板底边 ≈ 球顶 + (56 + 44) / 2。
+      final inputBottom = top + (bubble + 44.0) / 2;
+      final imeTop = size.height - keyboard - 8;
+      final delta = inputBottom - imeTop;
+      if (delta > 0) {
+        final maxShift = top - minY;
+        final shift = delta < maxShift ? delta : maxShift;
+        top -= shift;
+      }
     }
 
     final chatState = ref.watch(chatProvider);

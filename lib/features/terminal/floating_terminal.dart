@@ -191,15 +191,21 @@ class _FloatingTerminalWindowState
     final left = _pos.dx.clamp(0.0, media.size.width - width - 8);
     final minTop = MediaQuery.paddingOf(context).top;
     var top = _pos.dy.clamp(minTop, media.size.height - height - 8);
-    // 终端输入行在窗口最下面；键盘弹起时整窗上移并适当收窄，
-    // 否则输入行会被键盘盖住。
+    // 终端输入行在窗口最下面：只在下边会被键盘盖住时才上移/收窄。
     final keyboard = media.viewInsets.bottom;
     if (keyboard > 0) {
-      final maxH = media.size.height - keyboard - 8 - minTop;
-      if (height > maxH) height = maxH < 160.0 ? 160.0 : maxH;
-      final limit = media.size.height - keyboard - 8 - height;
-      if (top > limit) top = limit;
-      if (top < minTop) top = minTop;
+      final imeTop = media.size.height - keyboard - 8;
+      final delta = (top + height) - imeTop;
+      if (delta > 0) {
+        final maxShift = top - minTop;
+        final shift = delta < maxShift ? delta : maxShift;
+        top -= shift;
+        final remaining = delta - shift;
+        if (remaining > 0) {
+          final shrunk = height - remaining;
+          height = shrunk < 160.0 ? 160.0 : shrunk;
+        }
+      }
     }
     FloatBoundsRegistry.report(
       _terminalBoundsKey,

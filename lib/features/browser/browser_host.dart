@@ -685,16 +685,23 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     var h = (win.h * f.height).clamp(BrowserWindow.minH * f.height, f.height);
     var left = f.left + win.x * f.width;
     var y = f.top + win.y * f.height;
-    // 键盘弹起时整窗上移；窗口太高时先收窄，否则只上移会被 f.top
-    // 卡住，页面下半部分的输入框依旧在键盘下面。
+    // 只在窗口底边会被键盘盖住时才上移；上移空间不够的部分再从底部
+    // 收窄，保证窗口里的输入区域始终在键盘上方。
     final keyboard = media.viewInsets.bottom;
     final minH = BrowserWindow.minH * f.height;
     if (keyboard > 0) {
-      final maxH = size.height - keyboard - 6 - f.top;
-      if (h > maxH) h = maxH < minH ? minH : maxH;
-      final limit = size.height - keyboard - 6 - h;
-      if (y > limit) y = limit;
-      if (y < f.top) y = f.top;
+      final imeTop = size.height - keyboard - 6;
+      final delta = (y + h) - imeTop;
+      if (delta > 0) {
+        final maxShift = y - f.top;
+        final shift = delta < maxShift ? delta : maxShift;
+        y -= shift;
+        final remaining = delta - shift;
+        if (remaining > 0) {
+          final shrunk = h - remaining;
+          h = shrunk < minH ? minH : shrunk;
+        }
+      }
     }
     left = left.clamp(f.left, f.left + f.width - w);
     y = y.clamp(f.top, f.top + f.height - h);

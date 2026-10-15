@@ -90,14 +90,21 @@ class _SshFloatingTerminalWindowState extends State<SshFloatingTerminalWindow> {
     final left = _pos.dx.clamp(0.0, media.size.width - width - 8);
     final minTop = MediaQuery.paddingOf(context).top;
     var top = _pos.dy.clamp(minTop, media.size.height - height - 8);
-    // 和普通悬浮终端一样：键盘弹起时上移 + 收窄，别让输入行被盖住。
+    // 和普通悬浮终端一样：只在下边会被键盘盖住时才上移 + 收窄。
     final keyboard = media.viewInsets.bottom;
     if (keyboard > 0) {
-      final maxH = media.size.height - keyboard - 8 - minTop;
-      if (height > maxH) height = maxH < 180.0 ? 180.0 : maxH;
-      final limit = media.size.height - keyboard - 8 - height;
-      if (top > limit) top = limit;
-      if (top < minTop) top = minTop;
+      final imeTop = media.size.height - keyboard - 8;
+      final delta = (top + height) - imeTop;
+      if (delta > 0) {
+        final maxShift = top - minTop;
+        final shift = delta < maxShift ? delta : maxShift;
+        top -= shift;
+        final remaining = delta - shift;
+        if (remaining > 0) {
+          final shrunk = height - remaining;
+          height = shrunk < 180.0 ? 180.0 : shrunk;
+        }
+      }
     }
     FloatBoundsRegistry.report(widget.boundsId, Rect.fromLTWH(left, top, width, height));
     final shell = "docker exec -it '${widget.containerId.replaceAll("'", "'\\''")}' /bin/sh -l";

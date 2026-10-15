@@ -189,8 +189,15 @@ class _FloatBoundsReporterState extends ConsumerState<_FloatBoundsReporter> {
           .clamp(minY, maxY < minY ? minY : maxY);
       final keyboard = media.viewInsets.bottom;
       if (dock.quickOpen && keyboard > 0) {
-        final limit = size.height - keyboard - 8 - bubble;
-        if (top > limit) top = limit < minY ? minY : limit;
+        // 只在输入面板会被键盘盖住时才抬球，和 AiBubbleLayer 的计算一致。
+        final inputBottom = top + (bubble + 44.0) / 2;
+        final imeTop = size.height - keyboard - 8;
+        final delta = inputBottom - imeTop;
+        if (delta > 0) {
+          final maxShift = top - minY;
+          final shift = delta < maxShift ? delta : maxShift;
+          top -= shift;
+        }
       }
       add(Rect.fromLTWH(left, top, bubble, bubble));
       // 快问输入条/结果窗大致贴着悬浮球展开，给个宽松的包围盒，
@@ -203,36 +210,11 @@ class _FloatBoundsReporterState extends ConsumerState<_FloatBoundsReporter> {
       }
     }
 
-    // AI 聊天窗。
+    // AI 聊天窗。几何和 AiDockOverlay 共用同一个函数，确保内外一致。
     if (dock.expanded) {
-      final safeArea = EdgeInsets.only(
-        left: 28,
-        right: 28,
-        top: safeTop + 6,
-        bottom: safeBottom + 6,
-      );
-      final field = Size(
-        size.width - safeArea.horizontal,
-        size.height - safeArea.vertical,
-      );
-      final w = (dock.ww * field.width)
-          .clamp(AiDockState.minW * field.width, field.width);
-      var h = (dock.wh * field.height)
-          .clamp(AiDockState.minH * field.height, field.height);
-      var left = safeArea.left + dock.wx * field.width;
-      var top = safeArea.top + dock.wy * field.height;
-      final keyboard = media.viewInsets.bottom;
-      final minH = AiDockState.minH * field.height;
-      if (keyboard > 0) {
-        final maxH = size.height - keyboard - 8 - safeArea.top;
-        if (h > maxH) h = maxH < minH ? minH : maxH;
-        final limit = size.height - keyboard - 8 - h;
-        if (top > limit) top = limit;
-        if (top < safeArea.top) top = safeArea.top;
-      }
-      left = left.clamp(safeArea.left, size.width - safeArea.right - w);
-      top = top.clamp(safeArea.top, size.height - safeArea.bottom - h);
-      add(Rect.fromLTWH(left, top, w, h));
+      final geometry = aiChatGeometry(media, dock);
+      final field = geometry.field;
+      add(geometry.rect);
 
       // 画布窗：与 AiDockOverlay._canvasWindow 同一套几何公式，
       // 否则多窗口时外悬浮窗覆盖层会裁掉画布。
