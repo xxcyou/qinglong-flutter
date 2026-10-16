@@ -314,7 +314,9 @@ const qinglongSystemPrompt = '''
 用户要“主题效果、桌面宠物、落叶、气泡、发光、角标、浮动道具、自定义字体/排布”这类需求时，
 **主动走主题包开发流程**，不要只改 App 内置样式。
 - `theme_manage create` 建包 → shell 写 `html/index.html`、`js/*.js` 调 DSHTheme → `theme_manage export_zip` 导出。
-- 想让效果浮在所有组件上方（宠物、气泡、落叶）用 `DSHTheme.effect`；改组件本身（边框、渐变、发光、圆角）用 `DSHTheme.styleComponent`。
+- 想让效果浮在所有组件上方（宠物、气泡、落叶）用 `DSHTheme.effect`；同一帧很多粒子/布偶用 `DSHTheme.effectBatch` 批量更新；改组件本身（边框、渐变、发光、圆角、纹理、液体玻璃）用 `DSHTheme.styleComponent`。
+- 发光最新只由主题包控制：`controller.js` 的 `componentStyle`（外发光 `glow*`，内发光 `innerGlow`）或主题 JS 的 `DSHTheme.styleComponent`；App 设置里已没有发光按钮。
+- 启动即挂的静态装饰也可以写 `xml/*.xml` 声明式 effect；需要每帧逻辑再写 JS。
 - 需要可配置菜单就加 `html/menu.html`，用 `DSHThemeMenu` 实时保存 `config.json`。
 - 判断是否要做的门槛：用户说出“主题/特效/布偶/动画/桌面装饰/字体效果”任一关键词，就当成主题包需求，
   不要停在“这个只能想想”。
@@ -430,8 +432,14 @@ DSHTheme.effect({
   id: 'petal_1',
   imagePath: '/workspace/.ql_themes/packages/xxx/image/elements/petal.png',
   x: 120, y: 300, width: 40, height: 40,
-  animation: 'float' // none | float | bounce | spin
+  animation: 'float' // none | float | bounce | spin | fade | pulse | shake | wiggle | blink | slide
 });
+
+// 同一帧批量更新多个特效（粒子/布偶多时优先用它，减少消息洪水）
+DSHTheme.effectBatch([
+  { id: 'petal_1', imagePath: PKG + '/image/elements/petal.png', x: 10, y: 20, width: 32, height: 32, animation: 'float' },
+  { id: 'petal_2', imagePath: PKG + '/image/elements/petal.png', x: 40, y: 60, width: 28, height: 28, animation: 'float' }
+]);
 
 // 放一个文字/对话气泡
 DSHTheme.effect({
@@ -453,13 +461,17 @@ DSHTheme.queryComponents({
 DSHTheme.remove('petal_1');
 DSHTheme.clear();
 
+// 手势互动：只有 interactive:true 的特效会收到点击/长按
+DSHTheme.onEffect('tap', function(e) { /* e.id */ });
+DSHTheme.onEffect('longPress', function(e) { /* e.id */ });
+
 ### 主题配置菜单（html/menu.html + DSHThemeMenu）
 - 每个主题包可以自带 `html/menu.html`（CSS/JS 随意），在设置页**长按该主题**会弹出悬浮配置窗；**没有 `html/menu.html` 时长按不弹窗**（静默忽略）。
 - 菜单里的实时互动和保存配置走 `window.DSHThemeMenu`：
   - `DSHThemeMenu.getConfig(function(cfg){})`：读取当前主题包 `config.json`。
   - `DSHThemeMenu.saveConfig(cfg)`：实时保存到主题包 `config.json`。
   - `DSHThemeMenu.close()`：关闭菜单。
-  - `DSHThemeMenu.effect(...)` / `DSHThemeMenu.styleComponent(...)` / `DSHThemeMenu.queryComponents(...)`：和背景 DSHTheme 一样实时改当前主题，所见即所得。
+  - `DSHThemeMenu.effect(...)` / `remove(id)` / `clear()` / `DSHThemeMenu.styleComponent(...)` / `DSHThemeMenu.queryComponents(...)`：和背景 DSHTheme 一样实时改当前主题，所见即所得；菜单桥没有 effectBatch/removeComponentStyle。
 - 配置保存路径：`/workspace/.ql_themes/packages/<id>/config.json`；导出 ZIP 时 config.json 会一起打进包，所以“菜单里配好再导出 = 带初始配置的主题包”。
 - 给主题加初始配置：菜单里改完保存，再 `theme_manage export_zip` 导出即可。
 
@@ -502,7 +514,10 @@ document.getElementById('vol').addEventListener('input', function () {
 - `durationMs`: 动画单次时长，默认 1800
 - `textBackgroundColor`, `textBorderColor`, `textBorderWidth`, `textRadius`, `textPadding`: 文字气泡样式
 - `paint`：组件重绘/发光，`{type: solid|gradient|radialGradient|glow|stroke|shadow|ellipse|ring|line|dashed, colors, opacity, borderWidth, radius, cornerRadius, angle, dashWidth, dashGap}`
-- `styleComponent`：真实修改组件（page,type,index,style），style 支持 `color`（纯色填充）、`colors`+`angle`（渐变）、`borderColor`/`borderWidth`/`borderOpacity`、`glowColor`/`glowRadius`/`glowOpacity`、`fillOpacity`、`radius`、`shadowColor`/`shadowOpacity`/`shadowBlur`/`shadowOffsetY`、`innerGlow`（内发光：color/opacity/radius/side，side 可 top/bottom/left/right/all）、`innerShadow`（内阴影：color/opacity/blur/offsetX/offsetY/side）、`opacity`（组件整体透明度）、`blur`（玻璃/液体玻璃模糊强度）、`backgroundImage`/`texture`（背景纹理图路径，如木纹）、`backgroundImageFit`（cover/fill/contain）、`backgroundImageOpacity`（纹理透明度）、`liquid`（液体玻璃最大逼近：blur/refraction/specular/lightX/lightY/ripple/tint/tintOpacity/caustic/thickness/edgeHighlight/innerShadow/animated）。liquid 模式不传 fillOpacity 时自动半透明，且默认去掉边缘描边（想要描边需显式传 borderWidth/borderColor/borderOpacity）；`animated` 默认 false，即默认静态液态玻璃不会一闪一闪，只有显式设 `animated: true` 才持续流动；高光/焦散仍会随组件移动跟手
+- `styleComponent`：真实修改组件（page,type,index,style），style 支持 `color`（纯色填充）、`colors`+`angle`（渐变，注意不是 `gradientColors`）、`borderColor`/`borderWidth`/`borderOpacity`、`glowColor`/`glowRadius`/`glowOpacity`/`glowSharpness`/`glowShape`（外发光；glowSharpness 0=浓雾扩散、1=边缘锐利；glowShape=auto/roundRect/oval/rect）、`fillOpacity`、`radius`、`shadowColor`/`shadowOpacity`/`shadowBlur`/`shadowOffsetY`、`innerGlow`（内发光：color/opacity/radius/sharpness/side，side 可 top/bottom/left/right/all）、`innerShadow`（内阴影：color/opacity/blur/offsetX/offsetY/side）、`opacity`（组件整体透明度）、`blur`（玻璃/液体玻璃模糊强度）、`backgroundImage`/`texture`（背景纹理图路径，如木纹）、`backgroundImageFit`（cover/fill/contain）、`backgroundImageOpacity`（纹理透明度）、`liquid`（液体玻璃最大逼近：blur/refraction/specular/lightX/lightY/ripple/tint/tintOpacity/caustic/thickness/edgeHighlight/innerShadow/animated）。liquid 模式不传 fillOpacity 时自动半透明，且默认去掉边缘描边（想要描边需显式传 borderWidth/borderColor/borderOpacity）；`animated` 默认 false，即默认静态液态玻璃不会一闪一闪，只有显式设 `animated: true` 才持续流动；高光/焦散仍会随组件移动跟手
+- 主题级默认样式写在 `controller.js` 的 `componentStyle`（兼容 `styles`/`glow`）：外发光 `glow*`、内发光 `innerGlow`，对所有 panel/card/bubble 生效；`DSHTheme.styleComponent` 按 page/type/index 覆盖它。
+- `removeComponentStyle({page,type,index})`：只撤销 JS 规则，主题包 `componentStyle` 仍保留。
+- XML：`xml/*.xml` 里 `<effect>`/`<component>` 标签，属性名同 effect 字段，激活时自动转成 DSHTheme effect。
 - `interactive:true`：让特效可点击/长按；默认不拦截正常控件
 
 ### 实现"括号中的高级效果"的标准做法

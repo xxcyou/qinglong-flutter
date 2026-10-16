@@ -4840,7 +4840,10 @@ class ChatNotifier extends Notifier<ChatState> {
             '用户说"换主题/生成个配色/导入主题/导出当前主题/背景图"时用。'
             '主题一律是 ZIP 包，不用 JSON。除 README.md 和 controller.js 外其他全是目录：'
             'image/elements、audio、css、js、html、xml/animations。'
-            'controller.js 是总控，负责分配每个组件用哪个子 js/css/html/xml/图片/音效。高级组件特效（落叶/布偶/气泡/发光/角标/浮动）用 DSHTheme 万能接口写进主题包 js，App 渲染覆盖层。'
+            'controller.js 是总控：声明 colors/effects/typography/componentStyle，并分配每个组件用哪个子 js/css/html/xml/图片/音效。'
+            '高级组件特效（落叶/布偶/气泡/发光/角标/浮动）用 DSHTheme 万能接口写进主题包 js，App 渲染覆盖层；'
+            '发光（外发光 glow*/内发光 innerGlow）只由主题包 componentStyle 或 DSHTheme.styleComponent 控制，App 设置里已没有发光按钮；'
+            '静态常驻装饰也可写 xml/ 里的 <effect>/<component> 声明；高频粒子用 DSHTheme.effectBatch。'
             '生成主题必须面向手机性能：不要用 three.js/WebGL/大音频/高帧率 canvas/每帧 queryComponents；'
             '优先静态图或轻量 CSS，动画粒子≤6 个、更新≤10fps、不自动播放音频。',
         parameters: const {

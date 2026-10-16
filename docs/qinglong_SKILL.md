@@ -241,7 +241,9 @@
 
 ### App 已经给主题包开放的能力
 - 主题包里的 html/js 会运行在全屏 WebView 背景里（只负责背景渲染）。
-- 只要在 js 里调用 `window.DSHTheme.*`，就可以在 **Flutter 组件的上层** 绘制图片、文字、气泡、动画，不阻塞点击。
+- **手机性能硬约束**：全屏 WebView 不能上 three.js/WebGL/大音频/高帧率 canvas/每帧 queryComponents。默认优先静态图/纯 CSS 渐变；要动画时粒子（桂花/星点等）控制在 6 个以内、更新频率 ≤10fps、不要自动播放音频；组件描边/玻璃效果用 DSHTheme 覆盖层，不要靠 WebView 每帧轮询。
+- 只要在 js 里调用 `window.DSHTheme.effect`，就是在 **所有 Flutter 组件的上方** 绘制图片、文字、气泡、动画，不阻塞点击——它是前景覆盖层，不是组件后面的背景。
+- 要“真实修改组件本身”（边缘、渐变、发光、圆角）用 `DSHTheme.styleComponent`，它不是覆盖层，是直接改 App 自带组件。
 - `GlassPanel` / `GlassCard` 会自动上报组件锚点，js 能查到组件在屏幕上的真实位置。
 
 ### DSHTheme API
@@ -255,8 +257,14 @@ DSHTheme.effect({
   id: 'petal_1',
   imagePath: '/workspace/.ql_themes/packages/xxx/image/elements/petal.png',
   x: 120, y: 300, width: 40, height: 40,
-  animation: 'float' // none | float | bounce | spin
+  animation: 'float' // none | float | bounce | spin | fade | pulse | shake | wiggle | blink | slide
 });
+
+// 同一帧批量更新多个特效（粒子/布偶多时优先用它，减少消息洪水）
+DSHTheme.effectBatch([
+  { id: 'petal_1', imagePath: PKG + '/image/elements/petal.png', x: 10, y: 20, width: 32, height: 32, animation: 'float' },
+  { id: 'petal_2', imagePath: PKG + '/image/elements/petal.png', x: 40, y: 60, width: 28, height: 28, animation: 'float' }
+]);
 
 // 放一个文字/对话气泡
 DSHTheme.effect({
@@ -277,7 +285,45 @@ DSHTheme.queryComponents({
 
 DSHTheme.remove('petal_1');
 DSHTheme.clear();
+
+// 手势互动：只有 interactive:true 的特效会收到点击/长按
+DSHTheme.onEffect('tap', function(e) { /* e.id */ });
+DSHTheme.onEffect('longPress', function(e) { /* e.id */ });
+
+### 主题配置菜单（html/menu.html + DSHThemeMenu）
+- 每个主题包可以自带 `html/menu.html`（CSS/JS 随意），在设置页**长按该主题**会弹出悬浮配置窗；**没有 `html/menu.html` 时长按不弹窗**（静默忽略）。
+- 菜单里的实时互动和保存配置走 `window.DSHThemeMenu`：
+  - `DSHThemeMenu.getConfig(function(cfg){})`：读取当前主题包 `config.json`。
+  - `DSHThemeMenu.saveConfig(cfg)`：实时保存到主题包 `config.json`。
+  - `DSHThemeMenu.close()`：关闭菜单。
+  - `DSHThemeMenu.effect(...)` / `DSHThemeMenu.styleComponent(...)` / `DSHThemeMenu.queryComponents(...)`：和背景 DSHTheme 一样实时改当前主题，所见即所得。
+- 配置保存路径：`/workspace/.ql_themes/packages/<id>/config.json`；导出 ZIP 时 config.json 会一起打进包，所以“菜单里配好再导出 = 带初始配置的主题包”。
+- 给主题加初始配置：菜单里改完保存，再 `theme_manage export_zip` 导出即可。
+
+实时要点：
+- **不要做“保存按钮”**。配置是实时的：控件每次变化时，同时调用 `saveConfig` 落盘 + `effect/styleComponent` 让当前主题立刻变化。
+- `saveConfig` 会直接写 `config.json`，没有手动保存步骤；导出 ZIP 时这些实时保存的配置会一起带走。
+
+示例（滑块一变就自动保存 + 实时生效）：
+```javascript
+window.DSHThemeMenu.getConfig(function (cfg) {
+  if (!cfg.volume) cfg.volume = 50;
+  updateUI(cfg);
+});
+document.getElementById('vol').addEventListener('input', function () {
+  cfg.volume = parseInt(this.value, 10);
+  DSHThemeMenu.saveConfig(cfg);                 // 自动保存，不点按钮
+  DSHThemeMenu.styleComponent({                 // 立即生效
+    type: 'panel',
+    style: { glowColor: '#D4AF37', glowOpacity: cfg.volume / 100 }
+  });
+});
 ```
+
+### 层级说明（别把前/后搞反）
+- `effect`：永远在组件**前面**，适合落叶、气泡、布偶、角标、光晕这类浮层特效；它默认不挡点击，但视觉上是盖在组件上的。
+- `styleComponent`：真正改**组件本身**，可以改边框颜色/宽度、渐变、发光、圆角；想要“组件背景/组件内部颜色”这类效果，优先用它，不要用 effect 假装背景。
+- 目前没有“画在组件后面”的图层。需要组件后面的装饰时，改用 `styleComponent` 改背景渐变/颜色，或者接受效果浮在组件上方。
 
 ### effect 常用字段
 - `id`: 唯一 id
@@ -285,10 +331,18 @@ DSHTheme.clear();
 - `text`: 文字 / 气泡内容
 - `x y width height`: 屏幕逻辑坐标（先查组件锚点再定位）
 - `color`: 颜色
-- `animation`: none / float / bounce / spin
+- `animation`: `none | float | bounce | spin | fade | pulse | shake | wiggle | blink | slide`
 - `fontSize`, `speechTail`, `fit`（contain/fill/cover）
-- `paint`：组件重绘/发光，`{type: solid|gradient|radialGradient|glow|stroke|shadow, colors, opacity, borderWidth, radius, cornerRadius, angle}`
-- `styleComponent`：真实修改组件边缘颜色/宽度/渐变/发光（page,type,index,style）
+- `opacity`: 整体透明度 0~1，默认 1
+- `rotation`: 静态旋转角度（度）
+- `scale`: 整体缩放，默认 1
+- `durationMs`: 动画单次时长，默认 1800
+- `textBackgroundColor`, `textBorderColor`, `textBorderWidth`, `textRadius`, `textPadding`: 文字气泡样式
+- `paint`：组件重绘/发光，`{type: solid|gradient|radialGradient|glow|stroke|shadow|ellipse|ring|line|dashed, colors, opacity, borderWidth, radius, cornerRadius, angle, dashWidth, dashGap}`
+- `styleComponent`：真实修改组件（page,type,index,style），style 支持 `color`（纯色填充）、`colors`+`angle`（渐变，注意不是 `gradientColors`）、`borderColor`/`borderWidth`/`borderOpacity`、`glowColor`/`glowRadius`/`glowOpacity`/`glowSharpness`/`glowShape`（外发光；glowSharpness 0=浓雾扩散、1=边缘锐利；glowShape=auto/roundRect/oval/rect）、`fillOpacity`、`radius`、`shadowColor`/`shadowOpacity`/`shadowBlur`/`shadowOffsetY`、`innerGlow`（内发光：color/opacity/radius/sharpness/side，side 可 top/bottom/left/right/all）、`innerShadow`（内阴影：color/opacity/blur/offsetX/offsetY/side）、`opacity`（组件整体透明度）、`blur`（玻璃/液体玻璃模糊强度）、`backgroundImage`/`texture`（背景纹理图路径，如木纹）、`backgroundImageFit`（cover/fill/contain）、`backgroundImageOpacity`（纹理透明度）、`liquid`（液体玻璃最大逼近：blur/refraction/specular/lightX/lightY/ripple/tint/tintOpacity/caustic/thickness/edgeHighlight/innerShadow/animated）。liquid 模式不传 fillOpacity 时自动半透明，且默认去掉边缘描边（想要描边需显式传 borderWidth/borderColor/borderOpacity）；`animated` 默认 false，即默认静态液态玻璃不会一闪一闪，只有显式设 `animated: true` 才持续流动；高光/焦散仍会随组件移动跟手
+- 主题级默认样式写在 `controller.js` 的 `componentStyle`（兼容 `styles`/`glow`）：外发光 `glow*`、内发光 `innerGlow`，对所有 panel/card/bubble 生效；`DSHTheme.styleComponent` 按 page/type/index 覆盖它。
+- `removeComponentStyle({page,type,index})`：只撤销 JS 规则，主题包 `componentStyle` 仍保留。
+- XML：`xml/*.xml` 里 `<effect>`/`<component>` 标签，属性名同 effect 字段，激活时自动转成 DSHTheme effect。
 - `interactive:true`：让特效可点击/长按；默认不拦截正常控件
 
 ### 实现"括号中的高级效果"的标准做法
@@ -297,6 +351,29 @@ DSHTheme.clear();
 3. **2D/3D 布偶**：把布偶图放 `image/elements`，用 `DSHTheme.effect` 放在组件上方，`animation:'bounce'` 做动作；互动 = 用主题包自己的 JS 监听触摸事件 + DSHTheme 更新气泡。
 4. **组件背景动态布偶撞来撞去**：这是"组件内部背景动画"——主题包先 `queryComponents` 取组件矩形，再用 JS 把布偶位置限制在该矩形内做弹跳，通过 DSHTheme 实时更新。
 5. **给 AI 输入框/列表等指定序号**：主题包用 `queryComponents({type:...)})` 返回 `index`，用 `index` 精确控制某个组件；也支持 `page/type/index` 自由组合。
+
+### 字体排版（主题包控制全局文字）
+主题包可以通过 `controller.js` 的 `typography` 字段控制 App 全局文字：
+```javascript
+typography: {
+  family: '/workspace/.ql_themes/packages/<id>/fonts/custom.ttf', // 或系统字体名，缺省系统
+  size: '16',            // 字号
+  weight: '600',         // 100~900
+  color: '#D4AF37',      // 文字颜色
+  opacity: '1',          // 0~1 透明度
+  strikethrough: 'false',// 是否删除线
+  gold: 'true'           // 是否金边字
+}
+```
+- `family` 可以是主题包内 .ttf/.otf 的 guest 路径，App 会自动加载；也可以是系统字体名。
+- 用户可在设置 → 字体设置里开启“自定义字体”覆盖这份主题排版。
+
+### 完整轮归档（历史轮次本地回溯）
+App 会把每次“完整轮”的数据存到本地会话目录（每会话一个文件夹、每轮一个 ID，实时写入）。这些数据**不进当前上下文**，需要时主动调工具：
+- `round_list`：列当前会话的完整轮 ID/时间/结果/目标/摘要。
+- `round_search`：按关键词搜历史完整轮，返回 round_id 和命中片段。
+- `round_read`：给 round_id 读某轮详情；`full=true` 可读完整 JSON（工具事件/原始结果）。
+用户问“之前是不是做过…/上一次做到哪/把第几轮的内容给我”时，先 round_list / round_search 找到轮次，再 round_read。
 
 ### 主题包制作/安装流程
 - 用 `theme_manage create` 生成基础 ZIP 包。
