@@ -10,6 +10,7 @@ import '../settings/providers/settings_provider.dart';
 import 'providers/shell_files_provider.dart';
 import 'providers/terminal_session_provider.dart';
 import 'terminal_palettes.dart';
+import '../../../shared/float_stack.dart';
 import '../../../shared/mono_text.dart';
 import '../floating/float_bounds_registry.dart';
 
@@ -44,6 +45,7 @@ class FloatingTerminal {
     _cwd = next;
     _open = true;
     _session++;
+    FloatStack.instance.raise(FloatStack.terminal);
     revision.value++;
   }
 

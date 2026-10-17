@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../shared/float_stack.dart';
 import '../../floating/float_bounds_registry.dart';
 
 /// SSH 容器悬浮窗总控：所有容器终端/日志/文件窗共用同一份常驻列表。
@@ -24,6 +25,7 @@ class SshFloatingHost {
     required WidgetBuilder builder,
   }) {
     final id = ++_counter;
+    FloatStack.instance.raise(FloatStack.ssh);
     _windows.add(_HostedWindow(
       id: id,
       group: group,
