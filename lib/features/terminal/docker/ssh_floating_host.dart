@@ -129,6 +129,7 @@ class SshFloatingHostLayer extends StatelessWidget {
         final windows = SshFloatingHost._windows;
         if (windows.isEmpty) return const SizedBox.shrink();
         return Stack(
+          fit: StackFit.expand,
           children: [
             for (final w in windows)
               KeyedSubtree(

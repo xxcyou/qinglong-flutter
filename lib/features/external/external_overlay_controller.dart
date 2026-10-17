@@ -6,6 +6,20 @@ import 'package:flutter/widgets.dart';
 
 import '../../shared/float_stack.dart';
 
+/// 标记：这棵子树里有“自定义文本输入”（xterm/终端等）。
+///
+/// 原生覆盖窗默认 FLAG_NOT_FOCUSABLE；只有 Dart 焦点落在可输入控件上时
+/// 才临时可聚焦并弹键盘。普通输入框有 EditableTextState 可以识别，xterm
+/// 只有自己的 FocusNode，因此包一层这个标记，控制器就认。
+class ExternalImeFocusRegion extends StatelessWidget {
+  const ExternalImeFocusRegion({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => child;
+}
+
 /// APP 外系统悬浮窗（预览）控制器。
 ///
 /// 真正的窗口由 Android 前台服务用 [WindowManager] 承载，Flutter 这边只负责：
@@ -371,7 +385,9 @@ class ExternalOverlayController {
     if (node == null) return false;
     final ctx = node.context;
     if (ctx == null) return false;
-    return ctx.findAncestorStateOfType<EditableTextState>() != null;
+    if (ctx.findAncestorStateOfType<EditableTextState>() != null) return true;
+    // xterm 等自定义输入：没有 EditableText，只用 FocusNode；靠显式标记识别。
+    return ctx.findAncestorWidgetOfExactType<ExternalImeFocusRegion>() != null;
   }
 
   void _syncImeFocus() {
@@ -386,6 +402,18 @@ class ExternalOverlayController {
     _imeFocus = next;
     try {
       _channel.invokeMethod<void>('setImeFocus', next);
+    } catch (_) {}
+  }
+
+  /// 终端等自定义输入控件在点击时主动请求一次原生 IME 焦点。
+  ///
+  /// FocusManager 的通用判断依赖 [ExternalImeFocusRegion]；主动请求是兜底，
+  /// 避免 xterm 在部分 ROM 上焦点变化被合并/丢失后键盘永远不弹。
+  void requestImeFocus() {
+    if (!active.value || _imeFocus) return;
+    _imeFocus = true;
+    try {
+      _channel.invokeMethod<void>('setImeFocus', true);
     } catch (_) {}
   }
 

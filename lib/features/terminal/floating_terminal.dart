@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
 
 import '../../../core/local_shell/proot_bridge.dart';
+import '../external/external_overlay_controller.dart';
 import '../settings/providers/settings_provider.dart';
 import 'providers/shell_files_provider.dart';
 import 'providers/terminal_session_provider.dart';
@@ -64,6 +65,7 @@ class FloatingTerminalHost extends StatelessWidget {
       builder: (context, _, __) {
         if (!FloatingTerminal.isOpen) return const SizedBox.shrink();
         return Stack(
+          fit: StackFit.expand,
           children: [
             FloatingTerminalWindow(
               key: ValueKey('floating-terminal-${FloatingTerminal.sessionKey}'),
@@ -283,8 +285,7 @@ class _FloatingTerminalWindowState
               ),
               iconSize: 14,
               padding: EdgeInsets.zero,
-              icon: const Icon(Icons.close_rounded,
-                  color: Colors.white70),
+              icon: const Icon(Icons.close_rounded, color: Colors.white70),
               onPressed: _close,
             ),
           ),
@@ -315,6 +316,7 @@ class _FloatingTerminalWindowState
       ),
     );
   }
+
   Widget _buildBody(ColorScheme scheme) {
     if (!_ready) {
       return Center(
@@ -348,22 +350,29 @@ class _FloatingTerminalWindowState
       );
     }
     final settings = ref.watch(settingsProvider);
-    return TerminalView(
-      _terminal,
-      controller: _terminalController,
-      focusNode: _focusNode,
-      autofocus: true,
-      keyboardType: TextInputType.multiline,
-      backgroundOpacity: 0.92,
-      theme: TerminalPalette.byId(settings.terminalPalette).theme,
-      textStyle: TerminalStyle(
-        fontSize: settings.terminalFontSize,
-        height: settings.terminalLineHeight,
-        fontFamily: kMonoFamily,
-        fontFamilyFallback: kMonoFallback,
+    return ExternalImeFocusRegion(
+      child: Listener(
+        behavior: HitTestBehavior.deferToChild,
+        onPointerDown: (_) =>
+            ExternalOverlayController.instance.requestImeFocus(),
+        child: TerminalView(
+          _terminal,
+          controller: _terminalController,
+          focusNode: _focusNode,
+          autofocus: true,
+          keyboardType: TextInputType.multiline,
+          backgroundOpacity: 0.92,
+          theme: TerminalPalette.byId(settings.terminalPalette).theme,
+          textStyle: TerminalStyle(
+            fontSize: settings.terminalFontSize,
+            height: settings.terminalLineHeight,
+            fontFamily: kMonoFamily,
+            fontFamilyFallback: kMonoFallback,
+          ),
+          padding: const EdgeInsets.fromLTRB(8, 6, 6, 6),
+          cursorType: TerminalCursorType.block,
+        ),
       ),
-      padding: const EdgeInsets.fromLTRB(8, 6, 6, 6),
-      cursorType: TerminalCursorType.block,
     );
   }
 }

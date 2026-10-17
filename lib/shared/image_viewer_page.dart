@@ -60,6 +60,9 @@ class ImageViewerPage extends StatefulWidget {
 }
 
 class _ImageViewerPageState extends State<ImageViewerPage> {
+  /// 查看器最大解码边长：够清楚，又不会让 1 亿像素原图直接吃光内存。
+  static const int _maxDecodeWidth = 2400;
+
   late final PageController _pageController;
   int _pageIndex = 0;
 
@@ -101,14 +104,22 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
       _height = null;
       _error = null;
     });
+    // 大图不为了显示一行“宽×高”去全量解码：这一步本身就会 OOM 闪退。
+    // 正常显示仍会走 cacheWidth 的受控解码。
+    if (widget.usingBytes &&
+        widget.imageBytes[_pageIndex].length > 4 * 1024 * 1024) {
+      return;
+    }
     try {
       final stream = widget.usingBytes
-          ? Image.memory(widget.imageBytes[_pageIndex]).image.resolve(
-                const ImageConfiguration(),
-              )
-          : Image.file(File(_currentHost)).image.resolve(
-                const ImageConfiguration(),
-              );
+          ? Image.memory(
+              widget.imageBytes[_pageIndex],
+              cacheWidth: _maxDecodeWidth,
+            ).image.resolve(const ImageConfiguration())
+          : Image.file(
+              File(_currentHost),
+              cacheWidth: _maxDecodeWidth,
+            ).image.resolve(const ImageConfiguration());
       final completer = stream;
       late ImageStreamListener listener;
       listener = ImageStreamListener(
@@ -225,6 +236,8 @@ class _ZoomableImage extends StatefulWidget {
 }
 
 class _ZoomableImageState extends State<_ZoomableImage> {
+  static const int _maxDecodeWidth = 2400;
+
   final _controller = TransformationController();
 
   @override
@@ -263,6 +276,7 @@ class _ZoomableImageState extends State<_ZoomableImage> {
               ? Image.memory(
                   widget.imageBytes!,
                   fit: BoxFit.contain,
+                  cacheWidth: _maxDecodeWidth,
                   errorBuilder: (_, error, __) => Center(
                     child: Text(
                       '解码失败：$error',
@@ -273,6 +287,7 @@ class _ZoomableImageState extends State<_ZoomableImage> {
               : Image.file(
                   File(widget.hostPath!),
                   fit: BoxFit.contain,
+                  cacheWidth: _maxDecodeWidth,
                   errorBuilder: (_, error, __) => Center(
                     child: Text(
                       '解码失败：$error',
@@ -306,6 +321,7 @@ class FullScreenImageViewerPage extends StatelessWidget {
       image = Image.memory(
         imageBytes!,
         fit: BoxFit.contain,
+        cacheWidth: 2400,
         errorBuilder: (_, error, __) => Text(
           '解码失败：$error',
           style: const TextStyle(color: Colors.white70),
@@ -315,6 +331,7 @@ class FullScreenImageViewerPage extends StatelessWidget {
       image = Image.file(
         File(hostPath!),
         fit: BoxFit.contain,
+        cacheWidth: 2400,
         errorBuilder: (_, error, __) => Text(
           '解码失败：$error',
           style: const TextStyle(color: Colors.white70),

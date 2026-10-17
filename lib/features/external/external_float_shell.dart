@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../floating/app_float_layer.dart';
+import '../floating/float_bounds_registry.dart';
 import 'external_overlay_controller.dart';
 
 /// APP 外悬浮模式下的根内容。
@@ -69,7 +70,11 @@ class ExternalFloatShell extends StatelessWidget {
                         ),
                       ),
                     ),
-                    child: const AppFloatLayer(),
+                    child: const ScaffoldMessenger(
+                      child: _ExternalRouteHost(
+                        child: AppFloatLayer(),
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -79,4 +84,95 @@ class ExternalFloatShell extends StatelessWidget {
       },
     );
   }
+}
+
+/// 桌面覆盖窗里的 Navigator/Scaffold 宿主。
+///
+/// 外悬浮模式下 MaterialApp.builder 直接返回 [ExternalFloatShell]，外面那棵
+/// Navigator 不在树上；容器文件管理的“更多/重命名/删除/新建”、图片查看、
+/// 代码编辑器等全部依赖 `Navigator.of(context)` 和 `ScaffoldMessenger`，没有
+/// 宿主时表现为“点了没反应/打开失败”。这里补一棵最小 Navigator，并在任何
+/// 非根路由（底部菜单/对话框/查看页）打开时把原生覆盖窗临时撑到全屏，
+/// 否则弹窗会被按悬浮窗并集裁掉一半。
+class _ExternalRouteHost extends StatefulWidget {
+  const _ExternalRouteHost({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_ExternalRouteHost> createState() => _ExternalRouteHostState();
+}
+
+class _ExternalRouteHostState extends State<_ExternalRouteHost> {
+  static const String _modalBoundsId = 'external-modal';
+
+  final ValueNotifier<bool> _modalOpen = ValueNotifier<bool>(false);
+  late final NavigatorObserver _observer = _ModalRouteObserver(_modalOpen);
+  bool _reported = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _modalOpen.addListener(_syncModalBounds);
+  }
+
+  @override
+  void dispose() {
+    _modalOpen.removeListener(_syncModalBounds);
+    _modalOpen.dispose();
+    FloatBoundsRegistry.remove(_modalBoundsId);
+    super.dispose();
+  }
+
+  void _syncModalBounds() {
+    final open = _modalOpen.value;
+    if (open == _reported) return;
+    _reported = open;
+    final screen = ExternalOverlayController.instance.fullScreenSize;
+    if (open && screen.width > 0 && screen.height > 0) {
+      FloatBoundsRegistry.report(_modalBoundsId, Offset.zero & screen);
+    } else {
+      FloatBoundsRegistry.remove(_modalBoundsId);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Navigator(
+      observers: [_observer],
+      onGenerateRoute: (settings) => MaterialPageRoute<void>(
+        settings: settings,
+        builder: (_) => Scaffold(
+          backgroundColor: Colors.transparent,
+          resizeToAvoidBottomInset: false,
+          body: widget.child,
+        ),
+      ),
+    );
+  }
+}
+
+class _ModalRouteObserver extends NavigatorObserver {
+  _ModalRouteObserver(this.modalOpen);
+
+  final ValueNotifier<bool> modalOpen;
+
+  void _sync() {
+    final next = navigator?.canPop() ?? false;
+    if (modalOpen.value != next) modalOpen.value = next;
+  }
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) => _sync();
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) => _sync();
+
+  @override
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) =>
+      _sync();
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) =>
+      _sync();
 }
