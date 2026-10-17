@@ -108,6 +108,7 @@ class AiDockState {
     this.quickExpand = false,
     this.quickFiles = const [],
     this.quickResults = const [],
+    this.zOrder = const [],
   });
 
   /// 窗口尺寸下限（占屏比例）：再小就装不下输入框了。
@@ -178,6 +179,12 @@ class AiDockState {
   /// 快问的结果窗，可以同时开好几个（问三件事就摊三张）。
   final List<QuickResultWindow> quickResults;
 
+  /// AI 浮窗的统一层级：key 形如 `quick:<id>`、`canvas:<name>`、`question:<id>`、`chat`。
+  /// 越靠后越在上层；点哪个窗口就把它移到末尾。结果窗和 ui_c 分属两个
+  /// list，光靠各自 reorder 永远无法让结果窗盖住画布窗，所以需要这一份
+  /// 跨类型的顺序。
+  final List<String> zOrder;
+
   AiDockState copyWith({
     bool? visible,
     bool? expanded,
@@ -197,6 +204,7 @@ class AiDockState {
     bool? quickExpand,
     List<QuickFileRef>? quickFiles,
     List<QuickResultWindow>? quickResults,
+    List<String>? zOrder,
   }) {
     return AiDockState(
       visible: visible ?? this.visible,
@@ -217,6 +225,7 @@ class AiDockState {
       quickExpand: quickExpand ?? this.quickExpand,
       quickFiles: quickFiles ?? this.quickFiles,
       quickResults: quickResults ?? this.quickResults,
+      zOrder: zOrder ?? this.zOrder,
     );
   }
 
@@ -434,6 +443,7 @@ class AiDockNotifier extends Notifier<AiDockState> {
       // 结果窗是这次提问的产物，不该被"悬浮球已隐藏"连带藏掉。
       visible: true,
     );
+    raiseWindow('quick:$id');
     return id;
   }
 
@@ -498,10 +508,13 @@ class AiDockNotifier extends Notifier<AiDockState> {
   /// 把某个结果窗抬到最上面：叠着时点哪个哪个在上。
   void raiseQuickResult(String id) {
     final index = state.quickResults.indexWhere((w) => w.id == id);
-    if (index < 0 || index == state.quickResults.length - 1) return;
-    final windows = [...state.quickResults];
-    windows.add(windows.removeAt(index));
-    state = state.copyWith(quickResults: windows);
+    if (index < 0) return;
+    if (index != state.quickResults.length - 1) {
+      final windows = [...state.quickResults];
+      windows.add(windows.removeAt(index));
+      state = state.copyWith(quickResults: windows);
+    }
+    raiseWindow('quick:$id');
   }
 
   /// 按增量拖动结果窗（理由同 [moveWindowBy]：一帧多事件时目标位置会丢位移）。
@@ -559,6 +572,7 @@ class AiDockNotifier extends Notifier<AiDockState> {
       quickOpen: false,
       quickExpand: false,
     );
+    raiseWindow('chat');
   }
 
   void close() => state = state.copyWith(expanded: false);
@@ -608,6 +622,7 @@ class AiDockNotifier extends Notifier<AiDockState> {
       // 非快问模式保持原来的行为（完整悬浮窗里弹画布）。
       expanded: state.quickOpen || state.quickBusy ? state.expanded : true,
     );
+    raiseWindow('canvas:$name');
   }
 
   void closeCanvas(String name) {
@@ -624,10 +639,23 @@ class AiDockNotifier extends Notifier<AiDockState> {
   /// 把某个窗口抬到同层最上面：多窗口叠着时点哪个哪个在上。
   void raiseCanvas(String name) {
     final index = state.canvasWindows.indexWhere((w) => w.name == name);
-    if (index < 0 || index == state.canvasWindows.length - 1) return;
-    final windows = [...state.canvasWindows];
-    windows.add(windows.removeAt(index));
-    state = state.copyWith(canvasWindows: windows);
+    if (index < 0) return;
+    if (index != state.canvasWindows.length - 1) {
+      final windows = [...state.canvasWindows];
+      windows.add(windows.removeAt(index));
+      state = state.copyWith(canvasWindows: windows);
+    }
+    raiseWindow('canvas:$name');
+  }
+
+  /// 把任意 AI 浮窗抬到最上层（跨结果窗/画布窗/提问窗/聊天窗）。
+  void raiseWindow(String key) {
+    if (key.isEmpty) return;
+    final order = [...state.zOrder];
+    if (order.isNotEmpty && order.last == key) return;
+    order.remove(key);
+    order.add(key);
+    state = state.copyWith(zOrder: order);
   }
 
   void moveCanvasBy(String name, double dxFrac, double dyFrac) {

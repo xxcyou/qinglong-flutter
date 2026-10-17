@@ -151,6 +151,26 @@ Rect? aiBubbleStatusLabelRect({
   );
 }
 
+/// 按统一 zOrder 排序 AI 浮窗：越靠后越在上层，未登记的保持原顺序。
+List<Widget> _orderAiWindows(
+  List<MapEntry<String, Widget>> items,
+  List<String> zOrder,
+) {
+  final order = <String, int>{
+    for (var i = 0; i < zOrder.length; i++) zOrder[i]: i,
+  };
+  final indexed = <MapEntry<int, MapEntry<String, Widget>>>[
+    for (var i = 0; i < items.length; i++) MapEntry(i, items[i]),
+  ];
+  indexed.sort((a, b) {
+    final za = order[a.value.key] ?? -1;
+    final zb = order[b.value.key] ?? -1;
+    if (za != zb) return za.compareTo(zb);
+    return a.key.compareTo(b.key);
+  });
+  return [for (final e in indexed) e.value.value];
+}
+
 /// 悬浮 AI 的宿主。
 ///
 /// 悬浮层挂在 `MaterialApp.builder` 里（这样 push 出去的页面也盖得住），
@@ -303,37 +323,49 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
     final chatRect = dock.expanded
         ? _chatGeometry(context).rect
         : Rect.fromLTWH(0, size.height, 0, 0);
-    return [
-      _build(context, dock),
+    final windows = <MapEntry<String, Widget>>[
+      MapEntry('chat', _build(context, dock)),
       // 提问与画布只在悬浮模式下浮出来：在 AI 页操作时还是原来的样子
       // （页内卡片 / 底部弹窗），不然同一件事会出现两份界面。
       if (dock.expanded && question != null)
         // 避让聊天窗：聊天窗偏下就贴顶，偏上就贴底。
         // 两个窗口叠在一起时用户根本分不清哪个是要答的。
-        Positioned(
-          key: ValueKey('qw${question.id}'),
-          left: 14,
-          top: chatRect.center.dy > size.height / 2 ? safeTop + 16 : null,
-          bottom: chatRect.center.dy > size.height / 2
-              ? null
-              : safeBottom + 16 + media.viewInsets.bottom,
-          width: size.width - 28,
-          child: FloatBoundsReporter(
-            id: 'ai-question-${question.id}',
-            child: _QuestionWindow(
-              question: question,
-              onAnswer: (answer) {
-                _pinned = true;
-                ref.read(chatProvider.notifier).send(answer);
-              },
+        MapEntry(
+          'question:${question.id}',
+          Positioned(
+            key: ValueKey('qw${question.id}'),
+            left: 14,
+            top: chatRect.center.dy > size.height / 2 ? safeTop + 16 : null,
+            bottom: chatRect.center.dy > size.height / 2
+                ? null
+                : safeBottom + 16 + media.viewInsets.bottom,
+            width: size.width - 28,
+            child: Listener(
+              onPointerDown: (_) => ref
+                  .read(aiDockProvider.notifier)
+                  .raiseWindow('question:${question.id}'),
+              child: FloatBoundsReporter(
+                id: 'ai-question-${question.id}',
+                child: _QuestionWindow(
+                  question: question,
+                  onAnswer: (answer) {
+                    _pinned = true;
+                    ref.read(chatProvider.notifier).send(answer);
+                  },
+                ),
+              ),
             ),
           ),
         ),
       // 画布窗口：不限个数，顺序即层级（点哪个哪个抬到最上）。
       if (dock.expanded)
         for (final win in dock.canvasWindows)
-          _canvasWindow(context, win, field, size, safeTop, safeBottom),
+          MapEntry(
+            'canvas:${win.name}',
+            _canvasWindow(context, win, field, size, safeTop, safeBottom),
+          ),
     ];
+    return _orderAiWindows(windows, dock.zOrder);
   }
 
   Widget _canvasWindow(
@@ -403,12 +435,17 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
       top: geo.rect.top,
       width: geo.rect.width,
       height: geo.rect.height,
-      child: _Window(
-        input: _input,
-        scroll: _scroll,
-        onSend: _send,
-        onToBottom: _toBottom,
-        field: geo.field,
+      child: Listener(
+        onPointerDown: (_) => ref
+            .read(aiDockProvider.notifier)
+            .raiseWindow('chat'),
+        child: _Window(
+          input: _input,
+          scroll: _scroll,
+          onSend: _send,
+          onToBottom: _toBottom,
+          field: geo.field,
+        ),
       ),
     );
   }
@@ -612,24 +649,34 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
         // 点到/收起，气泡再冒出来反而像 bug（用户反馈打开浏览器时会冒球）。
         // 气泡只在聊天窗收起时作为唯一入口显示。
         final hideBall = !dock.visible || dock.expanded;
+        // 结果窗、提问窗、ui_c 画布窗共用一份跨类型层级：
+        // 点哪个哪个到最上，不能因为“画布窗永远后画”就压在结果窗上面。
+        final windows = <MapEntry<String, Widget>>[
+          ..._quickResultWindows(context, dock),
+          // 模型抛出的问题直接浮在屏幕上方回答；快问输入条是否收起
+          // 不影响它，每个窗口自己关自己。
+          if (hasQuickQuestion)
+            MapEntry(
+              'question:${chatState.pendingQuestion!.id}',
+              _quickQuestionWindow(
+                context,
+                dock,
+                chatState.pendingQuestion!,
+              ),
+            ),
+          // ui_c 画布窗：多个一起浮，不切去完整悬浮窗，也不随快问条消失。
+          // 展开完整聊天窗时画布由 AiDockOverlay 渲染，这里必须让位，
+          // 否则同一块画布会画两份、点两份。
+          if (hasQuickCanvas) ..._quickCanvasWindows(context, dock),
+        ];
         return Material(
           type: MaterialType.transparency,
           child: Stack(
             clipBehavior: Clip.none,
             children: [
+              ..._orderAiWindows(windows, dock.zOrder),
+              // 球/输入条永远最后画：别的窗口再大也不能把唯一的入口盖掉。
               if (!hideBall) ..._build(context, dock),
-              // 结果窗画在球下面（球永远点得到），但在别的悬浮窗之上。
-              ..._quickResultWindows(context, dock),
-              // 模型抛出的问题直接浮在屏幕上方回答；快问输入条是否收起
-              // 不影响它，每个窗口自己关自己。
-              if (hasQuickQuestion)
-                _quickQuestionWindow(
-                  context,
-                  dock,
-                  chatState.pendingQuestion!,
-                ),
-              // ui_c 画布窗：多个一起浮，不切去完整悬浮窗，也不随快问条消失。
-              if (hasQuickCanvas) ..._quickCanvasWindows(context, dock),
             ],
           ),
         );
@@ -638,7 +685,10 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
   }
 
   /// 快问结果窗：无边、可拖、可关、可按边缩放。
-  List<Widget> _quickResultWindows(BuildContext context, AiDockState dock) {
+  List<MapEntry<String, Widget>> _quickResultWindows(
+    BuildContext context,
+    AiDockState dock,
+  ) {
     if (dock.quickResults.isEmpty) return const [];
     final media = MediaQuery.of(context);
     final size = media.size;
@@ -660,37 +710,41 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
               (12 + win.x * field.width).clamp(6.0, size.width - w - 6);
           final top = (safeTop + 6 + win.y * field.height)
               .clamp(safeTop + 4, size.height - safeBottom - h - 4);
-          return Positioned(
-            key: ValueKey('quick:${win.id}'),
-            left: left,
-            top: top,
-            width: w,
-            height: h,
-            child: Listener(
-              onPointerDown: (_) {
-                FloatStack.instance.raise(FloatStack.ai);
-                notifier.raiseQuickResult(win.id);
-              },
-              child: FloatBoundsReporter(
-                id: 'quick-result-${win.id}',
-                child: _QuickResultCard(
-                  win: win,
-                  field: field,
-                  onMove: (dx, dy) => notifier.moveQuickResultBy(win.id, dx, dy),
-                  onResize: ({
-                    double dLeft = 0,
-                    double dTop = 0,
-                    double dRight = 0,
-                    double dBottom = 0,
-                  }) =>
-                      notifier.resizeQuickResult(
-                    win.id,
-                    dLeft: dLeft,
-                    dTop: dTop,
-                    dRight: dRight,
-                    dBottom: dBottom,
+          return MapEntry(
+            'quick:${win.id}',
+            Positioned(
+              key: ValueKey('quick:${win.id}'),
+              left: left,
+              top: top,
+              width: w,
+              height: h,
+              child: Listener(
+                onPointerDown: (_) {
+                  FloatStack.instance.raise(FloatStack.ai);
+                  notifier.raiseQuickResult(win.id);
+                },
+                child: FloatBoundsReporter(
+                  id: 'quick-result-${win.id}',
+                  child: _QuickResultCard(
+                    win: win,
+                    field: field,
+                    onMove: (dx, dy) =>
+                        notifier.moveQuickResultBy(win.id, dx, dy),
+                    onResize: ({
+                      double dLeft = 0,
+                      double dTop = 0,
+                      double dRight = 0,
+                      double dBottom = 0,
+                    }) =>
+                        notifier.resizeQuickResult(
+                      win.id,
+                      dLeft: dLeft,
+                      dTop: dTop,
+                      dRight: dRight,
+                      dBottom: dBottom,
+                    ),
+                    onClose: () => notifier.closeQuickResult(win.id),
                   ),
-                  onClose: () => notifier.closeQuickResult(win.id),
                 ),
               ),
             ),
@@ -701,7 +755,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
 
   /// 快问模式下的画布浮动窗：跟完整悬浮窗一样支持多个 ui_c，
   /// 但不展开完整 AI 窗，也不走 AI 页里的画布卡片。
-  List<Widget> _quickCanvasWindows(
+  List<MapEntry<String, Widget>> _quickCanvasWindows(
     BuildContext context,
     AiDockState dock,
   ) {
@@ -728,36 +782,43 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
             safeTop + 4,
             size.height - safeBottom - h - 4,
           );
-          return Positioned(
-            key: ValueKey('quickCanvas:${win.name}'),
-            left: left,
-            top: top,
-            width: w,
-            height: h,
-            child: Listener(
-              onPointerDown: (_) => notifier.raiseCanvas(win.name),
-              child: FloatBoundsReporter(
-                id: 'quick-canvas-${win.name}',
-                child: _CanvasWindow(
-                  canvas: win.canvas,
-                  chromeless: win.chromeless,
-                  field: field,
-                  onMove: (dx, dy) => notifier.moveCanvasBy(win.name, dx, dy),
-                  onResize: ({
-                    double dLeft = 0,
-                    double dTop = 0,
-                    double dRight = 0,
-                    double dBottom = 0,
-                  }) =>
-                      notifier.resizeCanvas(
-                    win.name,
-                    dLeft: dLeft,
-                    dTop: dTop,
-                    dRight: dRight,
-                    dBottom: dBottom,
+          return MapEntry(
+            'canvas:${win.name}',
+            Positioned(
+              key: ValueKey('quickCanvas:${win.name}'),
+              left: left,
+              top: top,
+              width: w,
+              height: h,
+              child: Listener(
+                onPointerDown: (_) {
+                  FloatStack.instance.raise(FloatStack.ai);
+                  notifier.raiseCanvas(win.name);
+                },
+                child: FloatBoundsReporter(
+                  id: 'quick-canvas-${win.name}',
+                  child: _CanvasWindow(
+                    canvas: win.canvas,
+                    chromeless: win.chromeless,
+                    field: field,
+                    onMove: (dx, dy) =>
+                        notifier.moveCanvasBy(win.name, dx, dy),
+                    onResize: ({
+                      double dLeft = 0,
+                      double dTop = 0,
+                      double dRight = 0,
+                      double dBottom = 0,
+                    }) =>
+                        notifier.resizeCanvas(
+                      win.name,
+                      dLeft: dLeft,
+                      dTop: dTop,
+                      dRight: dRight,
+                      dBottom: dBottom,
+                    ),
+                    onCommit: notifier.commitLayout,
+                    onClose: () => notifier.closeCanvas(win.name),
                   ),
-                  onCommit: notifier.commitLayout,
-                  onClose: () => notifier.closeCanvas(win.name),
                 ),
               ),
             ),
@@ -832,13 +893,21 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
       left: 14,
       top: safeTop + 12,
       width: size.width - 28,
-      child: Material(
-        type: MaterialType.transparency,
-        child: FloatBoundsReporter(
-          id: 'quick-question-${question.id}',
-          child: _QuestionWindow(
-            question: question,
-            onAnswer: _answerQuickQuestion,
+      child: Listener(
+        onPointerDown: (_) {
+          FloatStack.instance.raise(FloatStack.ai);
+          ref.read(aiDockProvider.notifier).raiseWindow(
+                'question:${question.id}',
+              );
+        },
+        child: Material(
+          type: MaterialType.transparency,
+          child: FloatBoundsReporter(
+            id: 'quick-question-${question.id}',
+            child: _QuestionWindow(
+              question: question,
+              onAnswer: _answerQuickQuestion,
+            ),
           ),
         ),
       ),
@@ -3339,31 +3408,9 @@ class _QuickResultCard extends StatelessWidget {
                             ),
                           ),
                         ),
-                        GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () {
-                            Clipboard.setData(ClipboardData(text: win.answer));
-                            final navContext = appNavigatorKey.currentContext;
-                            if (navContext == null || !navContext.mounted) {
-                              return;
-                            }
-                            ScaffoldMessenger.of(navContext).showSnackBar(
-                              const SnackBar(
-                                content: Text('已复制'),
-                                duration: Duration(seconds: 2),
-                              ),
-                            );
-                          },
-                          child: const _GhostButton(
-                            icon: Icons.copy_all_outlined,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: onClose,
-                          child: const _GhostButton(icon: Icons.close),
-                        ),
+                        // 右上角给复制/关闭按钮留位，按钮本体画在 _Edge 之后，
+                        // 不会被右边缘的缩放热区抢走点击。
+                        const SizedBox(width: 64),
                       ],
                     ),
                   ),
@@ -3408,6 +3455,40 @@ class _QuickResultCard extends StatelessWidget {
           cursor: SystemMouseCursors.resizeUpDown,
           onDrag: (d) => onResize(dBottom: d.dy / field.height),
           onEnd: () {},
+        ),
+        // 必须放在所有 _Edge 之后：右侧 16px 的缩放热区正好压在右上角，
+        // 放在标题栏里会导致点 × 变成拉窗口（用户反馈“关不掉”）。
+        Positioned(
+          top: 6,
+          right: 6,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              GestureDetector(
+                key: ValueKey('quick-copy-${win.id}'),
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: win.answer));
+                  final navContext = appNavigatorKey.currentContext;
+                  if (navContext == null || !navContext.mounted) return;
+                  ScaffoldMessenger.of(navContext).showSnackBar(
+                    const SnackBar(
+                      content: Text('已复制'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
+                child: const _GhostButton(icon: Icons.copy_all_outlined),
+              ),
+              const SizedBox(width: 6),
+              GestureDetector(
+                key: ValueKey('quick-close-${win.id}'),
+                behavior: HitTestBehavior.opaque,
+                onTap: onClose,
+                child: const _GhostButton(icon: Icons.close),
+              ),
+            ],
+          ),
         ),
       ],
     );

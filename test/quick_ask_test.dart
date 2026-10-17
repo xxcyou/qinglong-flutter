@@ -245,6 +245,28 @@ void main() {
       expect(dock.quickOpen, isTrue);
     });
 
+    test('跨类型层级：点正文窗能盖住后开的 ui_c，点 ui_c 又能盖回来', () {
+      final c = boot();
+      final n = c.read(aiDockProvider.notifier);
+      n.toggleQuickAsk();
+      final id = n.pushQuickResult(question: '正文', answer: '内容');
+      n.showCanvas(const AiCanvas(
+        id: 'c1',
+        title: 'ui_c',
+        html: '<h1>x</h1>',
+        window: 'ui_c',
+      ));
+
+      // 画布后开，默认压在正文窗上面。
+      expect(c.read(aiDockProvider).zOrder.last, 'canvas:ui_c');
+      // 点正文窗（onPointerDown 会调 raiseQuickResult）→ 正文窗到最上。
+      n.raiseQuickResult(id);
+      expect(c.read(aiDockProvider).zOrder.last, 'quick:$id');
+      // 再点画布窗 → 画布窗又到最上。
+      n.raiseCanvas('ui_c');
+      expect(c.read(aiDockProvider).zOrder.last, 'canvas:ui_c');
+    });
+
     test('ui_c 画布窗独立存活：收起快问条、隐藏悬浮球都不消失', () {
       final c = boot();
       final n = c.read(aiDockProvider.notifier);

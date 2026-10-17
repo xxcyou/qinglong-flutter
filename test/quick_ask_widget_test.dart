@@ -145,6 +145,28 @@ void main() {
     expect(find.text('磁盘还剩多少'), findsNothing);
   });
 
+  testWidgets('结果窗关闭按钮贴右边缘也能点，不被缩放热区抢走', (tester) async {
+    await tester.pumpWidget(host());
+    await tester.pump(const Duration(milliseconds: 50));
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(AiBubbleLayer)),
+    );
+    final n = container.read(aiDockProvider.notifier);
+    final id = n.pushQuickResult(question: '正文问题', answer: '正文内容');
+    await tester.pump(const Duration(milliseconds: 50));
+
+    final close = find.byKey(ValueKey('quick-close-$id'));
+    expect(close, findsOneWidget);
+    // 点在按钮靠右的位置：右边 16px 是缩放热区，按钮必须压在它上面。
+    final rect = tester.getRect(close);
+    await tester.tapAt(rect.topRight + const Offset(-2, 2));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(
+      container.read(aiDockProvider).quickResults.any((w) => w.id == id),
+      isFalse,
+    );
+  });
+
   testWidgets('悬浮球隐藏了，已经弹出来的结果窗还留着', (tester) async {
     await tester.pumpWidget(host());
     await tester.pump(const Duration(milliseconds: 50));
