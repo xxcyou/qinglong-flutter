@@ -61,11 +61,13 @@ class ContainerFileEntry {
     required this.isDirectory,
     required this.size,
     this.mode = '',
+    this.isSymlink = false,
   });
 
   final String name;
   final bool isDirectory;
   final int size;
+  final bool isSymlink;
 
   /// `ls -la` 第一列的权限串（如 -rw-r--r-- / drwxr-xr-x）。
   /// 用户反馈“缺少权限显示”，这里直接展示，点开失败时也好定位。
@@ -279,13 +281,31 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
     }
   }
 
+  /// 判断路径（通常是指向目录的符号链接）是否为目录。
+  Future<bool> _probeDirectory(String absolute) async {
+    try {
+      final out = await _runRemote(
+        '$_docker sh -c \'[ -d "\$1" ] && echo __DIR__ || echo __FILE__\' '
+        'sh ${_shq(absolute)}',
+      );
+      return out.contains('__DIR__');
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _load() async {
     setState(() {
       loading = true;
       error = null;
     });
     try {
-      final cmd = "$_docker sh -c 'ls -la \"\$1\" 2>&1' sh ${_shq(path)}";
+      // 末尾补 /：普通目录无影响；符号链接指向目录时，ls 会列出目标目录
+      // 内容而不是只显示链接本身（点进 /root 下的链接目录就不会再报
+      // cat: Is a directory）。
+      final listingPath = path == '/' || path.endsWith('/') ? path : '$path/';
+      final cmd =
+          "$_docker sh -c 'ls -la \"\$1\" 2>&1' sh ${_shq(listingPath)}";
       final raw =
           await SshSessionManager.instance.executeFull(widget.sessionId, cmd);
       final parsed = _parse(raw);
@@ -332,6 +352,7 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
         isDirectory: mode.startsWith('d'),
         size: int.tryParse(tokens[4]) ?? 0,
         mode: mode,
+        isSymlink: mode.startsWith('l'),
       ));
     }
     result.sort((a, b) {
@@ -564,6 +585,12 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
   Future<void> _openEntry(ContainerFileEntry e) async {
     if (e.isDirectory) return _enter(e.name);
     final absolute = _abs(e);
+    // 符号链接可能是目录：必须先判断，否则 cat 会报 Is a directory，
+    // 还会把 SSH 登录 shell 的 .bashrc 噪音一起带出来。
+    if (e.isSymlink && await _probeDirectory(absolute)) {
+      if (!mounted) return;
+      return _enter(e.name);
+    }
     final kind = FileKinds.of(e.name);
     // 先按 `ls` 的尺寸拦一层：文本/图片各有安全上限，别等读进内存才崩。
     const textLimit = 8 * 1024 * 1024;
@@ -635,8 +662,21 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
         );
       });
     } catch (err) {
-      _toast('打开文件失败：$err');
+      _toast('打开文件失败：${_friendlyError(err)}');
     }
+  }
+
+  String _friendlyError(Object err) {
+    var text = err.toString();
+    if (text.startsWith('Bad state: ')) {
+      text = text.substring('Bad state: '.length);
+    }
+    return text
+        .split('\n')
+        .where((line) => !line.contains('.bashrc'))
+        .where((line) => !line.contains('.openclaw/completions'))
+        .join('\n')
+        .trim();
   }
 
   Future<Uint8List?> _readThumb(String name) async {

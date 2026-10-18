@@ -126,9 +126,20 @@ class DockerService {
           : '${(maxBytes / 1024).toStringAsFixed(0)}KB';
       throw StateError('文件超过 $limit，为避免闪退已阻止直接读取');
     }
-    final err = errorText.toString().trim();
+    final rawErr = errorText.toString().trim();
+    // 交互式 SSH 登录 shell 可能把宿主机的 .bashrc 报错混进 stderr；真正
+    // 的错误信息要留下，但不要把这类噪音原样甩给用户。
+    final err = rawErr
+        .split('\n')
+        .where((line) => !line.contains('.openclaw/completions'))
+        .where((line) => !line.contains('.bashrc: line'))
+        .join('\n')
+        .trim();
     final code = session.exitCode;
     if (code != null && code != 0) {
+      if (rawErr.contains('Is a directory') || err.contains('Is a directory')) {
+        throw StateError('这是一个目录，不能按文件打开');
+      }
       throw StateError(err.isEmpty ? '读取失败（exit=$code）' : err);
     }
     return builder.takeBytes();
