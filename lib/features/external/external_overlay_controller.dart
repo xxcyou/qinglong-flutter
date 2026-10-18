@@ -4,8 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
-import '../../shared/float_stack.dart';
-
 /// 标记：这棵子树里有“自定义文本输入”（xterm/终端等）。
 ///
 /// 原生覆盖窗默认 FLAG_NOT_FOCUSABLE；只有 Dart 焦点落在可输入控件上时
@@ -393,11 +391,10 @@ class ExternalOverlayController {
   void _syncImeFocus() {
     if (!active.value) return;
     final next = _hasEditableFocus();
-    if (next) {
-      // 输入框拿到焦点时强制把 AI 层置顶：键盘弹出/点按过程中如果
-      // 别的悬浮层被误 raise，气泡会从聊天窗下面冒出来。
-      FloatStack.instance.raise(FloatStack.ai);
-    }
+    // 注意：这里不要 raise AI 层。终端/容器文件窗里的输入框拿到焦点时
+    // 也走这条路径；如果顺手把 AI 层抬到最上面，展开的 AI 聊天窗会立刻
+    // 盖住用户正在操作的容器悬浮窗，表现就是“容器窗被 AI 锁死、动不了”。
+    // AI 气泡本身在 AppFloatLayer 里永远最后绘制，不需要这里抬。
     if (next == _imeFocus) return;
     _imeFocus = next;
     try {
