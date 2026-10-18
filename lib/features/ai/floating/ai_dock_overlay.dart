@@ -2062,6 +2062,7 @@ class _WindowState extends ConsumerState<_Window> {
                                   // 再看结论。放答案下面会把结论顶走，读起来是倒的。
                                   if (m.agentEvents.isNotEmpty && !m.isUser)
                                     Padding(
+                                      key: ValueKey('dock-agent-$index'),
                                       padding: const EdgeInsets.only(bottom: 6),
                                       child: AgentProcessCard(
                                         events: m.agentEvents,
@@ -2080,6 +2081,7 @@ class _WindowState extends ConsumerState<_Window> {
                                       ),
                                     ),
                                   _MiniBubble(
+                                    key: ValueKey('dock-msg-$index'),
                                     isUser: m.isUser,
                                     text: m.content,
                                     outcome: m.outcome,
@@ -2147,6 +2149,7 @@ class _WindowState extends ConsumerState<_Window> {
                                 ],
                                 if (chat.liveAgentEvents.isNotEmpty)
                                   AgentProcessCard(
+                                    key: const ValueKey('dock-live-process'),
                                     events: chat.liveAgentEvents,
                                     running: chat.isLoading,
                                     totalTokens: chat.lastTokens,
@@ -2164,6 +2167,7 @@ class _WindowState extends ConsumerState<_Window> {
                                 // 正在流的那一段：悬浮窗矮，用 dense 排版。
                                 if (chat.isLoading)
                                   AgentStreamCard(
+                                    key: const ValueKey('dock-live-stream'),
                                     reasoning: chat.liveReasoning,
                                     content: chat.liveContent,
                                     reasoningChars: chat.liveReasoningChars,
@@ -2176,6 +2180,7 @@ class _WindowState extends ConsumerState<_Window> {
                                 if (chat.pendingQuestion == null &&
                                     chat.pendingPlan.isNotEmpty)
                                   _MiniConfirm(
+                                    key: const ValueKey('dock-live-confirm'),
                                     count: chat.pendingPlan.length,
                                     irreversible: chat.pendingPlan
                                         .any((a) => !a.reversible),
@@ -3119,6 +3124,7 @@ class _MiniImageState extends State<_MiniImage> {
 
 class _MiniBubble extends StatefulWidget {
   const _MiniBubble({
+    super.key,
     required this.isUser,
     required this.text,
     required this.outcome,
@@ -3308,6 +3314,7 @@ class _MiniAction extends StatelessWidget {
 
 class _MiniConfirm extends StatelessWidget {
   const _MiniConfirm({
+    super.key,
     required this.count,
     required this.irreversible,
     required this.names,
