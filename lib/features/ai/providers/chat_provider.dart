@@ -296,16 +296,16 @@ class ChatState {
   }
 
   /// 会话累计输入 token；旧消息没有分类字段时用 promptTokens 兜底。
-  int get sessionInputTokens =>
-      messages.fold(0, (sum, m) => sum + (m.inputTokens > 0 ? m.inputTokens : m.promptTokens));
+  int get sessionInputTokens => messages.fold(0,
+      (sum, m) => sum + (m.inputTokens > 0 ? m.inputTokens : m.promptTokens));
 
   /// 会话累计输出 token。
   int get sessionOutputTokens =>
       messages.fold(0, (sum, m) => sum + m.outputTokens);
 
   /// 会话累计缓存命中 token；旧消息没有分类字段时用 cachedTokens 兜底。
-  int get sessionCacheTokens =>
-      messages.fold(0, (sum, m) => sum + (m.cacheTokens > 0 ? m.cacheTokens : m.cachedTokens));
+  int get sessionCacheTokens => messages.fold(0,
+      (sum, m) => sum + (m.cacheTokens > 0 ? m.cacheTokens : m.cachedTokens));
 
   /// 标题栏实时输入 token：已落库累计 + 当前这轮已经回来的累计输入。
   int get liveSessionInputTokens =>
@@ -1680,9 +1680,8 @@ class ChatNotifier extends Notifier<ChatState> {
         ...state.interruptedRunBySession,
         sid: null,
       },
-      liveAgentEvents: state.currentSessionId == sid
-          ? const []
-          : state.liveAgentEvents,
+      liveAgentEvents:
+          state.currentSessionId == sid ? const [] : state.liveAgentEvents,
     );
     await _sendNow(
       promptText,
@@ -2402,6 +2401,11 @@ class ChatNotifier extends Notifier<ChatState> {
 
   /// 启动时检查有没有被打断的运行。
   Future<void> loadInterruptedRun() async {
+    // 页面每次重建（例如从 APP 外悬浮切回 AI 页）都会调这里。此时内存里
+    // 的 run 还在跑，磁盘上的 active_run 只是“正在跑”的崩溃恢复副本；
+    // 如果照读，会把正在执行的任务标成“已中断”，ResumeStrip 也会冒出来。
+    // 只有内存里确实没有活着的 run 时，才把磁盘快照当成真·中断恢复。
+    if (_runs.isNotEmpty) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       final run = InterruptedRun.decode(prefs.getString(_activeRunKey) ?? '');
@@ -3062,9 +3066,8 @@ class ChatNotifier extends Notifier<ChatState> {
       liveInputTokens: run?.inputTokens ?? 0,
       liveOutputTokens: run?.outputTokens ?? 0,
       liveCacheTokens: run?.cacheTokens ?? 0,
-      liveUsageDetails: run == null
-          ? const []
-          : List<AiUsageDetail>.from(run.usageDetails),
+      liveUsageDetails:
+          run == null ? const [] : List<AiUsageDetail>.from(run.usageDetails),
       liveSubagentReasoning: {
         for (final entry in (run?.subagentReasoning ?? const {}).entries)
           entry.key: _tail(entry.value.toString()),
@@ -3480,18 +3483,18 @@ class ChatNotifier extends Notifier<ChatState> {
             : raw.replaceAll('\n', ' ');
         unawaited(
           ref.read(auditProvider.notifier).add(
-            sessionId: sessionId,
-            module: _auditModule(event.toolName!),
-            action: event.toolName!,
-            detail: [
-              if (target.isNotEmpty) target,
-              if ((event.durationMs ?? 0) > 0) '${event.durationMs}ms',
-              if (short.isNotEmpty) short,
-            ].join(' · '),
-            result: event.ok ? 'ok' : 'error',
-            messageIndex: session.messages.length,
-            eventIndex: run.events.length - 1,
-          ),
+                sessionId: sessionId,
+                module: _auditModule(event.toolName!),
+                action: event.toolName!,
+                detail: [
+                  if (target.isNotEmpty) target,
+                  if ((event.durationMs ?? 0) > 0) '${event.durationMs}ms',
+                  if (short.isNotEmpty) short,
+                ].join(' · '),
+                result: event.ok ? 'ok' : 'error',
+                messageIndex: session.messages.length,
+                eventIndex: run.events.length - 1,
+              ),
         );
       }
     }
@@ -3661,8 +3664,7 @@ class ChatNotifier extends Notifier<ChatState> {
     _toolScreenshotsBySession.remove(run?.sessionId ?? state.currentSessionId);
     _lastToolScreenshot = null;
     final config = await ref.read(llmConfigProvider.future);
-    final toolTimeout =
-        ref.read(settingsProvider).toolExecutionTimeoutSeconds;
+    final toolTimeout = ref.read(settingsProvider).toolExecutionTimeoutSeconds;
     final activeProviderId = ref.read(llmRegistryProvider).active.id;
     final mainProvider = ref.read(llmRegistryProvider).active;
     // 能力判断必须用“界面上真正选中的主模型”，不能用提供商默认模型。
@@ -5409,18 +5411,18 @@ class ChatNotifier extends Notifier<ChatState> {
   void _auditRun(AgentResult result, {int? messageIndex}) {
     // 工具级审计已经在 _appendAgentEvent 里实时写好了，这里只补一条整轮汇总。
     ref.read(auditProvider.notifier).addAll(
-          [
-            AuditLog(
-              time: DateTime.now(),
-              module: 'ai',
-              action: 'agent_run',
-              detail: '${result.turns} 轮 · ${result.toolRecords.length} 次工具 · '
-                  '${result.usage.totalTokens} tokens',
-              result: result.outcome.name,
-            ),
-          ],
-          sessionId: state.currentSessionId,
-        );
+      [
+        AuditLog(
+          time: DateTime.now(),
+          module: 'ai',
+          action: 'agent_run',
+          detail: '${result.turns} 轮 · ${result.toolRecords.length} 次工具 · '
+              '${result.usage.totalTokens} tokens',
+          result: result.outcome.name,
+        ),
+      ],
+      sessionId: state.currentSessionId,
+    );
   }
 
   /// 按工具名前缀归类模块，审计列表里好筛。

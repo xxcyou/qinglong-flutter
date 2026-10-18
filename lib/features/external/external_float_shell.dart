@@ -29,12 +29,10 @@ class ExternalFloatShell extends StatelessWidget {
       animation: Listenable.merge([
         controller.bounds,
         controller.appliedBounds,
-        controller.frameTick,
         controller.imeHeight,
       ]),
       builder: (context, _) {
         final bounds = controller.appliedBounds.value;
-        final tick = controller.frameTick.value;
         final base = MediaQuery.of(context);
         // 正常从 APP 内进入时已经有全屏信息；极端情况（服务直接拉起引擎/
         // 进程重启）没有，就用当前 view 尺寸兜底，至少不会白屏。
@@ -42,44 +40,52 @@ class ExternalFloatShell extends StatelessWidget {
         final screen = fallback ? base.size : controller.fullScreenSize;
         if (screen.isEmpty) return const SizedBox.shrink();
         final shifted = fallback ? Rect.zero : bounds;
-        return Opacity(
-          // 0.999 与 1.0 肉眼无差，但会让引擎重新 paint 一帧；这是把内容
-          // 真正画到覆盖窗口 surface 上的关键（部分 ROM 只 scheduleFrame
-          // 不够，需要一个真实的绘制变更）。
-          opacity: tick.isEven ? 1.0 : 0.999,
-          child: ClipRect(
-            child: Stack(
-              children: [
-                Positioned(
-                  left: -shifted.left,
-                  top: -shifted.top,
-                  width: screen.width,
-                  height: screen.height,
-                  child: MediaQuery(
-                    data: base.copyWith(
-                      size: screen,
-                      padding: controller.fullScreenPadding,
-                      viewPadding: controller.fullScreenViewPadding,
-                      systemGestureInsets: controller.systemGestureInsets,
-                      // 原生量出来的键盘高度并入 viewInsets：覆盖窗口自己
-                      // 不一定会把 IME insets 透传给 Flutter。
-                      viewInsets: base.viewInsets.copyWith(
-                        bottom: math.max(
-                          base.viewInsets.bottom,
-                          controller.imeHeight.value,
-                        ),
-                      ),
-                    ),
-                    child: const ScaffoldMessenger(
-                      child: _ExternalRouteHost(
-                        child: AppFloatLayer(),
+        final shell = ClipRect(
+          child: Stack(
+            children: [
+              Positioned(
+                left: -shifted.left,
+                top: -shifted.top,
+                width: screen.width,
+                height: screen.height,
+                child: MediaQuery(
+                  data: base.copyWith(
+                    size: screen,
+                    padding: controller.fullScreenPadding,
+                    viewPadding: controller.fullScreenViewPadding,
+                    systemGestureInsets: controller.systemGestureInsets,
+                    // 原生量出来的键盘高度并入 viewInsets：覆盖窗口自己
+                    // 不一定会把 IME insets 透传给 Flutter。
+                    viewInsets: base.viewInsets.copyWith(
+                      bottom: math.max(
+                        base.viewInsets.bottom,
+                        controller.imeHeight.value,
                       ),
                     ),
                   ),
+                  child: const ScaffoldMessenger(
+                    child: _ExternalRouteHost(
+                      child: AppFloatLayer(),
+                    ),
+                  ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
+        );
+        // 只让补帧计数器重建最外层的 Opacity，不要每 tick 都把整个
+        // AppFloatLayer（含 AI 聊天窗 ListView）重建一遍——AI 流式输出时
+        // 那会表现成悬浮窗内容一直闪、滚动位置乱跳。
+        return ValueListenableBuilder<int>(
+          valueListenable: controller.frameTick,
+          builder: (context, tick, child) => Opacity(
+            // 0.999 与 1.0 肉眼无差，但会让引擎重新 paint 一帧；这是把
+            // 内容真正画到覆盖窗口 surface 上的关键（部分 ROM 只
+            // scheduleFrame 不够，需要一个真实的绘制变更）。
+            opacity: tick.isEven ? 1.0 : 0.999,
+            child: child,
+          ),
+          child: shell,
         );
       },
     );

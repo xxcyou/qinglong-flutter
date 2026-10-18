@@ -215,6 +215,11 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
   /// 是否跟着最新内容走。用户往上翻看历史时自动停，回到底部自动恢复。
   bool _pinned = true;
 
+  /// 代码主动 jumpTo/animateTo 时置位：这些滚动不是用户往上翻，
+  /// 不能让 _onScroll 把 _pinned 误判成 false，否则流式输出到一半
+  /// 自动跟随会突然断掉。
+  bool _autoScrolling = false;
+
   @override
   void initState() {
     super.initState();
@@ -231,7 +236,7 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
   }
 
   void _onScroll() {
-    if (!_scroll.hasClients) return;
+    if (!_scroll.hasClients || _autoScrolling) return;
     final pos = _scroll.position;
     final atBottom = pos.maxScrollExtent - pos.pixels <= 120;
     if (atBottom != _pinned) _pinned = atBottom;
@@ -244,7 +249,9 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
       if (!mounted || !_scroll.hasClients) return;
       final max = _scroll.position.maxScrollExtent;
       if ((max - _scroll.position.pixels).abs() < 1) return;
+      _autoScrolling = true;
       _scroll.jumpTo(max);
+      _autoScrolling = false;
     });
   }
 
@@ -267,11 +274,21 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
 
   void _toBottom() {
     if (!_scroll.hasClients) return;
-    _scroll.animateTo(
+    _pinned = true;
+    _autoScrolling = true;
+    _scroll
+        .animateTo(
       _scroll.position.maxScrollExtent,
       duration: const Duration(milliseconds: 180),
       curve: Curves.easeOut,
-    );
+    )
+        .whenComplete(() {
+      _autoScrolling = false;
+      if (!mounted || !_scroll.hasClients) return;
+      // 动画若被用户手势打断，按真实位置决定是否继续跟随。
+      _pinned =
+          _scroll.position.maxScrollExtent - _scroll.position.pixels <= 120;
+    });
   }
 
   @override
@@ -436,12 +453,12 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
       width: geo.rect.width,
       height: geo.rect.height,
       child: Listener(
-        onPointerDown: (_) => ref
-            .read(aiDockProvider.notifier)
-            .raiseWindow('chat'),
+        onPointerDown: (_) =>
+            ref.read(aiDockProvider.notifier).raiseWindow('chat'),
         child: _Window(
           input: _input,
           scroll: _scroll,
+          pinned: _pinned,
           onSend: _send,
           onToBottom: _toBottom,
           field: geo.field,
@@ -801,8 +818,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
                     canvas: win.canvas,
                     chromeless: win.chromeless,
                     field: field,
-                    onMove: (dx, dy) =>
-                        notifier.moveCanvasBy(win.name, dx, dy),
+                    onMove: (dx, dy) => notifier.moveCanvasBy(win.name, dx, dy),
                     onResize: ({
                       double dLeft = 0,
                       double dTop = 0,
@@ -1544,7 +1560,6 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
       ),
     );
   }
-
 }
 
 /// 取一段流式文字的尾巴，压成能塞进一行的样子。
@@ -1820,6 +1835,7 @@ class _Window extends ConsumerStatefulWidget {
   const _Window({
     required this.input,
     required this.scroll,
+    required this.pinned,
     required this.onSend,
     required this.onToBottom,
     required this.field,
@@ -1827,6 +1843,9 @@ class _Window extends ConsumerStatefulWidget {
 
   final TextEditingController input;
   final ScrollController scroll;
+
+  /// 当前是否在自动跟随底部。用户往上翻后为 false，显示“回到底部”按钮。
+  final bool pinned;
   final VoidCallback onSend;
   final VoidCallback onToBottom;
 
@@ -2265,6 +2284,30 @@ class _WindowState extends ConsumerState<_Window> {
             ),
           ),
         ),
+        // 用户往上翻看历史后自动跟随会停；给一个明确入口回到最新，
+        // 不用在窄窗里一路手动滑到底。
+        if (!widget.pinned && !_sessions && recent.isNotEmpty)
+          Positioned(
+            right: 14,
+            bottom: 74,
+            child: Material(
+              color: scheme.primary,
+              shape: const CircleBorder(),
+              elevation: 3,
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: widget.onToBottom,
+                child: const Padding(
+                  padding: EdgeInsets.all(7),
+                  child: Icon(
+                    Icons.arrow_downward_rounded,
+                    size: 18,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          ),
         // 四边 + 四角热区：按住边缘随手指改窗口大小。
         _Edge(
           alignment: Alignment.centerLeft,
