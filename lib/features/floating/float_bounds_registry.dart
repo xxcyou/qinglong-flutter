@@ -1,3 +1,4 @@
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 import '../external/external_overlay_controller.dart';
@@ -34,7 +35,7 @@ class FloatBoundsRegistry {
     }
     if (_rects[id] == rect) return;
     _rects[id] = rect;
-    revision.value++;
+    _bumpRevision();
   }
 
   static void remove(Object id) {
@@ -44,6 +45,32 @@ class FloatBoundsRegistry {
 
   static void _removeRect(Object id) {
     if (_rects.remove(id) == null) return;
+    _bumpRevision();
+  }
+
+  static bool _kickScheduled = false;
+
+  /// 很多窗口是在 `build()` 里直接登记矩形的；在 build 阶段 notifyListeners
+  /// 时，已经构建过/正在构建的 `FloatBoundsReporter` 可能吃不到这次通知，
+  /// 于是原生覆盖窗口一直只按旧的并集大小（只包住 AI 球），终端/日志/
+  /// 文件夹窗就被裁成“只显示一半”。这里在帧末再补一次通知，强制下一帧
+  /// 重新计算并上报并集。
+  static void _bumpRevision() {
+    // 帧构建过程中直接 notifyListeners 会触发
+    // “setState() or markNeedsBuild() called during build”：登记方
+    // （SshFloatingHostLayer 里的窗口）和监听方（_FloatBoundsReporter）
+    // 是兄弟节点，Flutter 不允许这样标记。延到帧末再通知，下一帧重算
+    // 并集并上报，原生覆盖窗才能包住容器终端/日志/文件夹窗。
+    if (SchedulerBinding.instance.schedulerPhase ==
+        SchedulerPhase.persistentCallbacks) {
+      if (_kickScheduled) return;
+      _kickScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _kickScheduled = false;
+        revision.value++;
+      });
+      return;
+    }
     revision.value++;
   }
 
@@ -86,10 +113,9 @@ class _FloatBoundsReporterState extends State<FloatBoundsReporter> {
     final controller = ExternalOverlayController.instance;
     // APP 外模式下 Shell 把整层 AppFloatLayer 平移了 -bounds.topLeft；
     // 加回来后方登记的是“全屏逻辑坐标”，和 _visibleBounds 里其它窗口一致。
-    final shift =
-        controller.active.value && controller.fullScreenSize.width > 0
-            ? controller.appliedBounds.value.topLeft
-            : Offset.zero;
+    final shift = controller.active.value && controller.fullScreenSize.width > 0
+        ? controller.appliedBounds.value.topLeft
+        : Offset.zero;
     FloatBoundsRegistry.report(widget.id, (local + shift) & box.size);
   }
 
