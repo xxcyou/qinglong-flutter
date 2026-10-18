@@ -420,11 +420,6 @@ class ExternalOverlayService : Service() {
                         shared.lifecycleChannel.appIsResumed()
                     } catch (_: Exception) {
                     }
-                    // 原生窗口会随容器终端/日志/文件夹窗的并集变大变小，
-                    // Surface 尺寸随之变化。这里补一轮帧，确保新露出的区域
-                    // 立即重绘，而不是继续显示旧 buffer/空白（看起来就是
-                    // 悬浮窗只显示一半）。
-                    notifyDartSurfaceReady()
                 }
 
                 override fun surfaceDestroyed(h: SurfaceHolder) {}
