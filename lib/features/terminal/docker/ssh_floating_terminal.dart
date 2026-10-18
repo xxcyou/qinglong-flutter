@@ -18,6 +18,7 @@ class SshFloatingTerminal {
     String? title,
   }) {
     late final int id;
+    final initialOffset = SshFloatingHost.nextCascadeOffset();
     id = SshFloatingHost.add(
       context,
       group: containerId,
@@ -34,6 +35,7 @@ class SshFloatingTerminal {
           _ids.remove(id);
         },
         boundsId: 'ssh-float-$id',
+        initialOffset: initialOffset,
       ),
     );
     _ids.add(id);
@@ -57,6 +59,7 @@ class SshFloatingTerminalWindow extends StatefulWidget {
     required this.onMinimize,
     required this.onClose,
     required this.boundsId,
+    this.initialOffset,
   });
 
   final Object boundsId;
@@ -66,6 +69,7 @@ class SshFloatingTerminalWindow extends StatefulWidget {
   final VoidCallback onFocus;
   final VoidCallback onMinimize;
   final VoidCallback onClose;
+  final Offset? initialOffset;
 
   @override
   State<SshFloatingTerminalWindow> createState() =>
@@ -79,8 +83,14 @@ class _SshFloatingTerminalWindowState extends State<SshFloatingTerminalWindow> {
     super.dispose();
   }
 
-  Offset _pos = const Offset(24, 90);
+  late Offset _pos;
   Size _size = const Size(380, 280);
+
+  @override
+  void initState() {
+    super.initState();
+    _pos = widget.initialOffset ?? const Offset(24, 90);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -106,116 +116,122 @@ class _SshFloatingTerminalWindowState extends State<SshFloatingTerminalWindow> {
         }
       }
     }
-    FloatBoundsRegistry.report(widget.boundsId, Rect.fromLTWH(left, top, width, height));
-    final shell = "docker exec -it '${widget.containerId.replaceAll("'", "'\\''")}' /bin/sh -l";
+    FloatBoundsRegistry.report(
+        widget.boundsId, Rect.fromLTWH(left, top, width, height));
+    final shell =
+        "docker exec -it '${widget.containerId.replaceAll("'", "'\\''")}' /bin/sh -l";
     return Stack(
       fit: StackFit.expand,
       children: [
         Positioned(
-      left: left,
-      top: top,
-      width: width,
-      height: height,
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: GestureDetector(
-              onTapDown: (_) => widget.onFocus(),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Material(
-                  color: const Color(0xF0282C34),
-                  child: SafeArea(
-                    top: false,
-                    bottom: false,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(0, 20, 0, 0),
-                      child: SshTerminalView(
-                        sessionId: widget.sessionId,
-                        initialCommand: shell,
-                        title: widget.title ?? '容器 ${widget.containerId.substring(0, widget.containerId.length > 12 ? 12 : widget.containerId.length)}',
+          left: left,
+          top: top,
+          width: width,
+          height: height,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: GestureDetector(
+                  onTapDown: (_) => widget.onFocus(),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Material(
+                      color: const Color(0xF0282C34),
+                      child: SafeArea(
+                        top: false,
+                        bottom: false,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(0, 20, 0, 0),
+                          child: SshTerminalView(
+                            sessionId: widget.sessionId,
+                            initialCommand: shell,
+                            title: widget.title ??
+                                '容器 ${widget.containerId.substring(0, widget.containerId.length > 12 ? 12 : widget.containerId.length)}',
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ),
-          Positioned(
-            left: 0,
-            right: 0,
-            top: 0,
-            height: 20,
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onTapDown: (_) => widget.onFocus(),
-              onPanUpdate: (d) => setState(() => _pos += d.delta),
-              child: Container(
-                color: const Color(0x00282C34),
-                padding: const EdgeInsets.only(left: 8),
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '容器终端',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Colors.white70,
-                    fontWeight: FontWeight.w600,
+              Positioned(
+                left: 0,
+                right: 0,
+                top: 0,
+                height: 20,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTapDown: (_) => widget.onFocus(),
+                  onPanUpdate: (d) => setState(() => _pos += d.delta),
+                  child: Container(
+                    color: const Color(0x00282C34),
+                    padding: const EdgeInsets.only(left: 8),
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '容器终端',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Colors.white70,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
-          Positioned(
-            right: 32,
-            top: 0,
-            child: IconButton(
-              tooltip: '最小化容器终端',
-              visualDensity: VisualDensity.compact,
-              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-              iconSize: 14,
-              padding: EdgeInsets.zero,
-              icon: const Icon(Icons.picture_in_picture_alt, color: Colors.white70),
-              onPressed: widget.onMinimize,
-            ),
-          ),
-          Positioned(
-            right: 2,
-            top: 0,
-            child: IconButton(
-              tooltip: '关闭容器终端',
-              visualDensity: VisualDensity.compact,
-              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-              iconSize: 14,
-              padding: EdgeInsets.zero,
-              icon: const Icon(Icons.close_rounded, color: Colors.white70),
-              onPressed: widget.onClose,
-            ),
-          ),
-          Positioned(
-            right: 0,
-            bottom: 0,
-            width: 20,
-            height: 20,
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onPanUpdate: (d) {
-                setState(() {
-                  _size = Size(
-                    (_size.width + d.delta.dx).clamp(240.0, 800.0),
-                    (_size.height + d.delta.dy).clamp(180.0, 700.0),
-                  );
-                });
-              },
-              child: const Icon(
-                Icons.open_in_full_rounded,
-                size: 13,
-                color: Colors.white54,
+              Positioned(
+                right: 32,
+                top: 0,
+                child: IconButton(
+                  tooltip: '最小化容器终端',
+                  visualDensity: VisualDensity.compact,
+                  constraints:
+                      const BoxConstraints(minWidth: 30, minHeight: 30),
+                  iconSize: 14,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.picture_in_picture_alt,
+                      color: Colors.white70),
+                  onPressed: widget.onMinimize,
+                ),
               ),
-            ),
+              Positioned(
+                right: 2,
+                top: 0,
+                child: IconButton(
+                  tooltip: '关闭容器终端',
+                  visualDensity: VisualDensity.compact,
+                  constraints:
+                      const BoxConstraints(minWidth: 30, minHeight: 30),
+                  iconSize: 14,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                  onPressed: widget.onClose,
+                ),
+              ),
+              Positioned(
+                right: 0,
+                bottom: 0,
+                width: 20,
+                height: 20,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanUpdate: (d) {
+                    setState(() {
+                      _size = Size(
+                        (_size.width + d.delta.dx).clamp(240.0, 800.0),
+                        (_size.height + d.delta.dy).clamp(180.0, 700.0),
+                      );
+                    });
+                  },
+                  child: const Icon(
+                    Icons.open_in_full_rounded,
+                    size: 13,
+                    color: Colors.white54,
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
-),
+        ),
       ],
     );
   }

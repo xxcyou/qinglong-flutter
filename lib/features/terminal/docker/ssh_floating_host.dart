@@ -15,6 +15,14 @@ class SshFloatingHost {
   static final List<_HostedWindow> _windows = [];
   static final ValueNotifier<int> revision = ValueNotifier<int>(0);
   static int _counter = 0;
+  static int _cascade = 0;
+
+  /// 新开的容器悬浮窗默认位置：错开叠放，避免三个窗完全重合后
+  /// 看起来像“锁在一起”、拖动时分不清哪个是哪个。
+  static Offset nextCascadeOffset() {
+    final step = (_cascade++ % 6) * 26.0;
+    return Offset(24 + step, 96 + step);
+  }
 
   /// 注册一个悬浮窗，返回稳定 id。
   static int add(
@@ -73,6 +81,7 @@ class SshFloatingHost {
     for (final w in _windows) {
       if (w.group == group && !w.minimized) {
         w.minimized = true;
+        FloatBoundsRegistry.setEnabled('ssh-float-${w.id}', false);
         expanded.add(w.id);
       }
     }
@@ -85,6 +94,7 @@ class SshFloatingHost {
     for (final w in _windows) {
       if (w.group == group && ids.contains(w.id)) {
         w.minimized = false;
+        FloatBoundsRegistry.setEnabled('ssh-float-${w.id}', true);
       }
     }
     revision.value++;

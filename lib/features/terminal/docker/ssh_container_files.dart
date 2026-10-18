@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../floating/float_bounds_registry.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../router.dart';
 import '../../../shared/code_editor_page.dart';
 import '../../../shared/confirm_dialog.dart';
 import '../../../shared/file_kinds.dart';
@@ -30,6 +31,7 @@ class SshFloatingFiles {
     String? title,
   }) {
     late final int id;
+    final initialOffset = SshFloatingHost.nextCascadeOffset();
     id = SshFloatingHost.add(
       context,
       group: containerId,
@@ -46,6 +48,7 @@ class SshFloatingFiles {
           _ids.remove(id);
         },
         boundsId: 'ssh-float-$id',
+        initialOffset: initialOffset,
       ),
     );
     _ids.add(id);
@@ -79,6 +82,7 @@ class SshFloatingFilesWindow extends StatefulWidget {
     required this.onMinimize,
     required this.onClose,
     required this.boundsId,
+    this.initialOffset,
   });
 
   final Object boundsId;
@@ -88,6 +92,7 @@ class SshFloatingFilesWindow extends StatefulWidget {
   final VoidCallback onFocus;
   final VoidCallback onMinimize;
   final VoidCallback onClose;
+  final Offset? initialOffset;
 
   @override
   State<SshFloatingFilesWindow> createState() => _SshFloatingFilesWindowState();
@@ -100,8 +105,14 @@ class _SshFloatingFilesWindowState extends State<SshFloatingFilesWindow> {
     super.dispose();
   }
 
-  Offset _pos = const Offset(32, 100);
+  late Offset _pos;
   Size _size = const Size(420, 360);
+
+  @override
+  void initState() {
+    super.initState();
+    _pos = widget.initialOffset ?? const Offset(32, 100);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -579,7 +590,7 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
         if (!mounted || bytes.isEmpty) return;
         await _openWithAutoMinimize(() async {
           if (!mounted) return;
-          await Navigator.of(context).push(
+          await Navigator.of(_navContext).push(
             MaterialPageRoute(
               builder: (_) => ImageViewerPage(
                 title: e.name,
@@ -596,7 +607,7 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
       if (!mounted) return;
       await _openWithAutoMinimize(() async {
         if (!mounted) return;
-        await Navigator.of(context).push(
+        await Navigator.of(_navContext).push(
           MaterialPageRoute(
             builder: (_) => CodeEditorPage(
               path: absolute,
@@ -680,7 +691,7 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
 
   Future<void> _showItemActions(ContainerFileEntry e) async {
     final action = await showModalBottomSheet<String>(
-      context: context,
+      context: _navContext,
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -736,9 +747,14 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
     }
   }
 
+  /// 悬浮窗渲染在 Navigator 之上：APP 内要借根 Navigator 的 context 才能
+  /// push/弹窗；外悬浮模式下根 Navigator 不在树上，回退到悬浮窗自己的
+  /// context（ExternalFloatShell 的内层 Navigator）。
+  BuildContext get _navContext => appNavigatorKey.currentContext ?? context;
+
   void _toast(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+    ScaffoldMessenger.maybeOf(_navContext)?.showSnackBar(SnackBar(
       content: Text(msg),
       behavior: SnackBarBehavior.floating,
     ));
