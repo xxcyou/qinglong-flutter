@@ -661,6 +661,11 @@ class ChatNotifier extends Notifier<ChatState> {
   String _sessionsEncoded(AiSession session) => jsonEncode([session.toJson()]);
 
   Future<void> loadSessions() async {
+    // AI 页每次重建都会调这里；如果内存里还有活着的 run，磁盘上的
+    // sessions 是旧的（流式中的回复/刚发的用户消息还没落盘）。此时重读
+    // 会把内存状态顶掉，切回 APP 时看起来就像任务断了。只有没有活 run
+    // 时才从磁盘恢复。
+    if (_runs.isNotEmpty) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       // 设置与会话解耦：以前设置的恢复嵌在"有持久化会话"分支里，
