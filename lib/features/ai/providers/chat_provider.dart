@@ -623,6 +623,28 @@ class ChatNotifier extends Notifier<ChatState> {
     return File('${dir.path}/$_sessionsFileName');
   }
 
+  /// 单条消息事件过多时压到 persistedEventLimit；完整过程在轮次归档里。
+  AiSession _boundedSession(AiSession session) {
+    if (!session.messages.any(
+      (m) => m.agentEvents.length > AgentEvent.persistedEventLimit,
+    )) {
+      return session;
+    }
+    return AiSession(
+      id: session.id,
+      title: session.title,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      messages: [
+        for (final m in session.messages)
+          if (m.agentEvents.length > AgentEvent.persistedEventLimit)
+            m.copyWith(agentEvents: _boundedEvents(m.agentEvents))
+          else
+            m,
+      ],
+    );
+  }
+
   /// 落盘前压缩：按 updateAt 新的优先，单会话只保最近 400 条，
   /// 仍超 8MB 就继续丢最旧消息，避免再次把持久化文件撑爆。
   List<Map<String, dynamic>> _storageReadySessions() {
@@ -631,7 +653,7 @@ class ChatNotifier extends Notifier<ChatState> {
     final result = <AiSession>[];
     var used = 0;
     for (final s in sorted) {
-      var compact = s;
+      var compact = _boundedSession(s);
       var encoded = _sessionsEncoded(compact);
       while (encoded.length > _maxSessionsBytes - used &&
           compact.messages.isNotEmpty) {
@@ -695,7 +717,8 @@ class ChatNotifier extends Notifier<ChatState> {
         if (decoded is! List) return;
         final sessions = [
           for (final item in decoded)
-            if (item is Map<String, dynamic>) AiSession.fromJson(item),
+            if (item is Map<String, dynamic>)
+              _boundedSession(AiSession.fromJson(item)),
         ];
         state = state.copyWith(sessions: sessions);
         await _persist();
@@ -704,11 +727,21 @@ class ChatNotifier extends Notifier<ChatState> {
       }
       final decoded = jsonDecode(raw);
       if (decoded is! List) return;
-      final sessions = [
+      final rawSessions = [
         for (final item in decoded)
           if (item is Map<String, dynamic>) AiSession.fromJson(item),
       ];
-      if (sessions.isEmpty) return;
+      if (rawSessions.isEmpty) return;
+      // 旧版本可能把一条消息存了几千个事件；这次先压到内存上限，
+      // 并重写一次磁盘文件，避免下次启动又解析同一个巨无霸 JSON。
+      final needsRewrite = rawSessions.any(
+        (s) => s.messages.any(
+          (m) => m.agentEvents.length > AgentEvent.persistedEventLimit,
+        ),
+      );
+      final sessions = [
+        for (final s in rawSessions) _boundedSession(s),
+      ];
       // 下次打开以上一次用过的会话为主：按 updatedAt 取最新，而不是列表第一条。
       var lastId = sessions.first.id;
       var lastAt = sessions.first.updatedAt;
@@ -730,6 +763,7 @@ class ChatNotifier extends Notifier<ChatState> {
         lastTurns: lastStats.turns,
         lastTokens: lastStats.tokens,
       );
+      if (needsRewrite) unawaited(_persist());
     } catch (e) {
       Logger.e('ai', 'load sessions failed', e);
     }
@@ -2058,7 +2092,7 @@ class ChatNotifier extends Notifier<ChatState> {
         pendingQuestionBySession: clearQuestionMap,
         interruptedRunBySession: clearInterruptedMap,
         liveAgentEvents: resumeEvents?.isNotEmpty == true
-            ? List<AgentEvent>.from(resumeEvents!)
+            ? _boundedLive(resumeEvents!)
             : const [],
         liveModeLabels: modeLabels,
         clearLiveText: true,
@@ -2150,7 +2184,7 @@ class ChatNotifier extends Notifier<ChatState> {
             AiToolCall(name: r.toolName, arguments: r.args),
         ],
         createdAt: DateTime.now(),
-        agentEvents: List<AgentEvent>.from(run.events),
+        agentEvents: _boundedEvents(run.events),
         outcome: result.outcome.name,
         turns: result.turns,
         totalTokens: result.usage.totalTokens,
@@ -2249,7 +2283,7 @@ class ChatNotifier extends Notifier<ChatState> {
           sendError: sendError,
           // 失败前已经跑过的工具照样留着：多轮任务中途断线时，
           // 用户得能看到"断在哪一步"。
-          agentEvents: List<AgentEvent>.from(run.events),
+          agentEvents: _boundedEvents(run.events),
         );
       }
       _replaceSession(
@@ -2267,7 +2301,7 @@ class ChatNotifier extends Notifier<ChatState> {
       final interrupted = InterruptedRun(
         sessionId: session.id,
         userInput: value,
-        events: List<AgentEvent>.from(run.events),
+        events: _boundedEvents(run.events),
         startedAt: DateTime.now(),
         roundId: run.roundId,
       );
@@ -2276,7 +2310,7 @@ class ChatNotifier extends Notifier<ChatState> {
           ...state.interruptedRunBySession,
           session.id: interrupted,
         },
-        liveAgentEvents: List<AgentEvent>.from(run.events),
+        liveAgentEvents: _boundedLive(run.events),
       );
       await _saveActiveRun();
       unawaited(
@@ -2380,9 +2414,7 @@ class ChatNotifier extends Notifier<ChatState> {
           InterruptedRun(
             sessionId: _activeRunSessionId,
             userInput: _activeRunInput,
-            events: run == null
-                ? List<AgentEvent>.from(_runEvents)
-                : List<AgentEvent>.from(run.events),
+            events: _boundedEvents(run == null ? _runEvents : run.events),
             startedAt: DateTime.now(),
             roundId: run?.roundId ?? '',
           ),
@@ -2424,7 +2456,7 @@ class ChatNotifier extends Notifier<ChatState> {
         },
         // 只有当前会话正好是中断会话时才把过程摆回界面，
         // 否则切到别的会话（包括新建话题）不该看到这段旧流程。
-        liveAgentEvents: showNow ? run.events : const [],
+        liveAgentEvents: showNow ? _boundedEvents(run.events) : const [],
       );
     } catch (e) {
       Logger.e('ai', 'load interrupted run failed', e);
@@ -2566,7 +2598,7 @@ class ChatNotifier extends Notifier<ChatState> {
                 _toolScreenshotsBySession[session.id] ?? const [],
               ),
               createdAt: DateTime.now(),
-              agentEvents: List<AgentEvent>.from(run.events),
+              agentEvents: _boundedEvents(run.events),
               outcome: result.outcome.name,
               turns: result.turns,
               totalTokens: result.usage.totalTokens,
@@ -2646,7 +2678,7 @@ class ChatNotifier extends Notifier<ChatState> {
         if (lastUser >= 0) {
           messages[lastUser] = messages[lastUser].copyWith(
             sendError: _friendlyError(e),
-            agentEvents: List<AgentEvent>.from(run.events),
+            agentEvents: _boundedEvents(run.events),
           );
         }
         _replaceSession(
@@ -3058,8 +3090,8 @@ class ChatNotifier extends Notifier<ChatState> {
       isLoading: run != null,
       runningSessionIds: {..._runs.keys},
       liveAgentEvents: run != null
-          ? List<AgentEvent>.from(run.events)
-          : List<AgentEvent>.from(
+          ? _boundedLive(run.events)
+          : _boundedEvents(
               state.interruptedRunBySession[id]?.events ?? const [],
             ),
       liveReasoning: run == null ? '' : _tail(run.liveReasoning.toString()),
@@ -3471,6 +3503,32 @@ class ChatNotifier extends Notifier<ChatState> {
     );
   }
 
+  /// 单条消息/中断快照最多保留的事件数；超出时用一条摘要事件占位，
+  /// 完整过程仍在轮次归档里。
+  List<AgentEvent> _boundedEvents(
+    List<AgentEvent> events, {
+    int limit = AgentEvent.persistedEventLimit,
+  }) {
+    if (events.length <= limit) return List<AgentEvent>.from(events);
+    final keep = limit - 1;
+    final omitted = events.length - keep;
+    return [
+      AgentEvent(
+        kind: AgentEventKind.thinking,
+        message: '更早的 $omitted 步过程已省略（完整过程见该轮归档）',
+        turn: events.first.turn,
+      ),
+      ...events.sublist(events.length - keep),
+    ];
+  }
+
+  List<AgentEvent> _boundedLive(List<AgentEvent> events) {
+    if (events.length <= AgentEvent.liveEventLimit) {
+      return List<AgentEvent>.from(events);
+    }
+    return events.sublist(events.length - AgentEvent.liveEventLimit);
+  }
+
   void _appendAgentEvent(String sessionId, AgentEvent event) {
     final run = _runs[sessionId];
     if (run == null) return;
@@ -3513,8 +3571,11 @@ class ChatNotifier extends Notifier<ChatState> {
       );
     }
     if (sessionId == state.currentSessionId) {
+      final nextLive = [...state.liveAgentEvents, event];
       state = state.copyWith(
-        liveAgentEvents: [...state.liveAgentEvents, event],
+        liveAgentEvents: nextLive.length > AgentEvent.liveEventLimit
+            ? nextLive.sublist(nextLive.length - AgentEvent.liveEventLimit)
+            : nextLive,
       );
     }
     // 每个工具边界落一次盘：闪退随时可能发生，而写 prefs 很便宜。
@@ -3566,7 +3627,7 @@ class ChatNotifier extends Notifier<ChatState> {
                   '你直接说下一步想干什么就行：接着往下做、换个方向、'
                   '或者当成一个全新的需求，我自己会判断。',
               createdAt: DateTime.now(),
-              agentEvents: List<AgentEvent>.from(run.events),
+              agentEvents: _boundedEvents(run.events),
               outcome: 'cancelled',
               roundId: run.roundId,
             ),

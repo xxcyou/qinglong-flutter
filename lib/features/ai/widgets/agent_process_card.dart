@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -70,6 +69,13 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
   /// 未提供外部 rowKey Map 时内部兜底，保证每行都能绑定 key。
   final Map<int, GlobalKey> _localRowKeys = {};
 
+  /// 内联最多画多少行；再多就折叠成入口，避免一条消息几千个工具步骤
+  /// 全部 mount 成 Widget（Column 不虚拟化，直接把内存/渲染拖爆）。
+  static const int _inlineRowLimit = 30;
+
+  /// condition_exec 内联最多画多少个小步骤。
+  static const int _inlineWorkflowLimit = 20;
+
   // 有文件写操作时自动展开执行过程，让用户第一时间看到 Diff；
   // 否则保持调用方给的初始状态（运行时/图片通常也是展开）。
   late bool _expanded = widget.initiallyExpanded ||
@@ -86,20 +92,32 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
       ) ||
       widget.highlightEventIndex != null;
 
-  /// 渐进渲染：先只画时间线末尾最新的一批，再后台逐步补上更早的步骤，
-  /// 避免旧会话一条消息几十上百个工具步骤一次性全渲染卡死。
-  static const int _progressiveBatchSize = 12;
-  int _visibleRows = 30;
-  Timer? _growTimer;
+  List<AgentEvent>? _cachedRows;
+  int _cachedRowsLength = -1;
+  int _cachedRowsLastHash = 0;
 
-  int get _totalRows => _rows.length;
+  List<AgentEvent> get _rows {
+    final length = widget.events.length;
+    final hash = length == 0 ? 0 : identityHashCode(widget.events.last);
+    final cached = _cachedRows;
+    if (cached != null &&
+        _cachedRowsLength == length &&
+        _cachedRowsLastHash == hash) {
+      return cached;
+    }
+    final computed = _computeRows();
+    _cachedRows = computed;
+    _cachedRowsLength = length;
+    _cachedRowsLastHash = hash;
+    return computed;
+  }
 
   /// 时间线上真正要画的事件。
   ///
   /// toolStart 只在"还没拿到返回"时有价值：拿到 toolEnd 之后两行讲的是同一件事，
   /// 而 toolStart 那行点进去只有参数、没有返回（就是"返回是空的"那个观感）。
   /// 所以这里把已经有结果的 toolStart 折掉——留下的每一行都同时有参数和返回。
-  List<AgentEvent> get _rows {
+  List<AgentEvent> _computeRows() {
     final events = widget.events;
     final settled = <String>{};
     for (final e in events) {
@@ -114,44 +132,46 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
           e,
     ];
     // condition_exec 现在会发很多小步骤；全摊开全是 condition_exec 太费眼。
-    // 把连续的小步骤折叠成一行"条件执行 · N 步"，展开/详情里保留完整树形轨迹。
+    // 连续小步骤折叠成一行，内联只保留最后 N 步；完整树形轨迹去完整过程页看。
     final grouped = <AgentEvent>[];
     for (var i = 0; i < visible.length;) {
       final e = visible[i];
       if (e.kind == AgentEventKind.workflowStep &&
           e.toolName == 'condition_exec') {
-        final trace = StringBuffer();
-        final stepCards = <Map<String, dynamic>>[];
         var ok = true;
         final start = i;
         while (i < visible.length &&
             visible[i].kind == AgentEventKind.workflowStep &&
             visible[i].toolName == 'condition_exec') {
           ok = ok && visible[i].ok;
-          final stepEvent = visible[i];
-          trace.writeln(_TimelineRowState._workflowLine(stepEvent));
-          stepCards.add({
-            'message': stepEvent.message,
-            'result': stepEvent.result,
-            'args': stepEvent.args,
-            'durationMs': stepEvent.durationMs,
-            'depth': _TimelineRowState._workflowDepth(stepEvent),
-            'ok': stepEvent.ok,
-          });
           i++;
         }
+        final count = i - start;
+        final showStart =
+            count > _inlineWorkflowLimit ? i - _inlineWorkflowLimit : start;
+        final stepCards = <Map<String, dynamic>>[
+          for (var j = showStart; j < i; j++)
+            {
+              'message': visible[j].message,
+              'result': visible[j].result,
+              'args': visible[j].args,
+              'durationMs': visible[j].durationMs,
+              'depth': _TimelineRowState._workflowDepth(visible[j]),
+              'ok': visible[j].ok,
+            },
+        ];
         grouped.add(
           AgentEvent(
             kind: AgentEventKind.workflowStep,
-            message: '条件执行 · ${i - start} 步',
+            message: '条件执行 · $count 步',
             toolName: 'condition_exec',
             args: {
-              'count': i - start,
+              'count': count,
               'collapsed': true,
               'steps': stepCards,
+              'omitted': count - stepCards.length,
             },
-            result: trace.toString().trim(),
-            fullResult: trace.toString().trim(),
+            result: '条件执行 $count 步',
             ok: ok,
             group: e.group,
           ),
@@ -164,45 +184,19 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
     return grouped;
   }
 
-  @override
-  void initState() {
-    super.initState();
-    if (widget.highlightEventIndex != null) {
-      _visibleRows = widget.events.length;
-    }
-    if (_expanded) _scheduleProgressiveGrow();
-  }
-
   void _toggleExpanded() {
     setState(() => _expanded = !_expanded);
-    if (_expanded) _scheduleProgressiveGrow();
   }
 
-  void _scheduleProgressiveGrow() {
-    _growTimer?.cancel();
-    if (!_expanded) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_expanded) return;
-      _growTimer?.cancel();
-      _growTimer = Timer.periodic(
-        const Duration(milliseconds: 40),
-        (_) {
-          if (!mounted || !_expanded) {
-            _growTimer?.cancel();
-            return;
-          }
-          final total = _totalRows;
-          if (_visibleRows >= total) {
-            _growTimer?.cancel();
-            return;
-          }
-          setState(() {
-            _visibleRows = (_visibleRows + _progressiveBatchSize)
-                .clamp(0, total);
-          });
-        },
-      );
-    });
+  void _openFullProcess(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => AgentProcessFullPage(
+          events: widget.events,
+          onOpenCanvas: widget.onOpenCanvas,
+        ),
+      ),
+    );
   }
 
   @override
@@ -223,20 +217,16 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
         oldWidget.highlightEventIndex != widget.highlightEventIndex &&
         !_expanded) {
       _expanded = true;
-      _visibleRows = widget.events.length;
-    }
-    if (_expanded && oldWidget.events.length != widget.events.length) {
-      _scheduleProgressiveGrow();
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final events = _rows;
+    // 折叠态只从原始事件算摘要，不构建分组后的时间线；展开态才走 _rows。
     final toolCount =
-        events.where((e) => e.kind == AgentEventKind.toolEnd).length;
-    final failed = events.any(
+        widget.events.where((e) => e.kind == AgentEventKind.toolEnd).length;
+    final failed = widget.events.any(
       (e) => e.kind == AgentEventKind.toolEnd && !e.ok,
     );
     final accent = widget.running
@@ -360,11 +350,11 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
               ),
             ),
           ),
-          if (!_expanded && events.isNotEmpty)
+          if (!_expanded && widget.events.isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
               child: Text(
-                _oneLine(events.last),
+                _oneLine(widget.events.last),
                 style: TextStyle(
                   fontSize: 11.5,
                   height: 1.35,
@@ -381,7 +371,7 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
             child: _expanded
                 ? Padding(
                     padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-                    child: _timeline(events),
+                    child: _timeline(_rows),
                   )
                 : const SizedBox(width: double.infinity),
           ),
@@ -407,29 +397,47 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
     }
     final used = <String>{};
     final children = <Widget>[];
-    // 渐进渲染：先画时间线末尾最新一批，更早的在后台逐步补上。
-    final start = _visibleRows >= events.length
-        ? 0
-        : events.length - _visibleRows;
+    // 内联只画末尾 _inlineRowLimit 行；更早的折叠成一个入口，点开完整过程页。
+    // 完整过程页用 ListView.builder，只构建可见行，几千步也不会一次性 mount。
+    var start = events.length > _inlineRowLimit
+        ? events.length - _inlineRowLimit
+        : 0;
+    final highlight = widget.highlightEventIndex;
+    if (highlight != null) {
+      final rowIndex = events.indexWhere(
+        (e) => _originalIndexOf(e) == highlight,
+      );
+      if (rowIndex >= 0) {
+        const window = _inlineRowLimit;
+        final maxStart = events.length > window ? events.length - window : 0;
+        start = (rowIndex - window ~/ 2).clamp(0, maxStart).toInt();
+      }
+    }
     if (start > 0) {
       children.add(
         Padding(
-          padding: const EdgeInsets.only(bottom: 6, top: 2),
+          padding: const EdgeInsets.only(bottom: 4, top: 2),
           child: Row(
             children: [
-              const SizedBox(
-                width: 12,
-                height: 12,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-              const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '更早的 $start 步过程后台加载中…',
+                  '更早的 $start 步已折叠',
                   style: TextStyle(
                     fontSize: 11,
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
+                ),
+              ),
+              TextButton(
+                onPressed: () => _openFullProcess(context),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text(
+                  '查看完整过程',
+                  style: TextStyle(fontSize: 11.5),
                 ),
               ),
             ],
@@ -448,6 +456,7 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
               events: byGroup[group]!,
               running: widget.running,
               onOpenCanvas: widget.onOpenCanvas,
+              onOpenFullProcess: () => _openFullProcess(context),
               liveReasoning: widget.liveSubagentReasoning[group] ?? '',
               liveContent: widget.liveSubagentContent[group] ?? '',
               liveTool: widget.liveSubagentTool[group] ?? '',
@@ -467,6 +476,7 @@ class _AgentProcessCardState extends State<AgentProcessCard> {
             event: e,
             isLast: i == visibleEvents.length - 1,
             onOpenCanvas: widget.onOpenCanvas,
+            onOpenFullProcess: () => _openFullProcess(context),
             highlighted: widget.highlightEventIndex != null &&
                 originalIndex == widget.highlightEventIndex,
             rowKey: rowKey,
@@ -517,6 +527,7 @@ class _TimelineRow extends StatefulWidget {
     required this.event,
     required this.isLast,
     this.onOpenCanvas,
+    this.onOpenFullProcess,
     this.highlighted = false,
     this.rowKey,
   });
@@ -526,6 +537,9 @@ class _TimelineRow extends StatefulWidget {
 
   /// 给 canvas 时间线行加“重新打开悬浮画布”入口。
   final void Function(AiCanvas canvas)? onOpenCanvas;
+
+  /// 打开“完整执行过程”页（懒加载全部事件）。
+  final VoidCallback? onOpenFullProcess;
 
   /// 审计跳转时高亮这一行。
   final bool highlighted;
@@ -834,7 +848,12 @@ class _TimelineRowState extends State<_TimelineRow> {
                     if (_workflowSteps != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
-                        child: _WorkflowFlowCard(steps: _workflowSteps!),
+                        child: _WorkflowFlowCard(
+                          steps: _workflowSteps!,
+                          omitted:
+                              (event.args?['omitted'] as num?)?.toInt() ?? 0,
+                          onOpenFull: widget.onOpenFullProcess,
+                        ),
                       )
                     else
                       Padding(
@@ -921,20 +940,6 @@ class _TimelineRowState extends State<_TimelineRow> {
     final d = event.args?['_depth'];
     if (d is num) return d.toInt().clamp(0, 9);
     return 0;
-  }
-
-  static String _workflowLine(AgentEvent event) {
-    final depth = _workflowDepth(event);
-    final indent = List.filled(depth, '  ').join();
-    final msg = event.message.startsWith('条件执行 · ')
-        ? event.message.substring('条件执行 · '.length)
-        : event.message;
-    final result = event.result?.trim() ?? '';
-    if (result.isEmpty || result == event.message) return '$indent- $msg';
-    final summary = result.replaceAll(RegExp(r'\s+'), ' ').trim();
-    final clipped =
-        summary.length > 160 ? '${summary.substring(0, 160)}…' : summary;
-    return '$indent- $msg：$clipped';
   }
 
   static String _ms(int ms) =>
@@ -1051,6 +1056,7 @@ class _SubagentGroup extends StatefulWidget {
     required this.events,
     required this.running,
     this.onOpenCanvas,
+    this.onOpenFullProcess,
     this.liveReasoning = '',
     this.liveContent = '',
     this.liveTool = '',
@@ -1061,6 +1067,7 @@ class _SubagentGroup extends StatefulWidget {
   final List<AgentEvent> events;
   final bool running;
   final void Function(AiCanvas canvas)? onOpenCanvas;
+  final VoidCallback? onOpenFullProcess;
   final String liveReasoning;
   final String liveContent;
   final String liveTool;
@@ -1072,6 +1079,9 @@ class _SubagentGroup extends StatefulWidget {
 }
 
 class _SubagentGroupState extends State<_SubagentGroup> {
+  /// 子代理展开后内联最多画多少行，避免单个子代理几千步全部 mount。
+  static const int _inlineSubagentRows = 20;
+
   late bool _expanded;
 
   static bool _hasWriteEventOf(List<AgentEvent> events) => events.any(
@@ -1200,11 +1210,49 @@ class _SubagentGroupState extends State<_SubagentGroup> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (var i = 0; i < widget.events.length; i++)
+                  if (widget.events.length > _inlineSubagentRows)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '更早的 ${widget.events.length - _inlineSubagentRows} 步已折叠',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          if (widget.onOpenFullProcess != null)
+                            TextButton(
+                              onPressed: widget.onOpenFullProcess,
+                              style: TextButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                ),
+                                minimumSize: Size.zero,
+                                tapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              child: const Text(
+                                '查看完整过程',
+                                style: TextStyle(fontSize: 11.5),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  for (var i = widget.events.length > _inlineSubagentRows
+                          ? widget.events.length - _inlineSubagentRows
+                          : 0;
+                      i < widget.events.length;
+                      i++)
                     _TimelineRow(
                       event: widget.events[i],
                       isLast: i == widget.events.length - 1,
                       onOpenCanvas: widget.onOpenCanvas,
+                      onOpenFullProcess: widget.onOpenFullProcess,
                     ),
                 ],
               ),
@@ -1259,9 +1307,17 @@ class _SubagentGroupState extends State<_SubagentGroup> {
 }
 
 class _WorkflowFlowCard extends StatelessWidget {
-  const _WorkflowFlowCard({required this.steps});
+  const _WorkflowFlowCard({
+    required this.steps,
+    this.omitted = 0,
+    this.onOpenFull,
+  });
 
   final List<Map<String, dynamic>> steps;
+
+  /// 被折叠掉的前面多少步（完整过程页里能看到）。
+  final int omitted;
+  final VoidCallback? onOpenFull;
 
   @override
   Widget build(BuildContext context) {
@@ -1279,6 +1335,36 @@ class _WorkflowFlowCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (omitted > 0)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '前面还有 $omitted 步已折叠',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                  if (onOpenFull != null)
+                    TextButton(
+                      onPressed: onOpenFull,
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: const Text(
+                        '查看完整过程',
+                        style: TextStyle(fontSize: 11.5),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           for (var i = 0; i < steps.length; i++)
             TweenAnimationBuilder<double>(
               key: ValueKey(
@@ -1488,4 +1574,38 @@ class _Visual {
   final IconData icon;
   final Color color;
   final String label;
+}
+
+
+/// 完整执行过程页：把一条消息的全部事件交给 ListView.builder 懒加载。
+///
+/// 过程卡内联只画末尾几十行，避免几千步一次性 mount 卡死；用户点
+/// “查看完整过程”时才进这里，滚动到哪一行才构建哪一行。
+class AgentProcessFullPage extends StatelessWidget {
+  const AgentProcessFullPage({
+    super.key,
+    required this.events,
+    this.onOpenCanvas,
+  });
+
+  final List<AgentEvent> events;
+  final void Function(AiCanvas canvas)? onOpenCanvas;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('完整执行过程（${events.length} 步）')),
+      body: events.isEmpty
+          ? const Center(child: Text('没有过程记录'))
+          : ListView.builder(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+              itemCount: events.length,
+              itemBuilder: (context, index) => _TimelineRow(
+                event: events[index],
+                isLast: index == events.length - 1,
+                onOpenCanvas: onOpenCanvas,
+              ),
+            ),
+    );
+  }
 }
