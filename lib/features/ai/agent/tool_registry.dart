@@ -30,6 +30,7 @@ import '../../../core/local_shell/proot_bridge.dart';
 import '../../../core/local_shell/sandbox.dart';
 import '../../../core/local_shell/shell_lock.dart';
 import '../../terminal/providers/ssh_session_provider.dart';
+import '../../terminal/providers/adb_session_provider.dart';
 import '../../terminal/providers/shell_files_provider.dart';
 import '../models/approval_mode.dart';
 
@@ -515,10 +516,16 @@ class QlToolRegistry {
         ),
         ToolDefinition(
           name: 'script_delete',
-          description: '删除脚本',
-          parameters: _obj(['path'], {'path': _stringProp}),
+          description: '删除脚本或脚本目录（自动识别文件/目录）',
+          parameters: _obj(['path'], {
+            'path': _stringProp,
+            'isDirectory': {
+              'type': 'boolean',
+              'description': '可选：明确知道是目录时传 true；不传会自动判断',
+            },
+          }),
           isWrite: true,
-          impact: '永久删除脚本文件',
+          impact: '永久删除脚本文件或整个脚本目录（目录会递归删除）',
           reversible: false,
           danger: true,
         ),
@@ -901,6 +908,85 @@ class QlToolRegistry {
           }),
           isWrite: false,
         ),
+        ToolDefinition(
+          name: 'adb_session_get',
+          description: '获取一个已保存 ADB 设备连接的全部配置：主机、端口、配对端口、配对码、状态。'
+              'id 来自 adb_session_list。',
+          parameters: _obj(['id'], {'id': _stringProp}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'adb_session_list',
+          description: '列出当前已保存的 ADB 无线调试设备（含连接状态）',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'adb_connect',
+          description:
+              '新建并连接一个 ADB 无线调试设备。Android 11+ 需要 pairingPort（配对端口）和 '
+              'pairingCode（6 位配对码），连接成功后可用 adb_exec / adb_file_ls 操作设备。',
+          parameters: _obj([
+            'name',
+            'host',
+            'port'
+          ], {
+            'name': _stringProp,
+            'host': _stringProp,
+            'port': _intProp,
+            'pairingPort': _intProp,
+            'pairingCode': _stringProp,
+          }),
+          isWrite: true,
+          impact: '新增一条 ADB 设备连接，之后可执行设备命令',
+          reversible: true,
+        ),
+        ToolDefinition(
+          name: 'adb_disconnect',
+          description: '断开一个 ADB 设备连接，但保留已保存的配置，之后可以重新连接',
+          parameters: _obj(['id'], {'id': _stringProp}),
+          isWrite: true,
+          impact: '关闭 ADB 连接，已保存设备保留',
+          reversible: true,
+        ),
+        ToolDefinition(
+          name: 'adb_remove',
+          description: '彻底删除一个已保存/已连接的 ADB 设备配置',
+          parameters: _obj(['id'], {'id': _stringProp}),
+          isWrite: true,
+          impact: '删除 ADB 设备配置，不可恢复',
+          reversible: false,
+          danger: true,
+        ),
+        ToolDefinition(
+          name: 'adb_exec',
+          description: '在已连接的 ADB 设备上执行一条 shell 命令（走 Android adb shell）。'
+              '支持管道、重定向、&& 等。id 来自 adb_session_list。',
+          parameters: _obj([
+            'id',
+            'command'
+          ], {
+            'id': _stringProp,
+            'command': _stringProp,
+          }),
+          isWrite: true,
+          impact: '在 ADB 设备上执行命令，可能产生真实副作用',
+          reversible: false,
+          danger: true,
+        ),
+        ToolDefinition(
+          name: 'adb_file_ls',
+          description: '列出已连接 ADB 设备的目录内容（等价 adb shell ls -la，默认 /storage/emulated/0），用于远程文件管理',
+          parameters: _obj([
+            'id',
+            'path'
+          ], {
+            'id': _stringProp,
+            'path': _stringProp,
+          }),
+          isWrite: false,
+        ),
+
         ToolDefinition(
           name: 'shell_exec',
           description: '在本机 PRoot Debian 里执行命令。这是一个**真正的 shell**：'
@@ -1792,16 +1878,25 @@ class QlToolRegistry {
           final nodes = await ScriptApi.files(apiBaseUrl: base);
           final paths = _flattenScriptPaths(nodes);
           final matches = <String>[];
+          // 这里必须按“匹配行数”累计，不能按 matches.length（文件数）。
+          // 否则 maxMatches=50 可能扫完所有脚本、每个脚本再返回 50 条，
+          // 结果膨胀几十倍，模型看到的就是一堆无关匹配。
+          var matchCount = 0;
           for (final p in paths) {
-            if (matches.length >= maxMatches) break;
+            if (matchCount >= maxMatches) break;
             final content = await ScriptApi.read(apiBaseUrl: base, file: p);
             final part = _searchOneScript(
               content: content,
               path: p,
               re: re,
-              maxMatches: maxMatches - matches.length,
+              maxMatches: maxMatches - matchCount,
             );
-            if (part.isNotEmpty) matches.add(part);
+            if (part.isEmpty) continue;
+            final partLines = part.split('\n');
+            final hasMarker = partLines.isNotEmpty &&
+                partLines.last.startsWith('…（达到 ');
+            matchCount += partLines.length - (hasMarker ? 1 : 0);
+            matches.add(part);
           }
           if (matches.isEmpty) return '所有面板脚本里都没有匹配。';
           return matches.join('\n');
@@ -1994,11 +2089,16 @@ class QlToolRegistry {
         }
 
       case 'script_delete':
+        final deletePath = args['path'] as String;
+        final isDirectory = args['isDirectory'];
         await ScriptApi.delete(
           apiBaseUrl: base,
-          path: args['path'] as String,
+          path: deletePath,
+          isDirectory: isDirectory is bool ? isDirectory : null,
         );
-        return '已删除脚本 ${args['path']}';
+        return isDirectory == true
+            ? '已删除目录 $deletePath'
+            : '已删除脚本/目录 $deletePath';
 
       case 'script_run':
         // 面板执行的是请求里带的 content（写成 .swap 临时文件），
@@ -2486,6 +2586,103 @@ class QlToolRegistry {
           return jsonEncode({'error': e.toString()});
         }
 
+      case 'adb_session_get': {
+        await AdbSessionManager.instance.loadSaved();
+        final id = args['id']?.toString() ?? '';
+        AdbSession? session;
+        for (final s in AdbSessionManager.instance.sessions) {
+          if (s.id == id) {
+            session = s;
+            break;
+          }
+        }
+        final draft = AdbSessionManager.instance.draftOf(id);
+        if (session == null || draft == null) {
+          return jsonEncode({'error': '找不到 ADB 设备 $id'});
+        }
+        return jsonEncode({
+          'id': session.id,
+          'name': session.name,
+          'host': session.host,
+          'port': session.port,
+          'pairingPort': session.pairingPort,
+          'pairingCode': session.pairingCode,
+          'status': session.status,
+        });
+      }
+
+      case 'adb_session_list':
+        await AdbSessionManager.instance.loadSaved();
+        return jsonEncode([
+          for (final s in AdbSessionManager.instance.sessions)
+            {
+              'id': s.id,
+              'name': s.name,
+              'host': s.host,
+              'port': s.port,
+              'status': s.status,
+            }
+        ]);
+
+      case 'adb_connect':
+        try {
+          final draft = AdbSessionDraft(
+            name: args['name']?.toString() ?? args['host']?.toString() ?? 'ADB',
+            host: args['host'].toString().trim(),
+            port: (args['port'] as num?)?.toInt() ?? 5555,
+            pairingPort: (args['pairingPort'] as num?)?.toInt(),
+            pairingCode: args['pairingCode']?.toString(),
+          );
+          final session = await AdbSessionManager.instance.connect(draft);
+          return jsonEncode({
+            'id': session.id,
+            'name': session.name,
+            'host': session.host,
+            'port': session.port,
+            'status': session.status,
+          });
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'adb_disconnect':
+        try {
+          await AdbSessionManager.instance.loadSaved();
+          await AdbSessionManager.instance.disconnect(args['id'].toString());
+          return jsonEncode({'ok': true});
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'adb_remove':
+        try {
+          await AdbSessionManager.instance.loadSaved();
+          await AdbSessionManager.instance.remove(args['id'].toString());
+          return jsonEncode({'ok': true});
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'adb_exec':
+        try {
+          await AdbSessionManager.instance.loadSaved();
+          return await AdbSessionManager.instance
+              .execute(args['id'].toString(), args['command'].toString());
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
+      case 'adb_file_ls':
+        try {
+          await AdbSessionManager.instance.loadSaved();
+          final quoted = (args['path']?.toString() ?? '/storage/emulated/0')
+              .replaceAll("'", "'\\''");
+          return await AdbSessionManager.instance
+              .execute(args['id'].toString(), 'ls -la \'$quoted\'');
+        } catch (e) {
+          return jsonEncode({'error': e.toString()});
+        }
+
       case 'shell_exec':
         const sandbox = CommandSandbox();
         final command = args['command'] as String;
@@ -2577,7 +2774,7 @@ class QlToolRegistry {
         final sMax =
             ((args['maxMatches'] as num?)?.toInt() ?? 50).clamp(1, 200);
         const sScript = r'''
-import os, re, sys, json
+import os, re, sys, json, codecs
 root, pattern_raw, max_matches = sys.argv[1], sys.argv[2], int(sys.argv[3])
 try:
     rx = re.compile(pattern_raw)
@@ -2585,33 +2782,41 @@ except re.error:
     rx = re.compile(re.escape(pattern_raw))
 
 def decode_text(data):
-    # 支持 UTF-8、UTF-16 和常见中文编码；以前只按 UTF-8 解，
-    # UTF-16 文件里 fcmbox 这种内容会被 null 字节拆开而搜不到。
-    if data.startswith(b'\xff\xfe') or data.startswith(b'\xfe\xff'):
+    # 返回 (文本, 用于回算字节偏移的编码, BOM 字节数)。
+    # 以前统一按 UTF-8 算偏移，UTF-16/GBK 文件里 startByte/endByte
+    # 会和 shell_read_range(byBytes) 读到的原始字节错位，模型照它去
+    # 精读/精改就会拿到错行、写出错乱内容。
+    if data.startswith(codecs.BOM_UTF8):
         try:
-            return data.decode('utf-16')
+            return data[3:].decode('utf-8'), 'utf-8', 3
+        except Exception:
+            pass
+    if data.startswith(codecs.BOM_UTF16_LE) or data.startswith(codecs.BOM_UTF16_BE):
+        enc = 'utf-16-le' if data.startswith(codecs.BOM_UTF16_LE) else 'utf-16-be'
+        try:
+            return data[2:].decode(enc), enc, 2
         except Exception:
             pass
     # 无 BOM 的 UTF-16 也能解出来：ASCII 字符之间会有很多 0x00。
     if data.count(0) > 0:
         for enc in ('utf-16-le', 'utf-16-be'):
             try:
-                return data.decode(enc)
+                return data.decode(enc), enc, 0
             except Exception:
                 pass
     try:
-        return data.decode('utf-8')
+        return data.decode('utf-8'), 'utf-8', 0
     except UnicodeDecodeError:
         try:
-            return data.decode('gbk')
+            return data.decode('gbk'), 'gbk', 0
         except Exception:
-            return data.decode('latin-1', errors='replace')
+            return data.decode('latin-1', errors='replace'), 'latin-1', 0
 
 def search_file(f):
     try:
         with open(f, 'rb') as fh:
             data = fh.read()
-        text = decode_text(data)
+        text, enc, bom = decode_text(data)
     except Exception:
         return ('skip', f)
     prefix_len = 0
@@ -2619,21 +2824,23 @@ def search_file(f):
     for i, line in enumerate(text.splitlines(True), 1):
         for m in rx.finditer(line):
             try:
-                start = prefix_len + len(line[:m.start()].encode('utf-8')) + 1
-                end = start + len(m.group().encode('utf-8')) - 1
+                start = bom + prefix_len + len(line[:m.start()].encode(enc)) + 1
+                end = start + len(m.group().encode(enc)) - 1
             except Exception:
-                start = prefix_len + m.start() + 1
-                end = prefix_len + m.end()
+                start = bom + prefix_len + len(line[:m.start()].encode('utf-8')) + 1
+                end = start + len(m.group().encode('utf-8')) - 1
             out.append({
                 'file': f,
                 'line': i,
+                'column': m.start() + 1,
+                'encoding': enc,
                 'startByte': start,
                 'endByte': end,
                 'text': line.strip()[:160],
             })
             if len(out) >= max_matches:
                 return ('ok', out)
-        prefix_len += len(line.encode('utf-8'))
+        prefix_len += len(line.encode(enc))
     return ('ok', out)
 
 if not os.path.exists(root):
@@ -2707,19 +2914,43 @@ print(json.dumps({
         final rEnd = (args['end'] as num?)?.toInt() ?? rStart;
         final rByBytes = args['byBytes'] == true || args['byBytes'] == 'true';
         const rScript = r'''
-import sys
+import sys, codecs
 p, s, e, by = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4] == '1'
 if s < 1: s = 1
+
+def decode_bytes(data):
+    # 和 shell_search_code 的偏移口径保持一致：UTF-8/UTF-16/GBK 都按
+    # 原始字节区间解码，避免按字节精读 UTF-16/GBK 文件时读出乱码。
+    if data.startswith(codecs.BOM_UTF8):
+        try: return data[3:].decode('utf-8', errors='replace')
+        except Exception: pass
+    if data.startswith(codecs.BOM_UTF16_LE) or data.startswith(codecs.BOM_UTF16_BE):
+        enc = 'utf-16-le' if data.startswith(codecs.BOM_UTF16_LE) else 'utf-16-be'
+        try: return data[2:].decode(enc, errors='replace')
+        except Exception: pass
+    if data.count(0) > 0:
+        for enc in ('utf-16-le', 'utf-16-be'):
+            try: return data.decode(enc)
+            except Exception: pass
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        try:
+            return data.decode('gbk')
+        except Exception:
+            return data.decode('latin-1', errors='replace')
+
 if by:
     with open(p, 'rb') as f:
         raw = f.read()
     if e <= 0: e = len(raw)
     if e > len(raw): e = len(raw)
     if e < s: e = s
-    sys.stdout.write(raw[s - 1:e].decode('utf-8', errors='replace'))
+    sys.stdout.write(decode_bytes(raw[s - 1:e]))
 else:
-    with open(p, encoding='utf-8', errors='replace') as f:
-        lines = f.readlines()
+    with open(p, 'rb') as f:
+        raw = f.read()
+    lines = decode_bytes(raw).splitlines(True)
     if e <= 0: e = len(lines)
     if e > len(lines): e = len(lines)
     if e < s: e = s
@@ -2765,13 +2996,45 @@ else:
         }
         final mByBytes = args['byBytes'] == true || args['byBytes'] == 'true';
         const mScript = r'''
-import sys
+import sys, codecs
 p, act, s, e, content, by = (
     sys.argv[1], sys.argv[2],
     int(sys.argv[3]), int(sys.argv[4]),
     sys.argv[5], sys.argv[6] == '1',
 )
 if s < 1: s = 1
+
+
+def detect_encoding(data):
+    # 按原始文件编码读/写，否则在 UTF-16/GBK 文件上做局部替换会写进
+    # UTF-8 字节，原文件立刻变成乱码（这正是“替换结果和理想不一致”的来源之一）。
+    if data.startswith(codecs.BOM_UTF8):
+        return 'utf-8', 3
+    if data.startswith(codecs.BOM_UTF16_LE):
+        return 'utf-16-le', 2
+    if data.startswith(codecs.BOM_UTF16_BE):
+        return 'utf-16-be', 2
+    if data.count(0) > 0:
+        for enc in ('utf-16-le', 'utf-16-be'):
+            try:
+                data.decode(enc)
+                return enc, 0
+            except Exception:
+                pass
+    try:
+        data.decode('utf-8')
+        return 'utf-8', 0
+    except UnicodeDecodeError:
+        try:
+            data.decode('gbk')
+            return 'gbk', 0
+        except Exception:
+            return 'latin-1', 0
+
+
+def decode_bytes(data):
+    enc, bom = detect_encoding(data)
+    return data[bom:].decode(enc, errors='replace'), enc, bom
 
 
 def emit_diff(old_lines, new_lines):
@@ -2791,42 +3054,65 @@ if by:
     if e <= 0: e = len(data)
     if e > len(data): e = len(data)
     if e < s: e = s
-    old = data[s - 1:e]
+    enc, bom = detect_encoding(data)
+    # 把 BOM 单独留在文件头，正文按“去掉 BOM 后的字节”计算区间；
+    # 这样 search 给出的 startByte（含 BOM 偏移）也能正确落点，且不会切掉 BOM。
+    bom_bytes = data[:bom]
+    body = data[bom:]
+    bs = max(s - 1 - bom, 0)
+    be = max(e - bom, 0)
+    if be > len(body): be = len(body)
+    if be < bs: be = bs
+    old = body[bs:be]
+    payload = content.encode(enc)
     if act == 'delete':
-        newdata = data[:s - 1] + data[e:]
+        newbody = body[:bs] + body[be:]
     elif act == 'overwrite':
-        newdata = data[:s - 1] + content.encode('utf-8') + data[e:]
+        newbody = body[:bs] + payload + body[be:]
     elif act == 'insert':
-        newdata = data[:s - 1] + content.encode('utf-8') + data[s - 1:]
+        newbody = body[:bs] + payload + body[bs:]
     else:
         raise SystemExit('bad action')
+    newdata = bom_bytes + newbody
     with open(p, 'wb') as f:
         f.write(newdata)
     sys.stdout.write('bytes %d -> %d' % (len(data), len(newdata)))
     emit_diff(
-        [old.decode('utf-8', errors='replace')] if old else [],
+        [decode_bytes(old)[0]] if old else [],
         content.split('\n') if act != 'delete' else [],
     )
 else:
-    with open(p, encoding='utf-8', errors='replace') as f:
-        lines = f.readlines()
+    with open(p, 'rb') as f:
+        raw = f.read()
+    text, enc, bom = decode_bytes(raw)
+    newline = '\r\n' if '\r\n' in text else '\n'
+    has_trailing = text.endswith(newline)
+    lines = [] if text == '' else text.split(newline)
+    if has_trailing and lines:
+        lines.pop()
     if e <= 0: e = len(lines)
     if e > len(lines): e = len(lines)
     if e < s: e = s
     old_lines = lines[s - 1:e]
+    # content 必须拆成独立行再拼回；直接 [content] 插入时，如果 content
+    # 不以换行结尾，最后一行会和后一行原文粘在一起，写出来就是错乱代码。
+    content_lines = content.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     if act == 'delete':
         newlines = lines[:s - 1] + lines[e:]
         new_lines = []
     elif act == 'overwrite':
-        newlines = lines[:s - 1] + [content] + lines[e:]
-        new_lines = content.split('\n')
+        newlines = lines[:s - 1] + content_lines + lines[e:]
+        new_lines = content_lines
     elif act == 'insert':
-        newlines = lines[:s - 1] + [content] + lines[s - 1:]
-        new_lines = content.split('\n')
+        newlines = lines[:s - 1] + content_lines + lines[s - 1:]
+        new_lines = content_lines
     else:
         raise SystemExit('bad action')
-    with open(p, 'w', encoding='utf-8') as f:
-        f.write(''.join(newlines))
+    result = newline.join(newlines)
+    if has_trailing:
+        result += newline
+    with open(p, 'wb') as f:
+        f.write(raw[:bom] + result.encode(enc))
     sys.stdout.write('lines %d -> %d' % (len(lines), len(newlines)))
     emit_diff(old_lines, new_lines)
 ''';

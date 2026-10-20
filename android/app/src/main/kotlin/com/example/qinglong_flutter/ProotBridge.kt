@@ -6,8 +6,11 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.content.ContentValues
 import android.provider.MediaStore
 import android.provider.OpenableColumns
@@ -138,6 +141,8 @@ class ProotBridge(private val context: Context) {
                 "statPath" -> handleStatPath(call, result)
                 "searchFiles" -> handleSearchFiles(call, result)
                 "listAppFiles" -> handleListAppFiles(call, result)
+                "hasAllFilesAccess" -> handleHasAllFilesAccess(result)
+                "openAllFilesAccess" -> handleOpenAllFilesAccess(call, result)
                 "importFiles" -> handleImportFiles(call, result)
                 "hostPath" -> handleHostPath(call, result)
                 "openExternal" -> handleOpenExternal(call, result)
@@ -1536,7 +1541,43 @@ class ProotBridge(private val context: Context) {
         "缓存" to context.cacheDir,
         ("外部文件" to context.getExternalFilesDir(null)).takeIf { it.second != null }
             ?.let { it.first to it.second!! },
+        // 允许文件管理器从 files/cache 继续上溯到 APP 自己的数据根目录。
+        ("数据根" to context.dataDir).takeIf { it != null }
+            ?.let { it.first to it.second!! },
+        // 手机内部存储空间：普通文件权限/系统授权下能访问的公共存储根。
+        ("手机存储" to File("/storage/emulated/0")),
     )
+
+    private fun handleHasAllFilesAccess(result: MethodChannel.Result) {
+        val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            true
+        }
+        result.success(granted)
+    }
+
+    private fun handleOpenAllFilesAccess(call: MethodCall, result: MethodChannel.Result) {
+        val act = activity
+        if (act == null) {
+            result.error("no_activity", "当前没有可用的界面，无法打开设置", null)
+            return
+        }
+        try {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:${act.packageName}")
+                )
+            } else {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${act.packageName}"))
+            }
+            act.startActivity(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("open_failed", e.message ?: e.toString(), null)
+        }
+    }
 
     private fun handleListAppFiles(call: MethodCall, result: MethodChannel.Result) {
         executor.execute {

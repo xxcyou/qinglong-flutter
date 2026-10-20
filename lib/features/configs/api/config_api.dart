@@ -1,4 +1,5 @@
 import '../../../core/network/dio_client.dart';
+import '../../../core/network/qinglong_version_compat.dart';
 import '../models/config_file.dart';
 
 /// 配置管理 API。
@@ -8,6 +9,22 @@ class ConfigApi {
   static Future<List<ConfigFile>> files({
     required String apiBaseUrl,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'config_files',
+      );
+      if (data != null) {
+        final parsed = _parseList(data is List
+            ? data
+            : (data is Map<String, dynamic>
+                ? data['data'] ?? const []
+                : const []));
+        if (parsed.isNotEmpty) return parsed;
+      }
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response =
         await DioClient.dio.get<dynamic>('$apiBaseUrl/configs/files');
     final data = parseQlResponse(response);
@@ -41,6 +58,23 @@ class ConfigApi {
     required String apiBaseUrl,
     required String file,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'config_read',
+        pathParams: {'file': file},
+      );
+      if (data != null) {
+        String? content;
+        if (data is String) content = data;
+        if (data is Map<String, dynamic>) {
+          content = (data['content'] ?? data['data']) as String?;
+        }
+        if (content != null && content.isNotEmpty) return content;
+      }
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.get<dynamic>(
       '$apiBaseUrl/configs/$file',
     );
@@ -58,6 +92,17 @@ class ConfigApi {
     required String file,
     required String content,
   }) async {
+    try {
+      final data = await QinglongVersionCompat.call(
+        apiBaseUrl: apiBaseUrl,
+        function: 'config_save',
+        pathParams: {'file': file},
+        body: {'content': content},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 兼容失败继续内置。
+    }
     final response = await DioClient.dio.post<dynamic>(
       '$apiBaseUrl/configs/save',
       data: {'name': file, 'content': content},

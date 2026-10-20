@@ -5,35 +5,79 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
 
 import '../../../core/local_shell/proot_bridge.dart';
+import '../external/external_overlay_controller.dart';
 import '../settings/providers/settings_provider.dart';
 import 'providers/shell_files_provider.dart';
 import 'providers/terminal_session_provider.dart';
 import 'terminal_palettes.dart';
+import '../../../shared/float_stack.dart';
 import '../../../shared/mono_text.dart';
+import '../floating/float_bounds_registry.dart';
 
 /// 悬浮窗终端：在文件管理器当前目录上浮一层，方便用户直接在该目录跑命令。
+///
+/// 这里不做 OverlayEntry 插入，而是由常驻的 [FloatingTerminalHost] 渲染在
+/// [AppFloatLayer] 里。这样 APP 外悬浮模式（页面不渲染）下终端窗也仍然存在，
+/// 和 APP 内是同一份窗口状态。
 class FloatingTerminal {
-  static OverlayEntry? _entry;
+  FloatingTerminal._();
 
-  static bool get isOpen => _entry != null;
+  static final ValueNotifier<int> revision = ValueNotifier<int>(0);
+  static bool _open = false;
+  static String _cwd = '';
+  static int _session = 0;
 
+  static bool get isOpen => _open;
+
+  static String get cwd => _cwd;
+  static int get sessionKey => _session;
+
+  /// 兼容旧调用点：`context` 不再用于找 Overlay，保留签名避免改动页面。
   static void show(
     BuildContext context, {
     String? cwd,
   }) {
-    if (_entry != null) return;
-    final overlay = Overlay.of(context, rootOverlay: true);
-    final entry = OverlayEntry(
-      builder: (_) => FloatingTerminalWindow(
-        cwd: cwd ?? fileManagerCwd.value,
-        onClose: () {
-          _entry?.remove();
-          _entry = null;
-        },
-      ),
+    final next = cwd ?? fileManagerCwd.value;
+    if (_open && next == _cwd) {
+      revision.value++;
+      return;
+    }
+    _cwd = next;
+    _open = true;
+    _session++;
+    FloatStack.instance.raise(FloatStack.terminal);
+    revision.value++;
+  }
+
+  static void hide() {
+    if (!_open) return;
+    _open = false;
+    revision.value++;
+  }
+}
+
+/// 常驻终端宿主：挂在 [AppFloatLayer] 中。
+class FloatingTerminalHost extends StatelessWidget {
+  const FloatingTerminalHost({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: FloatingTerminal.revision,
+      builder: (context, _, __) {
+        if (!FloatingTerminal.isOpen) return const SizedBox.shrink();
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            FloatingTerminalWindow(
+              key: ValueKey('floating-terminal-${FloatingTerminal.sessionKey}'),
+              cwd: FloatingTerminal.cwd,
+              onClose: FloatingTerminal.hide,
+            ),
+          ],
+        );
+      },
     );
-    _entry = entry;
-    overlay.insert(entry);
   }
 }
 
@@ -79,11 +123,14 @@ class _FloatingTerminalWindowState
 
   @override
   void dispose() {
+    FloatBoundsRegistry.remove(_terminalBoundsKey);
     _eventsSubscription?.cancel();
     if (_terminalId > 0) _bridge.stopTerminal(_terminalId);
     _focusNode.dispose();
     super.dispose();
   }
+
+  static const _terminalBoundsKey = 'floating-terminal';
 
   Future<void> _start() async {
     try {
@@ -144,10 +191,30 @@ class _FloatingTerminalWindowState
     final scheme = Theme.of(context).colorScheme;
     final media = MediaQuery.of(context);
     final width = (_size.width).clamp(220.0, media.size.width - 16);
-    final height = (_size.height).clamp(160.0, media.size.height - 120);
+    var height = (_size.height).clamp(160.0, media.size.height - 120);
     final left = _pos.dx.clamp(0.0, media.size.width - width - 8);
-    final top = _pos.dy.clamp(MediaQuery.paddingOf(context).top,
-        media.size.height - height - 8);
+    final minTop = MediaQuery.paddingOf(context).top;
+    var top = _pos.dy.clamp(minTop, media.size.height - height - 8);
+    // 终端输入行在窗口最下面：只在下边会被键盘盖住时才上移/收窄。
+    final keyboard = media.viewInsets.bottom;
+    if (keyboard > 0) {
+      final imeTop = media.size.height - keyboard - 8;
+      final delta = (top + height) - imeTop;
+      if (delta > 0) {
+        final maxShift = top - minTop;
+        final shift = delta < maxShift ? delta : maxShift;
+        top -= shift;
+        final remaining = delta - shift;
+        if (remaining > 0) {
+          final shrunk = height - remaining;
+          height = shrunk < 160.0 ? 160.0 : shrunk;
+        }
+      }
+    }
+    FloatBoundsRegistry.report(
+      _terminalBoundsKey,
+      Rect.fromLTWH(left, top, width, height),
+    );
     return Positioned(
       left: left,
       top: top,
@@ -220,8 +287,7 @@ class _FloatingTerminalWindowState
               ),
               iconSize: 14,
               padding: EdgeInsets.zero,
-              icon: const Icon(Icons.close_rounded,
-                  color: Colors.white70),
+              icon: const Icon(Icons.close_rounded, color: Colors.white70),
               onPressed: _close,
             ),
           ),
@@ -252,6 +318,7 @@ class _FloatingTerminalWindowState
       ),
     );
   }
+
   Widget _buildBody(ColorScheme scheme) {
     if (!_ready) {
       return Center(
@@ -285,22 +352,29 @@ class _FloatingTerminalWindowState
       );
     }
     final settings = ref.watch(settingsProvider);
-    return TerminalView(
-      _terminal,
-      controller: _terminalController,
-      focusNode: _focusNode,
-      autofocus: true,
-      keyboardType: TextInputType.multiline,
-      backgroundOpacity: 0.92,
-      theme: TerminalPalette.byId(settings.terminalPalette).theme,
-      textStyle: TerminalStyle(
-        fontSize: settings.terminalFontSize,
-        height: settings.terminalLineHeight,
-        fontFamily: kMonoFamily,
-        fontFamilyFallback: kMonoFallback,
+    return ExternalImeFocusRegion(
+      child: Listener(
+        behavior: HitTestBehavior.deferToChild,
+        onPointerDown: (_) =>
+            ExternalOverlayController.instance.requestImeFocus(),
+        child: TerminalView(
+          _terminal,
+          controller: _terminalController,
+          focusNode: _focusNode,
+          autofocus: true,
+          keyboardType: TextInputType.multiline,
+          backgroundOpacity: 0.92,
+          theme: TerminalPalette.byId(settings.terminalPalette).theme,
+          textStyle: TerminalStyle(
+            fontSize: settings.terminalFontSize,
+            height: settings.terminalLineHeight,
+            fontFamily: kMonoFamily,
+            fontFamilyFallback: kMonoFallback,
+          ),
+          padding: const EdgeInsets.fromLTRB(8, 6, 6, 6),
+          cursorType: TerminalCursorType.block,
+        ),
       ),
-      padding: const EdgeInsets.fromLTRB(8, 6, 6, 6),
-      cursorType: TerminalCursorType.block,
     );
   }
 }

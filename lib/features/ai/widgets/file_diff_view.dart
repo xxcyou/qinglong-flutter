@@ -17,11 +17,15 @@ class FileDiffView extends StatelessWidget {
     required this.toolName,
     required this.args,
     this.result,
+    this.remote = false,
   });
 
   final String toolName;
   final Map<String, dynamic> args;
   final String? result;
+
+  /// 远程命令（ssh_exec）：卡片内容与 shell_exec 同款，只把文案换成“远程”。
+  final bool remote;
 
   static final RegExp _diffFence =
       RegExp(r'```diff\s*\n(.*?)\n```', dotAll: true);
@@ -48,7 +52,7 @@ class FileDiffView extends StatelessWidget {
     final fromCommand = _pathFromCommand;
     if (fromCommand != null && fromCommand.isNotEmpty) return fromCommand;
     if (toolName == 'shell_exec' || toolName == 'shell_script') {
-      return '本机命令';
+      return remote ? '远程命令' : '本机命令';
     }
     if (toolName.toLowerCase().contains('script') ||
         toolName.toLowerCase().contains('browser') ||
@@ -364,6 +368,7 @@ class FileDiffView extends StatelessWidget {
     if (toolName == 'shell_archive_extract') return '解压';
     if (toolName == 'shell_exec' || toolName == 'shell_script') {
       final cmd = args['command']?.toString().trimLeft() ?? '';
+      if (remote) return '远程命令执行';
       if (cmd.startsWith('rm ') ||
           cmd.startsWith('rmdir ') ||
           cmd.startsWith('unlink ') ||
@@ -783,7 +788,7 @@ static const Set<String> _shellCommands = {
               TextSpan(
                 children: isCommand
                     ? _highlightShell(line.text)
-                    : toolName == 'shell_exec' &&
+                    : (toolName == 'shell_exec' || remote) &&
                             line.type == _DiffLineType.context
                         ? _highlightOutput(line.text)
                         : [TextSpan(text: line.text)],
@@ -877,7 +882,9 @@ static const Set<String> _shellCommands = {
 
     // shell_exec / shell_script 没有结构化 diff 时，至少把命令/输出亮出来，
     // 不要再出现“没有可展示的文件内容”的白卡。
-    if (toolName == 'shell_exec' || toolName == 'shell_script') {
+    if (toolName == 'shell_exec' ||
+        toolName == 'shell_script' ||
+        remote) {
       final shell = _shellFallbackLines();
       if (shell.isNotEmpty) return shell;
     }

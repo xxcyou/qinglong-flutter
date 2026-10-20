@@ -5,12 +5,14 @@ import '../../../core/cache/cache_cleaner.dart';
 import '../../../shared/glass_scaffold.dart';
 import '../../../core/llm/llm_registry_provider.dart';
 import '../../ai/floating/ai_dock_provider.dart';
+import '../../external/external_overlay_controller.dart';
 import '../../ai/providers/chat_provider.dart';
 import '../providers/settings_provider.dart';
 import 'ai_settings_page.dart';
 import 'linux_container_page.dart' show LinuxContainerPage;
 import 'font_settings_page.dart';
 import 'theme_settings_page.dart';
+import 'about_page.dart';
 
 class SettingsPage extends ConsumerWidget {
   const SettingsPage({super.key});
@@ -203,7 +205,7 @@ class SettingsPage extends ConsumerWidget {
                           ),
                           SizedBox(height: 2),
                           Text(
-                            '点开聊天窗；长按伸出快问输入框（隐藏只能在这里关）',
+                            '点开聊天窗；长按伸出快问输入框。开启后悬浮球/悬浮窗显示在系统上层（APP 外悬浮）',
                             style: TextStyle(fontSize: 12.5),
                           ),
                         ],
@@ -211,14 +213,15 @@ class SettingsPage extends ConsumerWidget {
                     ),
                     Switch(
                       value: dock.visible,
-                      onChanged: (_) =>
-                          ref.read(aiDockProvider.notifier).toggleVisible(),
+                      onChanged: (value) =>
+                          _setBubbleAndExternal(context, ref, value),
                     ),
                   ],
                 ),
               );
             },
           ),
+          const SizedBox(height: 8),
           const SectionLabel('终端'),
           GlassCard(
             child: Row(
@@ -326,29 +329,38 @@ class SettingsPage extends ConsumerWidget {
           ),
           const SectionLabel('关于'),
           GlassCard(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Column(
               children: [
-                const Icon(Icons.info_outline),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '关于',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '青龙面板 Flutter 客户端 v0.1.0\n数据仅存本地，无第三方统计',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.info_outline),
+                  title: const Text(
+                    '关于青龙AI',
+                    style: TextStyle(fontWeight: FontWeight.w600),
                   ),
+                  subtitle: const Text('版本信息、项目说明与开源地址'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AboutPage()),
+                  ),
+                ),
+                Divider(
+                  height: 1,
+                  color: Theme.of(context)
+                      .colorScheme
+                      .outlineVariant
+                      .withValues(alpha: 0.5),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.code_rounded),
+                  title: const Text(
+                    'GitHub 开源地址',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: const Text(AboutPage.githubLabel),
+                  trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+                  onTap: () => AboutPage.openGithub(context),
                 ),
               ],
             ),
@@ -619,6 +631,34 @@ class _StepperCard extends StatelessWidget {
             icon: const Icon(Icons.add),
           ),
         ],
+      ),
+    );
+  }
+}
+
+
+/// AI 悬浮球开关 = APP 外悬浮总开关。
+///
+/// 开启后不会强制 APP 退后台，也不重启 APP：前台时悬浮球/悬浮窗照常画在
+/// APP 内；用户自己把 APP 缩到后台时，原生才把同一个 view 挂到系统覆盖
+/// 窗口上，悬浮层原位继续显示。权限被拒时 APP 内悬浮球仍然可用。
+Future<void> _setBubbleAndExternal(
+  BuildContext context,
+  WidgetRef ref,
+  bool visible,
+) async {
+  final controller = ExternalOverlayController.instance;
+  if (!visible) {
+    ref.read(aiDockProvider.notifier).hide();
+    await controller.disable();
+    return;
+  }
+  ref.read(aiDockProvider.notifier).show();
+  final ok = await controller.enable(MediaQuery.of(context));
+  if (!ok && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('已开启 APP 内悬浮球；要缩到后台也显示，请在系统设置允许“显示在其他应用上层”'),
       ),
     );
   }

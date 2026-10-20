@@ -580,6 +580,17 @@ class ProotBridge {
     throw StateError('列 APP 目录返回异常');
   }
 
+  /// 是否已授予“所有文件访问”特殊权限（Android 11+ 才能访问完整公共存储）。
+  Future<bool> hasAllFilesAccess() async {
+    final result = await _channel.invokeMethod<bool>('hasAllFilesAccess');
+    return result == true;
+  }
+
+  /// 打开系统“所有文件访问”授权页。
+  Future<void> openAllFilesAccess() async {
+    await _channel.invokeMethod<void>('openAllFilesAccess');
+  }
+
   /// 从别的 APP 导入文件（系统文件选择器 / SAF）。
   ///
   /// 为什么必须走系统选择器：Android 10 起应用读不到别的 APP 的私有目录，

@@ -22,6 +22,7 @@ import 'browser_window.dart';
 import 'models/browser_profile.dart';
 import 'intercept_js.dart';
 import 'models/intercept_script.dart';
+import 'models/browser_download.dart';
 import 'models/browser_models.dart';
 import 'web_bridge.dart';
 import '../../shared/float_stack.dart';
@@ -115,6 +116,13 @@ class BrowserEngine {
   final ValueNotifier<List<BrowserHistoryEntry>> history = ValueNotifier([]);
 
   static const _maxHistory = 800;
+
+  /// 用户点击下载链接产生的下载任务列表（新任务在最前）。
+  final ValueNotifier<List<BrowserDownload>> downloads = ValueNotifier(const []);
+  int _downloadSeq = 0;
+  final Map<int, HttpClientRequest> _activeDownloadRequests = {};
+  final Set<int> _pausedDownloads = {};
+  final Set<int> _deletedDownloads = {};
 
   bool _profilesLoaded = false;
 
@@ -510,7 +518,9 @@ class BrowserEngine {
     if (_controller == null || !isReady) return const {};
     try {
       final raw = await evalSync(
-        "JSON.stringify(Object.fromEntries(Object.entries(localStorage)))",
+        "(function(){ try { return JSON.stringify("
+        "Object.fromEntries(Object.entries(localStorage))); }"
+        " catch(e){ return '{}'; } })()",
       );
       if (raw.trim().isEmpty || raw.trim() == 'null') return const {};
       final decoded = jsonDecode(raw);
@@ -859,7 +869,11 @@ class BrowserEngine {
     }
   }
 
-  BrowserEngine._();
+  BrowserEngine._() {
+    unawaited(_ensureDownloadsDir());
+    unawaited(_restoreDownloads());
+    downloads.addListener(_persistDownloads);
+  }
 
   static final BrowserEngine instance = BrowserEngine._();
 
@@ -939,6 +953,11 @@ class BrowserEngine {
   /// 主框架导航失败后是否已自动重试过一次。
   bool _retriedFailedMainNav = false;
 
+  /// 是否已经至少成功加载过一个页面（包括启动预热页）。
+  /// 外部链接可能在刚启动、WebView 平台视图还没挂好时就进来；
+  /// 此时不能直接 loadRequest，必须先等 RepaintBoundary 有尺寸。
+  bool _everLoadedPage = false;
+
   static const _maxRequests = 300;
   static const _maxConsole = 200;
 
@@ -953,6 +972,30 @@ class BrowserEngine {
   /// 建内核。重复调用无副作用。
   bool _scriptsLoaded = false;
   bool _swCaptureRegistered = false;
+  bool _warmUpStarted = false;
+
+  /// 启动预热：把 WebView 内核创建并挂载好，再加载一个空白的 about:blank，
+  /// 让平台视图真正完成初始化。之后 AI/用户打开真实网址时就是“二次打开”，
+  /// 不会出现第一次 loadRequest 发给还没准备好的 WebView 导致白屏/转圈。
+  Future<void> warmUp() async {
+    if (_warmUpStarted) return;
+    _warmUpStarted = true;
+    try {
+      final hadUrl = currentUrl.value.isNotEmpty;
+      final c = await ensure();
+      // 如果预热期间已经有人开始导航（AI 提前调用），就别覆盖它。
+      // 用带 baseUrl 的空 HTML 预热：origin 是 https://warmup.local，
+      // localStorage 可正常访问，不会像 about:blank 那样抛 SecurityError。
+      if (!hadUrl && currentUrl.value.isEmpty) {
+        await c.loadHtmlString(
+          '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body></body></html>',
+          baseUrl: 'https://warmup.local/',
+        );
+      }
+    } catch (e) {
+      Logger.e('browser', 'warmUp failed', e);
+    }
+  }
 
   Future<WebViewController> ensure() async {
     final existing = _controller;
@@ -981,6 +1024,11 @@ class BrowserEngine {
                 scheme == 'javascript' ||
                 scheme == 'file' ||
                 scheme == 'blob') {
+              // 下载链接交给下载管理器，不让 WebView 把二进制当网页打开。
+              if (_looksLikeDownload(request.url)) {
+                unawaited(startDownload(request.url));
+                return NavigationDecision.prevent;
+              }
               return NavigationDecision.navigate;
             }
             return interceptExternalJump(
@@ -1010,6 +1058,7 @@ class BrowserEngine {
             }
           },
           onPageFinished: (url) async {
+            _everLoadedPage = true;
             loading.value = false;
             currentUrl.value = url;
             title.value = await _controller?.getTitle() ?? '';
@@ -1579,16 +1628,12 @@ class BrowserEngine {
   }
 
   Future<void> open(String url) async {
-    final firstBoot = _controller == null;
     final c = await ensure();
-    // 第一次 create 的 WebView 要等 Flutter 平台视图真正挂载后 loadRequest
-    // 才会生效；否则第一次打开会黑屏，第二次才正常。这里不是摸黑等固定时长，
-    // 而是轮询到 RepaintBoundary 已经出现在树上且有尺寸。
-    if (firstBoot) {
-      // 只等一两帧，让 BrowserView 的 controllerRevision 监听把 WebViewWidget
-      // 挂出来；不再轮询/等待几秒，保持“秒开”。
-      await WidgetsBinding.instance.endOfFrame;
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+    // 第一次真正加载前，必须等 Flutter 平台视图挂出来且有尺寸，否则
+    // loadRequest 会发给“还没准备好的 WebView”，表现就是外部链接/首次打开
+    // 转圈、白屏。启动预热页加载完成后 _everLoadedPage 为 true，这里直接跳过。
+    if (!_everLoadedPage) {
+      await _waitForWebViewAttached();
     }
     var target = url.trim();
     // 本地文件优先判断：AI 写了个 html 到工作目录，然后想让用户看效果。
@@ -1624,6 +1669,15 @@ class BrowserEngine {
         path.endsWith('.svg') ||
         path.endsWith('.pdf');
     return isPage && !t.contains(' ');
+  }
+
+  Future<void> _waitForWebViewAttached() async {
+    for (var i = 0; i < 40; i++) {
+      final ctx = webViewBoundaryKey.currentContext;
+      final box = ctx?.findRenderObject();
+      if (box is RenderBox && box.hasSize) return;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
   }
 
   /// 打开本地文件。返回真正加载的 file:// 地址。
@@ -2533,6 +2587,378 @@ return list.map(function(e){
   return '[' + e.type + '] ' + e.size + 'B ' + e.ms + 'ms ' + e.url;
 }).join(String.fromCharCode(10)) || '（没有匹配的资源）';
 ''');
+
+  static const Set<String> _downloadExtensions = {
+    'apk', 'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz',
+    'exe', 'msi', 'dmg', 'iso', 'deb', 'rpm', 'jar', 'bin',
+  };
+
+  bool _looksLikeDownload(String url) {
+    final lower = url.toLowerCase();
+    if (lower.contains('download') ||
+        lower.contains('attachment') ||
+        lower.contains('response-content-disposition') ||
+        lower.contains('x-oss-process=') && lower.contains('attname')) {
+      return true;
+    }
+    try {
+      final path = Uri.parse(url).path;
+      final dot = path.lastIndexOf('.');
+      if (dot < 0 || dot == path.length - 1) return false;
+      return _downloadExtensions.contains(path.substring(dot + 1).toLowerCase());
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 新建/恢复一个下载任务。支持断点续传：暂停后保留 .part 文件，
+  /// 恢复时从已下载字节继续（Range 请求）。
+  ///
+  /// 返回的是任务 id，**立即返回**，不等待下载完成；下载在后台异步跑，
+  /// 进度通过 [downloads] 通知 UI/AI。
+  Future<int> startDownload(
+    String url, {
+    String? suggestedName,
+    int? resumeId,
+  }) async {
+    int id;
+    String name;
+    final existed = resumeId != null &&
+        downloads.value.any((d) => d.id == resumeId);
+    if (existed) {
+      id = resumeId;
+      name = downloads.value.firstWhere((d) => d.id == id).name;
+    } else {
+      id = ++_downloadSeq;
+      name = suggestedName?.trim().isNotEmpty == true
+          ? suggestedName!.trim()
+          : _fileNameFromUrl(url);
+      if (name.isEmpty || name == 'download') {
+        name = 'download_$id';
+      }
+      name = name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+      downloads.value = [
+        BrowserDownload(id: id, url: url, name: name),
+        ...downloads.value,
+      ];
+    }
+    _pausedDownloads.remove(id);
+    _deletedDownloads.remove(id);
+    _updateDownload(id,
+        status: BrowserDownloadStatus.downloading, error: null);
+
+    unawaited(_downloadWorker(id, url, name));
+    return id;
+  }
+
+  Future<void> _downloadWorker(int id, String url, String name) async {
+    try {
+      final folder = await _downloadsFolder();
+      final finalFile = File('${folder.path}/$name');
+      final partFile = File('${finalFile.path}.part');
+      // 一进任务就先把 .part 占位文件建出来：暂停/中断后用户在文件管理里
+      // 一定能看到下载中的半成品，而不是“连文件都没有”。
+      if (!partFile.existsSync()) partFile.createSync(recursive: true);
+      final start = partFile.lengthSync();
+
+      final cookie = await WebBridge.cookies(url);
+      final client = HttpClient()
+        ..badCertificateCallback = (cert, host, port) =>
+            BrowserEngine.allowSelfSigned;
+      try {
+        final request = await client.openUrl('GET', Uri.parse(url));
+        _activeDownloadRequests[id] = request;
+        request.headers.set('User-Agent', userAgentNotifier.value);
+        if (cookie.isNotEmpty) request.headers.set('Cookie', cookie);
+        if (start > 0) {
+          request.headers.set('Range', 'bytes=$start-');
+        }
+        final response = await request.close();
+        if (response.statusCode != 200 && response.statusCode != 206) {
+          throw Exception('HTTP ${response.statusCode}');
+        }
+        var resumeStart = start;
+        if (response.statusCode == 200 && resumeStart > 0) {
+          // 服务端不支持 Range：从头重下，不能把全量内容拼到残缺文件后面。
+          await partFile.writeAsBytes([], flush: true);
+          resumeStart = 0;
+        }
+        final total = response.contentLength >= 0
+            ? resumeStart + response.contentLength
+            : 0;
+        final raf = await partFile.open(mode: FileMode.append);
+        var received = resumeStart;
+        await for (final chunk in response) {
+          if (_deletedDownloads.contains(id)) {
+            await raf.close();
+            return;
+          }
+          if (_pausedDownloads.contains(id)) {
+            await raf.close();
+            _activeDownloadRequests.remove(id);
+            _updateDownload(id, status: BrowserDownloadStatus.paused);
+            return;
+          }
+          await raf.writeFrom(chunk);
+          received += chunk.length;
+          if (total > 0) {
+            _updateDownload(
+              id,
+              progress: received / total,
+              receivedBytes: received,
+              totalBytes: total,
+            );
+          }
+        }
+        await raf.close();
+        if (_deletedDownloads.contains(id)) return;
+        if (_pausedDownloads.contains(id)) {
+          _updateDownload(id, status: BrowserDownloadStatus.paused);
+          return;
+        }
+        if (finalFile.existsSync()) finalFile.deleteSync();
+        await partFile.rename(finalFile.path);
+        _updateDownload(
+          id,
+          status: BrowserDownloadStatus.completed,
+          progress: 1,
+          receivedBytes: received,
+          totalBytes: received,
+          localPath: finalFile.path,
+        );
+      } catch (e) {
+        if (_deletedDownloads.contains(id)) return;
+        if (_pausedDownloads.contains(id)) {
+          _updateDownload(id, status: BrowserDownloadStatus.paused);
+        } else {
+          _updateDownload(id,
+              status: BrowserDownloadStatus.failed, error: '$e');
+        }
+      } finally {
+        _activeDownloadRequests.remove(id);
+        client.close(force: true);
+      }
+    } catch (e) {
+      _updateDownload(id,
+          status: BrowserDownloadStatus.failed, error: '$e');
+      _activeDownloadRequests.remove(id);
+    }
+  }
+
+  void _updateDownload(
+    int id, {
+    BrowserDownloadStatus? status,
+    double? progress,
+    int? receivedBytes,
+    int? totalBytes,
+    String? localPath,
+    String? error,
+  }) {
+    final list = List<BrowserDownload>.of(downloads.value);
+    final idx = list.indexWhere((d) => d.id == id);
+    if (idx < 0) return;
+    list[idx] = list[idx].copyWith(
+      status: status,
+      progress: progress,
+      receivedBytes: receivedBytes,
+      totalBytes: totalBytes,
+      localPath: localPath,
+      error: error,
+    );
+    downloads.value = list;
+  }
+
+  /// 暂停下载。正在下载的会立即中断并保留 .part 临时文件。
+  void pauseDownload(int id) {
+    if (!downloads.value.any((d) => d.id == id)) return;
+    _pausedDownloads.add(id);
+    final req = _activeDownloadRequests[id];
+    if (req == null) {
+      _updateDownload(id, status: BrowserDownloadStatus.paused);
+      return;
+    }
+    try {
+      req.abort();
+    } catch (_) {}
+  }
+
+  /// 恢复暂停的下载（从上次断点继续）。
+  Future<void> resumeDownload(int id) async {
+    final list = downloads.value;
+    BrowserDownload? d;
+    for (final x in list) {
+      if (x.id == id) {
+        d = x;
+        break;
+      }
+    }
+    if (d == null || d.status != BrowserDownloadStatus.paused) return;
+    await startDownload(d.url, suggestedName: d.name, resumeId: id);
+  }
+
+  /// 删除下载任务，同时删除已下载文件和 .part 临时文件。
+  void deleteDownload(int id, {bool deleteFile = true}) {
+    BrowserDownload? d;
+    for (final x in downloads.value) {
+      if (x.id == id) {
+        d = x;
+        break;
+      }
+    }
+    if (d == null) return;
+    _deletedDownloads.add(id);
+    _pausedDownloads.remove(id);
+    final req = _activeDownloadRequests[id];
+    if (req != null) {
+      try {
+        req.abort();
+      } catch (_) {}
+    }
+    try {
+      final dir = getApplicationDocumentsDirectory();
+      // 同步删除前先取路径，文件删除放异步完成。
+      final path = d.localPath;
+      final safe = d.name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+      _removeFromDownloads(id);
+      unawaited(() async {
+        final folder = Directory('${(await dir).path}/browser_downloads');
+        if (deleteFile) {
+          if (path != null && File(path).existsSync()) {
+            File(path).deleteSync();
+          }
+          final part = File('${folder.path}/$safe.part');
+          final done = File('${folder.path}/$safe');
+          if (part.existsSync()) part.deleteSync();
+          if (done.existsSync()) done.deleteSync();
+        }
+      }());
+    } catch (_) {}
+  }
+
+  void _removeFromDownloads(int id) {
+    downloads.value =
+        downloads.value.where((d) => d.id != id).toList(growable: false);
+  }
+
+  /// 批量删除任务（默认连文件一起删）。
+  void deleteDownloads(Iterable<int> ids) {
+    for (final id in List<int>.of(ids)) {
+      deleteDownload(id);
+    }
+  }
+
+  /// 下载管理目录（APP 私有目录下的 browser_downloads）。
+  Future<String> downloadsDirectory() async =>
+      (await _downloadsFolder()).path;
+
+  /// 找到“文件管理器里能看到”的下载目录。
+  ///
+  /// 不用 path_provider 的 getApplicationDocumentsDirectory 直接拼：在部分
+  /// MIUI/多用户环境它返回的路径和原生 context.filesDir 不一致，导致文件
+  /// 真的写进去了，但文件管理里看不到，也续传不了。这里用 ProotBridge 的
+  /// APP 根目录（和文件管理器同一套原生目录）来拼，并把旧的 path_provider
+  /// 目录里的半成品迁移过来。
+  Future<Directory> _downloadsFolder() async {
+    Directory root;
+    try {
+      final bridge = ProotBridge();
+      final listing = await bridge.listAppFiles(path: '');
+      if (listing.roots.isNotEmpty) {
+        root = Directory(listing.roots.first);
+      } else {
+        root = Directory((await getApplicationDocumentsDirectory()).path);
+      }
+    } catch (_) {
+      root = Directory((await getApplicationDocumentsDirectory()).path);
+    }
+    final folder = Directory('${root.path}/browser_downloads');
+    if (!folder.existsSync()) folder.createSync(recursive: true);
+    // 迁移旧路径（path_provider 拼出来的 browser_downloads）里的文件。
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      final old = Directory('${docs.path}/browser_downloads');
+      if (old.existsSync() && old.path != folder.path) {
+        for (final f in old.listSync()) {
+          try {
+            final dest =
+                File('${folder.path}/${Uri.file(f.path).pathSegments.last}');
+            if (!dest.existsSync()) f.rename(dest.path);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    return folder;
+  }
+
+  static const _downloadsKey = 'browser_downloads_v1';
+
+  Future<void> _ensureDownloadsDir() async {
+    try {
+      await _downloadsFolder();
+    } catch (_) {}
+  }
+
+  Future<void> _restoreDownloads() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_downloadsKey);
+      if (raw == null || raw.isEmpty) return;
+      final data = jsonDecode(raw) as List;
+      final list = data
+          .map((e) => BrowserDownload.fromJson(
+              Map<String, dynamic>.from(e as Map)))
+          .toList();
+      if (list.isEmpty) return;
+      final folder = (await _downloadsFolder()).path;
+      var maxId = 0;
+      for (final d in list) {
+        if (d.id > maxId) maxId = d.id;
+        final safe = d.name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+        final part = File('$folder/$safe.part');
+        final done = File('$folder/$safe');
+        if (d.status == BrowserDownloadStatus.downloading) {
+          d.status = BrowserDownloadStatus.paused;
+        }
+        if (d.status == BrowserDownloadStatus.completed &&
+            !done.existsSync() &&
+            part.existsSync()) {
+          d.status = BrowserDownloadStatus.paused;
+        }
+        if (d.status == BrowserDownloadStatus.paused ||
+            d.status == BrowserDownloadStatus.failed) {
+          d.status = BrowserDownloadStatus.paused;
+          if (!part.existsSync()) {
+            part.createSync(recursive: true);
+          }
+          d.receivedBytes = part.lengthSync();
+          d.progress = d.totalBytes > 0
+              ? d.receivedBytes / d.totalBytes
+              : 0;
+        }
+      }
+      _downloadSeq = maxId;
+      downloads.value = list;
+    } catch (_) {}
+  }
+
+  Future<void> _persistDownloads() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _downloadsKey,
+        jsonEncode(downloads.value.map((d) => d.toJson()).toList()),
+      );
+    } catch (_) {}
+  }
+
+  String _fileNameFromUrl(String url) {
+    try {
+      final uri = Uri.parse(url);
+      final seg = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+      if (seg.isNotEmpty) return seg.last;
+    } catch (_) {}
+    return 'download';
+  }
 
   /// 把页面里的一个资源下载到 APP 私有目录，返回本地路径。
   ///

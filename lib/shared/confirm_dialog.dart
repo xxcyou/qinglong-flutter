@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../router.dart';
+
 /// 二次确认对话框。
 Future<bool> showConfirmDialog(
   BuildContext context, {
@@ -8,8 +10,12 @@ Future<bool> showConfirmDialog(
   String confirmText = '确认',
   bool destructive = false,
 }) async {
+  // 悬浮窗挂在 Navigator 之上；APP 内要用根 Navigator 的 context 才能弹窗。
+  // 外悬浮模式根 Navigator 不在树上，appNavigatorKey.currentContext 为 null，
+  // 此时回退到悬浮窗自己的 context（ExternalFloatShell 的内层 Navigator）。
+  final targetContext = appNavigatorKey.currentContext ?? context;
   final result = await showDialog<bool>(
-    context: context,
+    context: targetContext,
     builder: (context) => AlertDialog(
       title: Text(title),
       content: Text(message),

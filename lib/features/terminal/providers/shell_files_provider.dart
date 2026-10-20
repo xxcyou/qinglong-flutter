@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -10,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/local_shell/proot_bridge.dart';
 import 'ssh_session_provider.dart';
+import 'adb_session_provider.dart';
 
 /// 文件管理器当前目录。悬浮终端、悬浮球 AI 都要读它。
 final ValueNotifier<String> fileManagerCwd = ValueNotifier('/workspace');
@@ -23,7 +23,10 @@ enum FileScope {
   app('APP 文件'),
 
   /// 已连接 SSH 会话的远程目录（SFTP）。
-  ssh('SSH 文件');
+  ssh('SSH 文件'),
+
+  /// 已连接 ADB 设备的远程目录（shell + base64 中转）。
+  adb('ADB 文件');
 
   const FileScope(this.label);
 
@@ -56,6 +59,7 @@ class ShellFilesState {
   const ShellFilesState({
     this.scope = FileScope.shell,
     this.sshSessionId,
+    this.adbSessionId,
     this.path = '/workspace',
     this.roots = const [
       '/workspace',
@@ -79,6 +83,7 @@ class ShellFilesState {
     this.clipboardIsCut = false,
     this.clipboardScope,
     this.clipboardSshId,
+    this.clipboardAdbId,
     this.error,
   });
 
@@ -86,6 +91,9 @@ class ShellFilesState {
 
   /// 当前 SSH 会话 id（scope == ssh 时有效）。
   final String? sshSessionId;
+
+  /// 当前 ADB 会话 id（scope == adb 时有效）。
+  final String? adbSessionId;
   final String path;
   final List<String> roots;
   final List<String> rootLabels;
@@ -111,9 +119,10 @@ class ShellFilesState {
   final String? clipboardPath;
   final bool clipboardIsCut;
 
-  /// 剪贴板来源作用域/SSH 会话。跨区粘贴（SSH ↔ 终端/APP）要用。
+  /// 剪贴板来源作用域/SSH/ADB 会话。跨区粘贴（SSH ↔ 终端/APP ↔ ADB）要用。
   final String? clipboardScope;
   final String? clipboardSshId;
+  final String? clipboardAdbId;
 
   final String? error;
 
@@ -122,9 +131,9 @@ class ShellFilesState {
   bool get isSelecting => selected.isNotEmpty;
 
   String get parentPath {
-    if (atRoot) return path;
+    if (path.isEmpty || path == '/') return path;
     final index = path.lastIndexOf('/');
-    if (index <= 0) return path;
+    if (index <= 0) return '/';
     final parent = path.substring(0, index);
     return parent.isEmpty ? '/' : parent;
   }
@@ -157,6 +166,8 @@ class ShellFilesState {
     FileScope? scope,
     String? sshSessionId,
     bool clearSshSession = false,
+    String? adbSessionId,
+    bool clearAdbSession = false,
     String? path,
     List<String>? roots,
     List<String>? rootLabels,
@@ -175,6 +186,7 @@ class ShellFilesState {
     bool? clipboardIsCut,
     String? clipboardScope,
     String? clipboardSshId,
+    String? clipboardAdbId,
     bool clearClipboard = false,
     String? error,
     bool clearError = false,
@@ -182,6 +194,8 @@ class ShellFilesState {
     return ShellFilesState(
       scope: scope ?? this.scope,
       sshSessionId: clearSshSession ? null : sshSessionId ?? this.sshSessionId,
+      adbSessionId:
+          clearAdbSession ? null : adbSessionId ?? this.adbSessionId,
       path: path ?? this.path,
       roots: roots ?? this.roots,
       rootLabels: rootLabels ?? this.rootLabels,
@@ -203,6 +217,8 @@ class ShellFilesState {
           clearClipboard ? null : clipboardScope ?? this.clipboardScope,
       clipboardSshId:
           clearClipboard ? null : clipboardSshId ?? this.clipboardSshId,
+      clipboardAdbId:
+          clearClipboard ? null : clipboardAdbId ?? this.clipboardAdbId,
       error: clearError ? null : error ?? this.error,
     );
   }
@@ -216,6 +232,7 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
     FileScope.shell: '/workspace',
     FileScope.app: '',
     FileScope.ssh: '/',
+    FileScope.adb: '/storage/emulated/0',
   };
   final Map<String, String> _sshPaths = {};
 
@@ -264,6 +281,8 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
       } else if (state.scope == FileScope.app) {
         listing =
             await _bridge.listAppFiles(path: target.isEmpty ? null : target);
+      } else if (state.scope == FileScope.adb) {
+        listing = await _adbListing(target);
       } else {
         listing = await _sshListing(target);
       }
@@ -289,13 +308,38 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
   Future<void> switchScope(FileScope scope) async {
     if (scope == state.scope) return;
     var sshId = state.sshSessionId;
+    var adbId = state.adbSessionId;
     var path = _pathsByScope[scope] ??
         (scope == FileScope.shell
             ? '/workspace'
             : scope == FileScope.app
                 ? ''
-                : '/');
-    if (scope == FileScope.ssh) {
+                : scope == FileScope.adb
+                    ? '/storage/emulated/0'
+                    : '/');
+    if (scope == FileScope.adb) {
+      if (adbId == null ||
+          AdbSessionManager.instance.connectionOf(adbId) == null) {
+        final saved = AdbSessionManager.instance.sessions;
+        if (saved.isEmpty) {
+          state = state.copyWith(
+            scope: scope,
+            adbSessionId: null,
+            clearAdbSession: true,
+            entries: const [],
+            selected: const {},
+            clearError: false,
+            clearClipboard: true,
+            error: '还没有 ADB 设备，请先在 ADB 设备管理里连接',
+          );
+          return;
+        }
+        adbId = saved.first.id;
+        path = '/storage/emulated/0';
+      } else {
+        path = '/storage/emulated/0';
+      }
+    } else if (scope == FileScope.ssh) {
       if (sshId == null || SshSessionManager.instance.clientOf(sshId) == null) {
         final saved = SshSessionManager.instance.sessions;
         if (saved.isEmpty) {
@@ -322,6 +366,7 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
     state = state.copyWith(
       scope: scope,
       sshSessionId: sshId,
+      adbSessionId: adbId,
       entries: const [],
       keyword: '',
       clearSearch: true,
@@ -359,6 +404,36 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
         error: _message(e),
         loading: false,
       );
+    }
+  }
+
+  /// 切换当前 ADB 设备。
+  Future<void> setAdbSession(String? id) async {
+    if (id == null || state.scope != FileScope.adb) return;
+    state = state.copyWith(
+      adbSessionId: id,
+      entries: const [],
+      keyword: '',
+      clearSearch: true,
+      selected: const {},
+      clearError: true,
+      loading: true,
+      path: '/sdcard',
+    );
+    try {
+      if (AdbSessionManager.instance.connectionOf(id) == null) {
+        final draft = AdbSessionManager.instance.draftOf(id);
+        if (draft == null) throw StateError('ADB 设备不存在');
+        final session =
+            await AdbSessionManager.instance.connect(draft, id: id);
+        if (!session.isConnected) {
+          state = state.copyWith(error: session.status, loading: false);
+          return;
+        }
+      }
+      await open('/sdcard');
+    } catch (e) {
+      state = state.copyWith(error: _message(e), loading: false);
     }
   }
 
@@ -436,8 +511,9 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
   Future<void> refresh() => open(state.path);
 
   Future<void> goUp() async {
-    if (state.atRoot) return;
-    await open(state.parentPath);
+    final parent = state.parentPath;
+    if (parent == state.path) return;
+    await open(parent);
   }
 
   void setKeyword(String value) =>
@@ -482,19 +558,45 @@ class ShellFilesNotifier extends Notifier<ShellFilesState> {
       state = state.copyWith(clearSearch: true, searching: false);
       return;
     }
-    if (state.scope == FileScope.app) {
-      state = state.copyWith(error: 'APP 目录暂不支持递归搜索');
-      return;
-    }
     state = state.copyWith(searching: true, clearError: true);
     try {
       final hits = state.scope == FileScope.ssh
           ? await _sshSearch(text)
-          : await _searchPython(text, matchContent: matchContent);
+          : state.scope == FileScope.app
+              ? await _appSearch(text)
+              : await _searchPython(text, matchContent: matchContent);
       state = state.copyWith(searchResults: hits, searching: false);
     } catch (e) {
       state = state.copyWith(searching: false, error: _message(e));
     }
+  }
+
+  /// APP 沙箱目录递归搜索：只搜文件名（原生没提供递归搜索，这里用
+  /// listAppFiles 自己逐层走，最多 12 层、返回前 200 条）。
+  Future<List<ShellFileEntry>> _appSearch(
+    String pattern, {
+    int limit = 200,
+  }) async {
+    final rx = RegExp(pattern);
+    final hits = <ShellFileEntry>[];
+    Future<void> walk(String dir, int depth) async {
+      if (depth > 12 || hits.length >= limit) return;
+      final listing = await _bridge.listAppFiles(path: dir);
+      for (final entry in listing.entries) {
+        if (hits.length >= limit) return;
+        if (rx.hasMatch(entry.name)) {
+          hits.add(entry);
+        }
+        if (entry.isDirectory && depth < 12) {
+          try {
+            await walk(entry.path, depth + 1);
+          } catch (_) {}
+        }
+      }
+    }
+
+    await walk(state.path, 0);
+    return hits;
   }
 
   /// SSH 远程目录递归搜索：只搜文件名（SFTP 不提供内容搜索）。
@@ -677,12 +779,262 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
 
   void exitSearch() => state = state.copyWith(clearSearch: true);
 
+  String _adbId() => state.adbSessionId!;
+
+  String _shq(String p) => "'${p.replaceAll("'", "'\\''")}'";
+
+  String _adbJoin(String dir, String name) {
+    final clean = name.trim();
+    if (dir.endsWith('/')) return '$dir$clean';
+    return '$dir/$clean';
+  }
+
+  /// ADB 目录列表：用 `ls -la` 输出解析，兼容 Android toybox。
+  ///
+  /// 两个容易踩的坑：
+  /// 1. Android toybox 的日期是 `YYYY-MM-DD HH:MM` 两列，文件名在第 7 列；
+  ///    而 GNU coreutils 是 `Mon DD HH:MM` 三列，文件名在第 8 列。以前按
+  ///    GNU 固定取第 8 列，结果小米/toybox 上普通文件全部解析不出来。
+  /// 2. `/sdcard` 本身是软链接，直接 `ls -la /sdcard` 只会得到一行
+  ///    `sdcard -> /storage/...`；先 readlink -f 解析到真实目录再列。
+  Future<ShellDirectoryListing> _adbListing(String path) async {
+    final id = _adbId();
+    final manager = AdbSessionManager.instance;
+    if (manager.connectionOf(id) == null) {
+      final draft = manager.draftOf(id);
+      if (draft == null) throw StateError('ADB 设备不存在');
+      final session = await manager.connect(draft, id: id);
+      if (!session.isConnected) throw StateError(session.status);
+    }
+    final realPath = await _adbRealPath(id, path);
+    final raw = await manager.execute(id, 'ls -la ${_shq(realPath)}');
+    final lines = raw.split('\n');
+    final entries = <ShellFileEntry>[];
+    String? errorLine;
+    for (final line in lines) {
+      final trimmed = line.trim();
+      if (trimmed.startsWith('ls:')) {
+        final lower = trimmed.toLowerCase();
+        if (errorLine == null &&
+            (lower.contains('permission denied') ||
+                lower.contains('no such file') ||
+                lower.contains('not a directory'))) {
+          errorLine = trimmed;
+        }
+        continue;
+      }
+      final entry = _parseAdbLsLine(line, realPath);
+      if (entry != null) entries.add(entry);
+    }
+    if (entries.isEmpty && errorLine != null) {
+      throw StateError(
+        errorLine.replaceFirst(RegExp(r'^ls:\s*'), '').trim(),
+      );
+    }
+    return ShellDirectoryListing(
+      path: realPath,
+      roots: const ['/storage/emulated/0', '/data/local/tmp'],
+      entries: entries,
+    );
+  }
+
+  /// 把软链接解析到真实路径；Toybox readlink 不支持时会原样返回。
+  Future<String> _adbRealPath(String id, String path) async {
+    try {
+      final out = await AdbSessionManager.instance
+          .execute(id, 'readlink -f ${_shq(path)}');
+      final resolved = out.trim();
+      // Toybox readlink -f 正常输出绝对路径；命令不存在/报错时可能返回
+      // `/system/bin/sh: readlink: not found`，不能把它当路径。
+      if (resolved.startsWith('/') &&
+          !resolved.contains('\n') &&
+          !resolved.contains('not found') &&
+          !resolved.startsWith('readlink:')) {
+        return resolved;
+      }
+    } catch (_) {}
+    return path;
+  }
+
+  ShellFileEntry? _parseAdbLsLine(String line, String dir) {
+    final trimmed = line.trimRight();
+    if (trimmed.isEmpty ||
+        trimmed.startsWith('total ') ||
+        trimmed.startsWith('ls: ')) {
+      return null;
+    }
+    final parts = trimmed.split(RegExp(r'\s+'));
+    // 有些目录（/、/data 等）元数据被 SELinux 遮住，行内会有
+    // `-????????? ? ? ? ? ? init.environ.rc` 只有 7 列，不能按 8 列拒掉。
+    if (parts.length < 7) return null;
+    final perms = parts[0];
+    if (!perms.startsWith('-') &&
+        !perms.startsWith('d') &&
+        !perms.startsWith('l')) {
+      return null;
+    }
+
+    // 位 5 是日期列：
+    // - Android toybox: 2025-09-07 01:07 name  → 名字从第 7 列开始
+    // - GNU coreutils:  Sep  7 01:07 name       → 名字从第 8 列开始
+    // - 元数据缺失:     ? ? ? ? ? name           → 名字紧跟在元数据后
+    final f5 = parts.length > 5 ? parts[5] : '';
+    final bool toyboxDate = RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(f5);
+    final bool gnuMonth = RegExp(r'^[A-Za-z]{3}$').hasMatch(f5);
+    final arrowIndex = parts.indexOf('->');
+    final logicalEnd = arrowIndex >= 0 ? arrowIndex : parts.length;
+    final int nameStart;
+    if (toyboxDate) {
+      nameStart = 7;
+    } else if (gnuMonth) {
+      nameStart = 8;
+    } else {
+      // 元数据缺失时至少取 `->` 前最后一个 token 作为文件名。
+      nameStart = logicalEnd - 1;
+    }
+    if (nameStart < 1 || nameStart >= logicalEnd) return null;
+
+    // 软链接行是 `name -> target`，展示名只留 name；路径解析交给 _adbRealPath。
+    final name = parts.sublist(nameStart, logicalEnd).join(' ').trim();
+    if (name.isEmpty || name == '.' || name == '..') return null;
+
+    final size = int.tryParse(parts[4]) ?? 0;
+    final isDir = perms.startsWith('d') || perms.startsWith('l');
+    final hidden = name.startsWith('.');
+
+    var modified = DateTime.now();
+    if (toyboxDate) {
+      final time = (parts.length > 6 && parts[6].contains(':'))
+          ? parts[6]
+          : '00:00';
+      modified = DateTime.tryParse('$f5 $time') ?? modified;
+    } else if (gnuMonth) {
+      final month = _monthNumber(f5);
+      final day = int.tryParse(parts[6]) ?? 1;
+      final yearOrTime = parts.length > 7 ? parts[7] : '';
+      if (yearOrTime.contains(':')) {
+        modified = DateTime.tryParse(
+              '${DateTime.now().year}-'
+              '${month.toString().padLeft(2, '0')}-'
+              '${day.toString().padLeft(2, '0')} $yearOrTime',
+            ) ??
+            modified;
+      } else {
+        final year = int.tryParse(yearOrTime) ?? DateTime.now().year;
+        modified = DateTime(year, month, day);
+      }
+    }
+
+    return ShellFileEntry(
+      name: name,
+      path: _adbJoin(dir, name),
+      isDirectory: isDir,
+      size: size,
+      modified: modified,
+      readable: perms.length > 1 && perms[1] == 'r',
+      writable: perms.length > 2 && perms[2] == 'w',
+      executable: perms.length > 3 && perms[3] == 'x',
+      hidden: hidden,
+    );
+  }
+
+  static int _monthNumber(String name) {
+    const months = {
+      'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+      'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
+    };
+    return months[name] ?? 1;
+  }
+
+  Future<String> _adbRead(String path) async {
+    final id = _adbId();
+    return AdbSessionManager.instance.execute(id, 'cat ${_shq(path)}');
+  }
+
+  Future<Uint8List?> _adbReadBytes(String path) async {
+    final id = _adbId();
+    final out =
+        await AdbSessionManager.instance.execute(id, 'base64 ${_shq(path)}');
+    final normalized = out.replaceAll(RegExp(r'\s'), '');
+    if (normalized.isEmpty) return null;
+    try {
+      return base64Decode(normalized);
+    } catch (e) {
+      throw StateError('ADB 读取二进制失败：$e');
+    }
+  }
+
+  Future<bool> _adbWriteBytes(String path, Uint8List bytes) async {
+    final id = _adbId();
+    final b64 = base64Encode(bytes);
+    if (b64.isEmpty) {
+      await AdbSessionManager.instance.execute(id, 'touch ${_shq(path)}');
+      return true;
+    }
+    // 分 32KB 块写，避免单条 shell 命令过长。
+    for (var offset = 0; offset < b64.length; offset += 32000) {
+      final chunk = b64.substring(
+          offset, offset + 32000 > b64.length ? b64.length : offset + 32000);
+      final append = offset == 0 ? '>' : '>>';
+      final quoted = chunk.replaceAll("'", "'\\''");
+      await AdbSessionManager.instance.execute(
+        id,
+        "echo '$quoted' | base64 -d $append '${path.replaceAll("'", "'\\''")}'",
+      );
+    }
+    return true;
+  }
+
+  Future<void> _adbDelete(String path) async {
+    await AdbSessionManager.instance
+        .execute(_adbId(), 'rm -rf ${_shq(path)}');
+  }
+
+  Future<void> _adbRename(String from, String to) async {
+    await AdbSessionManager.instance
+        .execute(_adbId(), 'mv ${_shq(from)} ${_shq(to)}');
+  }
+
+  Future<void> _adbMkdir(String path) async {
+    await AdbSessionManager.instance
+        .execute(_adbId(), 'mkdir -p ${_shq(path)}');
+  }
+
+  Future<ShellFileEntry> _adbStat(String path) async {
+    final raw = await AdbSessionManager.instance
+        .execute(_adbId(), 'ls -ld ${_shq(path)}');
+    final entry = _parseAdbLsLine(raw.trim(), path.endsWith('/') ? path.substring(0, path.length - 1) : path) ??
+        ShellFileEntry(
+          name: path.split('/').last,
+          path: path,
+          isDirectory: false,
+          size: 0,
+          modified: DateTime.now(),
+        );
+    return entry;
+  }
+
+  Future<void> _adbCopy(String from, String to) async {
+    final id = _adbId();
+    // 先试 cp -rf；部分精简 ROM 没有 cp 时退化为 base64 字节中转。
+    final cmd = 'cp -rf ${_shq(from)} ${_shq(to)}';
+    final out = await AdbSessionManager.instance.execute(id, cmd);
+    if (out.trim().isNotEmpty && !out.startsWith('usage')) {
+      throw StateError(out.trim());
+    }
+  }
+
+  Future<void> _adbMove(String from, String to) async {
+    await _adbRename(from, to);
+  }
+
   /// 当前作用域给原生侧的标记。两套目录树在磁盘上是嵌套的
   /// （guest 的 /workspace 就在 filesDir 下），路径字符串分不出来，必须带上。
   String get _scope => switch (state.scope) {
         FileScope.shell => 'shell',
         FileScope.app => 'app',
         FileScope.ssh => 'ssh',
+        FileScope.adb => 'adb',
       };
 
   Future<String?> readFile(String path) async {
@@ -692,6 +1044,9 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
         final f = await sftp.open(path);
         final bytes = await f.readBytes();
         return utf8.decode(bytes, allowMalformed: true);
+      }
+      if (state.scope == FileScope.adb) {
+        return await _adbRead(path);
       }
       return await _bridge.readFile(path: path, scope: _scope);
     } catch (e) {
@@ -710,6 +1065,9 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
         await f.close();
         return bytes;
       }
+      if (state.scope == FileScope.adb) {
+        return await _adbReadBytes(path);
+      }
       final host = await _bridge.hostPath(path: path, scope: _scope);
       if (host.isEmpty) return null;
       return File(host).readAsBytes();
@@ -723,9 +1081,14 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
   Future<Uint8List?> readBytesAtScope(
     String path,
     FileScope scope,
-    String? sshId,
-  ) async {
+    String? sshId, {
+    String? adbId,
+  }) async {
     try {
+      if (scope == FileScope.adb) {
+        return await AdbSessionManager.instance
+            .runBase64Read(adbId!, path);
+      }
       if (scope == FileScope.ssh) {
         final sftp = await _sftpFor(sshId!);
         final f = await sftp.open(path);
@@ -758,6 +1121,11 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
         await refresh();
         return true;
       }
+      if (state.scope == FileScope.adb) {
+        await _adbWriteBytes(path, bytes);
+        await refresh();
+        return true;
+      }
       final host = await _bridge.hostPath(path: path, scope: _scope);
       if (host.isEmpty) return false;
       await File(host).writeAsBytes(bytes, flush: true);
@@ -770,8 +1138,15 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
   }
 
   /// 删除指定作用域里的文件/目录（跨区剪切到容器后清理源文件用）。
-  Future<bool> deleteAtScope(String path, FileScope scope, String? sshId) async {
+  Future<bool> deleteAtScope(String path, FileScope scope, String? sshId,
+      {String? adbId}) async {
     try {
+      if (scope == FileScope.adb) {
+        await AdbSessionManager.instance
+            .execute(adbId!, 'rm -rf ${_shq(path)}');
+        if (state.scope == scope && state.adbSessionId == adbId) await refresh();
+        return true;
+      }
       if (scope == FileScope.ssh) {
         final sftp = await _sftpFor(sshId!);
         await sftp.remove(path);
@@ -790,6 +1165,7 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
   /// 取宿主真实路径（内置图片查看器要用）。
   Future<String?> hostPath(String path) async {
     if (state.scope == FileScope.ssh) return null;
+    if (state.scope == FileScope.adb) return null;
     try {
       return await _bridge.hostPath(path: path, scope: _scope);
     } catch (e) {
@@ -820,30 +1196,38 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
   Future<bool> saveFile(String path, String content) => _guard(
         () => state.scope == FileScope.ssh
             ? _sshWrite(path, content)
-            : _bridge.writeFile(path: path, content: content, scope: _scope),
+            : state.scope == FileScope.adb
+                ? _adbWriteBytes(path, Uint8List.fromList(utf8.encode(content)))
+                : _bridge.writeFile(path: path, content: content, scope: _scope),
       );
 
   Future<bool> createDirectory(String name) => _guard(
         () => state.scope == FileScope.ssh
             ? _sftpFor(state.sshSessionId!)
                 .then((sftp) => sftp.mkdir(_sshJoin(state.path, name)))
-            : _bridge.makeDirectory(_join(state.path, name), scope: _scope),
+            : state.scope == FileScope.adb
+                ? _adbMkdir(_adbJoin(state.path, name))
+                : _bridge.makeDirectory(_join(state.path, name), scope: _scope),
       );
 
   Future<bool> createFile(String name) => _guard(
         () => state.scope == FileScope.ssh
             ? _sshWrite(_sshJoin(state.path, name), '')
-            : _bridge.writeFile(
-                path: _join(state.path, name),
-                content: '',
-                scope: _scope,
-              ),
+            : state.scope == FileScope.adb
+                ? _adbWriteBytes(_adbJoin(state.path, name), Uint8List(0))
+                : _bridge.writeFile(
+                    path: _join(state.path, name),
+                    content: '',
+                    scope: _scope,
+                  ),
       );
 
   Future<bool> delete(String path) => _guard(
         () => state.scope == FileScope.ssh
             ? _sshDelete(path)
-            : _bridge.deletePath(path, scope: _scope),
+            : state.scope == FileScope.adb
+                ? _adbDelete(path)
+                : _bridge.deletePath(path, scope: _scope),
       );
 
   Future<void> _sshWrite(String path, String content) async {
@@ -920,6 +1304,45 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
         }
         return ShellImportResult(canceled: false, files: files, failed: failed);
       }
+      if (state.scope == FileScope.adb) {
+        final picked = await FilePicker.pickFiles(allowMultiple: true);
+        if (picked == null) {
+          return const ShellImportResult(
+            canceled: true,
+            files: [],
+            failed: [],
+          );
+        }
+        final files = <ShellFileEntry>[];
+        final failed = <({String name, String error})>[];
+        for (final f in picked.files) {
+          final local = f.path;
+          if (local == null) continue;
+          final remote = _adbJoin(state.path, f.name);
+          try {
+            final bytes = await File(local).readAsBytes();
+            await _adbWriteBytes(remote, bytes);
+            files.add(ShellFileEntry(
+              name: f.name,
+              path: remote,
+              isDirectory: false,
+              size: bytes.length,
+              modified: DateTime.now(),
+              readable: true,
+              writable: true,
+            ));
+          } catch (e) {
+            failed.add((name: f.name, error: _message(e)));
+          }
+        }
+        await refresh();
+        if (failed.isNotEmpty) {
+          state = state.copyWith(
+            error: '${failed.first.name}：${failed.first.error}',
+          );
+        }
+        return ShellImportResult(canceled: false, files: files, failed: failed);
+      }
       final result = await _bridge.importFiles(path: state.path, scope: _scope);
       // 有文件落地就刷新列表；一个都没成功就别白刷一次。
       if (result.files.isNotEmpty) await refresh();
@@ -944,6 +1367,8 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       try {
         if (state.scope == FileScope.ssh) {
           await _sshDelete(path);
+        } else if (state.scope == FileScope.adb) {
+          await _adbDelete(path);
         } else {
           await _bridge.deletePath(path, scope: _scope);
         }
@@ -961,11 +1386,13 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
         () => state.scope == FileScope.ssh
             ? _sftpFor(state.sshSessionId!).then((sftp) =>
                 sftp.rename(entry.path, _sshJoin(state.path, newName)))
-            : _bridge.movePath(
-                from: entry.path,
-                to: _join(state.path, newName),
-                scope: _scope,
-              ),
+            : state.scope == FileScope.adb
+                ? _adbRename(entry.path, _adbJoin(state.path, newName))
+                : _bridge.movePath(
+                    from: entry.path,
+                    to: _join(state.path, newName),
+                    scope: _scope,
+                  ),
       );
 
   /// 读取图片原始字节（本地走宿主文件，SSH 走 SFTP）。
@@ -979,6 +1406,9 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
         } finally {
           await f.close();
         }
+      }
+      if (state.scope == FileScope.adb) {
+        return await _adbReadBytes(path);
       }
       final host = await hostPath(path);
       if (host == null || host.isEmpty) return null;
@@ -1006,6 +1436,13 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       _imageCache[key] = decoded;
       return decoded;
     } catch (e) {
+      // 原生解码失败（个别 ROM/特殊格式）时，收藏器（大图）退回 Flutter
+      // 自带的 JPEG/PNG/WebP/GIF 解码；缩略图不退回原图，避免大图列表卡顿。
+      if (!thumbnail) {
+        if (_imageCache.length > 400) _imageCache.clear();
+        _imageCache[key] = raw;
+        return raw;
+      }
       return null;
     }
   }
@@ -1036,6 +1473,17 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
           hostPath: path,
         );
       }
+      if (state.scope == FileScope.adb) {
+        final entry = await _adbStat(path);
+        final isDir = entry.isDirectory;
+        return ShellFileStat(
+          entry: entry,
+          totalBytes: entry.size,
+          fileCount: isDir ? 0 : 1,
+          dirCount: isDir ? 1 : 0,
+          hostPath: 'adb://${state.adbSessionId}$path',
+        );
+      }
       return await _bridge.stat(path, scope: _scope);
     } catch (e) {
       state = state.copyWith(error: _message(e));
@@ -1063,6 +1511,8 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
         clipboardScope: state.scope.name,
         clipboardSshId:
             state.scope == FileScope.ssh ? state.sshSessionId : null,
+        clipboardAdbId:
+            state.scope == FileScope.adb ? state.adbSessionId : null,
       );
 
   void cutToClipboard(String path) => state = state.copyWith(
@@ -1071,6 +1521,8 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
         clipboardScope: state.scope.name,
         clipboardSshId:
             state.scope == FileScope.ssh ? state.sshSessionId : null,
+        clipboardAdbId:
+            state.scope == FileScope.adb ? state.adbSessionId : null,
       );
 
   /// 粘贴：剪切 = move，复制 = copy。同名自动加后缀，不覆盖已有文件。
@@ -1081,8 +1533,12 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
     if (source == null) return false;
     final dir = targetDir ?? state.path;
     final name = source.split('/').last;
-    var target =
-        state.scope == FileScope.ssh ? _sshJoin(dir, name) : _join(dir, name);
+    String join(String d, String n) => state.scope == FileScope.ssh
+        ? _sshJoin(d, n)
+        : state.scope == FileScope.adb
+            ? _adbJoin(d, n)
+            : _join(d, n);
+    var target = join(dir, name);
     // 同名自动加后缀，不覆盖已有文件。
     final existing = dir == state.path
         ? {for (final e in state.entries) e.path}
@@ -1093,9 +1549,7 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       final ext = dot > 0 ? name.substring(dot) : '';
       var i = 2;
       while (existing.contains(target)) {
-        target = state.scope == FileScope.ssh
-            ? _sshJoin(dir, '$stem($i)$ext')
-            : _join(dir, '$stem($i)$ext');
+        target = join(dir, '$stem($i)$ext');
         i++;
       }
     }
@@ -1113,6 +1567,7 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
   ) async {
     final sourceScopeName = state.clipboardScope;
     final sourceSshId = state.clipboardSshId;
+    final sourceAdbId = state.clipboardAdbId;
     final sourceScope = sourceScopeName == null
         ? state.scope
         : FileScope.values.firstWhere(
@@ -1120,9 +1575,21 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
             orElse: () => state.scope,
           );
     final sameScope = sourceScope == state.scope &&
-        (sourceScope != FileScope.ssh || sourceSshId == state.sshSessionId);
+        ((sourceScope != FileScope.ssh && sourceScope != FileScope.adb) ||
+            (sourceScope == FileScope.ssh &&
+                sourceSshId == state.sshSessionId) ||
+            (sourceScope == FileScope.adb &&
+                sourceAdbId == state.adbSessionId));
 
     if (sameScope) {
+      if (state.scope == FileScope.adb) {
+        if (cut) {
+          await _adbMove(source, target);
+        } else {
+          await _adbCopy(source, target);
+        }
+        return;
+      }
       if (state.scope == FileScope.ssh) {
         final remoteTarget = target;
         if (cut) {
@@ -1146,33 +1613,46 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       source,
       sourceScope,
       sourceSshId,
+      adbId: sourceAdbId,
     );
     if (isDir) {
       throw StateError('跨区复制/剪切暂只支持文件，文件夹请先从里面复制文件');
     }
 
-    // SSH -> 终端/APP
+    // SSH -> 终端/APP/ADB
     if (sourceScope == FileScope.ssh && state.scope != FileScope.ssh) {
       final sftp = await _sftpFor(sourceSshId!);
       final src = await sftp.open(source);
       final bytes = await src.readBytes();
       await src.close();
-      final host = await _hostPathFor(target, state.scope);
-      if (host.isEmpty) {
-        throw StateError('目标目录不存在或不可写');
+      if (state.scope == FileScope.adb) {
+        await _adbWriteBytes(target, bytes);
+      } else {
+        final host = await _hostPathFor(target, state.scope);
+        if (host.isEmpty) {
+          throw StateError('目标目录不存在或不可写');
+        }
+        await File(host).writeAsBytes(bytes, flush: true);
       }
-      await File(host).writeAsBytes(bytes, flush: true);
       if (cut) await _sftpFor(sourceSshId).then((s) => s.remove(source));
       return;
     }
 
-    // 终端/APP -> SSH
+    // 终端/APP/ADB -> SSH
     if (sourceScope != FileScope.ssh && state.scope == FileScope.ssh) {
-      final host = await _hostPathFor(source, sourceScope);
-      if (host.isEmpty) {
-        throw StateError('取不到源文件宿主路径（文件不存在或已删除）');
+      Uint8List bytes;
+      if (sourceScope == FileScope.adb) {
+        final raw = await AdbSessionManager.instance
+            .runBase64Read(sourceAdbId!, source);
+        if (raw == null) throw StateError('ADB 读取源文件失败');
+        bytes = raw;
+      } else {
+        final host = await _hostPathFor(source, sourceScope);
+        if (host.isEmpty) {
+          throw StateError('取不到源文件宿主路径（文件不存在或已删除）');
+        }
+        bytes = await File(host).readAsBytes();
       }
-      final bytes = await File(host).readAsBytes();
       final sftp = await _sftpFor(state.sshSessionId!);
       final dst = await sftp.open(
         target,
@@ -1182,7 +1662,59 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
       );
       await dst.writeBytes(bytes);
       await dst.close();
-      if (cut) await _bridge.deletePath(source, scope: sourceScope.name);
+      if (cut) {
+        if (sourceScope == FileScope.adb) {
+          await AdbSessionManager.instance
+              .execute(sourceAdbId!, 'rm -rf ${_shq(source)}');
+        } else {
+          await _bridge.deletePath(source, scope: sourceScope.name);
+        }
+      }
+      return;
+    }
+
+    // ADB -> 终端/APP（源 ADB 目标本地）
+    if (sourceScope == FileScope.adb && state.scope != FileScope.adb) {
+      final raw = await AdbSessionManager.instance
+          .runBase64Read(sourceAdbId!, source);
+      if (raw == null) throw StateError('ADB 读取源文件失败');
+      final bytes = raw;
+      final host = await _hostPathFor(target, state.scope);
+      if (host.isEmpty) {
+        throw StateError('目标目录不存在或不可写');
+      }
+      await File(host).writeAsBytes(bytes, flush: true);
+      if (cut) {
+        await AdbSessionManager.instance
+            .execute(sourceAdbId, 'rm -rf ${_shq(source)}');
+      }
+      return;
+    }
+
+    // 终端/APP -> ADB（源本地目标 ADB）
+    if (sourceScope != FileScope.adb && state.scope == FileScope.adb) {
+      Uint8List bytes;
+      if (sourceScope == FileScope.ssh) {
+        final sftp = await _sftpFor(sourceSshId!);
+        final src = await sftp.open(source);
+        bytes = await src.readBytes();
+        await src.close();
+      } else {
+        final host = await _hostPathFor(source, sourceScope);
+        if (host.isEmpty) {
+          throw StateError('取不到源文件宿主路径（文件不存在或已删除）');
+        }
+        bytes = await File(host).readAsBytes();
+      }
+      await _adbWriteBytes(target, bytes);
+      if (cut) {
+        if (sourceScope == FileScope.ssh) {
+          final sftp = await _sftpFor(sourceSshId!);
+          await sftp.remove(source);
+        } else {
+          await _bridge.deletePath(source, scope: sourceScope.name);
+        }
+      }
       return;
     }
 
@@ -1199,9 +1731,15 @@ print(json.dumps({'path': root, 'pattern': pattern_raw, 'matches': hits[:limit]}
   Future<bool> _crossSourceIsDir(
     String path,
     FileScope scope,
-    String? sshId,
-  ) async {
+    String? sshId, {
+    String? adbId,
+  }) async {
     try {
+      if (scope == FileScope.adb) {
+        final raw = await AdbSessionManager.instance
+            .execute(adbId!, 'ls -ld ${_shq(path)}');
+        return raw.trimLeft().startsWith('d');
+      }
       if (scope == FileScope.ssh) {
         final sftp = await _sftpFor(sshId!);
         final attrs = await sftp.stat(path);

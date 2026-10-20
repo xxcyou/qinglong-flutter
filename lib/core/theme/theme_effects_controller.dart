@@ -161,6 +161,8 @@ class ComponentStyle {
     this.glowColor,
     this.glowRadius,
     this.glowOpacity,
+    this.glowSharpness,
+    this.glowShape = 'auto',
     this.gradientColors,
     this.gradientAngle = 135,
     this.fillOpacity,
@@ -172,6 +174,7 @@ class ComponentStyle {
     this.innerGlowColor,
     this.innerGlowOpacity,
     this.innerGlowRadius,
+    this.innerGlowSharpness,
     this.innerGlowSide = 'all',
     this.innerShadowColor,
     this.innerShadowOpacity,
@@ -195,6 +198,13 @@ class ComponentStyle {
   final Color? glowColor;
   final double? glowRadius;
   final double? glowOpacity;
+
+  /// 外发光锐化度 0~1：0 = 浓雾一样扩散，1 = 边缘锐利清晰。
+  final double? glowSharpness;
+
+  /// 外发光形状：auto 自动按圆角/椭圆判断，roundRect 圆角矩形，
+  /// oval 椭圆/圆形，rect 直角矩形。
+  final String glowShape;
   final List<Color>? gradientColors;
   final double gradientAngle;
   final double? fillOpacity;
@@ -208,6 +218,9 @@ class ComponentStyle {
   final Color? innerGlowColor;
   final double? innerGlowOpacity;
   final double? innerGlowRadius;
+
+  /// 内发光锐化度 0~1：1 时紧贴边框，0 时柔和晕开。
+  final double? innerGlowSharpness;
   final String innerGlowSide;
 
   /// 内阴影：组件内部边缘暗影，模拟被遮挡/月光照不到的暗部。
@@ -242,6 +255,8 @@ class ComponentStyle {
       glowColor: glowColor ?? base.glowColor,
       glowRadius: glowRadius ?? base.glowRadius,
       glowOpacity: glowOpacity ?? base.glowOpacity,
+      glowSharpness: glowSharpness ?? base.glowSharpness,
+      glowShape: glowShape,
       gradientColors: gradientColors ?? base.gradientColors,
       gradientAngle: gradientAngle,
       fillOpacity: fillOpacity ?? base.fillOpacity,
@@ -253,6 +268,7 @@ class ComponentStyle {
       innerGlowColor: innerGlowColor ?? base.innerGlowColor,
       innerGlowOpacity: innerGlowOpacity ?? base.innerGlowOpacity,
       innerGlowRadius: innerGlowRadius ?? base.innerGlowRadius,
+      innerGlowSharpness: innerGlowSharpness ?? base.innerGlowSharpness,
       innerGlowSide: innerGlowSide,
       innerShadowColor: innerShadowColor ?? base.innerShadowColor,
       innerShadowOpacity: innerShadowOpacity ?? base.innerShadowOpacity,
@@ -398,6 +414,10 @@ class ThemeEffectsController extends ChangeNotifier {
   Timer? _effectFlushTimer;
   final Map<String, ComponentStyle> _styles = {};
 
+  /// 当前主题包 controller.js 里的组件风格（zip 内配置），
+  /// 主题包发光由这里统一控制。
+  ComponentStyle? _themeStyle;
+
   /// guest 图片路径 -> host 文件路径缓存：同一动画帧里多个特效引用同一张图时，
   /// 不再重复走 ProotBridge.hostPath 异步链路。
   final Map<String, String> _imageHostCache = {};
@@ -473,8 +493,14 @@ class ThemeEffectsController extends ChangeNotifier {
       '${page ?? '*'} | ${type ?? '*'} | ${index?.toString() ?? '*'}'
           .replaceAll(' ', '');
 
+  /// 设置主题包自带组件风格（来自 zip / controller.js）。
+  void setThemeStyle(ComponentStyle? style) {
+    _themeStyle = style;
+    notifyListeners();
+  }
+
   ComponentStyle? componentStyleFor(String page, String type, int index) {
-    return _styles[_styleKey(page, type, index)] ??
+    final base = _styles[_styleKey(page, type, index)] ??
         _styles[_styleRuleKey(null, type, index)] ??
         _styles[_styleRuleKey(page, null, index)] ??
         _styles[_styleRuleKey(null, null, index)] ??
@@ -482,6 +508,8 @@ class ThemeEffectsController extends ChangeNotifier {
         _styles[_styleRuleKey(null, type, null)] ??
         _styles[_styleRuleKey(page, null, null)] ??
         _styles[_styleRuleKey(null, null, null)];
+    final theme = _themeStyle;
+    return theme == null ? base : theme.merge(base);
   }
 
   /// 存储一条可作用于未来组件的样式规则：
@@ -655,6 +683,8 @@ class ThemeEffectBridge {
       glowColor: parseColor(st['glowColor']),
       glowRadius: (st['glowRadius'] as num?)?.toDouble(),
       glowOpacity: (st['glowOpacity'] as num?)?.toDouble(),
+      glowSharpness: (st['glowSharpness'] as num?)?.toDouble(),
+      glowShape: st['glowShape']?.toString() ?? 'auto',
       gradientColors: colors,
       gradientAngle: (st['angle'] as num?)?.toDouble() ?? 135,
       fillOpacity: (st['fillOpacity'] as num?)?.toDouble(),
@@ -673,6 +703,10 @@ class ThemeEffectBridge {
       innerGlowRadius: (innerGlow['radius'] ??
               innerGlow['innerGlowRadius'] ??
               st['innerGlowRadius'] as num?)
+          ?.toDouble(),
+      innerGlowSharpness: (innerGlow['sharpness'] ??
+              innerGlow['innerGlowSharpness'] ??
+              st['innerGlowSharpness'] as num?)
           ?.toDouble(),
       innerGlowSide: (innerGlow['side'] ??
                   innerGlow['innerGlowSide'] ??
@@ -1080,23 +1114,41 @@ class ThemeInnerDecorPainter extends CustomPainter {
   ThemeInnerDecorPainter({
     required this.style,
     required this.cornerRadius,
+    required this.glowShape,
+    required this.glowSharpness,
   });
 
   final ComponentStyle style;
   final double cornerRadius;
+  final String glowShape;
+  final double glowSharpness;
 
   @override
   void paint(Canvas canvas, Size size) {
     if (size.isEmpty) return;
-    final rr = RRect.fromRectAndRadius(
-      Offset.zero & size,
-      Radius.circular(cornerRadius),
-    );
     canvas.save();
-    canvas.clipRRect(rr);
+    canvas.clipPath(_edgePath(size));
     _paintGlow(canvas, size);
     _paintShadow(canvas, size);
     canvas.restore();
+  }
+
+  /// 内发光也要贴合组件形状：圆/椭圆用椭圆路径，圆角矩形用 RRect。
+  Path _edgePath(Size size) {
+    final rect = Offset.zero & size;
+    // 组件是圆角矩形就按圆角矩形发光；只有显式传 oval 才用椭圆/圆形光。
+    final shape = glowShape == 'oval';
+    final path = Path();
+    if (shape) {
+      path.addOval(rect);
+    } else if (glowShape == 'rect') {
+      path.addRect(rect);
+    } else {
+      path.addRRect(
+        RRect.fromRectAndRadius(rect, Radius.circular(cornerRadius)),
+      );
+    }
+    return path;
   }
 
   List<String> _sides(String? raw) {
@@ -1123,6 +1175,23 @@ class ThemeInnerDecorPainter extends CustomPainter {
     }
     final paint = Paint();
     final sides = _sides(style.innerGlowSide);
+    // 全边内发光：直接沿边框路径画一条高斯模糊描边，紧密跟随圆角/椭圆弧度，
+    // 不再用“整条矩形渐变 + 圆角裁剪”导致角上看起来像直角光。
+    if (sides.length == 4) {
+      final sharp = glowSharpness.clamp(0.0, 1.0);
+      final blur = band * (1 - sharp);
+      canvas.drawPath(
+        _edgePath(size),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = band * (1.6 + 0.8 * (1 - sharp))
+          ..maskFilter = blur > 0.5
+              ? MaskFilter.blur(BlurStyle.normal, blur)
+              : null
+          ..color = color.withValues(alpha: opacity.clamp(0.0, 1.0)),
+      );
+      return;
+    }
     void face(String side) {
       switch (side) {
         case 'top':
@@ -1249,7 +1318,10 @@ class ThemeInnerDecorPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant ThemeInnerDecorPainter oldDelegate) =>
-      oldDelegate.style != style || oldDelegate.cornerRadius != cornerRadius;
+      oldDelegate.style != style ||
+      oldDelegate.cornerRadius != cornerRadius ||
+      oldDelegate.glowShape != glowShape ||
+      oldDelegate.glowSharpness != glowSharpness;
 }
 
 /// 液体玻璃合成层：在组件背景上叠加动态高光、焦散、折射波纹与厚度边缘。

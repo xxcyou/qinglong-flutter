@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../core/theme/glass.dart';
@@ -14,6 +16,9 @@ import '../../shared/editor_bus.dart';
 import '../../shared/float_stack.dart';
 import '../../shared/highlighting_code_controller.dart';
 import 'browser_engine.dart';
+import '../terminal/pages/shell_files_page.dart';
+import '../terminal/providers/shell_files_provider.dart';
+import 'models/browser_download.dart';
 import 'browser_window.dart';
 import 'web_bridge.dart';
 import 'intercept_js.dart';
@@ -147,6 +152,10 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
   /// 0 页面 / 1 抓包 / 2 日志 / 3 脚本
   int _tab = 0;
 
+  /// 下载管理：批量选择状态与选中的任务 id。
+  bool _downloadSelectMode = false;
+  final Set<int> _selectedDownloadIds = {};
+
   /// 抓包详情：点列表项后在这里看结构化内容，null = 回到列表。
   CapturedRequest? _detailRequest;
 
@@ -176,7 +185,7 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     // 控制器已经 ready，不会出现“第一次 loadRequest 发给没准备好的 WebView”
     // 导致黑屏/转圈/地址空。这是最彻底的避免首开竞态的办法。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_engine.ensure());
+      unawaited(_engine.warmUp());
     });
     // WebView 第一次 created 后必须让 BrowserView 自己 setState 重建：
     // BrowserHost 外层重建不会穿透 OverlayEntry，只有这里的监听能保证
@@ -613,6 +622,7 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                       onOpenUrl: _openUrlFromPanel,
                     ),
                     7 => _ProfilePanel(engine: _engine),
+                    8 => _downloadList(),
                     _ => _scriptList(),
                   },
                 ),
@@ -672,15 +682,26 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
     if (win.maximized) return Rect.fromLTWH(0, 0, size.width, size.height);
     final f = _field(media);
     final w = (win.w * f.width).clamp(BrowserWindow.minW * f.width, f.width);
-    final h = (win.h * f.height).clamp(BrowserWindow.minH * f.height, f.height);
+    var h = (win.h * f.height).clamp(BrowserWindow.minH * f.height, f.height);
     var left = f.left + win.x * f.width;
     var y = f.top + win.y * f.height;
-    // 键盘弹起时整窗上移：登录框在页面下半部分时最需要这个。
+    // 只在窗口底边会被键盘盖住时才上移；上移空间不够的部分再从底部
+    // 收窄，保证窗口里的输入区域始终在键盘上方。
     final keyboard = media.viewInsets.bottom;
+    final minH = BrowserWindow.minH * f.height;
     if (keyboard > 0) {
-      final limit = size.height - keyboard - 6 - h;
-      if (y > limit) y = limit;
-      if (y < f.top) y = f.top;
+      final imeTop = size.height - keyboard - 6;
+      final delta = (y + h) - imeTop;
+      if (delta > 0) {
+        final maxShift = y - f.top;
+        final shift = delta < maxShift ? delta : maxShift;
+        y -= shift;
+        final remaining = delta - shift;
+        if (remaining > 0) {
+          final shrunk = h - remaining;
+          h = shrunk < minH ? minH : shrunk;
+        }
+      }
     }
     left = left.clamp(f.left, f.left + f.width - w);
     y = y.clamp(f.top, f.top + f.height - h);
@@ -833,6 +854,17 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
                         _tabChip('历史', 6, Icons.history_outlined),
                         const SizedBox(width: 5),
                         _tabChip('快照', 7, Icons.account_tree_outlined),
+                        const SizedBox(width: 5),
+                        ValueListenableBuilder<List<BrowserDownload>>(
+                          valueListenable: _engine.downloads,
+                          builder: (context, list, _) => _tabChip(
+                            list.isEmpty
+                                ? '下载'
+                                : '下载 ${list.length}',
+                            8,
+                            Icons.download_outlined,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -1134,6 +1166,490 @@ class _BrowserViewState extends State<BrowserView> with WidgetsBindingObserver {
       backgroundColor: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
       side: BorderSide.none,
     );
+  }
+
+  Widget _downloadList() {
+    return ValueListenableBuilder<List<BrowserDownload>>(
+      valueListenable: _engine.downloads,
+      builder: (context, list, _) {
+        final scheme = Theme.of(context).colorScheme;
+        final selected = _selectedDownloadIds
+            .where((id) => list.any((d) => d.id == id))
+            .toSet();
+        return Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: '新建下载',
+                    icon: const Icon(Icons.add_link_rounded),
+                    onPressed: _showNewDownloadDialog,
+                  ),
+                  const SizedBox(width: 4),
+                  if (!_downloadSelectMode)
+                    IconButton(
+                      tooltip: '批量管理',
+                      icon: const Icon(Icons.checklist_rounded),
+                      onPressed: () {
+                        setState(() {
+                          _downloadSelectMode = true;
+                          _selectedDownloadIds.clear();
+                        });
+                      },
+                    )
+                  else ...[
+                    IconButton(
+                      tooltip: '取消批量',
+                      icon: const Icon(Icons.close_rounded),
+                      onPressed: () {
+                        setState(() {
+                          _downloadSelectMode = false;
+                          _selectedDownloadIds.clear();
+                        });
+                      },
+                    ),
+                    IconButton(
+                      tooltip: selected.isEmpty ? '全选' : '清空选择',
+                      icon: Icon(
+                        selected.isNotEmpty
+                            ? Icons.deselect_rounded
+                            : Icons.select_all_rounded,
+                      ),
+                      onPressed: () {
+                        setState(() {
+                          if (selected.isNotEmpty) {
+                            _selectedDownloadIds.clear();
+                          } else {
+                            _selectedDownloadIds
+                              ..clear()
+                              ..addAll(list.map((d) => d.id));
+                          }
+                        });
+                      },
+                    ),
+                    if (selected.isNotEmpty)
+                      IconButton(
+                        tooltip: '删除选中（含文件）',
+                        icon: const Icon(Icons.delete_sweep_outlined),
+                        onPressed: () => _deleteSelectedDownloads(selected),
+                      ),
+                  ],
+                  const Spacer(),
+                  if (_downloadSelectMode)
+                    Text(
+                      '已选 ${selected.length}',
+                      style: TextStyle(
+                          fontSize: 12, color: scheme.onSurfaceVariant),
+                    ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: list.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.download_outlined,
+                              size: 42, color: scheme.onSurfaceVariant),
+                          const SizedBox(height: 8),
+                          Text(
+                            '下载列表是空的',
+                            style: TextStyle(
+                                color: scheme.onSurfaceVariant, fontSize: 13),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '网页里点下载链接或点左上角「新建下载」都会出现在这里',
+                            style: TextStyle(
+                                color: scheme.onSurfaceVariant, fontSize: 11.5),
+                          ),
+                        ],
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(10, 4, 10, 12),
+                      itemCount: list.length,
+                      itemBuilder: (context, index) {
+                        final d = list[index];
+                        final isDone = d.status == BrowserDownloadStatus.completed;
+                        final isFailed = d.status == BrowserDownloadStatus.failed;
+                        final isPaused = d.status == BrowserDownloadStatus.paused;
+                        final isSelected =
+                            _downloadSelectMode && _selectedDownloadIds.contains(d.id);
+                        final accent = isFailed
+                            ? scheme.error
+                            : isDone
+                                ? Colors.green.shade600
+                                : scheme.primary;
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          color: isSelected
+                              ? scheme.primaryContainer.withValues(alpha: 0.45)
+                              : scheme.surfaceContainerHigh.withValues(alpha: 0.7),
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    if (_downloadSelectMode)
+                                      IconButton(
+                                        icon: Icon(
+                                          isSelected
+                                              ? Icons.check_circle_rounded
+                                              : Icons.radio_button_unchecked_rounded,
+                                          color: isSelected ? scheme.primary : null,
+                                        ),
+                                        onPressed: () =>
+                                            _toggleDownloadSelect(d.id),
+                                      )
+                                    else
+                                      Icon(
+                                        isFailed
+                                            ? Icons.error_outline
+                                            : isPaused
+                                                ? Icons.pause_circle_outline
+                                                : isDone
+                                                    ? Icons.check_circle_outline
+                                                    : Icons.downloading,
+                                        color: accent,
+                                        size: 22,
+                                      ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        d.name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                            fontSize: 13.5,
+                                            fontWeight: FontWeight.w600),
+                                      ),
+                                    ),
+                                    if (!_downloadSelectMode) ...[
+                                      IconButton(
+                                        tooltip: '复制下载链接',
+                                        visualDensity: VisualDensity.compact,
+                                        icon: const Icon(Icons.link_rounded,
+                                            size: 18),
+                                        onPressed: () => _copyDownloadLink(d),
+                                      ),
+                                      IconButton(
+                                        tooltip: '删除任务和文件',
+                                        visualDensity: VisualDensity.compact,
+                                        icon: const Icon(
+                                            Icons.delete_outline_rounded,
+                                            size: 18),
+                                        onPressed: () => _deleteDownloadTask(d),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 2, right: 2),
+                                  child: Text(
+                                    d.url,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        fontSize: 11,
+                                        color: scheme.onSurfaceVariant),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 2, right: 2),
+                                  child: isFailed
+                                      ? Text(
+                                          '下载失败：${d.error ?? '未知错误'}',
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                              fontSize: 11.5,
+                                              color: scheme.error),
+                                        )
+                                      : isDone
+                                          ? Text(
+                                              d.localPath ?? '',
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: scheme.onSurfaceVariant),
+                                            )
+                                          : isPaused
+                                              ? Text(
+                                                  '已暂停 · ${_fmtBytes(d.receivedBytes)}'
+                                                  '${d.totalBytes > 0 ? ' / ${_fmtBytes(d.totalBytes)}' : ''}'
+                                                  ' · ${(d.progress * 100).toStringAsFixed(0)}%',
+                                                  style: TextStyle(
+                                                      fontSize: 11,
+                                                      color:
+                                                          scheme.onSurfaceVariant),
+                                                )
+                                              : Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                    ClipRRect(
+                                                      borderRadius:
+                                                          BorderRadius.circular(4),
+                                                      child:
+                                                          LinearProgressIndicator(
+                                                        value: d.progress > 0
+                                                            ? d.progress
+                                                            : null,
+                                                        minHeight: 5,
+                                                        backgroundColor: scheme
+                                                            .surfaceContainerHighest,
+                                                      ),
+                                                    ),
+                                                    if (d.totalBytes > 0)
+                                                      Padding(
+                                                        padding: const EdgeInsets
+                                                            .only(top: 4),
+                                                        child: Text(
+                                                          '${(d.progress * 100).toStringAsFixed(0)}% '
+                                                          '(${_fmtBytes(d.receivedBytes)} / '
+                                                          '${_fmtBytes(d.totalBytes)})',
+                                                          style: TextStyle(
+                                                              fontSize: 10.5,
+                                                              color: scheme
+                                                                  .onSurfaceVariant),
+                                                        ),
+                                                      ),
+                                                  ],
+                                                ),
+                                ),
+                                if (!_downloadSelectMode) ...[
+                                  const SizedBox(height: 8),
+                                  Wrap(
+                                    spacing: 4,
+                                    runSpacing: 4,
+                                    children: [
+                                      if (d.status ==
+                                          BrowserDownloadStatus.downloading)
+                                        _downloadActionChip(
+                                          label: '暂停',
+                                          icon: Icons.pause_rounded,
+                                          onTap: () =>
+                                              _engine.pauseDownload(d.id),
+                                        )
+                                      else if (d.status ==
+                                          BrowserDownloadStatus.paused)
+                                        _downloadActionChip(
+                                          label: '继续',
+                                          icon: Icons.play_arrow_rounded,
+                                          onTap: () => unawaited(
+                                              _engine.resumeDownload(d.id)),
+                                        )
+                                      else if (d.status ==
+                                          BrowserDownloadStatus.failed)
+                                        _downloadActionChip(
+                                          label: '重试',
+                                          icon: Icons.refresh_rounded,
+                                          onTap: () => unawaited(_engine
+                                              .startDownload(d.url,
+                                                  suggestedName: d.name)),
+                                        ),
+                                      if (d.status !=
+                                          BrowserDownloadStatus.downloading)
+                                        _downloadActionChip(
+                                          label: '打开目录',
+                                          icon: Icons.folder_open_rounded,
+                                          onTap: () => unawaited(
+                                              _openDownloadFolder(d)),
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _downloadActionChip({
+    required String label,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return ActionChip(
+      label: Text(label, style: const TextStyle(fontSize: 11.5)),
+      avatar: Icon(icon, size: 15),
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      backgroundColor: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+      side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.3)),
+      onPressed: onTap,
+    );
+  }
+
+  Future<void> _showNewDownloadDialog() async {
+    final urlController = TextEditingController();
+    final nameController = TextEditingController();
+    final url = await showBrowserDialog<String?>(
+      context: context,
+      builder: (context, pop) => AlertDialog(
+        title: const Text('新建下载'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: urlController,
+              autofocus: true,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                labelText: '下载链接',
+                hintText: 'https://...',
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: '文件名（可选）',
+                hintText: '留空自动取链接文件名',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => pop(null),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => pop(urlController.text.trim()),
+            child: const Text('开始下载'),
+          ),
+        ],
+      ),
+    );
+    if (url == null || url.isEmpty) return;
+    final name = nameController.text.trim();
+    await _engine.startDownload(
+      url,
+      suggestedName: name.isEmpty ? null : name,
+    );
+  }
+
+  Future<void> _copyDownloadLink(BrowserDownload d) async {
+    await Clipboard.setData(ClipboardData(text: d.url));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已复制下载链接')),
+      );
+    }
+  }
+
+  Future<void> _openDownloadFolder(BrowserDownload d) async {
+    final container = ProviderScope.containerOf(context, listen: false);
+    final notifier = container.read(shellFilesProvider.notifier);
+    await notifier.switchScope(FileScope.app);
+    if (!mounted) return;
+    // 不能直接用 path_provider 的绝对路径：它和原生 appRoots 可能不是同一套
+    // 规范化路径，会被“只允许访问 APP 自身目录”拦下来。这里从文件管理器
+    // 的 APP 根目录（roots 第一项 = 内部文件）出发拼 browser_downloads，
+    // 保证一定在允许范围内，也不会把当前已打开的 browser_downloads 再拼一层。
+    final shellState = container.read(shellFilesProvider);
+    final appRoot = shellState.roots.isNotEmpty
+        ? shellState.roots.first
+        : shellState.path;
+    final dir = appRoot.endsWith('browser_downloads')
+        ? appRoot
+        : appRoot.isEmpty
+            ? '/browser_downloads'
+            : '$appRoot/browser_downloads';
+    final safe = d.name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+    final done = File('$dir/$safe');
+    final part = File('$dir/$safe.part');
+    final file = !done.existsSync() && part.existsSync()
+        ? part.path
+        : done.path;
+    await showBrowserDialog<void>(
+      context: context,
+      builder: (dialogContext, pop) => ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: SizedBox(
+          width: MediaQuery.sizeOf(dialogContext).width * 0.94,
+          height: MediaQuery.sizeOf(dialogContext).height * 0.9,
+          child: Material(
+            color: Theme.of(dialogContext).colorScheme.surface.withValues(alpha: 0.94),
+            child: Navigator(
+              initialRoute: '/',
+              onGenerateRoute: (settings) {
+                if (settings.name == '/') {
+                  return MaterialPageRoute<void>(
+                    settings: settings,
+                    builder: (_) => ShellFilesPage(
+                      asSheet: true,
+                      initialDir: dir,
+                      initialSelectPath: file,
+                      onClose: () => pop(),
+                      closeIcon: Icons.close_rounded,
+                    ),
+                  );
+                }
+                return MaterialPageRoute<void>(
+                  settings: settings,
+                  builder: (_) => const Scaffold(body: SizedBox.shrink()),
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _toggleDownloadSelect(int id) {
+    setState(() {
+      if (!_selectedDownloadIds.remove(id)) _selectedDownloadIds.add(id);
+    });
+  }
+
+  void _deleteDownloadTask(BrowserDownload d) {
+    _engine.deleteDownload(d.id);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('下载任务和文件已删除')),
+      );
+    }
+  }
+
+  void _deleteSelectedDownloads(Set<int> ids) {
+    _engine.deleteDownloads(ids);
+    setState(() {
+      _selectedDownloadIds.clear();
+      _downloadSelectMode = false;
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已删除 ${ids.length} 个下载任务')),
+      );
+    }
+  }
+
+  static String _fmtBytes(int v) {
+    if (v < 1024) return '$v B';
+    if (v < 1024 * 1024) return '${(v / 1024).toStringAsFixed(1)} KB';
+    if (v < 1024 * 1024 * 1024) {
+      return '${(v / 1024 / 1024).toStringAsFixed(1)} MB';
+    }
+    return '${(v / 1024 / 1024 / 1024).toStringAsFixed(2)} GB';
   }
 
   Widget _captureList() {

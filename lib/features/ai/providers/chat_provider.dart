@@ -296,16 +296,16 @@ class ChatState {
   }
 
   /// 会话累计输入 token；旧消息没有分类字段时用 promptTokens 兜底。
-  int get sessionInputTokens =>
-      messages.fold(0, (sum, m) => sum + (m.inputTokens > 0 ? m.inputTokens : m.promptTokens));
+  int get sessionInputTokens => messages.fold(0,
+      (sum, m) => sum + (m.inputTokens > 0 ? m.inputTokens : m.promptTokens));
 
   /// 会话累计输出 token。
   int get sessionOutputTokens =>
       messages.fold(0, (sum, m) => sum + m.outputTokens);
 
   /// 会话累计缓存命中 token；旧消息没有分类字段时用 cachedTokens 兜底。
-  int get sessionCacheTokens =>
-      messages.fold(0, (sum, m) => sum + (m.cacheTokens > 0 ? m.cacheTokens : m.cachedTokens));
+  int get sessionCacheTokens => messages.fold(0,
+      (sum, m) => sum + (m.cacheTokens > 0 ? m.cacheTokens : m.cachedTokens));
 
   /// 标题栏实时输入 token：已落库累计 + 当前这轮已经回来的累计输入。
   int get liveSessionInputTokens =>
@@ -623,6 +623,28 @@ class ChatNotifier extends Notifier<ChatState> {
     return File('${dir.path}/$_sessionsFileName');
   }
 
+  /// 单条消息事件过多时压到 persistedEventLimit；完整过程在轮次归档里。
+  AiSession _boundedSession(AiSession session) {
+    if (!session.messages.any(
+      (m) => m.agentEvents.length > AgentEvent.persistedEventLimit,
+    )) {
+      return session;
+    }
+    return AiSession(
+      id: session.id,
+      title: session.title,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      messages: [
+        for (final m in session.messages)
+          if (m.agentEvents.length > AgentEvent.persistedEventLimit)
+            m.copyWith(agentEvents: _boundedEvents(m.agentEvents))
+          else
+            m,
+      ],
+    );
+  }
+
   /// 落盘前压缩：按 updateAt 新的优先，单会话只保最近 400 条，
   /// 仍超 8MB 就继续丢最旧消息，避免再次把持久化文件撑爆。
   List<Map<String, dynamic>> _storageReadySessions() {
@@ -631,7 +653,7 @@ class ChatNotifier extends Notifier<ChatState> {
     final result = <AiSession>[];
     var used = 0;
     for (final s in sorted) {
-      var compact = s;
+      var compact = _boundedSession(s);
       var encoded = _sessionsEncoded(compact);
       while (encoded.length > _maxSessionsBytes - used &&
           compact.messages.isNotEmpty) {
@@ -661,6 +683,11 @@ class ChatNotifier extends Notifier<ChatState> {
   String _sessionsEncoded(AiSession session) => jsonEncode([session.toJson()]);
 
   Future<void> loadSessions() async {
+    // AI 页每次重建都会调这里；如果内存里还有活着的 run，磁盘上的
+    // sessions 是旧的（流式中的回复/刚发的用户消息还没落盘）。此时重读
+    // 会把内存状态顶掉，切回 APP 时看起来就像任务断了。只有没有活 run
+    // 时才从磁盘恢复。
+    if (_runs.isNotEmpty) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       // 设置与会话解耦：以前设置的恢复嵌在"有持久化会话"分支里，
@@ -690,7 +717,8 @@ class ChatNotifier extends Notifier<ChatState> {
         if (decoded is! List) return;
         final sessions = [
           for (final item in decoded)
-            if (item is Map<String, dynamic>) AiSession.fromJson(item),
+            if (item is Map<String, dynamic>)
+              _boundedSession(AiSession.fromJson(item)),
         ];
         state = state.copyWith(sessions: sessions);
         await _persist();
@@ -699,11 +727,21 @@ class ChatNotifier extends Notifier<ChatState> {
       }
       final decoded = jsonDecode(raw);
       if (decoded is! List) return;
-      final sessions = [
+      final rawSessions = [
         for (final item in decoded)
           if (item is Map<String, dynamic>) AiSession.fromJson(item),
       ];
-      if (sessions.isEmpty) return;
+      if (rawSessions.isEmpty) return;
+      // 旧版本可能把一条消息存了几千个事件；这次先压到内存上限，
+      // 并重写一次磁盘文件，避免下次启动又解析同一个巨无霸 JSON。
+      final needsRewrite = rawSessions.any(
+        (s) => s.messages.any(
+          (m) => m.agentEvents.length > AgentEvent.persistedEventLimit,
+        ),
+      );
+      final sessions = [
+        for (final s in rawSessions) _boundedSession(s),
+      ];
       // 下次打开以上一次用过的会话为主：按 updatedAt 取最新，而不是列表第一条。
       var lastId = sessions.first.id;
       var lastAt = sessions.first.updatedAt;
@@ -725,6 +763,7 @@ class ChatNotifier extends Notifier<ChatState> {
         lastTurns: lastStats.turns,
         lastTokens: lastStats.tokens,
       );
+      if (needsRewrite) unawaited(_persist());
     } catch (e) {
       Logger.e('ai', 'load sessions failed', e);
     }
@@ -1652,6 +1691,12 @@ class ChatNotifier extends Notifier<ChatState> {
       );
       state = state.copyWith(
         queue: [...state.queue, queued],
+        // 用户已经发了新消息：旧的“中断继续”不再有意义，立刻清掉，
+        // 避免消息排队时还挂着旧任务的继续条，点了继续又回到旧上下文。
+        interruptedRunBySession: {
+          ...state.interruptedRunBySession,
+          sid: null,
+        },
       );
       run.inbox.add(
         AgentInboxMessage(
@@ -1667,15 +1712,22 @@ class ChatNotifier extends Notifier<ChatState> {
     }
     // 附件/模式已经交给 _sendNow 了，这里立刻清空待发条，不要等整轮跑完才消失。
     clearPendingImages();
-    // 上一次是被打断的：把中断前已执行的工具链直接带过去续轮，而不是开全新一轮。
+    // 用户主动新发消息时不再自动续旧中断任务：旧的“继续”只通过 ResumeStrip
+    // 明确点击才触发，避免新消息被旧上下文“顶掉”或失败后点继续仍回到旧任务。
+    state = state.copyWith(
+      interruptedRunBySession: {
+        ...state.interruptedRunBySession,
+        sid: null,
+      },
+      liveAgentEvents:
+          state.currentSessionId == sid ? const [] : state.liveAgentEvents,
+    );
     await _sendNow(
       promptText,
       sessionId: sid,
       images: images,
       displayText: visibleDisplay,
       modeLabels: modeLabels,
-      resumeEvents: _resumeEventsFromCancelled(sid),
-      resumeRoundId: _roundIdFromCancelled(sid),
     );
     // 这里不再无条件 drain：_sendNow 收尾时已经按"是否挂起"判断过一次。
     _pumpQueue(sid);
@@ -1699,6 +1751,10 @@ class ChatNotifier extends Notifier<ChatState> {
               modeText.isEmpty ? '' : (value.isEmpty ? '（仅挂载模式，未输入文字）' : value),
         ),
       ],
+      interruptedRunBySession: {
+        ...state.interruptedRunBySession,
+        state.currentSessionId: null,
+      },
     );
   }
 
@@ -1723,6 +1779,10 @@ class ChatNotifier extends Notifier<ChatState> {
           displayText: display,
         ),
       ],
+      interruptedRunBySession: {
+        ...state.interruptedRunBySession,
+        state.currentSessionId: null,
+      },
     );
   }
 
@@ -2032,7 +2092,7 @@ class ChatNotifier extends Notifier<ChatState> {
         pendingQuestionBySession: clearQuestionMap,
         interruptedRunBySession: clearInterruptedMap,
         liveAgentEvents: resumeEvents?.isNotEmpty == true
-            ? List<AgentEvent>.from(resumeEvents!)
+            ? _boundedLive(resumeEvents!)
             : const [],
         liveModeLabels: modeLabels,
         clearLiveText: true,
@@ -2124,7 +2184,7 @@ class ChatNotifier extends Notifier<ChatState> {
             AiToolCall(name: r.toolName, arguments: r.args),
         ],
         createdAt: DateTime.now(),
-        agentEvents: List<AgentEvent>.from(run.events),
+        agentEvents: _boundedEvents(run.events),
         outcome: result.outcome.name,
         turns: result.turns,
         totalTokens: result.usage.totalTokens,
@@ -2223,7 +2283,7 @@ class ChatNotifier extends Notifier<ChatState> {
           sendError: sendError,
           // 失败前已经跑过的工具照样留着：多轮任务中途断线时，
           // 用户得能看到"断在哪一步"。
-          agentEvents: List<AgentEvent>.from(run.events),
+          agentEvents: _boundedEvents(run.events),
         );
       }
       _replaceSession(
@@ -2241,7 +2301,7 @@ class ChatNotifier extends Notifier<ChatState> {
       final interrupted = InterruptedRun(
         sessionId: session.id,
         userInput: value,
-        events: List<AgentEvent>.from(run.events),
+        events: _boundedEvents(run.events),
         startedAt: DateTime.now(),
         roundId: run.roundId,
       );
@@ -2250,7 +2310,7 @@ class ChatNotifier extends Notifier<ChatState> {
           ...state.interruptedRunBySession,
           session.id: interrupted,
         },
-        liveAgentEvents: List<AgentEvent>.from(run.events),
+        liveAgentEvents: _boundedLive(run.events),
       );
       await _saveActiveRun();
       unawaited(
@@ -2354,9 +2414,7 @@ class ChatNotifier extends Notifier<ChatState> {
           InterruptedRun(
             sessionId: _activeRunSessionId,
             userInput: _activeRunInput,
-            events: run == null
-                ? List<AgentEvent>.from(_runEvents)
-                : List<AgentEvent>.from(run.events),
+            events: _boundedEvents(run == null ? _runEvents : run.events),
             startedAt: DateTime.now(),
             roundId: run?.roundId ?? '',
           ),
@@ -2380,6 +2438,11 @@ class ChatNotifier extends Notifier<ChatState> {
 
   /// 启动时检查有没有被打断的运行。
   Future<void> loadInterruptedRun() async {
+    // 页面每次重建（例如从 APP 外悬浮切回 AI 页）都会调这里。此时内存里
+    // 的 run 还在跑，磁盘上的 active_run 只是“正在跑”的崩溃恢复副本；
+    // 如果照读，会把正在执行的任务标成“已中断”，ResumeStrip 也会冒出来。
+    // 只有内存里确实没有活着的 run 时，才把磁盘快照当成真·中断恢复。
+    if (_runs.isNotEmpty) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       final run = InterruptedRun.decode(prefs.getString(_activeRunKey) ?? '');
@@ -2393,7 +2456,7 @@ class ChatNotifier extends Notifier<ChatState> {
         },
         // 只有当前会话正好是中断会话时才把过程摆回界面，
         // 否则切到别的会话（包括新建话题）不该看到这段旧流程。
-        liveAgentEvents: showNow ? run.events : const [],
+        liveAgentEvents: showNow ? _boundedEvents(run.events) : const [],
       );
     } catch (e) {
       Logger.e('ai', 'load interrupted run failed', e);
@@ -2422,6 +2485,24 @@ class ChatNotifier extends Notifier<ChatState> {
         last.isNotEmpty &&
         last.last.role == 'user' &&
         last.last.content == run.userInput;
+    // 继续时把上次遗留的“未发送成功”红字清掉：这次是真的重发，不再是失败态。
+    if (alreadyThere && state.currentSession != null) {
+      final session = state.currentSession!;
+      final msgs = [...session.messages];
+      final lastIdx = msgs.length - 1;
+      if (msgs[lastIdx].sendError.isNotEmpty) {
+        msgs[lastIdx] = msgs[lastIdx].copyWith(sendError: '');
+        _replaceSession(
+          AiSession(
+            id: session.id,
+            title: session.title,
+            messages: msgs,
+            createdAt: session.createdAt,
+            updatedAt: DateTime.now(),
+          ),
+        );
+      }
+    }
     if (_runs.containsKey(state.currentSessionId)) {
       enqueue(run.userInput);
       return;
@@ -2517,7 +2598,7 @@ class ChatNotifier extends Notifier<ChatState> {
                 _toolScreenshotsBySession[session.id] ?? const [],
               ),
               createdAt: DateTime.now(),
-              agentEvents: List<AgentEvent>.from(run.events),
+              agentEvents: _boundedEvents(run.events),
               outcome: result.outcome.name,
               turns: result.turns,
               totalTokens: result.usage.totalTokens,
@@ -2597,7 +2678,7 @@ class ChatNotifier extends Notifier<ChatState> {
         if (lastUser >= 0) {
           messages[lastUser] = messages[lastUser].copyWith(
             sendError: _friendlyError(e),
-            agentEvents: List<AgentEvent>.from(run.events),
+            agentEvents: _boundedEvents(run.events),
           );
         }
         _replaceSession(
@@ -3009,8 +3090,8 @@ class ChatNotifier extends Notifier<ChatState> {
       isLoading: run != null,
       runningSessionIds: {..._runs.keys},
       liveAgentEvents: run != null
-          ? List<AgentEvent>.from(run.events)
-          : List<AgentEvent>.from(
+          ? _boundedLive(run.events)
+          : _boundedEvents(
               state.interruptedRunBySession[id]?.events ?? const [],
             ),
       liveReasoning: run == null ? '' : _tail(run.liveReasoning.toString()),
@@ -3022,9 +3103,8 @@ class ChatNotifier extends Notifier<ChatState> {
       liveInputTokens: run?.inputTokens ?? 0,
       liveOutputTokens: run?.outputTokens ?? 0,
       liveCacheTokens: run?.cacheTokens ?? 0,
-      liveUsageDetails: run == null
-          ? const []
-          : List<AiUsageDetail>.from(run.usageDetails),
+      liveUsageDetails:
+          run == null ? const [] : List<AiUsageDetail>.from(run.usageDetails),
       liveSubagentReasoning: {
         for (final entry in (run?.subagentReasoning ?? const {}).entries)
           entry.key: _tail(entry.value.toString()),
@@ -3423,6 +3503,32 @@ class ChatNotifier extends Notifier<ChatState> {
     );
   }
 
+  /// 单条消息/中断快照最多保留的事件数；超出时用一条摘要事件占位，
+  /// 完整过程仍在轮次归档里。
+  List<AgentEvent> _boundedEvents(
+    List<AgentEvent> events, {
+    int limit = AgentEvent.persistedEventLimit,
+  }) {
+    if (events.length <= limit) return List<AgentEvent>.from(events);
+    final keep = limit - 1;
+    final omitted = events.length - keep;
+    return [
+      AgentEvent(
+        kind: AgentEventKind.thinking,
+        message: '更早的 $omitted 步过程已省略（完整过程见该轮归档）',
+        turn: events.first.turn,
+      ),
+      ...events.sublist(events.length - keep),
+    ];
+  }
+
+  List<AgentEvent> _boundedLive(List<AgentEvent> events) {
+    if (events.length <= AgentEvent.liveEventLimit) {
+      return List<AgentEvent>.from(events);
+    }
+    return events.sublist(events.length - AgentEvent.liveEventLimit);
+  }
+
   void _appendAgentEvent(String sessionId, AgentEvent event) {
     final run = _runs[sessionId];
     if (run == null) return;
@@ -3440,18 +3546,18 @@ class ChatNotifier extends Notifier<ChatState> {
             : raw.replaceAll('\n', ' ');
         unawaited(
           ref.read(auditProvider.notifier).add(
-            sessionId: sessionId,
-            module: _auditModule(event.toolName!),
-            action: event.toolName!,
-            detail: [
-              if (target.isNotEmpty) target,
-              if ((event.durationMs ?? 0) > 0) '${event.durationMs}ms',
-              if (short.isNotEmpty) short,
-            ].join(' · '),
-            result: event.ok ? 'ok' : 'error',
-            messageIndex: session.messages.length,
-            eventIndex: run.events.length - 1,
-          ),
+                sessionId: sessionId,
+                module: _auditModule(event.toolName!),
+                action: event.toolName!,
+                detail: [
+                  if (target.isNotEmpty) target,
+                  if ((event.durationMs ?? 0) > 0) '${event.durationMs}ms',
+                  if (short.isNotEmpty) short,
+                ].join(' · '),
+                result: event.ok ? 'ok' : 'error',
+                messageIndex: session.messages.length,
+                eventIndex: run.events.length - 1,
+              ),
         );
       }
     }
@@ -3465,8 +3571,11 @@ class ChatNotifier extends Notifier<ChatState> {
       );
     }
     if (sessionId == state.currentSessionId) {
+      final nextLive = [...state.liveAgentEvents, event];
       state = state.copyWith(
-        liveAgentEvents: [...state.liveAgentEvents, event],
+        liveAgentEvents: nextLive.length > AgentEvent.liveEventLimit
+            ? nextLive.sublist(nextLive.length - AgentEvent.liveEventLimit)
+            : nextLive,
       );
     }
     // 每个工具边界落一次盘：闪退随时可能发生，而写 prefs 很便宜。
@@ -3518,7 +3627,7 @@ class ChatNotifier extends Notifier<ChatState> {
                   '你直接说下一步想干什么就行：接着往下做、换个方向、'
                   '或者当成一个全新的需求，我自己会判断。',
               createdAt: DateTime.now(),
-              agentEvents: List<AgentEvent>.from(run.events),
+              agentEvents: _boundedEvents(run.events),
               outcome: 'cancelled',
               roundId: run.roundId,
             ),
@@ -3621,8 +3730,7 @@ class ChatNotifier extends Notifier<ChatState> {
     _toolScreenshotsBySession.remove(run?.sessionId ?? state.currentSessionId);
     _lastToolScreenshot = null;
     final config = await ref.read(llmConfigProvider.future);
-    final toolTimeout =
-        ref.read(settingsProvider).toolExecutionTimeoutSeconds;
+    final toolTimeout = ref.read(settingsProvider).toolExecutionTimeoutSeconds;
     final activeProviderId = ref.read(llmRegistryProvider).active.id;
     final mainProvider = ref.read(llmRegistryProvider).active;
     // 能力判断必须用“界面上真正选中的主模型”，不能用提供商默认模型。
@@ -4800,7 +4908,10 @@ class ChatNotifier extends Notifier<ChatState> {
             '用户说"换主题/生成个配色/导入主题/导出当前主题/背景图"时用。'
             '主题一律是 ZIP 包，不用 JSON。除 README.md 和 controller.js 外其他全是目录：'
             'image/elements、audio、css、js、html、xml/animations。'
-            'controller.js 是总控，负责分配每个组件用哪个子 js/css/html/xml/图片/音效。高级组件特效（落叶/布偶/气泡/发光/角标/浮动）用 DSHTheme 万能接口写进主题包 js，App 渲染覆盖层。'
+            'controller.js 是总控：声明 colors/effects/typography/componentStyle，并分配每个组件用哪个子 js/css/html/xml/图片/音效。'
+            '高级组件特效（落叶/布偶/气泡/发光/角标/浮动）用 DSHTheme 万能接口写进主题包 js，App 渲染覆盖层；'
+            '发光（外发光 glow*/内发光 innerGlow）只由主题包 componentStyle 或 DSHTheme.styleComponent 控制，App 设置里已没有发光按钮；'
+            '静态常驻装饰也可写 xml/ 里的 <effect>/<component> 声明；高频粒子用 DSHTheme.effectBatch。'
             '生成主题必须面向手机性能：不要用 three.js/WebGL/大音频/高帧率 canvas/每帧 queryComponents；'
             '优先静态图或轻量 CSS，动画粒子≤6 个、更新≤10fps、不自动播放音频。',
         parameters: const {
@@ -5366,18 +5477,18 @@ class ChatNotifier extends Notifier<ChatState> {
   void _auditRun(AgentResult result, {int? messageIndex}) {
     // 工具级审计已经在 _appendAgentEvent 里实时写好了，这里只补一条整轮汇总。
     ref.read(auditProvider.notifier).addAll(
-          [
-            AuditLog(
-              time: DateTime.now(),
-              module: 'ai',
-              action: 'agent_run',
-              detail: '${result.turns} 轮 · ${result.toolRecords.length} 次工具 · '
-                  '${result.usage.totalTokens} tokens',
-              result: result.outcome.name,
-            ),
-          ],
-          sessionId: state.currentSessionId,
-        );
+      [
+        AuditLog(
+          time: DateTime.now(),
+          module: 'ai',
+          action: 'agent_run',
+          detail: '${result.turns} 轮 · ${result.toolRecords.length} 次工具 · '
+              '${result.usage.totalTokens} tokens',
+          result: result.outcome.name,
+        ),
+      ],
+      sessionId: state.currentSessionId,
+    );
   }
 
   /// 按工具名前缀归类模块，审计列表里好筛。

@@ -1,5 +1,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- 访问手机内部存储：普通存储权限可覆盖的范围（Android 12L 及以下外部存储
+         需要 READ/WRITE；更高版本用媒体权限）。公共根目录在部分系统上仍受
+         分区存储限制，能读到多少由系统授权决定。 -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
+    <!-- 完整查看/管理手机公共存储（Android 11+ 所有文件访问，需用户在系统设置里开启）。 -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+    <!-- APP 外悬浮窗（预览）：系统级覆盖窗口 + 前台服务保活。 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="青龙AI"
         android:name="${applicationName}"
@@ -9,7 +24,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
@@ -41,6 +56,14 @@
                 <data android:scheme="https"/>
             </intent-filter>
         </activity>
+        <service
+            android:name=".ExternalOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="external_floating_window" />
+        </service>
         <!-- 「用其它 APP 打开」必须用 content:// URI：Android 7 起 file:// 会抛
              FileUriExposedException，外部 APP 本来也读不到我们的私有目录。
              只暴露 cache/share 一个中转目录，其余沙箱内容不对外可见。 -->
@@ -68,6 +91,11 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- 关于页打开 GitHub 开源地址；Android 11+ 需要在 queries 里声明 https 外部浏览器。 -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="https"/>
         </intent>
     </queries>
 </manifest>

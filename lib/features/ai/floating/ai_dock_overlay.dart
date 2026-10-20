@@ -33,7 +33,143 @@ import '../widgets/agent_process_card.dart';
 import '../widgets/markdown_message.dart';
 import '../widgets/pending_image_bar.dart';
 import '../../../shared/image_preview_overlay.dart';
+import '../../floating/float_bounds_registry.dart';
 import 'ai_dock_provider.dart';
+
+/// 聊天窗几何：聊天窗本身和画布窗共用同一块 field。
+///
+/// 关键点：键盘弹起时不是无脑整窗上移，而是只看聊天窗底部的输入行
+/// 有没有被键盘盖住——被盖住才上移，移不动的部分再从底部收窄；
+/// 输入行本来就在键盘上方时（比如用户把聊天窗拖到了上半屏）保持原地。
+({Rect rect, Size field}) aiChatGeometry(
+  MediaQueryData media,
+  AiDockState dock,
+) {
+  final size = media.size;
+  final safeTop = media.padding.top;
+  final safeBottom = media.padding.bottom;
+  // 左右留 28 逻辑像素：系统返回手势占据屏幕两侧约 24dp，
+  // 窗口边缘落进去的话，用户想拉边框会被识别成“返回”，边框就捏不动。
+  final safeArea = EdgeInsets.only(
+    left: 28,
+    right: 28,
+    top: safeTop + 6,
+    bottom: safeBottom + 6,
+  );
+  final field = Size(
+    size.width - safeArea.horizontal,
+    size.height - safeArea.vertical,
+  );
+  final w = (dock.ww * field.width)
+      .clamp(AiDockState.minW * field.width, field.width);
+  var h = (dock.wh * field.height)
+      .clamp(AiDockState.minH * field.height, field.height);
+  var left = safeArea.left + dock.wx * field.width;
+  var top = safeArea.top + dock.wy * field.height;
+  left = left.clamp(safeArea.left, size.width - safeArea.right - w);
+  top = top.clamp(safeArea.top, size.height - safeArea.bottom - h);
+
+  final keyboard = media.viewInsets.bottom;
+  if (keyboard > 0) {
+    final imeTop = size.height - keyboard - 8;
+    // 输入行在聊天窗底部；只要窗口底边不越过键盘顶边，就完全不动。
+    final delta = (top + h) - imeTop;
+    if (delta > 0) {
+      final maxShift = top - safeArea.top;
+      final shift = delta < maxShift ? delta : maxShift;
+      top -= shift;
+      final remaining = delta - shift;
+      if (remaining > 0) {
+        final minH = AiDockState.minH * field.height;
+        final shrunk = h - remaining;
+        h = shrunk < minH ? minH : shrunk;
+      }
+    }
+  }
+
+  top = top.clamp(safeArea.top, size.height - safeArea.bottom - h);
+  return (rect: Rect.fromLTWH(left, top, w, h), field: field);
+}
+
+/// 悬浮球旁边那行“正在思考/调用工具”的文字；空串表示不显示。
+///
+/// 被 [_AiBubbleLayerState] 和 [_FloatBoundsReporter] 共用：前者画字，
+/// 后者算原生覆盖窗要多大，避免桌面级只露出一点点。
+String aiBubbleStatusText(ChatState chat) {
+  // 挂起等回答时 isLoading 是 false，但这恰恰是最需要提示的时刻：
+  // 收起状态下提问窗不画出来，球也不转，用户完全不知道 AI 在等他说话——
+  // 看着就是“问了一次就卡住了”。
+  if (chat.pendingQuestion != null) return '等你回答';
+  if (chat.pendingPlan.isNotEmpty) return '等你确认';
+  if (!chat.isLoading) return '';
+  if (chat.liveTool.isNotEmpty) return chat.liveTool;
+  // 思考/正文都显示**正在流的原文尾巴**，让这行字自己动起来。
+  if (chat.liveReasoning.isNotEmpty) return statusTail(chat.liveReasoning);
+  if (chat.liveContent.isNotEmpty) return statusTail(chat.liveContent);
+  final events = chat.liveAgentEvents;
+  if (events.isNotEmpty) {
+    return switch (events.last.kind) {
+      AgentEventKind.thinking => '思考中',
+      AgentEventKind.answer => '答复中',
+      AgentEventKind.toolStart => events.last.toolName ?? '调用工具',
+      AgentEventKind.toolImage => '显示图片',
+      AgentEventKind.toolEnd => '处理结果',
+      AgentEventKind.taskPlan => '规划任务',
+      AgentEventKind.canvas => '生成卡片',
+      AgentEventKind.workflowStep => '条件执行',
+      AgentEventKind.question => '等你回答',
+      AgentEventKind.planPending => '等你确认',
+      AgentEventKind.error => '出错了',
+      AgentEventKind.done => '收尾',
+    };
+  }
+  return '处理中';
+}
+
+/// 状态文字这一行的矩形；没有文字或空间太窄时返回 null。
+///
+/// 几何必须和 [_AiBubbleLayerState._statusLabel] 完全一致，这样原生覆盖窗
+/// 的并集才能正好包住文字，桌面级不再被裁成一点点。
+Rect? aiBubbleStatusLabelRect({
+  required Size size,
+  required double left,
+  required double top,
+  required String status,
+}) {
+  if (status.isEmpty) return null;
+  const bubble = 56.0;
+  const labelHeight = 18.0;
+  final onRight = left + bubble / 2 > size.width / 2;
+  final room = onRight ? left - 8 : size.width - (left + bubble) - 8;
+  final width = room.clamp(0.0, 220.0);
+  if (width < 56) return null;
+  return Rect.fromLTWH(
+    onRight ? left - width - 4 : left + bubble + 4,
+    top + (bubble - labelHeight) / 2,
+    width,
+    labelHeight,
+  );
+}
+
+/// 按统一 zOrder 排序 AI 浮窗：越靠后越在上层，未登记的保持原顺序。
+List<Widget> _orderAiWindows(
+  List<MapEntry<String, Widget>> items,
+  List<String> zOrder,
+) {
+  final order = <String, int>{
+    for (var i = 0; i < zOrder.length; i++) zOrder[i]: i,
+  };
+  final indexed = <MapEntry<int, MapEntry<String, Widget>>>[
+    for (var i = 0; i < items.length; i++) MapEntry(i, items[i]),
+  ];
+  indexed.sort((a, b) {
+    final za = order[a.value.key] ?? -1;
+    final zb = order[b.value.key] ?? -1;
+    if (za != zb) return za.compareTo(zb);
+    return a.key.compareTo(b.key);
+  });
+  return [for (final e in indexed) e.value.value];
+}
 
 /// 悬浮 AI 的宿主。
 ///
@@ -79,6 +215,11 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
   /// 是否跟着最新内容走。用户往上翻看历史时自动停，回到底部自动恢复。
   bool _pinned = true;
 
+  /// 代码主动 jumpTo/animateTo 时置位：这些滚动不是用户往上翻，
+  /// 不能让 _onScroll 把 _pinned 误判成 false，否则流式输出到一半
+  /// 自动跟随会突然断掉。
+  bool _autoScrolling = false;
+
   @override
   void initState() {
     super.initState();
@@ -95,7 +236,7 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
   }
 
   void _onScroll() {
-    if (!_scroll.hasClients) return;
+    if (!_scroll.hasClients || _autoScrolling) return;
     final pos = _scroll.position;
     final atBottom = pos.maxScrollExtent - pos.pixels <= 120;
     if (atBottom != _pinned) _pinned = atBottom;
@@ -108,7 +249,9 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
       if (!mounted || !_scroll.hasClients) return;
       final max = _scroll.position.maxScrollExtent;
       if ((max - _scroll.position.pixels).abs() < 1) return;
+      _autoScrolling = true;
       _scroll.jumpTo(max);
+      _autoScrolling = false;
     });
   }
 
@@ -131,11 +274,21 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
 
   void _toBottom() {
     if (!_scroll.hasClients) return;
-    _scroll.animateTo(
+    _pinned = true;
+    _autoScrolling = true;
+    _scroll
+        .animateTo(
       _scroll.position.maxScrollExtent,
       duration: const Duration(milliseconds: 180),
       curve: Curves.easeOut,
-    );
+    )
+        .whenComplete(() {
+      _autoScrolling = false;
+      if (!mounted || !_scroll.hasClients) return;
+      // 动画若被用户手势打断，按真实位置决定是否继续跟随。
+      _pinned =
+          _scroll.position.maxScrollExtent - _scroll.position.pixels <= 120;
+    });
   }
 
   @override
@@ -187,34 +340,49 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
     final chatRect = dock.expanded
         ? _chatGeometry(context).rect
         : Rect.fromLTWH(0, size.height, 0, 0);
-    return [
-      _build(context, dock),
+    final windows = <MapEntry<String, Widget>>[
+      MapEntry('chat', _build(context, dock)),
       // 提问与画布只在悬浮模式下浮出来：在 AI 页操作时还是原来的样子
       // （页内卡片 / 底部弹窗），不然同一件事会出现两份界面。
       if (dock.expanded && question != null)
         // 避让聊天窗：聊天窗偏下就贴顶，偏上就贴底。
         // 两个窗口叠在一起时用户根本分不清哪个是要答的。
-        Positioned(
-          key: ValueKey('qw${question.id}'),
-          left: 14,
-          top: chatRect.center.dy > size.height / 2 ? safeTop + 16 : null,
-          bottom: chatRect.center.dy > size.height / 2
-              ? null
-              : safeBottom + 16 + media.viewInsets.bottom,
-          width: size.width - 28,
-          child: _QuestionWindow(
-            question: question,
-            onAnswer: (answer) {
-              _pinned = true;
-              ref.read(chatProvider.notifier).send(answer);
-            },
+        MapEntry(
+          'question:${question.id}',
+          Positioned(
+            key: ValueKey('qw${question.id}'),
+            left: 14,
+            top: chatRect.center.dy > size.height / 2 ? safeTop + 16 : null,
+            bottom: chatRect.center.dy > size.height / 2
+                ? null
+                : safeBottom + 16 + media.viewInsets.bottom,
+            width: size.width - 28,
+            child: Listener(
+              onPointerDown: (_) => ref
+                  .read(aiDockProvider.notifier)
+                  .raiseWindow('question:${question.id}'),
+              child: FloatBoundsReporter(
+                id: 'ai-question-${question.id}',
+                child: _QuestionWindow(
+                  question: question,
+                  onAnswer: (answer) {
+                    _pinned = true;
+                    ref.read(chatProvider.notifier).send(answer);
+                  },
+                ),
+              ),
+            ),
           ),
         ),
       // 画布窗口：不限个数，顺序即层级（点哪个哪个抬到最上）。
       if (dock.expanded)
         for (final win in dock.canvasWindows)
-          _canvasWindow(context, win, field, size, safeTop, safeBottom),
+          MapEntry(
+            'canvas:${win.name}',
+            _canvasWindow(context, win, field, size, safeTop, safeBottom),
+          ),
     ];
+    return _orderAiWindows(windows, dock.zOrder);
   }
 
   Widget _canvasWindow(
@@ -243,26 +411,29 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
       height: h,
       child: Listener(
         onPointerDown: (_) => notifier.raiseCanvas(win.name),
-        child: _CanvasWindow(
-          canvas: win.canvas,
-          chromeless: win.chromeless,
-          field: field,
-          onMove: (dx, dy) => notifier.moveCanvasBy(win.name, dx, dy),
-          onResize: ({
-            double dLeft = 0,
-            double dTop = 0,
-            double dRight = 0,
-            double dBottom = 0,
-          }) =>
-              notifier.resizeCanvas(
-            win.name,
-            dLeft: dLeft,
-            dTop: dTop,
-            dRight: dRight,
-            dBottom: dBottom,
+        child: FloatBoundsReporter(
+          id: 'ai-canvas-${win.name}',
+          child: _CanvasWindow(
+            canvas: win.canvas,
+            chromeless: win.chromeless,
+            field: field,
+            onMove: (dx, dy) => notifier.moveCanvasBy(win.name, dx, dy),
+            onResize: ({
+              double dLeft = 0,
+              double dTop = 0,
+              double dRight = 0,
+              double dBottom = 0,
+            }) =>
+                notifier.resizeCanvas(
+              win.name,
+              dLeft: dLeft,
+              dTop: dTop,
+              dRight: dRight,
+              dBottom: dBottom,
+            ),
+            onCommit: notifier.commitLayout,
+            onClose: () => notifier.closeCanvas(win.name),
           ),
-          onCommit: notifier.commitLayout,
-          onClose: () => notifier.closeCanvas(win.name),
         ),
       ),
     );
@@ -270,41 +441,8 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
 
   /// 聊天窗与它所在的可用区域。提问窗要靠它避让，所以必须算在一处，
   /// 两边各算一遍迟早会不一致。
-  ({Rect rect, Size field}) _chatGeometry(BuildContext context) {
-    final media = MediaQuery.of(context);
-    final size = media.size;
-    final safeTop = media.padding.top;
-    final safeBottom = media.padding.bottom;
-    final dock = ref.read(aiDockProvider);
-    // 左右留 28 逻辑像素：系统返回手势占据屏幕两侧约 24dp，
-    // 窗口边缘落进去的话，用户想拉边框会被识别成"返回"，边框就捏不动。
-    final safeArea = EdgeInsets.only(
-      left: 28,
-      right: 28,
-      top: safeTop + 6,
-      bottom: safeBottom + 6,
-    );
-    final field = Size(
-      size.width - safeArea.horizontal,
-      size.height - safeArea.vertical,
-    );
-    final w = (dock.ww * field.width)
-        .clamp(AiDockState.minW * field.width, field.width);
-    final h = (dock.wh * field.height)
-        .clamp(AiDockState.minH * field.height, field.height);
-    var left = safeArea.left + dock.wx * field.width;
-    var top = safeArea.top + dock.wy * field.height;
-    // 键盘弹起时整窗上移，保证输入框可见（不缩小窗口，避免布局跳动）。
-    final keyboard = media.viewInsets.bottom;
-    if (keyboard > 0) {
-      final limit = size.height - keyboard - 8 - h;
-      if (top > limit) top = limit;
-      if (top < safeArea.top) top = safeArea.top;
-    }
-    left = left.clamp(safeArea.left, size.width - safeArea.right - w);
-    top = top.clamp(safeArea.top, size.height - safeArea.bottom - h);
-    return (rect: Rect.fromLTWH(left, top, w, h), field: field);
-  }
+  ({Rect rect, Size field}) _chatGeometry(BuildContext context) =>
+      aiChatGeometry(MediaQuery.of(context), ref.read(aiDockProvider));
 
   Widget _build(BuildContext context, AiDockState dock) {
     // 半屏浮动窗：可拖动、可按边缩放，下层页面依然能滚能点。
@@ -314,12 +452,17 @@ class _AiDockOverlayState extends ConsumerState<AiDockOverlay> {
       top: geo.rect.top,
       width: geo.rect.width,
       height: geo.rect.height,
-      child: _Window(
-        input: _input,
-        scroll: _scroll,
-        onSend: _send,
-        onToBottom: _toBottom,
-        field: geo.field,
+      child: Listener(
+        onPointerDown: (_) =>
+            ref.read(aiDockProvider.notifier).raiseWindow('chat'),
+        child: _Window(
+          input: _input,
+          scroll: _scroll,
+          pinned: _pinned,
+          onSend: _send,
+          onToBottom: _toBottom,
+          field: geo.field,
+        ),
       ),
     );
   }
@@ -504,35 +647,53 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
       if (previous == null) return;
       _syncQuickLive(previous, next);
     });
-    // 球藏了但结果窗还开着：结果窗要留下。它是用户主动问出来的东西，
-    // 顺手关个球就把答案一起弄没了才叫难受。
-    if (!dock.visible && dock.quickResults.isEmpty) {
+    // 每个悬浮窗独立存活：球藏了、快问输入条收了，已经弹出的结果窗/
+    // ui_c 画布窗/提问窗都要留下，直到用户自己关掉它们。
+    final showQuickExtras = !dock.expanded;
+    final hasQuickQuestion =
+        showQuickExtras && chatState.pendingQuestion != null;
+    final hasQuickCanvas = showQuickExtras && dock.canvasWindows.isNotEmpty;
+    if (!dock.visible &&
+        dock.quickResults.isEmpty &&
+        !hasQuickQuestion &&
+        !hasQuickCanvas) {
       return const SizedBox.shrink();
     }
     return AnimatedBuilder(
       animation: FloatStack.instance,
       builder: (context, _) {
-        // 展开且在最上面时不画气泡（窗口本身就是入口，再画一个多余）。
-        // 但"展开却被浏览器压住"时必须画出来——那是唤回聊天窗的唯一入口。
-        final hideBall = !dock.visible ||
-            (dock.expanded && FloatStack.instance.isTop(FloatStack.ai));
+        // 只要聊天窗还在展开，就不画气泡：输入框、浏览器、终端都能自己
+        // 点到/收起，气泡再冒出来反而像 bug（用户反馈打开浏览器时会冒球）。
+        // 气泡只在聊天窗收起时作为唯一入口显示。
+        final hideBall = !dock.visible || dock.expanded;
+        // 结果窗、提问窗、ui_c 画布窗共用一份跨类型层级：
+        // 点哪个哪个到最上，不能因为“画布窗永远后画”就压在结果窗上面。
+        final windows = <MapEntry<String, Widget>>[
+          ..._quickResultWindows(context, dock),
+          // 模型抛出的问题直接浮在屏幕上方回答；快问输入条是否收起
+          // 不影响它，每个窗口自己关自己。
+          if (hasQuickQuestion)
+            MapEntry(
+              'question:${chatState.pendingQuestion!.id}',
+              _quickQuestionWindow(
+                context,
+                dock,
+                chatState.pendingQuestion!,
+              ),
+            ),
+          // ui_c 画布窗：多个一起浮，不切去完整悬浮窗，也不随快问条消失。
+          // 展开完整聊天窗时画布由 AiDockOverlay 渲染，这里必须让位，
+          // 否则同一块画布会画两份、点两份。
+          if (hasQuickCanvas) ..._quickCanvasWindows(context, dock),
+        ];
         return Material(
           type: MaterialType.transparency,
           child: Stack(
             clipBehavior: Clip.none,
             children: [
+              ..._orderAiWindows(windows, dock.zOrder),
+              // 球/输入条永远最后画：别的窗口再大也不能把唯一的入口盖掉。
               if (!hideBall) ..._build(context, dock),
-              // 结果窗画在球下面（球永远点得到），但在别的悬浮窗之上。
-              ..._quickResultWindows(context, dock),
-              // 快问模式下，模型抛出的问题直接浮在屏幕上方回答，不展开完整窗。
-              if (dock.quickOpen && chatState.pendingQuestion != null)
-                _quickQuestionWindow(
-                  context,
-                  dock,
-                  chatState.pendingQuestion!,
-                ),
-              // 快问模式下的 ui_c 画布窗：多个一起浮，不切去完整悬浮窗。
-              if (dock.quickOpen) ..._quickCanvasWindows(context, dock),
             ],
           ),
         );
@@ -541,7 +702,10 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
   }
 
   /// 快问结果窗：无边、可拖、可关、可按边缩放。
-  List<Widget> _quickResultWindows(BuildContext context, AiDockState dock) {
+  List<MapEntry<String, Widget>> _quickResultWindows(
+    BuildContext context,
+    AiDockState dock,
+  ) {
     if (dock.quickResults.isEmpty) return const [];
     final media = MediaQuery.of(context);
     final size = media.size;
@@ -563,35 +727,42 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
               (12 + win.x * field.width).clamp(6.0, size.width - w - 6);
           final top = (safeTop + 6 + win.y * field.height)
               .clamp(safeTop + 4, size.height - safeBottom - h - 4);
-          return Positioned(
-            key: ValueKey('quick:${win.id}'),
-            left: left,
-            top: top,
-            width: w,
-            height: h,
-            child: Listener(
-              onPointerDown: (_) {
-                FloatStack.instance.raise(FloatStack.ai);
-                notifier.raiseQuickResult(win.id);
-              },
-              child: _QuickResultCard(
-                win: win,
-                field: field,
-                onMove: (dx, dy) => notifier.moveQuickResultBy(win.id, dx, dy),
-                onResize: ({
-                  double dLeft = 0,
-                  double dTop = 0,
-                  double dRight = 0,
-                  double dBottom = 0,
-                }) =>
-                    notifier.resizeQuickResult(
-                  win.id,
-                  dLeft: dLeft,
-                  dTop: dTop,
-                  dRight: dRight,
-                  dBottom: dBottom,
+          return MapEntry(
+            'quick:${win.id}',
+            Positioned(
+              key: ValueKey('quick:${win.id}'),
+              left: left,
+              top: top,
+              width: w,
+              height: h,
+              child: Listener(
+                onPointerDown: (_) {
+                  FloatStack.instance.raise(FloatStack.ai);
+                  notifier.raiseQuickResult(win.id);
+                },
+                child: FloatBoundsReporter(
+                  id: 'quick-result-${win.id}',
+                  child: _QuickResultCard(
+                    win: win,
+                    field: field,
+                    onMove: (dx, dy) =>
+                        notifier.moveQuickResultBy(win.id, dx, dy),
+                    onResize: ({
+                      double dLeft = 0,
+                      double dTop = 0,
+                      double dRight = 0,
+                      double dBottom = 0,
+                    }) =>
+                        notifier.resizeQuickResult(
+                      win.id,
+                      dLeft: dLeft,
+                      dTop: dTop,
+                      dRight: dRight,
+                      dBottom: dBottom,
+                    ),
+                    onClose: () => notifier.closeQuickResult(win.id),
+                  ),
                 ),
-                onClose: () => notifier.closeQuickResult(win.id),
               ),
             ),
           );
@@ -601,7 +772,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
 
   /// 快问模式下的画布浮动窗：跟完整悬浮窗一样支持多个 ui_c，
   /// 但不展开完整 AI 窗，也不走 AI 页里的画布卡片。
-  List<Widget> _quickCanvasWindows(
+  List<MapEntry<String, Widget>> _quickCanvasWindows(
     BuildContext context,
     AiDockState dock,
   ) {
@@ -628,34 +799,43 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
             safeTop + 4,
             size.height - safeBottom - h - 4,
           );
-          return Positioned(
-            key: ValueKey('quickCanvas:${win.name}'),
-            left: left,
-            top: top,
-            width: w,
-            height: h,
-            child: Listener(
-              onPointerDown: (_) => notifier.raiseCanvas(win.name),
-              child: _CanvasWindow(
-                canvas: win.canvas,
-                chromeless: win.chromeless,
-                field: field,
-                onMove: (dx, dy) => notifier.moveCanvasBy(win.name, dx, dy),
-                onResize: ({
-                  double dLeft = 0,
-                  double dTop = 0,
-                  double dRight = 0,
-                  double dBottom = 0,
-                }) =>
-                    notifier.resizeCanvas(
-                  win.name,
-                  dLeft: dLeft,
-                  dTop: dTop,
-                  dRight: dRight,
-                  dBottom: dBottom,
+          return MapEntry(
+            'canvas:${win.name}',
+            Positioned(
+              key: ValueKey('quickCanvas:${win.name}'),
+              left: left,
+              top: top,
+              width: w,
+              height: h,
+              child: Listener(
+                onPointerDown: (_) {
+                  FloatStack.instance.raise(FloatStack.ai);
+                  notifier.raiseCanvas(win.name);
+                },
+                child: FloatBoundsReporter(
+                  id: 'quick-canvas-${win.name}',
+                  child: _CanvasWindow(
+                    canvas: win.canvas,
+                    chromeless: win.chromeless,
+                    field: field,
+                    onMove: (dx, dy) => notifier.moveCanvasBy(win.name, dx, dy),
+                    onResize: ({
+                      double dLeft = 0,
+                      double dTop = 0,
+                      double dRight = 0,
+                      double dBottom = 0,
+                    }) =>
+                        notifier.resizeCanvas(
+                      win.name,
+                      dLeft: dLeft,
+                      dTop: dTop,
+                      dRight: dRight,
+                      dBottom: dBottom,
+                    ),
+                    onCommit: notifier.commitLayout,
+                    onClose: () => notifier.closeCanvas(win.name),
+                  ),
                 ),
-                onCommit: notifier.commitLayout,
-                onClose: () => notifier.closeCanvas(win.name),
               ),
             ),
           );
@@ -729,11 +909,22 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
       left: 14,
       top: safeTop + 12,
       width: size.width - 28,
-      child: Material(
-        type: MaterialType.transparency,
-        child: _QuestionWindow(
-          question: question,
-          onAnswer: _answerQuickQuestion,
+      child: Listener(
+        onPointerDown: (_) {
+          FloatStack.instance.raise(FloatStack.ai);
+          ref.read(aiDockProvider.notifier).raiseWindow(
+                'question:${question.id}',
+              );
+        },
+        child: Material(
+          type: MaterialType.transparency,
+          child: FloatBoundsReporter(
+            id: 'quick-question-${question.id}',
+            child: _QuestionWindow(
+              question: question,
+              onAnswer: _answerQuickQuestion,
+            ),
+          ),
         ),
       ),
     );
@@ -827,12 +1018,19 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
         (dock.dx * (size.width - bubble)).clamp(4.0, size.width - bubble - 4);
     var top =
         (minY + dock.dy * (maxY - minY)).clamp(minY, maxY < minY ? minY : maxY);
-    // 快问条伸出来时键盘会顶上来：球在下半屏的话，输入条直接被键盘盖住，
-    // 用户看不见自己打的字。这时把球（和它身上的输入条）抬到键盘上面。
+    // 快问条伸出来时键盘会顶上来：只在输入条真的会被键盘盖住时才把球
+    // 抬到键盘上方；输入条本来就在上半屏时保持原地，不整层乱动。
     final keyboard = media.viewInsets.bottom;
     if (dock.quickOpen && keyboard > 0) {
-      final limit = size.height - keyboard - 8 - bubble;
-      if (top > limit) top = limit < minY ? minY : limit;
+      // 输入面板底边 ≈ 球顶 + (56 + 44) / 2。
+      final inputBottom = top + (bubble + 44.0) / 2;
+      final imeTop = size.height - keyboard - 8;
+      final delta = inputBottom - imeTop;
+      if (delta > 0) {
+        final maxShift = top - minY;
+        final shift = delta < maxShift ? delta : maxShift;
+        top -= shift;
+      }
     }
 
     final chatState = ref.watch(chatProvider);
@@ -847,7 +1045,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     final onAiPage = ref.watch(homeTabIndexProvider) == 2;
     final status = (dock.expanded || onAiPage || dock.quickOpen)
         ? ''
-        : _statusText(chatState);
+        : aiBubbleStatusText(chatState);
 
     // 球贴右边 → 输入条往左长；贴左边 → 往右长。永远往空的那一侧伸。
     final onRight = left + bubble / 2 > size.width / 2;
@@ -857,7 +1055,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     final docked = !dock.quickOpen &&
         !dock.expanded &&
         (dock.dx <= 0.03 || dock.dx >= 0.97);
-    const dockedTabWidth = 24.0;
+    const dockedTabWidth = 44.0;
     const dockedTabHeight = 44.0;
     final renderLeft =
         docked ? (onRight ? size.width - dockedTabWidth - 2.0 : 2.0) : left;
@@ -986,7 +1184,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     final expanded = dock.quickExpand;
     final running = dock.quickBusy;
     // 正在跑：框里用灰字显示思考尾巴 / 正在调的工具。这就是"进度条"。
-    final live = running ? _statusText(chat) : '';
+    final live = running ? aiBubbleStatusText(chat) : '';
     final hint = running
         ? (live.isEmpty ? '正在处理…' : live)
         : (chat.isLoading ? 'AI 正忙，问了会排队' : '问一句，结果弹小窗');
@@ -1185,22 +1383,34 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
   /// 挑一个本地文件挂到快问附件行。
   ///
   /// 只记路径/名字，不读正文：AI 自己会调 `read_file`/`cat` 去看。
-  /// 选择器是路由弹窗，需要借根 Navigator 的 context（和聊天窗同一个坑）。
+  /// 选择器现在自己是常驻悬浮窗，不再依赖根 Navigator；外部悬浮模式下
+  /// `appNavigatorKey.currentContext` 可能为空，以前这里会直接 return，
+  /// 表现就是"点快问附件没反应"。用当前 widget 的 context 即可。
   Future<void> _pickQuickFile(BuildContext context) async {
-    final navContext = appNavigatorKey.currentContext;
-    if (navContext == null || !navContext.mounted) return;
     final notifier = ref.read(aiDockProvider.notifier);
-    final picked = await LocalFilePicker.pick(navContext);
+    PickedLocalFile? picked;
+    try {
+      picked = await LocalFilePicker.pick(context);
+    } catch (e) {
+      _quickToast('打开文件选择器失败：$e');
+      return;
+    }
     if (picked == null || !mounted) return;
     notifier.addQuickFile(path: picked.path, name: picked.name);
-    final toastContext = appNavigatorKey.currentContext;
-    if (toastContext == null || !toastContext.mounted) return;
-    ScaffoldMessenger.of(toastContext).showSnackBar(
-      SnackBar(
-        content: Text('已附上 ${picked.name}（只发路径，AI 自己读）'),
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    _quickToast('已附上 ${picked.name}（只发路径，AI 自己读）');
+  }
+
+  /// 快问条里的提示：外部悬浮模式可能没有 ScaffoldMessenger，失败就静默。
+  void _quickToast(String message) {
+    final ctx = appNavigatorKey.currentContext;
+    if (ctx == null || !ctx.mounted) return;
+    try {
+      ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+      );
+    } catch (_) {
+      // 纯提示，失败就算了。
+    }
   }
 
   /// 把快问问题 + 附件路径拼成最终提问。
@@ -1303,18 +1513,23 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
     required double top,
     required String text,
   }) {
-    const bubble = 56.0;
+    // 几何和 _FloatBoundsReporter 共用：原生覆盖窗按同一个矩形扩张，
+    // 桌面级才不会被裁得只剩一点点。
+    final rect = aiBubbleStatusLabelRect(
+      size: size,
+      left: left,
+      top: top,
+      status: text,
+    );
+    if (rect == null) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
     // 球贴右边 → 字往左长；贴左边 → 字往右长。
-    final onRight = left + bubble / 2 > size.width / 2;
-    final room = onRight ? left - 8 : size.width - (left + bubble) - 8;
-    final width = room.clamp(0.0, 220.0);
-    if (width < 56) return const SizedBox.shrink();
+    final onRight = left + 56.0 / 2 > size.width / 2;
     return Positioned(
-      left: onRight ? left - width - 4 : left + bubble + 4,
-      // 和球垂直居中：球 56 高，这行字 18 高。
-      top: top + (bubble - 18) / 2,
-      width: width,
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
       child: IgnorePointer(
         // 这里显示的是**思考原文的尾巴**，不是"思考中"三个字。
         //
@@ -1324,7 +1539,7 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
         // 卡住了一眼就能看出来——比一个恒定的"思考中"有用得多。
         child: _StatusTail(
           text: text,
-          width: width,
+          width: rect.width,
           alignRight: onRight,
           style: TextStyle(
             fontSize: 11.5,
@@ -1344,41 +1559,6 @@ class _AiBubbleLayerState extends ConsumerState<AiBubbleLayer> {
         ),
       ),
     );
-  }
-
-  /// 现在在干什么，压成一小段话。
-  ///
-  /// 优先级：正在调的工具 > 思考 > 正在答 > 最近一步的类型。都没有就返回空串
-  /// （空串 = 这一行不显示）。
-  String _statusText(ChatState chat) {
-    // 挂起等回答时 isLoading 是 false，但这恰恰是最需要提示的时刻：
-    // 收起状态下提问窗不画出来，球也不转，用户完全不知道 AI 在等他说话——
-    // 看着就是"问了一次就卡住了"。
-    if (chat.pendingQuestion != null) return '等你回答';
-    if (chat.pendingPlan.isNotEmpty) return '等你确认';
-    if (!chat.isLoading) return '';
-    if (chat.liveTool.isNotEmpty) return chat.liveTool;
-    // 思考/正文都显示**正在流的原文尾巴**，让这行字自己动起来。
-    if (chat.liveReasoning.isNotEmpty) return statusTail(chat.liveReasoning);
-    if (chat.liveContent.isNotEmpty) return statusTail(chat.liveContent);
-    final events = chat.liveAgentEvents;
-    if (events.isNotEmpty) {
-      return switch (events.last.kind) {
-        AgentEventKind.thinking => '思考中',
-        AgentEventKind.answer => '答复中',
-        AgentEventKind.toolStart => events.last.toolName ?? '调用工具',
-        AgentEventKind.toolImage => '显示图片',
-        AgentEventKind.toolEnd => '处理结果',
-        AgentEventKind.taskPlan => '规划任务',
-        AgentEventKind.canvas => '生成卡片',
-        AgentEventKind.workflowStep => '条件执行',
-        AgentEventKind.question => '等你回答',
-        AgentEventKind.planPending => '等你确认',
-        AgentEventKind.error => '出错了',
-        AgentEventKind.done => '收尾',
-      };
-    }
-    return '处理中';
   }
 }
 
@@ -1548,7 +1728,7 @@ class _Bubble extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: pending ? scheme.error : scheme.primary,
                   borderRadius: BorderRadius.circular(10),
-                  boxShadow: Glass.shadow(scheme, y: 2),
+                  boxShadow: const <BoxShadow>[],
                 ),
                 child: Text(
                   badge,
@@ -1593,23 +1773,23 @@ class _DockedBubble extends StatelessWidget {
                 ? '$unread'
                 : null;
     return SizedBox(
-      width: 24,
+      width: 44,
       height: 44,
       child: Stack(
         clipBehavior: Clip.none,
         children: [
           GlassPanel(
-            radius: 14,
+            radius: 22,
             blur: 14,
             shadowY: 3,
             child: SizedBox(
-              width: 24,
+              width: 44,
               height: 44,
               child: Center(
                 child: busy
                     ? SizedBox(
-                        width: 13,
-                        height: 13,
+                        width: 18,
+                        height: 18,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
                           color: scheme.primary,
@@ -1617,7 +1797,7 @@ class _DockedBubble extends StatelessWidget {
                       )
                     : Icon(
                         Icons.auto_awesome,
-                        size: 15,
+                        size: 19,
                         color: pending ? scheme.error : scheme.primary,
                       ),
               ),
@@ -1633,7 +1813,7 @@ class _DockedBubble extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: pending ? scheme.error : scheme.primary,
                   borderRadius: BorderRadius.circular(9),
-                  boxShadow: Glass.shadow(scheme, y: 2),
+                  boxShadow: const <BoxShadow>[],
                 ),
                 child: Text(
                   badge,
@@ -1655,6 +1835,7 @@ class _Window extends ConsumerStatefulWidget {
   const _Window({
     required this.input,
     required this.scroll,
+    required this.pinned,
     required this.onSend,
     required this.onToBottom,
     required this.field,
@@ -1662,6 +1843,9 @@ class _Window extends ConsumerStatefulWidget {
 
   final TextEditingController input;
   final ScrollController scroll;
+
+  /// 当前是否在自动跟随底部。用户往上翻后为 false，显示“回到底部”按钮。
+  final bool pinned;
   final VoidCallback onSend;
   final VoidCallback onToBottom;
 
@@ -1878,6 +2062,7 @@ class _WindowState extends ConsumerState<_Window> {
                                   // 再看结论。放答案下面会把结论顶走，读起来是倒的。
                                   if (m.agentEvents.isNotEmpty && !m.isUser)
                                     Padding(
+                                      key: ValueKey('dock-agent-$index'),
                                       padding: const EdgeInsets.only(bottom: 6),
                                       child: AgentProcessCard(
                                         events: m.agentEvents,
@@ -1896,6 +2081,7 @@ class _WindowState extends ConsumerState<_Window> {
                                       ),
                                     ),
                                   _MiniBubble(
+                                    key: ValueKey('dock-msg-$index'),
                                     isUser: m.isUser,
                                     text: m.content,
                                     outcome: m.outcome,
@@ -1963,6 +2149,7 @@ class _WindowState extends ConsumerState<_Window> {
                                 ],
                                 if (chat.liveAgentEvents.isNotEmpty)
                                   AgentProcessCard(
+                                    key: const ValueKey('dock-live-process'),
                                     events: chat.liveAgentEvents,
                                     running: chat.isLoading,
                                     totalTokens: chat.lastTokens,
@@ -1980,6 +2167,7 @@ class _WindowState extends ConsumerState<_Window> {
                                 // 正在流的那一段：悬浮窗矮，用 dense 排版。
                                 if (chat.isLoading)
                                   AgentStreamCard(
+                                    key: const ValueKey('dock-live-stream'),
                                     reasoning: chat.liveReasoning,
                                     content: chat.liveContent,
                                     reasoningChars: chat.liveReasoningChars,
@@ -1992,6 +2180,7 @@ class _WindowState extends ConsumerState<_Window> {
                                 if (chat.pendingQuestion == null &&
                                     chat.pendingPlan.isNotEmpty)
                                   _MiniConfirm(
+                                    key: const ValueKey('dock-live-confirm'),
                                     count: chat.pendingPlan.length,
                                     irreversible: chat.pendingPlan
                                         .any((a) => !a.reversible),
@@ -2100,6 +2289,30 @@ class _WindowState extends ConsumerState<_Window> {
             ),
           ),
         ),
+        // 用户往上翻看历史后自动跟随会停；给一个明确入口回到最新，
+        // 不用在窄窗里一路手动滑到底。
+        if (!widget.pinned && !_sessions && recent.isNotEmpty)
+          Positioned(
+            right: 14,
+            bottom: 74,
+            child: Material(
+              color: scheme.primary,
+              shape: const CircleBorder(),
+              elevation: 3,
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: widget.onToBottom,
+                child: const Padding(
+                  padding: EdgeInsets.all(7),
+                  child: Icon(
+                    Icons.arrow_downward_rounded,
+                    size: 18,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          ),
         // 四边 + 四角热区：按住边缘随手指改窗口大小。
         _Edge(
           alignment: Alignment.centerLeft,
@@ -2180,85 +2393,90 @@ class _WindowState extends ConsumerState<_Window> {
     );
   }
 
-  /// 挑一个本地文件当附件。选择器是路由弹窗，必须借根 Navigator 的 context：
-  /// 悬浮层在 Navigator 之上，用自己的 context 弹出来会被窗口自己盖住。
+  /// 统一弹提示：外部悬浮窗模式下根 Navigator 有可能没有 ScaffoldMessenger，
+  /// 或者 context 已经卸载，提示失败不能反过来打断附件流程。
+  void _toast(String message,
+      {Duration duration = const Duration(seconds: 2)}) {
+    final ctx = appNavigatorKey.currentContext;
+    if (ctx == null || !ctx.mounted) return;
+    try {
+      ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
+        SnackBar(content: Text(message), duration: duration),
+      );
+    } catch (_) {
+      // 纯提示，失败就算了。
+    }
+  }
+
+  /// 挑一个本地文件当附件。选择器是常驻悬浮窗，APP 内外都能用。
+  ///
+  /// 挑一个本地文件当附件。选择器是常驻悬浮窗，APP 内外都能用。
+  ///
+  /// 关键约束：进来先把聊天窗收起来腾位置，所以任何一条路径（取消、
+  /// 图片不支持、读图失败、附件异常）都必须把聊天窗重新 open，否则用户
+  /// 看到的就是"选了文件 → 悬浮窗直接消失"。
   Future<void> _pickFile(BuildContext context, WidgetRef ref) async {
-    final navContext = appNavigatorKey.currentContext;
-    if (navContext == null || !navContext.mounted) return;
     final notifier = ref.read(aiDockProvider.notifier);
-    // 选择器是路由弹窗，活在 Navigator 里，也就是**这一层的下面**——
-    // 聊天窗会压在它上面，重叠区域的点击还会被聊天窗吃掉。
-    // 所以挑文件期间先把窗口收起来，选完（或取消）再回来。
     notifier.close();
-    final picked = await LocalFilePicker.pick(navContext);
+    PickedLocalFile? picked;
+    try {
+      picked = await LocalFilePicker.pick(context);
+    } catch (e) {
+      notifier.open();
+      _toast('打开文件选择器失败：$e');
+      return;
+    }
     if (picked == null) {
       notifier.open();
       return;
     }
     if (picked.mime.toLowerCase().startsWith('image/')) {
-      final registry = ref.read(llmRegistryProvider);
-      final activeProvider = registry.active;
-      final currentModel = ref.read(chatProvider).selectedModel.isNotEmpty
-          ? ref.read(chatProvider).selectedModel
-          : activeProvider.defaultModel;
-      final mainSupportsImage =
-          activeProvider.capabilitiesFor(currentModel).supportsImage;
-      if (!mainSupportsImage &&
-          (registry.visionModel.trim().isEmpty ||
-              registry.visionProviderId.isEmpty)) {
-        notifier.open();
-        final toastContext = appNavigatorKey.currentContext;
-        if (toastContext != null && toastContext.mounted) {
-          ScaffoldMessenger.of(toastContext).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  '当前主模型不支持图片，且没有设置图片识别模型。去「设置 → AI → 图片识别模型」配置，或在模型能力里给主模型勾选“支持图片”。'),
-              duration: Duration(seconds: 3),
-            ),
+      try {
+        final registry = ref.read(llmRegistryProvider);
+        final activeProvider = registry.active;
+        final currentModel = ref.read(chatProvider).selectedModel.isNotEmpty
+            ? ref.read(chatProvider).selectedModel
+            : activeProvider.defaultModel;
+        final mainSupportsImage =
+            activeProvider.capabilitiesFor(currentModel).supportsImage;
+        if (!mainSupportsImage &&
+            (registry.visionModel.trim().isEmpty ||
+                registry.visionProviderId.isEmpty)) {
+          _toast(
+            '当前主模型不支持图片，且没有设置图片识别模型。去「设置 → AI → 图片识别模型」配置，或在模型能力里给主模型勾选“支持图片”。',
+            duration: const Duration(seconds: 3),
           );
+          return;
         }
-        return;
-      }
-      final image = await readPickedImage(picked);
-      if (image == null) {
-        notifier.open();
-        final toastContext = appNavigatorKey.currentContext;
-        if (toastContext != null && toastContext.mounted) {
-          ScaffoldMessenger.of(toastContext).showSnackBar(
-            SnackBar(content: Text('图片读取失败：${picked.path}')),
-          );
+        final image = await readPickedImage(picked);
+        if (image == null) {
+          _toast('图片读取失败：${picked.path}');
+          return;
         }
+        ref.read(chatProvider.notifier).addPendingImage(image);
+        _toast('已附上图片 ${picked.name}', duration: const Duration(seconds: 1));
         return;
+      } catch (e) {
+        _toast('图片附加失败：$e');
+        return;
+      } finally {
+        if (!ref.read(aiDockProvider).expanded) notifier.open();
       }
-      ref.read(chatProvider.notifier).addPendingImage(image);
-      notifier.open();
-      final toastContext = appNavigatorKey.currentContext;
-      if (toastContext != null && toastContext.mounted) {
-        ScaffoldMessenger.of(toastContext).showSnackBar(
-          SnackBar(
-            content: Text('已附上图片 ${picked.name}'),
-            duration: const Duration(seconds: 1),
-          ),
-        );
-      }
-      return;
     }
     // pushFile(open: true) 会把窗口重新展开，附件已经在输入框上方了。
-    final label = notifier.pushFile(
-      path: picked.path,
-      name: picked.name,
-      content: picked.content,
-      language: picked.language,
-      truncated: picked.truncated,
-    );
-    final toastContext = appNavigatorKey.currentContext;
-    if (toastContext == null || !toastContext.mounted) return;
-    ScaffoldMessenger.of(toastContext).showSnackBar(
-      SnackBar(
-        content: Text('已附上 $label'),
-        duration: const Duration(seconds: 1),
-      ),
-    );
+    try {
+      final label = notifier.pushFile(
+        path: picked.path,
+        name: picked.name,
+        content: picked.content,
+        language: picked.language,
+        truncated: picked.truncated,
+      );
+      _toast('已附上 $label', duration: const Duration(seconds: 1));
+    } catch (e) {
+      notifier.open();
+      _toast('附件失败：$e');
+    }
   }
 
   void _approvalMenu(BuildContext context, WidgetRef ref) {
@@ -2906,6 +3124,7 @@ class _MiniImageState extends State<_MiniImage> {
 
 class _MiniBubble extends StatefulWidget {
   const _MiniBubble({
+    super.key,
     required this.isUser,
     required this.text,
     required this.outcome,
@@ -3095,6 +3314,7 @@ class _MiniAction extends StatelessWidget {
 
 class _MiniConfirm extends StatelessWidget {
   const _MiniConfirm({
+    super.key,
     required this.count,
     required this.irreversible,
     required this.names,
@@ -3238,31 +3458,9 @@ class _QuickResultCard extends StatelessWidget {
                             ),
                           ),
                         ),
-                        GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () {
-                            Clipboard.setData(ClipboardData(text: win.answer));
-                            final navContext = appNavigatorKey.currentContext;
-                            if (navContext == null || !navContext.mounted) {
-                              return;
-                            }
-                            ScaffoldMessenger.of(navContext).showSnackBar(
-                              const SnackBar(
-                                content: Text('已复制'),
-                                duration: Duration(seconds: 2),
-                              ),
-                            );
-                          },
-                          child: const _GhostButton(
-                            icon: Icons.copy_all_outlined,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: onClose,
-                          child: const _GhostButton(icon: Icons.close),
-                        ),
+                        // 右上角给复制/关闭按钮留位，按钮本体画在 _Edge 之后，
+                        // 不会被右边缘的缩放热区抢走点击。
+                        const SizedBox(width: 64),
                       ],
                     ),
                   ),
@@ -3307,6 +3505,40 @@ class _QuickResultCard extends StatelessWidget {
           cursor: SystemMouseCursors.resizeUpDown,
           onDrag: (d) => onResize(dBottom: d.dy / field.height),
           onEnd: () {},
+        ),
+        // 必须放在所有 _Edge 之后：右侧 16px 的缩放热区正好压在右上角，
+        // 放在标题栏里会导致点 × 变成拉窗口（用户反馈“关不掉”）。
+        Positioned(
+          top: 6,
+          right: 6,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              GestureDetector(
+                key: ValueKey('quick-copy-${win.id}'),
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: win.answer));
+                  final navContext = appNavigatorKey.currentContext;
+                  if (navContext == null || !navContext.mounted) return;
+                  ScaffoldMessenger.of(navContext).showSnackBar(
+                    const SnackBar(
+                      content: Text('已复制'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
+                child: const _GhostButton(icon: Icons.copy_all_outlined),
+              ),
+              const SizedBox(width: 6),
+              GestureDetector(
+                key: ValueKey('quick-close-${win.id}'),
+                behavior: HitTestBehavior.opaque,
+                onTap: onClose,
+                child: const _GhostButton(icon: Icons.close),
+              ),
+            ],
+          ),
         ),
       ],
     );

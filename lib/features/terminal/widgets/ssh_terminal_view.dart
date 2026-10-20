@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
 
 import '../../../shared/mono_text.dart';
+import '../../external/external_overlay_controller.dart';
 import '../../../core/theme/glass.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../providers/ssh_session_provider.dart';
@@ -174,22 +175,29 @@ class _SshTerminalViewState extends ConsumerState<SshTerminalView> {
               padding: EdgeInsets.zero,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(20),
-                child: TerminalView(
-                  _terminal,
-                  controller: _controller,
-                  focusNode: _focusNode,
-                  autofocus: true,
-                  keyboardType: TextInputType.multiline,
-                  backgroundOpacity: 0.86,
-                  theme: palette.theme,
-                  textStyle: TerminalStyle(
-                    fontSize: settings.terminalFontSize,
-                    height: settings.terminalLineHeight,
-                    fontFamily: kMonoFamily,
-                    fontFamilyFallback: kMonoFallback,
+                child: ExternalImeFocusRegion(
+                  child: Listener(
+                    behavior: HitTestBehavior.deferToChild,
+                    onPointerDown: (_) =>
+                        ExternalOverlayController.instance.requestImeFocus(),
+                    child: TerminalView(
+                      _terminal,
+                      controller: _controller,
+                      focusNode: _focusNode,
+                      autofocus: true,
+                      keyboardType: TextInputType.multiline,
+                      backgroundOpacity: 0.86,
+                      theme: palette.theme,
+                      textStyle: TerminalStyle(
+                        fontSize: settings.terminalFontSize,
+                        height: settings.terminalLineHeight,
+                        fontFamily: kMonoFamily,
+                        fontFamilyFallback: kMonoFallback,
+                      ),
+                      padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+                      cursorType: TerminalCursorType.block,
+                    ),
                   ),
-                  padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
-                  cursorType: TerminalCursorType.block,
                 ),
               ),
             ),

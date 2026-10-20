@@ -1,14 +1,48 @@
 import 'package:dio/dio.dart';
-
-import '../../../core/network/api_exception.dart';
 import '../../../core/network/dio_client.dart';
-import '../../../core/network/error_handler.dart';
+import '../../../core/network/qinglong_version_compat.dart';
 import '../../panels/adapters/qinglong_api_adapter.dart';
 import '../models/log_item.dart';
 
 /// 日志中心 API。
 class LogApi {
   LogApi._();
+
+  static List<String> _splitLog(dynamic data) {
+    if (data is String) return data.isEmpty ? const [] : data.split('\n');
+    if (data is List) return data.map((e) => e.toString()).toList();
+    if (data is Map<String, dynamic>) {
+      final lines = data['data'] ?? data['lines'] ?? const [];
+      if (lines is String) return lines.isEmpty ? const [] : lines.split('\n');
+      if (lines is List) return lines.map((e) => e.toString()).toList();
+    }
+    return const [];
+  }
+
+  static Future<dynamic> _compatCall({
+    required String apiBaseUrl,
+    required String function,
+    Map<String, String> pathParams = const {},
+    Map<String, dynamic> query = const {},
+  }) async {
+    final spec = await QinglongVersionCompat.specForCurrentVersion(
+      function,
+      pathParams: pathParams,
+    );
+    if (spec == null) return null;
+    final path = QinglongCompatRender.render(spec.path, pathParams, query);
+    final queryParameters = <String, dynamic>{
+      for (final e in spec.query.entries)
+        e.key: QinglongCompatRender.renderValue(e.value, pathParams, query),
+      ...query,
+    };
+    final response = await DioClient.dio.request<dynamic>(
+      '$apiBaseUrl$path',
+      options: Options(method: spec.method),
+      queryParameters: queryParameters,
+    );
+    return parseQlResponse(response);
+  }
 
   static Future<List<LogItem>> list({
     required String apiBaseUrl,
@@ -33,8 +67,28 @@ class LogApi {
           if (result.isNotEmpty) return result;
         }
       } catch (_) {
-        // 插件失败回退内置。
+        // 插件失败回退内置版本表。
       }
+    }
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'log_list',
+        query: {
+          if (searchValue != null && searchValue.isNotEmpty)
+            'searchValue': searchValue,
+        },
+      );
+      if (data != null) {
+        final result = _flatten(data is List
+            ? data
+            : (data is Map<String, dynamic>
+                ? data['data'] as List? ?? const []
+                : const []));
+        if (result.isNotEmpty) return result;
+      }
+    } catch (_) {
+      // 兼容失败继续内置。
     }
     final response = await DioClient.dio.get<dynamic>(
       '$apiBaseUrl/logs',
@@ -92,66 +146,44 @@ class LogApi {
           if (result.isNotEmpty) return result;
         }
       } catch (_) {
-        // 插件失败回退内置。
+        // 插件失败回退内置版本表。
       }
     }
     try {
-      // 新版青龙（2.16+）已下线 GET /logs/:file，改用 /logs/detail。
-      final response = await DioClient.dio.get<dynamic>(
-        '$apiBaseUrl/logs/detail',
-        queryParameters: {
-          'path': dir ?? '',
-          'file': file,
-        },
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'log_read',
+        pathParams: {'dir': dir ?? '', 'file': file},
       );
-      return _splitLog(parseQlResponse(response));
-    } on DioException catch (e) {
-      if (_isNotFound(e.response?.statusCode) ||
-          _isNotFound(_businessCode(e.response?.data))) {
-        try {
-          final response = await DioClient.dio.get<dynamic>(
-            '$apiBaseUrl/logs/$file',
-            queryParameters: {
-              if (dir != null && dir.isNotEmpty) 'path': dir,
-            },
-          );
-          return _splitLog(parseQlResponse(response));
-        } on DioException catch (e2) {
-          throw ApiException(message: readableError(e2));
-        }
+      if (data != null) {
+        final result = _splitLog(data);
+        if (result.isNotEmpty) return result;
       }
-      throw ApiException(message: readableError(e));
+    } catch (_) {
+      // 兼容失败继续内置。
     }
-  }
-
-  static List<String> _splitLog(dynamic data) {
+    final response = await DioClient.dio.get<dynamic>(
+      '$apiBaseUrl/logs/$file',
+      queryParameters: {
+        if (dir != null && dir.isNotEmpty) 'path': dir,
+      },
+    );
+    final data = parseQlResponse(response);
     if (data is String) {
+      // 青龙 /logs/detail 返回的是字符串内容，按行拆开便于展示。
       if (data.isEmpty) return const [];
       return data.split('\n');
     }
-    if (data is List) return data.map((e) => e.toString()).toList();
+    if (data is List) {
+      return data.map((e) => e.toString()).toList();
+    }
     if (data is Map<String, dynamic>) {
       final lines = data['data'] ?? data['lines'] ?? const [];
-      if (lines is String) return lines.isEmpty ? const [] : lines.split('\n');
+      if (lines is String) {
+        return lines.isEmpty ? const [] : lines.split('\n');
+      }
       if (lines is List) return lines.map((e) => e.toString()).toList();
     }
     return const [];
-  }
-
-  static bool _isNotFound(dynamic code) {
-    if (code is int) return code == 404 || code == 405 || code == 410;
-    if (code is String) {
-      return code == '404' || code == '405' || code == '410';
-    }
-    return false;
-  }
-
-  static int? _businessCode(dynamic data) {
-    if (data is Map<String, dynamic>) {
-      final code = data['code'];
-      if (code is int) return code;
-      if (code is String) return int.tryParse(code);
-    }
-    return null;
   }
 }

@@ -5,6 +5,8 @@ import 'dart:typed_data';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 
+import '../../floating/float_bounds_registry.dart';
+
 import '../providers/ssh_session_provider.dart';
 import 'ssh_floating_host.dart';
 import '../../../shared/mono_text.dart';
@@ -20,6 +22,7 @@ class SshFloatingLogs {
     String? title,
   }) {
     late final int id;
+    final initialOffset = SshFloatingHost.nextCascadeOffset();
     id = SshFloatingHost.add(
       context,
       group: containerId,
@@ -35,6 +38,8 @@ class SshFloatingLogs {
           SshFloatingHost.close(id);
           _ids.remove(id);
         },
+        boundsId: 'ssh-float-$id',
+        initialOffset: initialOffset,
       ),
     );
     _ids.add(id);
@@ -50,22 +55,38 @@ class SshFloatingLogsWindow extends StatefulWidget {
     required this.onFocus,
     required this.onMinimize,
     required this.onClose,
+    required this.boundsId,
+    this.initialOffset,
   });
 
+  final Object boundsId;
   final String sessionId;
   final String containerId;
   final String? title;
   final VoidCallback onFocus;
   final VoidCallback onMinimize;
   final VoidCallback onClose;
+  final Offset? initialOffset;
 
   @override
   State<SshFloatingLogsWindow> createState() => _SshFloatingLogsWindowState();
 }
 
 class _SshFloatingLogsWindowState extends State<SshFloatingLogsWindow> {
-  Offset _pos = const Offset(40, 120);
+  @override
+  void dispose() {
+    FloatBoundsRegistry.remove(widget.boundsId);
+    super.dispose();
+  }
+
+  late Offset _pos;
   Size _size = const Size(380, 260);
+
+  @override
+  void initState() {
+    super.initState();
+    _pos = widget.initialOffset ?? const Offset(40, 120);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -73,109 +94,114 @@ class _SshFloatingLogsWindowState extends State<SshFloatingLogsWindow> {
     final width = (_size.width).clamp(240.0, media.size.width - 16);
     final height = (_size.height).clamp(180.0, media.size.height - 120);
     final left = _pos.dx.clamp(0.0, media.size.width - width - 8);
-    final top = _pos.dy.clamp(MediaQuery.paddingOf(context).top,
-        media.size.height - height - 8);
+    final top = _pos.dy.clamp(
+        MediaQuery.paddingOf(context).top, media.size.height - height - 8);
+    FloatBoundsRegistry.report(
+        widget.boundsId, Rect.fromLTWH(left, top, width, height));
     return Stack(
       fit: StackFit.expand,
       children: [
         Positioned(
-      left: left,
-      top: top,
-      width: width,
-      height: height,
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: GestureDetector(
-              onTapDown: (_) => widget.onFocus(),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Material(
-                  color: const Color(0xF0182028),
-                  child: SshContainerLogView(
-                    sessionId: widget.sessionId,
-                    containerId: widget.containerId,
-                    title: widget.title,
+          left: left,
+          top: top,
+          width: width,
+          height: height,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: GestureDetector(
+                  onTapDown: (_) => widget.onFocus(),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Material(
+                      color: const Color(0xF0182028),
+                      child: SshContainerLogView(
+                        sessionId: widget.sessionId,
+                        containerId: widget.containerId,
+                        title: widget.title,
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
-          Positioned(
-            left: 0,
-            right: 36,
-            top: 0,
-            height: 20,
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onTapDown: (_) => widget.onFocus(),
-              onPanUpdate: (d) => setState(() => _pos += d.delta),
-              child: Container(
-                color: const Color(0x00182028),
-                padding: const EdgeInsets.only(left: 8),
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '${widget.title ?? '容器日志'} · 实时',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Colors.white70,
-                    fontWeight: FontWeight.w600,
+              Positioned(
+                left: 0,
+                right: 36,
+                top: 0,
+                height: 20,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTapDown: (_) => widget.onFocus(),
+                  onPanUpdate: (d) => setState(() => _pos += d.delta),
+                  child: Container(
+                    color: const Color(0x00182028),
+                    padding: const EdgeInsets.only(left: 8),
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '${widget.title ?? '容器日志'} · 实时',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Colors.white70,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
-          Positioned(
-            right: 32,
-            top: 0,
-            child: IconButton(
-              tooltip: '最小化容器日志',
-              visualDensity: VisualDensity.compact,
-              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-              iconSize: 14,
-              padding: EdgeInsets.zero,
-              icon: const Icon(Icons.picture_in_picture_alt, color: Colors.white70),
-              onPressed: widget.onMinimize,
-            ),
-          ),
-          Positioned(
-            right: 2,
-            top: 0,
-            child: IconButton(
-              tooltip: '关闭容器日志',
-              visualDensity: VisualDensity.compact,
-              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-              iconSize: 14,
-              padding: EdgeInsets.zero,
-              icon: const Icon(Icons.close_rounded, color: Colors.white70),
-              onPressed: widget.onClose,
-            ),
-          ),
-          Positioned(
-            right: 0,
-            bottom: 0,
-            width: 20,
-            height: 20,
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onPanUpdate: (d) {
-                setState(() {
-                  _size = Size(
-                    (_size.width + d.delta.dx).clamp(240.0, 800.0),
-                    (_size.height + d.delta.dy).clamp(180.0, 700.0),
-                  );
-                });
-              },
-              child: const Icon(
-                Icons.open_in_full_rounded,
-                size: 13,
-                color: Colors.white54,
+              Positioned(
+                right: 32,
+                top: 0,
+                child: IconButton(
+                  tooltip: '最小化容器日志',
+                  visualDensity: VisualDensity.compact,
+                  constraints:
+                      const BoxConstraints(minWidth: 30, minHeight: 30),
+                  iconSize: 14,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.picture_in_picture_alt,
+                      color: Colors.white70),
+                  onPressed: widget.onMinimize,
+                ),
               ),
-            ),
+              Positioned(
+                right: 2,
+                top: 0,
+                child: IconButton(
+                  tooltip: '关闭容器日志',
+                  visualDensity: VisualDensity.compact,
+                  constraints:
+                      const BoxConstraints(minWidth: 30, minHeight: 30),
+                  iconSize: 14,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                  onPressed: widget.onClose,
+                ),
+              ),
+              Positioned(
+                right: 0,
+                bottom: 0,
+                width: 20,
+                height: 20,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanUpdate: (d) {
+                    setState(() {
+                      _size = Size(
+                        (_size.width + d.delta.dx).clamp(240.0, 800.0),
+                        (_size.height + d.delta.dy).clamp(180.0, 700.0),
+                      );
+                    });
+                  },
+                  child: const Icon(
+                    Icons.open_in_full_rounded,
+                    size: 13,
+                    color: Colors.white54,
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
-    ),
+        ),
       ],
     );
   }

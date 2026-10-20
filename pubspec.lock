@@ -130,7 +130,7 @@ packages:
     source: hosted
     version: "0.3.5+2"
   crypto:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: crypto
       sha256: c8ea0233063ba03258fbcf2ca4d6dadfefe14f02fab57702265467a19f27fadf
@@ -177,6 +177,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.15.0"
+  edwards25519:
+    dependency: transitive
+    description:
+      name: edwards25519
+      sha256: "63e05986664ca4a7b203390a76af94b0cc43608bc2916828d7728d6b5b4c8598"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.5"
   equatable:
     dependency: transitive
     description:
@@ -222,6 +230,14 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  flutter_adb:
+    dependency: "direct main"
+    description:
+      name: flutter_adb
+      sha256: ddd028f80e3350c0773a104a380ac8bb5ae0c46fab7b32c0f7ab719a0ab72745
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.0"
   flutter_code_editor:
     dependency: "direct main"
     description:
@@ -501,6 +517,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.5"
+  multicast_dns:
+    dependency: transitive
+    description:
+      name: multicast_dns
+      sha256: de72ada5c3db6fdd6ad4ae99452fe05fb403c4bb37c67ceb255ddd37d2b5b1eb
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.3.3"
   nm:
     dependency: transitive
     description:

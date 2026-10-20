@@ -19,6 +19,7 @@ class ThemeConfig {
     this.colors = const {},
     this.effects = const {},
     this.typography = const {},
+    this.componentStyle = const {},
   });
 
   final String id;
@@ -44,6 +45,12 @@ class ThemeConfig {
   /// 字体排版表。见 [defaultTypography]。
   /// 键：family / size / weight / color / opacity / strikethrough / gold。
   final Map<String, String> typography;
+
+  /// 主题包组件风格配置（来自 controller.js 的 `componentStyle`/`styles`）。
+  /// 目前用于组件发光：`glowColor` 外发光、`glowRadius` 外发光大小、
+  /// `glowOpacity` 外发光强度、`innerGlow` 内发光（radius/opacity/color/side）。
+  /// 主题包自己定义的光效会在激活主题时自动压到组件上，不需要用户去按钮里调。
+  final Map<String, dynamic> componentStyle;
 
   bool get isDark => brightness != 'light';
 
@@ -195,9 +202,11 @@ class ThemeConfig {
     Map<String, String>? colors,
     Map<String, double>? effects,
     Map<String, String>? typography,
+    Map<String, dynamic>? componentStyle,
   }) {
     return ThemeConfig(
       id: id ?? this.id,
+      componentStyle: componentStyle ?? this.componentStyle,
       name: name ?? this.name,
       brightness: brightness ?? this.brightness,
       backgroundImage: backgroundImage ?? this.backgroundImage,
@@ -277,8 +286,8 @@ class ThemeConfig {
   static const Map<String, double> defaultEffects = {
     'glassBlur': 26,
     'glassBorderOpacity': 0.16,
-    'glassShadowY': 8,
-    'glassShadowOpacity': 0.42,
+    'glassShadowY': 6,
+    'glassShadowOpacity': 0.20,
     'glassRadius': 22,
     'cardRadius': 16,
     'floatingDepth': 4,

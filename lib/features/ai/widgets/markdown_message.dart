@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -19,29 +20,37 @@ import '../models/ai_message.dart';
 String _normalizeUnclosedFences(String input) {
   final lines = input.split('\n');
   var inFence = false;
-  String fence = '```';
+  var fenceChar = '`';
+  var fenceLen = 3;
   for (final line in lines) {
     final trimmed = line.trimLeft();
-    if (trimmed.startsWith('```')) {
-      final rest = trimmed.substring(3).trim();
-      if (!inFence) {
-        inFence = true;
-        fence = '```';
-      } else if (rest.isEmpty) {
-        inFence = false;
-      }
-    } else if (trimmed.startsWith('~~~')) {
-      final rest = trimmed.substring(3).trim();
-      if (!inFence) {
-        inFence = true;
-        fence = '~~~';
-      } else if (rest.isEmpty) {
-        inFence = false;
-      }
+    if (trimmed.isEmpty) continue;
+    final ch = trimmed[0];
+    if (ch != '`' && ch != '~') continue;
+    var run = 0;
+    while (run < trimmed.length && trimmed[run] == ch) {
+      run++;
+    }
+    if (run < 3) continue;
+    final rest = trimmed.substring(run).trim();
+    if (!inFence) {
+      inFence = true;
+      fenceChar = ch;
+      fenceLen = run;
+    } else if (ch == fenceChar && run >= fenceLen && rest.isEmpty) {
+      inFence = false;
     }
   }
   if (!inFence) return input;
+  final fence = fenceChar * fenceLen;
   return '$input\n$fence\n';
+}
+
+
+/// 用增强语法再次解析自定义标签里的原始文本，支持 `=={c:red}文字{/c}==` 这类嵌套渲染。
+List<md.Node> _parseStyleNodes(String text) {
+  return md.Document(extensionSet: MarkdownMessage.enhancedExtensionSet)
+      .parseInline(text);
 }
 
 class MarkdownMessage extends StatelessWidget {
@@ -65,6 +74,15 @@ class MarkdownMessage extends StatelessWidget {
       _GlowSyntax(),
       _ColorSyntax(),
       _HighlightSyntax(),
+      _NeonSyntax(),
+      _GradientSyntax(),
+      _FlashSyntax(),
+      _RainbowSyntax(),
+      _PulseSyntax(),
+      _ShimmerSyntax(),
+      _BounceSyntax(),
+      _TypingSyntax(),
+      _WrapASyntax(),
     ],
   );
 
@@ -90,6 +108,15 @@ class MarkdownMessage extends StatelessWidget {
         'mark': _GlowBuilder(),
         'span': _ColorSpanBuilder(),
         'highlight': _HighlightBuilder(),
+        'neon': _NeonBuilder(),
+        'g': _GradientBuilder(),
+        'flash': _FlashBuilder(),
+        'rainbow': _RainbowBuilder(),
+        'pulse': _PulseBuilder(),
+        'shimmer': _ShimmerBuilder(),
+        'bounce': _BounceBuilder(),
+        'typing': _TypingBuilder(),
+        'wrap': _TransparentBuilder(),
         'pre': codeBlockBuilder,
         'code': codeBlockBuilder,
         'functionPlot': _FunctionPlotBuilder(),
@@ -165,33 +192,35 @@ class MarkdownMessage extends StatelessWidget {
 
 /// `++文字++` → 下划线。
 class _UnderlineSyntax extends md.InlineSyntax {
-  _UnderlineSyntax() : super(r'\+\+([^+\n]+?)\+\+');
+  _UnderlineSyntax() : super(r'\+\+(.+?)\+\+');
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
-    parser.addNode(md.Element.text('u', match.group(1) ?? ''));
+    // 只保留一个原始文本子节点；真正嵌套样式在 Builder 里二次解析，
+    // 避免 flutter_markdown 合并时因为多个子节点只替换第一个而丢样式。
+    parser.addNode(md.Element('u', [md.Text(match.group(1) ?? '')]));
     return true;
   }
 }
 
 /// `==文字==` → 发光（霓虹强调）。
 class _GlowSyntax extends md.InlineSyntax {
-  _GlowSyntax() : super(r'==([^=\n]+?)==');
+  _GlowSyntax() : super(r'==(.+?)==');
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
-    parser.addNode(md.Element.text('mark', match.group(1) ?? ''));
+    parser.addNode(md.Element('mark', [md.Text(match.group(1) ?? '')]));
     return true;
   }
 }
 
 /// `{c:red}文字{/c}` → 指定颜色，支持红/绿/蓝等名字或 #RRGGBB。
 class _ColorSyntax extends md.InlineSyntax {
-  _ColorSyntax() : super(r'\{c:([^}\n]+)\}([^{]+?)\{/c\}');
+  _ColorSyntax() : super(r'\{c:([^}\n]+)\}(.+?)\{/c\}');
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
-    final node = md.Element.text('span', match.group(2) ?? '')
+    final node = md.Element('span', [md.Text(match.group(2) ?? '')])
       ..attributes['color'] = match.group(1) ?? '';
     parser.addNode(node);
     return true;
@@ -200,15 +229,360 @@ class _ColorSyntax extends md.InlineSyntax {
 
 /// `{bg:yellow}文字{/bg}` → 背景高亮（荧光笔）。
 class _HighlightSyntax extends md.InlineSyntax {
-    _HighlightSyntax() : super(r'\{bg:([^}\n]+)\}([^{]+?)\{/bg\}');
+    _HighlightSyntax() : super(r'\{bg:([^}\n]+)\}(.+?)\{/bg\}');
 
   @override
   bool onMatch(md.InlineParser parser, Match match) {
-    final node = md.Element.text('highlight', match.group(2) ?? '')
+    final node = md.Element('highlight', [md.Text(match.group(2) ?? '')])
       ..attributes['bg'] = match.group(1) ?? '';
     parser.addNode(node);
     return true;
   }
+}
+
+/// `{neon:cyan}文字{/neon}` → 指定颜色霓虹发光。
+class _NeonSyntax extends md.InlineSyntax {
+  _NeonSyntax() : super(r'\{neon:([^}\n]*)\}(.+?)\{/neon\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('neon', [md.Text(match.group(2) ?? '')])
+      ..attributes['color'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// `{g:red,yellow}文字{/g}` → 左右渐变。
+class _GradientSyntax extends md.InlineSyntax {
+  _GradientSyntax() : super(r'\{g:([^}\n]+)\}(.+?)\{/g\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('g', [md.Text(match.group(2) ?? '')])
+      ..attributes['colors'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// `{flash:red,yellow}文字{/flash}` → 闪烁动画。
+class _FlashSyntax extends md.InlineSyntax {
+  _FlashSyntax() : super(r'\{flash:([^}\n]+)\}(.+?)\{/flash\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('flash', [md.Text(match.group(2) ?? '')])
+      ..attributes['colors'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// 解析逗号分隔的颜色列表，如 `red,#00ffcc`。
+List<Color> _parseColorList(String raw) {
+  final colors = <Color>[];
+  for (final part in raw.split(',')) {
+    final c = _ColorSpanBuilder()._parse(part.trim());
+    if (c != null) colors.add(c);
+  }
+  if (colors.isEmpty) {
+    colors.addAll(const  [Color(0xFF00E5FF), Color(0xFFFF4081)]);
+  }
+  return colors;
+}
+
+/// 估算文本宽度，用于内嵌渐变时的 shader 横向长度。
+double _estimateTextWidth(String text, TextStyle? style) {
+  final count = text.runes.length;
+  final size = style?.fontSize ?? 14;
+  return math.max(20.0, count * size * 0.62);
+}
+
+/// `{a}...{/a}` → 通用透明外层（AI 偶尔会生成，不增加特效，只让里面标签正常渲染）。
+class _WrapASyntax extends md.InlineSyntax {
+  _WrapASyntax() : super(r'\{a\}(.+?)\{/a\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    parser.addNode(md.Element('wrap', [md.Text(match.group(1) ?? '')]));
+    return true;
+  }
+}
+
+/// `{rainbow}文字{/rainbow}` → 彩虹渐变循环（可 `{rainbow:red,blue}` 自定义色板）。
+class _RainbowSyntax extends md.InlineSyntax {
+  _RainbowSyntax() : super(r'\{rainbow(?::([^}\n]+))?\}(.+?)\{/rainbow\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('rainbow', [md.Text(match.group(2) ?? '')])
+      ..attributes['colors'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// `{pulse}文字{/pulse}` → 呼吸/脉冲效果（可给颜色）。
+class _PulseSyntax extends md.InlineSyntax {
+  _PulseSyntax() : super(r'\{pulse(?::([^}\n]+))?\}(.+?)\{/pulse\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('pulse', [md.Text(match.group(2) ?? '')])
+      ..attributes['colors'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// `{shimmer}文字{/shimmer}` → 金属流光扫过。
+class _ShimmerSyntax extends md.InlineSyntax {
+  _ShimmerSyntax() : super(r'\{shimmer(?::([^}\n]+))?\}(.+?)\{/shimmer\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('shimmer', [md.Text(match.group(2) ?? '')])
+      ..attributes['colors'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// `{bounce}文字{/bounce}` → 上下跳动。
+class _BounceSyntax extends md.InlineSyntax {
+  _BounceSyntax() : super(r'\{bounce\}(.+?)\{/bounce\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    parser.addNode(md.Element('bounce', [md.Text(match.group(1) ?? '')]));
+    return true;
+  }
+}
+
+/// `{typing}文字{/typing}` → 打字机逐个出现。
+class _TypingSyntax extends md.InlineSyntax {
+  _TypingSyntax() : super(r'\{typing(?::([^}\n]+))?\}(.+?)\{/typing\}');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final node = md.Element('typing', [md.Text(match.group(2) ?? '')])
+      ..attributes['color'] = match.group(1) ?? '';
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// 递归构建**扁平**内联 TextSpan。
+///
+/// 不能返回嵌套 TextSpan 树：flutter_markdown 合并相邻文本时会把中间层
+/// 的 children 丢掉，导致样式丢失/文字消失。这里把所有样式累积到叶子 TextSpan 上。
+List<InlineSpan> _buildInlineSpans(List<md.Node>? nodes, TextStyle? parent) {
+  if (nodes == null || nodes.isEmpty) return const [];
+  final result = <InlineSpan>[];
+  for (final node in nodes) {
+    _buildNodeSpans(node, parent, result);
+  }
+  return result;
+}
+
+void _buildNodeSpans(md.Node node, TextStyle? parent, List<InlineSpan> out) {
+  if (node is md.Text) {
+    out.add(TextSpan(text: node.text, style: parent));
+    return;
+  }
+  if (node is md.Element) {
+    final children = node.children;
+    final base = parent ?? const TextStyle();
+    TextStyle? style;
+    switch (node.tag) {
+      case 'u':
+        style = base.copyWith(
+          decoration: TextDecoration.underline,
+          decorationColor: base.color,
+        );
+        for (final child in _parseStyleNodes(node.textContent)) {
+          _buildNodeSpans(child, style, out);
+        }
+        return;
+      case 'mark':
+        const glow = Color(0xFFFFD54F);
+        // 发光只负责加光晕；外层已指定颜色时保留外层颜色。
+        style = base.copyWith(
+          color: base.color ?? glow,
+          shadows: const [
+            Shadow(color: Color(0x66FFD54F), blurRadius: 6),
+            Shadow(color: Color(0x44FFB300), blurRadius: 14),
+          ],
+        );
+        for (final child in _parseStyleNodes(node.textContent)) {
+          _buildNodeSpans(child, style, out);
+        }
+        return;
+      case 'span':
+        final color =
+            _ColorSpanBuilder()._parse(node.attributes['color'] ?? '');
+        style = base.copyWith(color: color);
+        for (final child in _parseStyleNodes(node.textContent)) {
+          _buildNodeSpans(child, style, out);
+        }
+        return;
+      case 'highlight':
+        final bg = _ColorSpanBuilder()._parse(node.attributes['bg'] ?? '');
+        // 背景不覆盖外层颜色；只有没指定颜色时才按背景亮度自适应。
+        style = base.copyWith(
+          backgroundColor: bg,
+          color:
+              base.color != null
+                  ? base.color
+                  : (bg != null && bg.computeLuminance() > 0.55
+                      ? const Color(0xFF1A1A1A)
+                      : base.color),
+        );
+        for (final child in _parseStyleNodes(node.textContent)) {
+          _buildNodeSpans(child, style, out);
+        }
+        return;
+      case 'strong':
+        style = base.copyWith(fontWeight: FontWeight.bold);
+        break;
+      case 'em':
+        style = base.copyWith(fontStyle: FontStyle.italic);
+        break;
+      case 'code':
+        style = base.copyWith(
+          fontFamily: kMonoFamily,
+          fontFamilyFallback: kMonoFallback,
+          fontSize: 12.5,
+        );
+        break;
+      case 'del':
+      case 's':
+      case 'strike':
+        style = base.copyWith(
+          decoration: TextDecoration.lineThrough,
+          decorationColor: base.color,
+        );
+        break;
+      case 'neon':
+        final neonColor =
+            _ColorSpanBuilder()._parse(node.attributes['color'] ?? '') ??
+                const Color(0xFF00E5FF);
+        style = base.copyWith(
+          color: neonColor,
+          shadows: [
+            Shadow(color: neonColor.withValues(alpha: 0.9), blurRadius: 8),
+            Shadow(color: neonColor.withValues(alpha: 0.6), blurRadius: 16),
+            Shadow(color: neonColor.withValues(alpha: 0.3), blurRadius: 24),
+          ],
+        );
+        for (final child in _parseStyleNodes(node.textContent)) {
+          _buildNodeSpans(child, style, out);
+        }
+        return;
+      case 'g':
+        final gradientColors = _parseColorList(node.attributes['colors'] ?? '');
+        final parsed = _parseStyleNodes(node.textContent);
+        final childSpans = _buildInlineSpans(parsed, null);
+        for (final span in childSpans) {
+          if (span is TextSpan && span.text != null && span.text!.isNotEmpty) {
+            final paint = Paint()
+              ..shader = ui.Gradient.linear(
+                Offset.zero,
+                Offset(_estimateTextWidth(span.text!, base), 0),
+                gradientColors,
+              );
+            out.add(TextSpan(
+              text: span.text,
+              style: (span.style ?? const TextStyle()).copyWith(
+                foreground: paint,
+                shadows: span.style?.shadows,
+              ),
+            ));
+          } else {
+            out.add(span);
+          }
+        }
+        return;
+      case 'flash':
+        final flashColors = _parseColorList(node.attributes['colors'] ?? '');
+        style = base.copyWith(color: flashColors.first);
+        for (final child in _parseStyleNodes(node.textContent)) {
+          _buildNodeSpans(child, style, out);
+        }
+        return;
+      case 'rainbow':
+        final rainbowColors = _parseColorList(node.attributes['colors'] ?? '');
+        out.add(WidgetSpan(
+          child: _RainbowText(
+            child: Text.rich(TextSpan(
+                children:
+                    _buildInlineSpans(_parseStyleNodes(node.textContent), base))),
+            colors: rainbowColors,
+          ),
+        ));
+        return;
+      case 'pulse':
+        final pulseColors = _parseColorList(node.attributes['colors'] ?? '');
+        out.add(WidgetSpan(
+          child: _PulseText(
+            child: Text.rich(TextSpan(
+                children:
+                    _buildInlineSpans(_parseStyleNodes(node.textContent), base))),
+            colors: pulseColors,
+          ),
+        ));
+        return;
+      case 'shimmer':
+        final shimmerColors = _parseColorList(node.attributes['colors'] ?? '');
+        out.add(WidgetSpan(
+          child: _ShimmerText(
+            child: Text.rich(TextSpan(
+                children:
+                    _buildInlineSpans(_parseStyleNodes(node.textContent), base))),
+            colors: shimmerColors,
+          ),
+        ));
+        return;
+      case 'bounce':
+        out.add(WidgetSpan(
+          child: _BounceText(
+            child: Text.rich(TextSpan(
+                children:
+                    _buildInlineSpans(_parseStyleNodes(node.textContent), base))),
+          ),
+        ));
+        return;
+      case 'typing':
+        final typingColor =
+            _ColorSpanBuilder()._parse(node.attributes['color'] ?? '');
+        final typingBase =
+            typingColor != null ? base.copyWith(color: typingColor) : base;
+        out.add(WidgetSpan(
+          child: _TypingText(
+            child: Text.rich(TextSpan(
+                children: _buildInlineSpans(
+                    _parseStyleNodes(node.textContent), typingBase))),
+          ),
+        ));
+        return;
+      case 'wrap':
+        for (final child in _parseStyleNodes(node.textContent)) {
+          _buildNodeSpans(child, base, out);
+        }
+        return;
+      default:
+        style = parent;
+        break;
+    }
+    if (children != null) {
+      for (final child in children) {
+        _buildNodeSpans(child, style, out);
+      }
+    }
+    return;
+  }
+  out.add(TextSpan(text: node.textContent, style: parent));
 }
 
 class _UnderlineBuilder extends MarkdownElementBuilder {
@@ -221,17 +595,13 @@ class _UnderlineBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
-    final text = element.textContent;
-    if (text.isEmpty) return null;
-    return Text.rich(
-      TextSpan(
-        text: text,
-        style: (parentStyle ?? const TextStyle()).copyWith(
-          decoration: TextDecoration.underline,
-          decorationColor: parentStyle?.color,
-        ),
-      ),
+    final style = (parentStyle ?? const TextStyle()).copyWith(
+      decoration: TextDecoration.underline,
+      decorationColor: parentStyle?.color,
     );
+    final spans = _buildInlineSpans(_parseStyleNodes(element.textContent), style);
+    if (spans.isEmpty) return null;
+    return Text.rich(TextSpan(children: spans));
   }
 }
 
@@ -245,21 +615,17 @@ class _GlowBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
-    final text = element.textContent;
-    if (text.isEmpty) return null;
     const glow = Color(0xFFFFD54F);
-    return Text.rich(
-      TextSpan(
-        text: text,
-        style: (parentStyle ?? const TextStyle()).copyWith(
-          color: glow,
-          shadows: const [
-            Shadow(color: Color(0x66FFD54F), blurRadius: 6),
-            Shadow(color: Color(0x44FFB300), blurRadius: 14),
-          ],
-        ),
-      ),
+    final style = (parentStyle ?? const TextStyle()).copyWith(
+      color: parentStyle?.color ?? glow,
+      shadows: const [
+        Shadow(color: Color(0x66FFD54F), blurRadius: 6),
+        Shadow(color: Color(0x44FFB300), blurRadius: 14),
+      ],
     );
+    final spans = _buildInlineSpans(_parseStyleNodes(element.textContent), style);
+    if (spans.isEmpty) return null;
+    return Text.rich(TextSpan(children: spans));
   }
 }
 
@@ -271,6 +637,8 @@ class _ColorSpanBuilder extends MarkdownElementBuilder {
     'green': Color(0xFF69F0AE),
     'blue': Color(0xFF82B1FF),
     'yellow': Color(0xFFFFD740),
+    'gold': Color(0xFFFFD700),
+    'amber': Color(0xFFFFC107),
     'orange': Color(0xFFFFAB40),
     'purple': Color(0xFFB388FF),
     'pink': Color(0xFFFF80AB),
@@ -312,15 +680,12 @@ class _ColorSpanBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
-    final text = element.textContent;
     final color = _parse(element.attributes['color'] ?? '');
-    if (text.isEmpty) return null;
-    return Text.rich(
-      TextSpan(
-        text: text,
-        style: (parentStyle ?? const TextStyle()).copyWith(color: color),
-      ),
-    );
+    final spans = _buildInlineSpans(
+        _parseStyleNodes(element.textContent),
+        (parentStyle ?? const TextStyle()).copyWith(color: color));
+    if (spans.isEmpty) return null;
+    return Text.rich(TextSpan(children: spans));
   }
 }
 
@@ -336,19 +701,15 @@ class _HighlightBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
-    final text = element.textContent;
-    if (text.isEmpty) return null;
     final bg = _parseColor(element.attributes['bg'] ?? '');
     final base = parentStyle ?? const TextStyle();
-    return Text.rich(
-      TextSpan(
-        text: text,
-        style: base.copyWith(
-          backgroundColor: bg,
-          color: bg != null ? _readableOn(bg) : base.color,
-        ),
-      ),
+    final style = base.copyWith(
+      backgroundColor: bg,
+      color: bg != null ? _readableOn(bg) : base.color,
     );
+    final spans = _buildInlineSpans(_parseStyleNodes(element.textContent), style);
+    if (spans.isEmpty) return null;
+    return Text.rich(TextSpan(children: spans));
   }
 
   Color _readableOn(Color bg) {
@@ -356,6 +717,514 @@ class _HighlightBuilder extends MarkdownElementBuilder {
     final luminance = 0.299 * bg.red + 0.587 * bg.green + 0.114 * bg.blue;
     return luminance > 150 ? const Color(0xFF1A1A1A) : Colors.white;
   }
+}
+
+class _NeonBuilder extends MarkdownElementBuilder {
+  _NeonBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final neonColor =
+        _ColorSpanBuilder()._parse(element.attributes['color'] ?? '') ??
+            const Color(0xFF00E5FF);
+    final style = (parentStyle ?? const TextStyle()).copyWith(
+      color: neonColor,
+      shadows: [
+        Shadow(color: neonColor.withValues(alpha: 0.9), blurRadius: 8),
+        Shadow(color: neonColor.withValues(alpha: 0.6), blurRadius: 16),
+        Shadow(color: neonColor.withValues(alpha: 0.3), blurRadius: 24),
+      ],
+    );
+    final spans =
+        _buildInlineSpans(_parseStyleNodes(element.textContent), style);
+    if (spans.isEmpty) return null;
+    return Text.rich(TextSpan(children: spans));
+  }
+}
+
+class _GradientBuilder extends MarkdownElementBuilder {
+  _GradientBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final colors = _parseColorList(element.attributes['colors'] ?? '');
+    final spans =
+        _buildInlineSpans(_parseStyleNodes(element.textContent), parentStyle);
+    if (spans.isEmpty) return null;
+    return ShaderMask(
+      shaderCallback: (bounds) => LinearGradient(
+        colors: colors,
+        begin: Alignment.centerLeft,
+        end: Alignment.centerRight,
+      ).createShader(bounds),
+      blendMode: BlendMode.srcIn,
+      child: Text.rich(TextSpan(children: spans)),
+    );
+  }
+}
+
+class _FlashBuilder extends MarkdownElementBuilder {
+  _FlashBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final colors = _parseColorList(element.attributes['colors'] ?? '');
+    final nodes = _parseStyleNodes(element.textContent);
+    return _FlashText(
+      nodes: nodes,
+      baseStyle: parentStyle,
+      colors: colors,
+    );
+  }
+}
+
+class _FlashText extends StatefulWidget {
+  const _FlashText({
+    required this.nodes,
+    required this.baseStyle,
+    required this.colors,
+  });
+
+  final List<md.Node> nodes;
+  final TextStyle? baseStyle;
+  final List<Color> colors;
+
+  @override
+  State<_FlashText> createState() => _FlashTextState();
+}
+
+class _FlashTextState extends State<_FlashText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = (math.sin(_controller.value * math.pi * 2) + 1) / 2;
+        final flashColor =
+            Color.lerp(widget.colors.first, widget.colors.last, t) ??
+                widget.colors.first;
+        final base = widget.baseStyle ?? const TextStyle();
+        final style = base.copyWith(color: flashColor);
+        final spans = _buildInlineSpans(widget.nodes, style);
+        return Text.rich(TextSpan(children: spans));
+      },
+    );
+  }
+}
+
+class _RainbowBuilder extends MarkdownElementBuilder {
+  _RainbowBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final colors = _parseColorList(element.attributes['colors'] ?? '');
+    final child = Text.rich(TextSpan(
+        children: _buildInlineSpans(
+            _parseStyleNodes(element.textContent), parentStyle)));
+    return Text.rich(TextSpan(
+      children: [WidgetSpan(child: _RainbowText(child: child, colors: colors))],
+    ));
+  }
+}
+
+class _PulseBuilder extends MarkdownElementBuilder {
+  _PulseBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final colors = _parseColorList(element.attributes['colors'] ?? '');
+    final child = Text.rich(TextSpan(
+        children: _buildInlineSpans(
+            _parseStyleNodes(element.textContent), parentStyle)));
+    return Text.rich(TextSpan(
+      children: [WidgetSpan(child: _PulseText(child: child, colors: colors))],
+    ));
+  }
+}
+
+class _ShimmerBuilder extends MarkdownElementBuilder {
+  _ShimmerBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final colors = _parseColorList(element.attributes['colors'] ?? '');
+    final child = Text.rich(TextSpan(
+        children: _buildInlineSpans(
+            _parseStyleNodes(element.textContent), parentStyle)));
+    return Text.rich(TextSpan(
+      children: [WidgetSpan(child: _ShimmerText(child: child, colors: colors))],
+    ));
+  }
+}
+
+class _BounceBuilder extends MarkdownElementBuilder {
+  _BounceBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final child = Text.rich(TextSpan(
+        children: _buildInlineSpans(
+            _parseStyleNodes(element.textContent), parentStyle)));
+    return Text.rich(TextSpan(
+      children: [WidgetSpan(child: _BounceText(child: child))],
+    ));
+  }
+}
+
+class _TypingBuilder extends MarkdownElementBuilder {
+  _TypingBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final color =
+        _ColorSpanBuilder()._parse(element.attributes['color'] ?? '');
+    final base = parentStyle ?? const TextStyle();
+    final style = color != null ? base.copyWith(color: color) : base;
+    final child = Text.rich(TextSpan(
+        children: _buildInlineSpans(
+            _parseStyleNodes(element.textContent), style)));
+    return Text.rich(TextSpan(
+      children: [WidgetSpan(child: _TypingText(child: child))],
+    ));
+  }
+}
+
+class _TransparentBuilder extends MarkdownElementBuilder {
+  _TransparentBuilder();
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final spans = _buildInlineSpans(
+        _parseStyleNodes(element.textContent), parentStyle);
+    if (spans.isEmpty) return null;
+    return Text.rich(TextSpan(children: spans));
+  }
+}
+
+class _RainbowText extends StatefulWidget {
+  const _RainbowText({required this.child, required this.colors});
+
+  final Widget child;
+  final List<Color> colors;
+
+  @override
+  State<_RainbowText> createState() => _RainbowTextState();
+}
+
+class _RainbowTextState extends State<_RainbowText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2600),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = _controller.value;
+        return ShaderMask(
+          shaderCallback: (bounds) => LinearGradient(
+            colors: widget.colors,
+            begin: Alignment(-1.2 + 2.4 * t, 0),
+            end: Alignment(0.8 + 2.4 * t, 0),
+          ).createShader(bounds),
+          blendMode: BlendMode.srcIn,
+          child: widget.child,
+        );
+      },
+    );
+  }
+}
+
+class _PulseText extends StatefulWidget {
+  const _PulseText({required this.child, required this.colors});
+
+  final Widget child;
+  final List<Color> colors;
+
+  @override
+  State<_PulseText> createState() => _PulseTextState();
+}
+
+class _PulseTextState extends State<_PulseText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = Curves.easeInOut.transform(_controller.value);
+        Widget child = widget.child;
+        if (widget.colors.isNotEmpty) {
+          final from = widget.colors.first;
+          final to = widget.colors.length >= 2 ? widget.colors[1] : from;
+          final color = Color.lerp(from, to, t) ?? from;
+          child = ColorFiltered(
+            colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
+            child: widget.child,
+          );
+        }
+        return Opacity(opacity: 0.55 + 0.45 * t, child: child);
+      },
+    );
+  }
+}
+
+class _ShimmerText extends StatefulWidget {
+  const _ShimmerText({required this.child, required this.colors});
+
+  final Widget child;
+  final List<Color> colors;
+
+  @override
+  State<_ShimmerText> createState() => _ShimmerTextState();
+}
+
+class _ShimmerTextState extends State<_ShimmerText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = _controller.value;
+        final baseColor =
+            widget.colors.length >= 2
+                ? widget.colors[0]
+                : const Color(0xFF888888);
+        final endColor =
+            widget.colors.length >= 2
+                ? widget.colors[1]
+                : const Color(0xFFDDDDDD);
+        return ShaderMask(
+          shaderCallback: (bounds) {
+            // 光带从第一个字开始，向右扫到最后一个字后离开。
+            final bandWidth = bounds.width * 0.45;
+            final startX = -bandWidth + t * (bounds.width + bandWidth);
+            return ui.Gradient.linear(
+              Offset(startX, 0),
+              Offset(startX + bandWidth, 0),
+              [baseColor, Colors.white, endColor],
+              const [0.0, 0.5, 1.0],
+            );
+          },
+          blendMode: BlendMode.srcIn,
+          child: widget.child,
+        );
+      },
+    );
+  }
+}
+
+class _BounceText extends StatefulWidget {
+  const _BounceText({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_BounceText> createState() => _BounceTextState();
+}
+
+class _BounceTextState extends State<_BounceText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final dy = math.sin(_controller.value * math.pi * 2) * 5.0;
+        return Transform.translate(
+          offset: Offset(0, dy),
+          child: widget.child,
+        );
+      },
+    );
+  }
+}
+
+class _TypingText extends StatefulWidget {
+  const _TypingText({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_TypingText> createState() => _TypingTextState();
+}
+
+class _TypingTextState extends State<_TypingText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2600),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = Curves.easeInOut.transform(_controller.value);
+        return ClipRect(
+          clipper: _TypingRevealClipper(t.clamp(0.0, 1.0)),
+          child: widget.child,
+        );
+      },
+    );
+  }
+}
+
+class _TypingRevealClipper extends CustomClipper<Rect> {
+  const _TypingRevealClipper(this.fraction);
+
+  final double fraction;
+
+  @override
+  Rect getClip(Size size) =>
+      Rect.fromLTRB(0, 0, size.width * fraction, size.height);
+
+  @override
+  bool shouldReclip(covariant _TypingRevealClipper oldClipper) =>
+      oldClipper.fraction != fraction;
 }
 
 class _CodeBlockBuilder extends MarkdownElementBuilder {
@@ -664,7 +1533,12 @@ class _CodeBlockState extends State<_CodeBlock> {
         else
           HighlightView(
             _displayCode,
-            language: widget.language,
+            // highlight 0.7 在 language == null 时会直接抛 ArgumentError，
+            // 无语言围栏（AI 很常发）会整块渲染失败；这里回退到 plaintext。
+            language: (widget.language == null ||
+                    widget.language!.trim().isEmpty)
+                ? 'plaintext'
+                : widget.language,
             theme: theme,
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
             textStyle: const TextStyle(
@@ -870,10 +1744,13 @@ class _JsonTreeNodeState extends State<_JsonTreeNode> {
   }
 }
 
-/// ` ```plot` 代码块 → 函数图。
+/// ` ```plot` / `~~~plot` 代码块 → 函数图。
+///
+/// 兼容 AI 常见的各种写法：0~3 空格缩进、3 个以上反引号/波浪线、
+/// plot/plotly/gnuplot/func/function/graph/chart/curve/math 等语言名。
 class _FunctionPlotSyntax extends md.BlockSyntax {
   static final RegExp _pattern = RegExp(
-    r'^```(?:plot|func|function|graph|chart)\s*(.*)$',
+    r'^\s*(`{3,}|~{3,})\s*(?:plot(?:ly)?|gnuplot|func(?:tion)?|graph|chart|curve|math)\s*(.*)$',
     caseSensitive: false,
   );
 
@@ -883,17 +1760,28 @@ class _FunctionPlotSyntax extends md.BlockSyntax {
   @override
   md.Node? parse(md.BlockParser parser) {
     final first = _pattern.firstMatch(parser.current.content);
+    if (first == null) return null;
+    final marker = first.group(1)!;
+    final fenceChar = marker[0];
+    final fenceLen = marker.length;
     parser.advance();
     final lines = <String>[];
-    final inline = first?.group(1)?.trim();
+    final inline = first.group(2)?.trim();
     if (inline != null && inline.isNotEmpty) lines.add(inline);
     while (!parser.isDone) {
-      final line = parser.current;
-      if (line.content.trimLeft().startsWith('```')) {
-        parser.advance();
-        break;
+      final raw = parser.current.content;
+      final trimmed = raw.trimLeft();
+      if (trimmed.isNotEmpty && trimmed[0] == fenceChar) {
+        var run = 0;
+        while (run < trimmed.length && trimmed[run] == fenceChar) {
+          run++;
+        }
+        if (run >= fenceLen && trimmed.substring(run).trim().isEmpty) {
+          parser.advance();
+          break;
+        }
       }
-      lines.add(line.content);
+      lines.add(raw);
       parser.advance();
     }
     return md.Element('functionPlot', <md.Node>[md.Text(lines.join('\n'))]);
@@ -951,7 +1839,7 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
       );
       return;
     }
-    if (parsed.usesT) {
+    if (parsed.usesT || parsed.usesU) {
       _controller = AnimationController(
         vsync: this,
         duration: const Duration(seconds: 4),
@@ -974,86 +1862,97 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
   _ViewBounds? _autoBounds(Size size) {
     final parsed = _parsed;
     if (parsed == null || size.width <= 0 || size.height <= 0) return null;
-    double dataXMin;
-    double dataXMax;
-    double dataYMin;
-    double dataYMax;
-    if (parsed.parametric) {
-      final px = parsed.paramX;
-      final py = parsed.paramY;
-      if (px == null || py == null) return null;
+    double? dataXMin;
+    double? dataXMax;
+    double? dataYMin;
+    double? dataYMax;
+
+    if (parsed.paramSeries.isNotEmpty) {
       final pts = <Offset>[];
       const n = 400;
       final step = (parsed.tMax - parsed.tMin) / n;
-      for (var i = 0; i <= n; i++) {
-        final tt = parsed.tMin + step * i;
-        final x = px.eval(0, tt);
-        final y = py.eval(0, tt);
-        if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
-          pts.add(Offset(x, y));
+      final uCount = parsed.usesU ? 16 : 1;
+      for (final ps in parsed.paramSeries) {
+        for (var ui = 0; ui <= uCount; ui++) {
+          final uu = parsed.usesU ? 2 * math.pi * ui / uCount : 0.0;
+          for (var i = 0; i <= n; i++) {
+            final tt = parsed.tMin + step * i;
+            final x = ps.x.eval(0, tt, uu);
+            final y = ps.y.eval(0, tt, uu);
+            if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
+              pts.add(Offset(x, y));
+            }
+          }
         }
       }
-      if (pts.isEmpty) return null;
-      final xs = pts.map((p) => p.dx).toList()..sort();
-      final ys = pts.map((p) => p.dy).toList()..sort();
-      dataXMin = xs.first;
-      dataXMax = xs.last;
-      dataYMin = ys.first;
-      dataYMax = ys.last;
-      if ((dataXMax - dataXMin).abs() < 0.5) {
-        final c = (dataXMax + dataXMin) / 2;
-        dataXMin = c - 1;
-        dataXMax = c + 1;
+      if (pts.isNotEmpty) {
+        final xs = pts.map((p) => p.dx).toList()..sort();
+        final ys = pts.map((p) => p.dy).toList()..sort();
+        dataXMin = xs.first;
+        dataXMax = xs.last;
+        dataYMin = ys.first;
+        dataYMax = ys.last;
       }
-      if ((dataYMax - dataYMin).abs() < 0.5) {
-        final c = (dataYMax + dataYMin) / 2;
-        dataYMin = c - 1;
-        dataYMax = c + 1;
-      }
-    } else {
-      dataXMin = parsed.xMin;
-      dataXMax = parsed.xMax;
-      final ys = <double>[];
-      final dynamicMode = parsed.usesT;
-      const rangeSampleCount = 256;
-      final xSpan = dataXMax - dataXMin;
-      if (xSpan <= 0) return null;
-      final rangeStep = xSpan / rangeSampleCount;
-      if (dynamicMode) {
-        const tSteps = 16;
-        for (var ti = 0; ti <= tSteps; ti++) {
-          final tt = 2 * math.pi * ti / tSteps;
+    }
+
+    if (parsed.series.isNotEmpty) {
+      final fxMin = parsed.xMin;
+      final fxMax = parsed.xMax;
+      if (fxMax > fxMin) {
+        final ys = <double>[];
+        final dynamicMode = parsed.usesT || parsed.usesU;
+        const rangeSampleCount = 256;
+        final xSpan = fxMax - fxMin;
+        final rangeStep = xSpan / rangeSampleCount;
+        if (dynamicMode) {
+          const tSteps = 16;
+          for (var ti = 0; ti <= tSteps; ti++) {
+            final tt = 2 * math.pi * ti / tSteps;
+            for (var i = 0; i <= rangeSampleCount; i++) {
+              final x = fxMin + rangeStep * i;
+              for (final s in parsed.series) {
+                final v = s.fn.eval(x, tt, tt);
+                if (v.isFinite && v.abs() < 1e9) ys.add(v);
+              }
+            }
+          }
+        } else {
           for (var i = 0; i <= rangeSampleCount; i++) {
-            final x = dataXMin + rangeStep * i;
+            final x = fxMin + rangeStep * i;
             for (final s in parsed.series) {
-              final v = s.fn.eval(x, tt);
+              final v = s.fn.eval(x, 0, 0);
               if (v.isFinite && v.abs() < 1e9) ys.add(v);
             }
           }
         }
-      } else {
-        for (var i = 0; i <= rangeSampleCount; i++) {
-          final x = dataXMin + rangeStep * i;
-          for (final s in parsed.series) {
-            final v = s.fn.eval(x, 0);
-            if (v.isFinite && v.abs() < 1e9) ys.add(v);
-          }
+        if (ys.isNotEmpty) {
+          ys.sort();
+          final yMin = dynamicMode ? ys.first : ys[ys.length ~/ 20];
+          final yMax = dynamicMode ? ys.last : ys[ys.length * 19 ~/ 20];
+          final dxMin = dataXMin ?? fxMin;
+          final dxMax = dataXMax ?? fxMax;
+          final dyMin = dataYMin ?? yMin;
+          final dyMax = dataYMax ?? yMax;
+          dataXMin = math.min(dxMin, fxMin);
+          dataXMax = math.max(dxMax, fxMax);
+          dataYMin = math.min(dyMin, yMin);
+          dataYMax = math.max(dyMax, yMax);
         }
       }
-      if (ys.isEmpty) return null;
-      ys.sort();
-      if (dynamicMode) {
-        dataYMin = ys.first;
-        dataYMax = ys.last;
-      } else {
-        dataYMin = ys[ys.length ~/ 20];
-        dataYMax = ys[ys.length * 19 ~/ 20];
-      }
-      if ((dataYMax - dataYMin).abs() < 0.5) {
-        final c = (dataYMax + dataYMin) / 2;
-        dataYMin = c - 1;
-        dataYMax = c + 1;
-      }
+    }
+
+    if (dataXMin == null || dataXMax == null || dataYMin == null || dataYMax == null) {
+      return null;
+    }
+    if ((dataXMax - dataXMin).abs() < 0.5) {
+      final c = (dataXMax + dataXMin) / 2;
+      dataXMin = c - 1;
+      dataXMax = c + 1;
+    }
+    if ((dataYMax - dataYMin).abs() < 0.5) {
+      final c = (dataYMax + dataYMin) / 2;
+      dataYMin = c - 1;
+      dataYMax = c + 1;
     }
     if (dataXMax <= dataXMin || dataYMax <= dataYMin) return null;
     const pad = 8.0;
@@ -1166,15 +2065,25 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
     if (parsed == null) {
       return Container(
         width: double.infinity,
-        padding: const EdgeInsets.all(10),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
           color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
           borderRadius: BorderRadius.circular(10),
         ),
-        child: Text(
-          '函数图格式示例：\n```plot\ny = x^2\nx: -10, 10\n```\n'
-          '动态函数用 t：\n```plot\ny = sin(x + t)\n```',
-          style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+        child: Row(
+          children: [
+            Icon(Icons.error_outline, size: 15, color: scheme.error),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                '函数图解析失败：表达式可能被截断或某一行格式不对。',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
@@ -1196,7 +2105,12 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
               Expanded(
                 child: Text(
                   parsed.parametric
-                      ? '参数曲线'
+                      ? (parsed.series.isNotEmpty
+                          ? '${parsed.paramSeries.length} 条参数曲线 + '
+                              '${parsed.series.length} 条函数'
+                          : parsed.paramSeries.length > 1
+                              ? '${parsed.paramSeries.length} 条参数曲线'
+                              : '参数曲线')
                       : parsed.pair
                           ? '${parsed.series.length ~/ 2} 层闭合曲线'
                           : parsed.connect
@@ -1221,7 +2135,7 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                 constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
                 tooltip: '重置缩放',
               ),
-              if (parsed.usesT)
+              if (parsed.usesT || parsed.usesU)
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
@@ -1344,8 +2258,9 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                   return AnimatedBuilder(
                     animation: _controller,
                     builder: (context, _) {
-                      final progress = parsed.usesT ? 1.0 : _controller.value;
-                      final t = parsed.usesT
+                      final _dynamicMode = parsed.usesT || parsed.usesU;
+                      final progress = _dynamicMode ? 1.0 : _controller.value;
+                      final t = _dynamicMode
                           ? _controller.value * 2 * math.pi
                           : 0.0;
                       return GestureDetector(
@@ -1363,8 +2278,8 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
                             connect: parsed.connect,
                             pair: parsed.pair,
                             parametric: parsed.parametric,
-                            paramX: parsed.paramX,
-                            paramY: parsed.paramY,
+                            paramSeries: parsed.paramSeries,
+                            usesU: parsed.usesU,
                             tMin: parsed.tMin,
                             tMax: parsed.tMax,
                             viewXMin: view?.xMin,
@@ -1428,11 +2343,11 @@ class _FunctionPlotCardState extends State<_FunctionPlotCard>
               style: TextStyle(color: Color(0xFF73839A), fontSize: 10),
             ),
           ),
-          if (parsed.usesT)
+          if (parsed.usesT || parsed.usesU)
             const Padding(
               padding: EdgeInsets.only(top: 2),
               child: Text(
-                't 为动态参数，自动 0~2π 循环',
+                '动态参数 t/u 自动 0~2π 循环',
                 style: TextStyle(color: Color(0xFF73839A), fontSize: 10),
               ),
             ),
@@ -1497,39 +2412,69 @@ _ParsePlot? _parsePlot(String source) {
   }
   if (exprLines.isEmpty) return null;
 
-  final parametric = paramFlag ||
-      (exprLines.any((l) => RegExp(r'^x\s*=').hasMatch(l)) &&
-          exprLines.any((l) => RegExp(r'^y\s*=').hasMatch(l)));
-  if (parametric) {
-    String? xExpr;
-    String? yExpr;
-    for (final line in exprLines) {
-      if (RegExp(r'^x\s*=').hasMatch(line)) {
-        xExpr = line.substring(line.indexOf('=') + 1).trim();
-      } else if (RegExp(r'^y\s*=').hasMatch(line)) {
-        yExpr = line.substring(line.indexOf('=') + 1).trim();
+  // 统一收集：局部变量 r/r1/m/k、参数方程 x/y 对、以及独立函数 y= 行。
+  final localVars = <String, _ExprNode>{};
+  final pairs = <List<String>>[];
+  final functionLines = <String>[];
+  String? pendingX;
+  for (final line in exprLines) {
+    final assign = RegExp(r'^([a-zA-Z_]\w*)\s*=\s*(.+)$').firstMatch(line);
+    if (assign != null) {
+      final name = assign.group(1)!;
+      if (name == 'x') {
+        pendingX = assign.group(2)!.trim();
+        continue;
       }
+      if (name == 'y') {
+        final yExpr = assign.group(2)!.trim();
+        if (pendingX != null) {
+          pairs.add([pendingX, yExpr]);
+          pendingX = null;
+        } else {
+          functionLines.add(line);
+        }
+        continue;
+      }
+      // y1/y2 这类是普通函数标签，不是局部变量。
+      if (RegExp(r'^y\d+[a-zA-Z_]*$').hasMatch(name)) {
+        functionLines.add(line);
+        continue;
+      }
+      // 其它名字按局部变量保存，支持 r/r1/m/k 等。
+      try {
+        localVars[name] = _ExprParser(assign.group(2)!, vars: localVars).parse();
+      } catch (_) {}
+      continue;
     }
-    if (xExpr == null || yExpr == null || xExpr.isEmpty || yExpr.isEmpty) {
-      return null;
-    }
+    functionLines.add(line);
+  }
+  // 末尾悬空的 x= 说明这块可能被截断：忽略它，让其他能解析的曲线继续画。
+  pendingX = null;
+
+  final useParam = paramFlag || pairs.isNotEmpty;
+  final paramSeries = <_ParametricSeries>[];
+  for (final p in pairs) {
     try {
-      final px = _ExprParser(xExpr).parse();
-      final py = _ExprParser(yExpr).parse();
-      return _ParsePlot(
-        series: const [],
-        xMin: xMin,
-        xMax: xMax,
-        connect: false,
-        parametric: true,
-        paramX: px,
-        paramY: py,
-        tMin: tMin,
-        tMax: tMax,
-      );
+      paramSeries.add(_ParametricSeries(
+        x: _ExprParser(p[0], vars: localVars).parse(),
+        y: _ExprParser(p[1], vars: localVars).parse(),
+      ));
     } catch (_) {
-      return null;
+      // 单条参数曲线写错时不拖垮整块图，先跳过，能画的继续画。
     }
+  }
+  if (useParam && paramSeries.isNotEmpty && functionLines.isEmpty) {
+    return _ParsePlot(
+      series: const [],
+      xMin: xMin,
+      xMax: xMax,
+      connect: connect,
+      parametric: true,
+      paramSeries: paramSeries,
+      tMin: tMin,
+      tMax: tMax,
+      usesU: exprLines.any((l) => RegExp(r'\b(?:u|phase)\b').hasMatch(l)),
+    );
   }
 
   if (xMax <= xMin) return null;
@@ -1543,35 +2488,35 @@ _ParsePlot? _parsePlot(String source) {
     Color(0xFFFF8A65),
     Color(0xFF9CCC65),
   ];
-  try {
-    final series = <_FunctionSeries>[];
-    for (var i = 0; i < exprLines.length; i++) {
-      final raw = exprLines[i];
-      double? segMin;
-      double? segMax;
-      var body = raw;
-      final segM = RegExp(
-        r'^(.*?),\s*x\s*[:：]\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$',
-      ).firstMatch(raw);
-      if (segM != null) {
-        body = segM.group(1)!.trim();
-        segMin = double.tryParse(segM.group(2)!);
-        segMax = double.tryParse(segM.group(3)!);
-        if (segMin == null || segMax == null || segMax <= segMin) {
-          body = raw;
-          segMin = null;
-          segMax = null;
-        }
+  final series = <_FunctionSeries>[];
+  for (var i = 0; i < functionLines.length; i++) {
+    final raw = functionLines[i];
+    double? segMin;
+    double? segMax;
+    var body = raw;
+    final segM = RegExp(
+      r'^(.*?),\s*x\s*[:：]\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*$',
+    ).firstMatch(raw);
+    if (segM != null) {
+      body = segM.group(1)!.trim();
+      segMin = double.tryParse(segM.group(2)!);
+      segMax = double.tryParse(segM.group(3)!);
+      if (segMin == null || segMax == null || segMax <= segMin) {
+        body = raw;
+        segMin = null;
+        segMax = null;
       }
-      var label = '';
-      var expr = body;
-      if (body.contains('=')) {
-        final idx = body.indexOf('=');
-        label = body.substring(0, idx).trim();
-        expr = body.substring(idx + 1).trim();
-      }
-      if (expr.isEmpty) continue;
-      final fn = _ExprParser(expr).parse();
+    }
+    var label = '';
+    var expr = body;
+    if (body.contains('=')) {
+      final idx = body.indexOf('=');
+      label = body.substring(0, idx).trim();
+      expr = body.substring(idx + 1).trim();
+    }
+    if (expr.isEmpty) continue;
+    try {
+      final fn = _ExprParser(expr, vars: localVars).parse();
       final usesT = RegExp(r'(^|[^a-zA-Z_])t([^a-zA-Z_]|$)').hasMatch(expr);
       series.add(_FunctionSeries(
         label: label.isEmpty ? (series.length == 0 ? 'y' : 'y${series.length + 1}') : label,
@@ -1586,18 +2531,23 @@ _ParsePlot? _parsePlot(String source) {
         segmentXMin: segMin,
         segmentXMax: segMax,
       ));
+    } catch (_) {
+      // 单条函数写错时同样跳过，不影响同块里其他曲线。
     }
-    if (series.isEmpty) return null;
-    return _ParsePlot(
-      series: series,
-      xMin: xMin,
-      xMax: xMax,
-      connect: connect,
-      pair: pairFlag,
-    );
-  } catch (_) {
-    return null;
   }
+  if (series.isEmpty && paramSeries.isEmpty) return null;
+  return _ParsePlot(
+    series: series,
+    xMin: xMin,
+    xMax: xMax,
+    connect: connect,
+    pair: pairFlag,
+    parametric: paramSeries.isNotEmpty,
+    paramSeries: paramSeries,
+    tMin: tMin,
+    tMax: tMax,
+    usesU: exprLines.any((l) => RegExp(r'\b(?:u|phase)\b').hasMatch(l)),
+  );
 }
 class _FunctionSeries {
   const _FunctionSeries({
@@ -1619,6 +2569,13 @@ class _FunctionSeries {
   final double? segmentXMax;
 }
 
+class _ParametricSeries {
+  const _ParametricSeries({required this.x, required this.y});
+
+  final _ExprNode x;
+  final _ExprNode y;
+}
+
 class _ParsePlot {
   const _ParsePlot({
     required this.series,
@@ -1627,10 +2584,10 @@ class _ParsePlot {
     required this.connect,
     this.pair = false,
     this.parametric = false,
-    this.paramX,
-    this.paramY,
+    this.paramSeries = const [],
     this.tMin = 0,
     this.tMax = 6.283185307179586,
+    this.usesU = false,
   });
 
   final List<_FunctionSeries> series;
@@ -1644,32 +2601,48 @@ class _ParsePlot {
   final bool connect;
   final bool pair;
   final bool parametric;
-  final _ExprNode? paramX;
-  final _ExprNode? paramY;
+
+  /// 参数方程可以写多组 x/y，每一组是一条独立曲线，自动配色。
+  final List<_ParametricSeries> paramSeries;
   final double tMin;
   final double tMax;
+
+  /// 参数方程是否使用 `u`/`phase` 作为动态相位（旋转/呼吸等）。
+  final bool usesU;
 }
 /// 简易表达式求值：支持 + - * / ^ ( ) 数字、x、t、pi/e，以及常见函数。
 /// `t` 是动态时间变量，函数图会把它当作动画参数（0~2π 循环）。
 abstract class _ExprNode {
-  double eval(double x, double t);
+  double eval(double x, double t, [double u = 0]);
 }
 
 class _NumberNode implements _ExprNode {
   _NumberNode(this.value);
   final double value;
   @override
-  double eval(double x, double t) => value;
+  double eval(double x, double t, [double u = 0]) => value;
 }
 
 class _VarNode implements _ExprNode {
   @override
-  double eval(double x, double t) => x;
+  double eval(double x, double t, [double u = 0]) => x;
 }
 
 class _TVarNode implements _ExprNode {
   @override
-  double eval(double x, double t) => t;
+  double eval(double x, double t, [double u = 0]) => t;
+}
+
+class _UVarNode implements _ExprNode {
+  @override
+  double eval(double x, double t, [double u = 0]) => u;
+}
+
+class _UserVarNode implements _ExprNode {
+  _UserVarNode(this.expr);
+  final _ExprNode expr;
+  @override
+  double eval(double x, double t, [double u = 0]) => expr.eval(x, t, u);
 }
 
 class _BinaryNode implements _ExprNode {
@@ -1678,9 +2651,9 @@ class _BinaryNode implements _ExprNode {
   final _ExprNode left;
   final _ExprNode right;
   @override
-  double eval(double x, double t) {
-    final l = left.eval(x, t);
-    final r = right.eval(x, t);
+  double eval(double x, double t, [double u = 0]) {
+    final l = left.eval(x, t, u);
+    final r = right.eval(x, t, u);
     switch (op) {
       case '+':
         return l + r;
@@ -1705,7 +2678,7 @@ class _NegNode implements _ExprNode {
   _NegNode(this.child);
   final _ExprNode child;
   @override
-  double eval(double x, double t) => -child.eval(x, t);
+  double eval(double x, double t, [double u = 0]) => -child.eval(x, t, u);
 }
 
 class _FuncNode implements _ExprNode {
@@ -1713,74 +2686,149 @@ class _FuncNode implements _ExprNode {
   final String name;
   final List<_ExprNode> args;
 
-  double _v(int i, double x, double t) => args[i].eval(x, t);
+  double _v(int i, double x, double t, double u) => args[i].eval(x, t, u);
 
   @override
-  double eval(double x, double t) {
+  double eval(double x, double t, [double u = 0]) {
     try {
       switch (name) {
         case 'sin':
-          return math.sin(_v(0, x, t));
+          return math.sin(_v(0, x, t, u));
         case 'cos':
-          return math.cos(_v(0, x, t));
+          return math.cos(_v(0, x, t, u));
         case 'tan':
-          return math.tan(_v(0, x, t));
+          return math.tan(_v(0, x, t, u));
         case 'asin':
-          return math.asin(_v(0, x, t));
+          return math.asin(_v(0, x, t, u));
         case 'acos':
-          return math.acos(_v(0, x, t));
+          return math.acos(_v(0, x, t, u));
         case 'atan':
-          return math.atan(_v(0, x, t));
+          return math.atan(_v(0, x, t, u));
         case 'atan2':
-          return math.atan2(_v(0, x, t), _v(1, x, t));
+          return math.atan2(_v(0, x, t, u), _v(1, x, t, u));
+        case 'sinh':
+          final v = _v(0, x, t, u);
+          return (math.exp(v) - math.exp(-v)) / 2;
+        case 'cosh':
+          final v = _v(0, x, t, u);
+          return (math.exp(v) + math.exp(-v)) / 2;
+        case 'tanh':
+          final v = _v(0, x, t, u);
+          final e = math.exp(2 * v);
+          return (e - 1) / (e + 1);
+        case 'asinh':
+          final v = _v(0, x, t, u);
+          return math.log(v + math.sqrt(v * v + 1));
+        case 'acosh':
+          final v = _v(0, x, t, u);
+          return v < 1 ? double.nan : math.log(v + math.sqrt(v * v - 1));
+        case 'atanh':
+          final v = _v(0, x, t, u);
+          final a = 1 + v;
+          final b = 1 - v;
+          if (b <= 0) return double.nan;
+          return 0.5 * math.log(a / b);
+        case 'sec':
+          return 1 / math.cos(_v(0, x, t, u));
+        case 'csc':
+          return 1 / math.sin(_v(0, x, t, u));
+        case 'cot':
+          return math.cos(_v(0, x, t, u)) / math.sin(_v(0, x, t, u));
+        case 'sinc': {
+          final v = _v(0, x, t, u);
+          return v.abs() < 1e-12 ? 1 : math.sin(v) / v;
+        }
+        case 'hypot':
+          return math.sqrt(_v(0, x, t, u) * _v(0, x, t, u) +
+              _v(1, x, t, u) * _v(1, x, t, u));
+        case 'gcd': {
+          var a = _v(0, x, t, u).round();
+          var b = _v(1, x, t, u).round();
+          a = a.abs();
+          b = b.abs();
+          while (b != 0) {
+            final r = a % b;
+            a = b;
+            b = r;
+          }
+          return a.toDouble();
+        }
+        case 'lcm': {
+          final a = _v(0, x, t, u).round().abs();
+          final b = _v(1, x, t, u).round().abs();
+          if (a == 0 || b == 0) return 0;
+          var p = a;
+          var q = b;
+          while (q != 0) {
+            final r = p % q;
+            p = q;
+            q = r;
+          }
+          return (a / p * b).toDouble();
+        }
+        case 'frac':
+          final v = _v(0, x, t, u);
+          return v - v.floorToDouble();
+        case 'trunc':
+          return _v(0, x, t, u).truncateToDouble();
+        case 'rad':
+          return _v(0, x, t, u) * math.pi / 180;
+        case 'deg':
+          return _v(0, x, t, u) * 180 / math.pi;
+        case 'smoothstep': {
+          final e0 = _v(0, x, t, u);
+          final e1 = _v(1, x, t, u);
+          final v = ((_v(2, x, t, u) - e0) / (e1 - e0)).clamp(0.0, 1.0);
+          return v * v * (3 - 2 * v);
+        }
         case 'sqrt':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v < 0 ? double.nan : math.sqrt(v);
         case 'abs':
-          return _v(0, x, t).abs();
+          return _v(0, x, t, u).abs();
         case 'exp':
-          return math.exp(_v(0, x, t));
+          return math.exp(_v(0, x, t, u));
         case 'ln':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v <= 0 ? double.nan : math.log(v);
         case 'log2':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v <= 0 ? double.nan : math.log(v) / math.ln2;
         case 'log10':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v <= 0 ? double.nan : math.log(v) / math.ln10;
         case 'log':
           if (args.length == 2) {
-            final v = _v(0, x, t);
-            final base = _v(1, x, t);
+            final v = _v(0, x, t, u);
+            final base = _v(1, x, t, u);
             if (v <= 0 || base <= 0 || base == 1) return double.nan;
             return math.log(v) / math.log(base);
           }
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           return v <= 0 ? double.nan : math.log(v);
         case 'min':
-          return math.min(_v(0, x, t), _v(1, x, t));
+          return math.min(_v(0, x, t, u), _v(1, x, t, u));
         case 'max':
-          return math.max(_v(0, x, t), _v(1, x, t));
+          return math.max(_v(0, x, t, u), _v(1, x, t, u));
         case 'pow':
-          return math.pow(_v(0, x, t), _v(1, x, t)).toDouble();
+          return math.pow(_v(0, x, t, u), _v(1, x, t, u)).toDouble();
         case 'mod':
-          final a = _v(0, x, t);
-          final b = _v(1, x, t);
+          final a = _v(0, x, t, u);
+          final b = _v(1, x, t, u);
           return b == 0 ? double.nan : a % b;
         case 'clamp':
-          final v = _v(0, x, t);
-          final lo = _v(1, x, t);
-          final hi = _v(2, x, t);
+          final v = _v(0, x, t, u);
+          final lo = _v(1, x, t, u);
+          final hi = _v(2, x, t, u);
           return v.clamp(lo, hi).toDouble();
         case 'floor':
-          return _v(0, x, t).floorToDouble();
+          return _v(0, x, t, u).floorToDouble();
         case 'ceil':
-          return _v(0, x, t).ceilToDouble();
+          return _v(0, x, t, u).ceilToDouble();
         case 'round':
-          return _v(0, x, t).roundToDouble();
+          return _v(0, x, t, u).roundToDouble();
         case 'sign':
-          final v = _v(0, x, t);
+          final v = _v(0, x, t, u);
           if (v > 0) return 1;
           if (v < 0) return -1;
           return 0;
@@ -1793,19 +2841,24 @@ class _FuncNode implements _ExprNode {
 }
 
 class _ExprParser {
-  _ExprParser(String input)
+  _ExprParser(String input, {Map<String, _ExprNode>? vars})
       : _tokens = _tokenize(input),
-        _pos = 0;
+        _pos = 0,
+        _vars = vars ?? const {};
 
   final List<String> _tokens;
+  final Map<String, _ExprNode> _vars;
   int _pos;
 
   static final RegExp _num = RegExp(r'^-?\d+(\.\d+)?([eE][+-]?\d+)?$');
   static final RegExp _id = RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$');
   static final Set<String> _functions = {
-    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2', 'sqrt', 'abs',
-    'exp', 'ln', 'log', 'log2', 'log10', 'min', 'max', 'pow', 'mod',
-    'clamp', 'floor', 'ceil', 'round', 'sign',
+    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
+    'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
+    'sec', 'csc', 'cot', 'sinc', 'hypot',
+    'gcd', 'lcm', 'frac', 'trunc', 'rad', 'deg', 'smoothstep',
+    'sqrt', 'abs', 'exp', 'ln', 'log', 'log2', 'log10',
+    'min', 'max', 'pow', 'mod', 'clamp', 'floor', 'ceil', 'round', 'sign',
   };
 
   static List<String> _tokenize(String input) {
@@ -1911,8 +2964,12 @@ class _ExprParser {
       _pos++;
       if (token == 'x') return _VarNode();
       if (token == 't') return _TVarNode();
+      if (token == 'u' || token == 'phase') return _UVarNode();
       if ((token == 'pi')) return _NumberNode(3.141592653589793);
       if (token == 'e') return _NumberNode(2.718281828459045);
+      if (_vars.containsKey(token)) {
+        return _UserVarNode(_vars[token]!);
+      }
       if (_functions.contains(token)) {
         if (_pos >= _tokens.length || _tokens[_pos] != '(') {
           throw FormatException('function needs (');
@@ -1939,6 +2996,17 @@ class _ExprParser {
   }
 }
 
+const _paramCurveColors = [
+  Color(0xFF64B5F6),
+  Color(0xFFF48FB1),
+  Color(0xFF81C784),
+  Color(0xFFFFD54F),
+  Color(0xFFBA68C8),
+  Color(0xFF4DD0E1),
+  Color(0xFFFF8A65),
+  Color(0xFF9CCC65),
+];
+
 class _FunctionPainter extends CustomPainter {
   _FunctionPainter({
     required this.series,
@@ -1949,10 +3017,10 @@ class _FunctionPainter extends CustomPainter {
     this.connect = false,
     this.pair = false,
     this.parametric = false,
-    this.paramX,
-    this.paramY,
+    this.paramSeries = const [],
     this.tMin = 0,
     this.tMax = 6.283185307179586,
+    this.usesU = false,
     this.viewXMin,
     this.viewXMax,
     this.viewYMin,
@@ -1969,10 +3037,12 @@ class _FunctionPainter extends CustomPainter {
   final bool connect;
   final bool pair;
   final bool parametric;
-  final _ExprNode? paramX;
-  final _ExprNode? paramY;
+  final List<_ParametricSeries> paramSeries;
   final double tMin;
   final double tMax;
+
+  /// 参数方程是否使用 `u`/`phase` 作为动态相位。
+  final bool usesU;
   final double? viewXMin;
   final double? viewXMax;
   final double? viewYMin;
@@ -1980,22 +3050,23 @@ class _FunctionPainter extends CustomPainter {
   final Color gridColor;
   final Color axisColor;
 
-  List<Offset> _sampleParametric() {
-    final pts = <Offset>[];
+  List<List<Offset>> _sampleParametric(double u) {
+    final curves = <List<Offset>>[];
     const n = 800;
     final step = (tMax - tMin) / n;
-    final px = paramX;
-    final py = paramY;
-    if (px == null || py == null) return pts;
-    for (var i = 0; i <= n; i++) {
-      final tt = tMin + step * i;
-      final x = px.eval(0, tt);
-      final y = py.eval(0, tt);
-      if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
-        pts.add(Offset(x, y));
+    for (final ps in paramSeries) {
+      final pts = <Offset>[];
+      for (var i = 0; i <= n; i++) {
+        final tt = tMin + step * i;
+        final x = ps.x.eval(0, tt, u);
+        final y = ps.y.eval(0, tt, u);
+        if (x.isFinite && y.isFinite && x.abs() < 1e9 && y.abs() < 1e9) {
+          pts.add(Offset(x, y));
+        }
       }
+      curves.add(pts);
     }
-    return pts;
+    return curves;
   }
 
   @override
@@ -2010,11 +3081,11 @@ class _FunctionPainter extends CustomPainter {
     late double axisXMax;
     late double axisYMin;
     late double axisYMax;
-    List<Offset>? paramPoints;
+    List<List<Offset>>? paramPoints;
 
-    if (parametric) {
-      paramPoints = _sampleParametric();
-      if (paramPoints.isEmpty) {
+    if (paramSeries.isNotEmpty) {
+      paramPoints = _sampleParametric(t);
+      if (paramPoints.isEmpty || paramPoints.every((pts) => pts.isEmpty)) {
         final noData = Paint()
           ..color = const Color(0xFF5B6B82)
           ..style = PaintingStyle.stroke
@@ -2026,97 +3097,85 @@ class _FunctionPainter extends CustomPainter {
         );
         return;
       }
-      if (viewXMin != null) {
-        axisXMin = viewXMin!;
-        axisXMax = viewXMax!;
-        axisYMin = viewYMin!;
-        axisYMax = viewYMax!;
-      } else {
-        final xs = paramPoints.map((p) => p.dx).toList()..sort();
-        final ys = paramPoints.map((p) => p.dy).toList()..sort();
-        axisXMin = xs.first;
-        axisXMax = xs.last;
-        axisYMin = ys.first;
-        axisYMax = ys.last;
-        if ((axisXMax - axisXMin).abs() < 0.5) {
-          final c = (axisXMax + axisXMin) / 2;
-          axisXMin = c - 1;
-          axisXMax = c + 1;
-        }
-        if ((axisYMax - axisYMin).abs() < 0.5) {
-          final c = (axisYMax + axisYMin) / 2;
-          axisYMin = c - 1;
-          axisYMax = c + 1;
+    }
+    if (paramPoints == null && series.isEmpty) return;
+
+    if (viewXMin != null) {
+      axisXMin = viewXMin!;
+      axisXMax = viewXMax!;
+      axisYMin = viewYMin!;
+      axisYMax = viewYMax!;
+    } else {
+      final xs = <double>[];
+      final ys = <double>[];
+      for (final pts in paramPoints ?? const <List<Offset>>[]) {
+        for (final p in pts) {
+          xs.add(p.dx);
+          ys.add(p.dy);
         }
       }
-    } else {
-      if (viewXMin != null) {
-        axisXMin = viewXMin!;
-        axisXMax = viewXMax!;
-        axisYMin = viewYMin!;
-        axisYMax = viewYMax!;
-      } else {
-        axisXMin = xMin;
-        axisXMax = xMax;
-        final ys = <double>[];
-        final dynamicMode = series.any((s) => s.usesT);
-        if (dynamicMode) {
-          // 动态模式下用整个 0~2π 的包络算固定 y 轴范围，
-          // 避免坐标轴跟着曲线缩放导致“外层看起来不动”。
-          const rangeSampleCount = 256;
-          const tSteps = 16;
-          final rangeStep = (xMax - xMin) / rangeSampleCount;
-          for (var ti = 0; ti <= tSteps; ti++) {
-            final tt = 2 * math.pi * ti / tSteps;
+      if (series.isNotEmpty) {
+        final dynamicMode = series.any((s) => s.usesT) || usesU;
+        const rangeSampleCount = 256;
+        final xSpan = xMax - xMin;
+        if (xSpan > 0) {
+          final rangeStep = xSpan / rangeSampleCount;
+          if (dynamicMode) {
+            const tSteps = 16;
+            for (var ti = 0; ti <= tSteps; ti++) {
+              final tt = 2 * math.pi * ti / tSteps;
+              for (var i = 0; i <= rangeSampleCount; i++) {
+                final x = xMin + rangeStep * i;
+                for (final s in series) {
+                  final v = s.fn.eval(x, tt, tt);
+                  if (v.isFinite && v.abs() < 1e9) ys.add(v);
+                }
+              }
+            }
+          } else {
             for (var i = 0; i <= rangeSampleCount; i++) {
               final x = xMin + rangeStep * i;
               for (final s in series) {
-                final v = s.fn.eval(x, tt);
+                final v = s.fn.eval(x, t, t);
                 if (v.isFinite && v.abs() < 1e9) ys.add(v);
               }
             }
           }
-        } else {
-          final step = (xMax - xMin) / sampleCount;
-          for (var i = 0; i <= sampleCount; i++) {
-            final x = xMin + step * i;
-            for (final s in series) {
-              final v = s.fn.eval(x, t);
-              if (v.isFinite && v.abs() < 1e9) ys.add(v);
-            }
-          }
+          xs.add(xMin);
+          xs.add(xMax);
         }
-        if (ys.isEmpty) {
-          final noData = Paint()
-            ..color = const Color(0xFF5B6B82)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1;
-          canvas.drawLine(
-            Offset(0, size.height / 2),
-            Offset(size.width, size.height / 2),
-            noData,
-          );
-          return;
-        }
-        ys.sort();
-        if (dynamicMode) {
-          // 动态图用完整包络，保证跳动到最大/最小时也不被裁掉
-          axisYMin = ys.first;
-          axisYMax = ys.last;
-        } else {
-          axisYMin = ys[ys.length ~/ 20];
-          axisYMax = ys[ys.length * 19 ~/ 20];
-        }
-        if ((axisYMax - axisYMin).abs() < 0.5) {
-          final c = (axisYMax + axisYMin) / 2;
-          axisYMin = c - 1;
-          axisYMax = c + 1;
-        }
-        // 上下留一点边距，曲线不会贴着边
-        final ySpan = axisYMax - axisYMin;
-        axisYMin -= ySpan * 0.08;
-        axisYMax += ySpan * 0.08;
       }
+      if (xs.isEmpty || ys.isEmpty) {
+        final noData = Paint()
+          ..color = const Color(0xFF5B6B82)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1;
+        canvas.drawLine(
+          Offset(0, size.height / 2),
+          Offset(size.width, size.height / 2),
+          noData,
+        );
+        return;
+      }
+      xs.sort();
+      ys.sort();
+      axisXMin = xs.first;
+      axisXMax = xs.last;
+      axisYMin = ys.first;
+      axisYMax = ys.last;
+      if ((axisXMax - axisXMin).abs() < 0.5) {
+        final c = (axisXMax + axisXMin) / 2;
+        axisXMin = c - 1;
+        axisXMax = c + 1;
+      }
+      if ((axisYMax - axisYMin).abs() < 0.5) {
+        final c = (axisYMax + axisYMin) / 2;
+        axisYMin = c - 1;
+        axisYMax = c + 1;
+      }
+      final ySpan = axisYMax - axisYMin;
+      axisYMin -= ySpan * 0.08;
+      axisYMax += ySpan * 0.08;
     }
 
     double tx(double x) =>
@@ -2154,26 +3213,32 @@ class _FunctionPainter extends CustomPainter {
     canvas.clipRect(
       Rect.fromLTWH(pad, pad, size.width - pad * 2, size.height - pad * 2),
     );
-    if (parametric) {
-      final curve = Paint()
-        ..color = const Color(0xFF64B5F6)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..strokeCap = StrokeCap.round;
-      final path = Path();
-      final drawCount = (paramPoints!.length * progress).round();
-      for (var i = 0; i <= drawCount && i < paramPoints.length; i++) {
-        final p = paramPoints[i];
-        final px = tx(p.dx);
-        final py = ty(p.dy);
-        if (i == 0) {
-          path.moveTo(px, py);
-        } else {
-          path.lineTo(px, py);
+    if (paramSeries.isNotEmpty) {
+      final curves = paramPoints!;
+      for (var ci = 0; ci < curves.length; ci++) {
+        final pts = curves[ci];
+        if (pts.isEmpty) continue;
+        final curve = Paint()
+          ..color = _paramCurveColors[ci % _paramCurveColors.length]
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..strokeCap = StrokeCap.round;
+        final path = Path();
+        final drawCount = (pts.length * progress).round();
+        for (var i = 0; i <= drawCount && i < pts.length; i++) {
+          final p = pts[i];
+          final px = tx(p.dx);
+          final py = ty(p.dy);
+          if (i == 0) {
+            path.moveTo(px, py);
+          } else {
+            path.lineTo(px, py);
+          }
         }
+        canvas.drawPath(path, curve);
       }
-      canvas.drawPath(path, curve);
-    } else {
+    }
+    if (series.isNotEmpty) {
       final step = (xMax - xMin) / sampleCount;
       final totalConnectSamples = connect
           ? series.fold<int>(0, (sum, s) => sum + 257)
@@ -2327,10 +3392,10 @@ class _FunctionPainter extends CustomPainter {
       oldDelegate.connect != connect ||
       oldDelegate.pair != pair ||
       oldDelegate.parametric != parametric ||
-      oldDelegate.paramX != paramX ||
-      oldDelegate.paramY != paramY ||
+      oldDelegate.paramSeries != paramSeries ||
       oldDelegate.tMin != tMin ||
       oldDelegate.tMax != tMax ||
+      oldDelegate.usesU != usesU ||
       oldDelegate.viewXMin != viewXMin ||
       oldDelegate.viewXMax != viewXMax ||
       oldDelegate.viewYMin != viewYMin ||

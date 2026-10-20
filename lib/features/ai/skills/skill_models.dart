@@ -309,7 +309,7 @@ const builtinSkills = <AiSkill>[
   AiSkill(
     id: 'builtin-theme-developer',
     name: 'theme-developer',
-    description: '主题包开发与安装：从零生成/修改/导入导出主题 ZIP，把效果写进主题包',
+    description: '主题包开发与安装：生成/修改/导入导出主题 ZIP，写 controller.js、componentStyle、XML 和 DSHTheme 特效',
     whenToUse: '用户要换主题、生成主题、做樱花树背景、导入/导出主题包时',
     builtin: true,
     instructions: r'''
@@ -319,98 +319,145 @@ const builtinSkills = <AiSkill>[
 你是主题包开发者，所有视觉/组件特效都由主题包自己实现，App 不内置固定特效。
 
 ## 主题包结构
-- `controller.js`：总控，声明 theme/themeResources。
-- `html/index.html`：背景 HTML。
+- `controller.js`：必须存在的总控，声明 `const theme = {...}` 和 `themeResources`。
+- `html/index.html`：背景 HTML（可选）。
+- `html/menu.html`：配置菜单（可选，长按主题弹出）。
 - `css/`、`js/`：背景样式与脚本（兄弟目录，相对 html 用 `../css/`、`../js/`）。
 - `image/elements/`：布偶、花瓣、角标等图片。
-- `xml/animations/background.xml`：App 启动/激活时解析成 DSHTheme 组件特效的声明式 XML。
+- `xml/`：声明式组件/特效 XML，激活时解析成 DSHTheme effect。
+- `config.json`：菜单实时配置，导出 ZIP 时一起带走。
 
 ## 流程
 1. `theme_manage create` 生成基础包。
-2. shell 写 html/js/css/image，controller.js 声明资源。
+2. shell 写 html/js/css/image/xml，controller.js 里声明资源和 `componentStyle`。
 3. `theme_manage export_zip` 导出。
 4. `theme_manage import_zip` 导入安装并应用。
 
-## 原则
+## controller.js 必会字段
+```javascript
+const theme = {
+  id: 'my_theme', name: '我的主题', brightness: 'dark',
+  backgroundImage: '',
+  colors: { primary:'#66BB6A', accent:'#4FC3F7', background:'#0F1115', surface:'#1A1D24', onSurface:'#E8EAED' },
+  effects: { glassBlur:26, glassBorderOpacity:0.16, glassShadowY:6, glassShadowOpacity:0.20, glassRadius:22, cardRadius:16, floatingDepth:4, animationDurationMs:250, animatedGradient:0 },
+  typography: { family:'', size:'16', weight:'400', color:'#E8EAED', opacity:'1', strikethrough:'false', gold:'false' },
+  // 主题级组件默认风格：外发光 glow*，内发光 innerGlow。App 已没有发光按钮，发光只由这里或 JS styleComponent 控制。
+  componentStyle: {
+    glowColor:'#00D4FF', glowRadius:16, glowOpacity:0.8,
+    glowSharpness:0.35, glowShape:'auto',
+    innerGlow:{ color:'#7DF9FF', radius:8, opacity:0.5, sharpness:0.5, side:'all' }
+  }
+};
+const themeResources = { components:{ background:{ script:'js/background.js', css:'css/background.css', html:'html/index.html', xml:'xml/animations/background.xml' } }, images:'image/elements', audio:'audio' };
+export default themeResources;
+```
+- `componentStyle` 字段和 DSHTheme.styleComponent 的 `style` 完全一致，见 theme-effect-dev。
+- 兼容写成 `styles`/`glow`，但推荐 `componentStyle`。
 - 高级组件特效用 DSHTheme（见 theme-effect-dev 技能），不要依赖 App 固定效果。
-- DSHTheme 支持：图片/文字特效、paint 组件重绘、styleComponent 真改组件边缘/渐变/发光、interactive 手势互动。
-- 图片路径必须是主题包内 guest 路径。
+- 图片路径不要写死包 id，用 `window.DSH_PACKAGE_ROOT + '/image/elements/x.png'`，或直接写包内相对路径。
 ''',
   ),
   AiSkill(
     id: 'builtin-theme-effect-dev',
     name: 'theme-effect-dev',
-    description: 'DSHTheme 高级组件特效：落叶、浮动、发光、角标、布偶、气泡、组件背景弹跳',
+    description: 'DSHTheme 高级组件特效：落叶、浮动、发光、角标、布偶、气泡、组件背景弹跳、XML 声明',
     whenToUse: '用户要组件特效/落叶/布偶/气泡/边框发光/角标/组件浮动时',
     builtin: true,
     instructions: r'''
 # DSHTheme 组件特效开发
 
 ## App 开放接口
-- `DSHTheme.effect`：在 **所有 Flutter 组件上方** 绘制前景效果（浮层），不挡点击。
-- `DSHTheme.styleComponent`：真实修改组件本身（边缘/渐变/发光/圆角），不是覆盖层。
-- 目前没有“组件后方”图层。需要组件背景/内部装饰时优先 `styleComponent` 改组件；`effect` 始终浮在组件前面。
-- GlassPanel/GlassCard 自动上报锚点，用 DSHTheme.queryComponents 查真实坐标。
+- `DSHTheme.effect`：在 **所有 Flutter 组件上方** 绘制前景效果（浮层），默认不挡点击。
+- `DSHTheme.effectBatch`：同一帧批量更新多个特效，高频粒子/布偶优先用它。
+- `DSHTheme.styleComponent`：真实修改组件本身（边缘/渐变/发光/圆角/纹理/液体玻璃），不是覆盖层。
+- 目前没有“组件后方”图层。需要组件背景/内部装饰时优先 `styleComponent`，`effect` 始终浮在组件前面。
+- `GlassPanel`/`GlassCard`/AI 气泡自动上报锚点，用 `DSHTheme.queryComponents` 查真实坐标。
 
 ## 层级说明
 - `effect` = 前景浮层：永远画在组件**上面**，适合落叶/气泡/布偶/角标/光晕。
-- `styleComponent` = 真改组件：适合组件背景、边框、渐变、发光、圆角。
+- `styleComponent` = 真改组件：适合组件背景、边框、渐变、发光、圆角、纹理、液体玻璃。
 - 没有 behind 图层；别把“组件背景”需求套到 effect 上，那会盖住组件内容。
 
-## API
+## effect 常用字段
+- `id`（必填，同 id 覆盖更新）、`imagePath`、`icon`、`text`、`x/y/width/height`、`color`。
+- `animation`：`none | float | bounce | spin | fade | pulse | shake | wiggle | blink | slide`。
+- `fit`（contain/fill/cover）、`fontSize`、`speechTail`、`interactive`。
+- `opacity` 整体透明度、`rotation` 静态旋转、`scale` 缩放、`durationMs` 动画时长。
+- `textBackgroundColor`/`textBorderColor`/`textBorderWidth`/`textRadius`/`textPadding` 气泡样式。
+- `icon` 内置名：`sparkle/star/heart/flower/paw/fire/bolt/smile/ghost/magic`。
+- `paint` 组件重绘：`{type: solid|gradient|radialGradient|glow|stroke|shadow|ellipse|ring|line|dashed, colors, opacity, borderWidth, radius, cornerRadius, angle, dashWidth, dashGap}`。
+
 ```javascript
-DSHTheme.effect({
-  id: 'petal_1',
-  imagePath: '/workspace/.ql_themes/packages/x/image/elements/petal.png',
-  x: 120, y: 300, width: 40, height: 40,
-  animation: 'float' // none | float | bounce | spin | fade | pulse | shake | wiggle | blink | slide
-});
-DSHTheme.queryComponents({ type: 'panel', callback: function(list) { console.log(list); } });
+const PKG = window.DSH_PACKAGE_ROOT;
+DSHTheme.effect({ id:'petal_1', imagePath: PKG+'/image/elements/petal.png', x:120, y:300, width:40, height:40, animation:'float', opacity:0.9 });
+DSHTheme.effect({ id:'bubble_1', text:'主人好~', x:300, y:500, width:200, height:60, color:'#FF9EC4', fontSize:14, speechTail:true });
+DSHTheme.effectBatch([{ id:'p1', imagePath:PKG+'/image/elements/leaf.png', x:10, y:20, width:32, height:32, animation:'float' }, { id:'p2', imagePath:PKG+'/image/elements/leaf.png', x:40, y:60, width:28, height:28, animation:'float' }]);
+DSHTheme.queryComponents({ page:'default', type:'panel', callback:function(list){ /* [{page,type,index,x,y,w,h}] */ } });
 DSHTheme.remove('petal_1');
 DSHTheme.clear();
-
-// 真实修改 APP 自带组件（不改坐标、不画覆盖层）
-DSHTheme.styleComponent({
-  page: 'default', type: 'panel', index: 0,
-  style: {
-    borderColor: '#D4AF37', borderWidth: 3,
-    glowColor: '#D4AF37', glowRadius: 14, glowOpacity: 0.8,
-    gradientColors: ['#1a1a2e', '#3a2d0a'], radius: 22
-  }
-});
-
-// 手势互动：默认特效不挡控件，只有 interactive:true 可点击
-window.DSHTheme.onEffect('tap', function(e) { /* e.id */ });
-DSHTheme.effect({ id:'puppet', imagePath: PKG+'/puppet.png', x:10, y:10, width:80, height:80, interactive:true, animation:'bounce' });
-
-## 主题配置菜单（html/menu.html + DSHThemeMenu）
-- 每个主题包可带 `html/menu.html`，设置页长按该主题会弹出悬浮配置窗；**没有 `html/menu.html` 时长按不弹窗**。
-- 菜单通道：`DSHThemeMenu.getConfig(cb)` / `saveConfig(cfg)` / `close()` / `effect()` / `styleComponent()` / `queryComponents()`。
-- 配置保存在主题包 `config.json`，导出 ZIP 会一起带走，所以可用菜单配好后导出成“带初始配置”的主题包。
-- **实时自动保存**：不要做保存按钮；控件每次变化时同时调 `saveConfig`（写 config.json）和 `effect/styleComponent`（实时生效）。
-- 示例：
-```javascript
-DSHThemeMenu.getConfig(function (cfg) { updateUI(cfg); });
-input.addEventListener('input', function () {
-  cfg.volume = parseInt(this.value, 10);
-  DSHThemeMenu.saveConfig(cfg);     // 自动保存
-  DSHThemeMenu.styleComponent({ type: 'panel', style: { glowColor: '#D4AF37', glowOpacity: cfg.volume / 100 } }); // 实时生效
-});
 ```
 
-## 常用字段
-- id/imagePath/icon/text/x/y/width/height/color/animation/fit/interactive/fontSize/speechTail。
-- `opacity` 整体透明度、`rotation` 静态旋转、`scale` 缩放、`durationMs` 动画时长、`textBackgroundColor`/`textBorderColor`/`textBorderWidth`/`textRadius`/`textPadding` 文字气泡样式。
-- `paint` 组件重绘：`{type: solid|gradient|radialGradient|glow|stroke|shadow|ellipse|ring|line|dashed, colors, opacity, borderWidth, radius, cornerRadius, angle, dashWidth, dashGap}`。
-- `styleComponent` 真实修改组件，style 支持 `color`（纯色填充）、`colors`+`angle`（渐变）、`borderColor`/`borderWidth`/`borderOpacity`、`glowColor`/`glowRadius`/`glowOpacity`、`fillOpacity`、`radius`、`shadowColor`/`shadowOpacity`/`shadowBlur`/`shadowOffsetY`、`innerGlow`（内发光：color/opacity/radius/side，side 可 top/bottom/left/right/all）、`innerShadow`（内阴影：color/opacity/blur/offsetX/offsetY/side）、`opacity`（整体透明度）、`blur`（玻璃/液体玻璃模糊）、`backgroundImage`/`texture`（背景纹理，如木纹）、`backgroundImageFit`/`backgroundImageOpacity`、`liquid`（液体玻璃最大逼近：blur/refraction/specular/lightX/lightY/ripple/tint/tintOpacity/caustic/thickness/edgeHighlight/innerShadow/animated；`animated` 默认 false 为静态液态玻璃，不闪烁，设 true 才持续流动；默认去描边、默认半透明）；type 支持 panel/card/bubble；不传 index 或 type:'*' 可应用到全部匹配组件。
-- 图片路径不要写死包 id，用 `window.DSH_PACKAGE_ROOT + '/image/elements/x.png'`。
+## styleComponent：真改组件
+```javascript
+DSHTheme.styleComponent({
+  page:'default', type:'panel', index:0,   // 省略或 type:'*' 应用到全部匹配组件
+  style:{
+    color:'#1A1D24',
+    colors:['#1a1a2e','#3a2d0a'], angle:135,   // 注意是 colors，不是 gradientColors
+    borderColor:'#D4AF37', borderWidth:3, borderOpacity:0.9,
+    glowColor:'#D4AF37', glowRadius:14, glowOpacity:0.8,
+    glowSharpness:0.4, glowShape:'auto',      // 0=浓雾扩散，1=边缘锐利；auto/roundRect/oval/rect
+    fillOpacity:0.7, radius:22,
+    shadowColor:'#000', shadowOpacity:0.35, shadowBlur:12, shadowOffsetY:6,
+    innerGlow:{ color:'#7DF9FF', opacity:0.5, radius:8, sharpness:0.6, side:'all' }, // side: all/top/bottom/left/right
+    innerShadow:{ color:'#000', opacity:0.4, blur:10, offsetX:0, offsetY:2, side:'bottom' },
+    opacity:1, blur:26,
+    backgroundImage: PKG+'/image/textures/wood.png', backgroundImageFit:'cover', backgroundImageOpacity:0.35,
+    liquid:{ blur:30, refraction:0.4, specular:0.65, lightX:0.72, lightY:0.14, ripple:0.35, tint:'#8CF', tintOpacity:0.32, caustic:0.25, thickness:0.5, edgeHighlight:true, innerShadow:true, animated:false }
+  }
+});
+DSHTheme.removeComponentStyle({ page:'default', type:'panel', index:0 });
+```
+- `type` 支持 `panel`（GlassPanel）/`card`（GlassCard）/`bubble`（AI 气泡）。
+- `page/type/index` 都可省略；省略或 `'*'` = 全部。规则会存下来，ListView 以后才 build 的组件也生效。
+- 内发光 `innerGlow` 字段：color/opacity/radius/sharpness/side；内阴影 `innerShadow`：color/opacity/blur/offsetX/offsetY/side。
+- `liquid.animated` 默认 false = 静态液态玻璃，不闪烁；设 true 才持续流动。默认去描边、默认半透明。
+
+## 主题级 componentStyle
+- ZIP 的 `controller.js` 里写 `componentStyle: {...}`，字段和上面 `style` 完全一致，作为所有 panel/card/bubble 的全局默认。
+- 最新发光配置只由主题包控制：外发光 `glow*`、内发光 `innerGlow`；App 设置里没有发光按钮。
+- JS 的 `styleComponent` 按 page/type/index 覆盖主题级 `componentStyle`。
+
+## XML 声明式特效
+`xml/` 下所有 `.xml` 激活时解析；`<effect>` 或 `<component>` 标签，属性名同 effect 字段，`id` 可省略。
+```xml
+<effects>
+  <effect id="badge-1" icon="sparkle" x="720" y="56" width="32" height="32" color="#FFD700" />
+  <effect id="petal-1" imagePath="image/elements/petal.png" x="120" y="80" width="48" height="48" animation="float" durationMs="2400" opacity="0.9" />
+</effects>
+```
+需要每帧逻辑（跟随/弹跳/互动）仍用 JS 调 DSHTheme。
+
+## 主题配置菜单（html/menu.html + DSHThemeMenu）
+- 菜单通道：`DSHThemeMenu.getConfig(cb)` / `saveConfig(cfg)` / `close()` / `effect(e)` / `remove(id)` / `clear()` / `styleComponent(options)` / `queryComponents(opts)`；菜单桥没有 `effectBatch`/`removeComponentStyle`，批量更新或撤销规则直接用背景 `DSHTheme`。
+- 配置保存在主题包 `config.json`，导出 ZIP 会一起带走。
+- **实时自动保存**：不要做保存按钮；控件每次变化时同时调 `saveConfig` + `effect/styleComponent`。
+
+## 手势互动
+默认特效不挡控件；需要点击/长按加 `interactive:true`：
+```javascript
+DSHTheme.onEffect('tap', function(e){ /* e.id */ });
+DSHTheme.onEffect('longPress', function(e){ /* e.id */ });
+DSHTheme.effect({ id:'puppet', imagePath:PKG+'/puppet.png', x:10, y:10, width:80, height:80, interactive:true, animation:'bounce' });
+```
 
 ## 标准套路
-1. 落叶：多片 leaf 图，float 动画，定时更新 x/y。
-2. 发光/渐变/角标：优先用 styleComponent 真改组件，或用 effect.paint 在组件矩形上绘制。
+1. 落叶：多片 leaf 图，float 动画，定时更新 x/y；粒子 ≤6、更新 ≤10fps，批量用 effectBatch。
+2. 发光/渐变/角标：优先用 styleComponent 真改组件（glow*/innerGlow），或用 effect.paint 在组件矩形上绘制。
 3. 布偶：布偶图放 image/elements，effect 挂组件上方，bounce 动作；interactive:true + onEffect('tap') 做互动。
 4. 组件背景弹跳：queryComponents 取矩形，JS 每帧限制布偶在矩形内弹跳。
-5. 序号：用返回的 index 精确指定第几个组件，也支持 page/type/index 组合。
+5. 序号：queryComponents 返回 index，用 page/type/index 精确指定第几个组件。
+6. 图片路径不要写死包 id，用 `window.DSH_PACKAGE_ROOT + '/image/elements/x.png'`。
 ''',
   ),
   AiSkill(

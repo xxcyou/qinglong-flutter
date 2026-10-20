@@ -1,7 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:io';
-import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 
@@ -65,12 +65,19 @@ Future<AiImageAttachment?> readPickedImage(PickedLocalFile picked) async {
       path: picked.path,
       scope: picked.scope,
     );
-    final bytes = await File(host).readAsBytes();
+    final raw = await File(host).readAsBytes();
+    if (raw.isEmpty) return null;
+    // 原图直接 base64 会有两个问题：
+    //  - 相机原图动辄十几 MB，data URI 会让内存峰值翻倍，悬浮窗/服务
+    //    容易被系统直接杀掉，表现就是"点图片后悬浮窗消失、附件失败"；
+    //  - HEIC/HEIF 等格式 Flutter 引擎不认，预览和模型都可能失败。
+    // 统一交给原生 BitmapFactory 解码并缩到 1280 以内，再以 PNG 回传。
+    final bytes = await bridge.decodeImage(raw, maxDimension: 1280);
     if (bytes.isEmpty) return null;
     return AiImageAttachment(
       name: picked.name,
-      mime: picked.mime,
-      dataUri: 'data:${picked.mime};base64,${base64Encode(bytes)}',
+      mime: 'image/png',
+      dataUri: 'data:image/png;base64,${base64Encode(bytes)}',
       path: picked.path,
       scope: picked.scope,
     );
@@ -92,6 +99,7 @@ class LocalFilePicker extends StatefulWidget {
     this.mode = LocalFilePickerMode.attachment,
     this.title,
     this.extensionFilter,
+    this.onPicked,
   });
 
   /// 附件正文上限。超过就截断——一份 500KB 的日志灌进去只会挤掉真正的对话。
@@ -106,95 +114,28 @@ class LocalFilePicker extends StatefulWidget {
   /// 后缀过滤（不带点，如 zip）。anyFile 模式下只允许该后缀的文件。
   final String? extensionFilter;
 
+  /// 悬浮窗宿主传入：拿到结果后调用它，而不是 `Navigator.pop`。
+  final ValueChanged<PickedLocalFile?>? onPicked;
+
   /// 弹出选择器，返回用户挑中的文件；取消返回 null。
+  ///
+  /// 统一走 [FilePickerFloatController]，由 `AppFloatLayer` 里的常驻宿主渲染
+  /// 成悬浮窗；这样 APP 内和 APP 外悬浮模式都能用，不再依赖 Navigator。
   static Future<PickedLocalFile?> pick(
     BuildContext context, {
     int maxChars = 20000,
   }) {
-    return showModalBottomSheet<PickedLocalFile>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.86,
-        minChildSize: 0.5,
-        maxChildSize: 0.94,
-        builder: (context, _) => ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-          // 半透明 + 模糊：整块面板是玻璃，底下的页面还看得见轮廓。
-          child: BackdropFilter(
-            filter: ImageFilter.blur(
-                sigmaX: Glass.blurStrong, sigmaY: Glass.blurStrong),
-            child: Material(
-              color:
-                  Theme.of(context).colorScheme.surface.withValues(alpha: 0.86),
-              child: LocalFilePicker(maxChars: maxChars),
-            ),
-          ),
-        ),
-      ),
-    );
+    return FilePickerFloatController.instance.pick(maxChars: maxChars);
   }
 
   /// 弹出选择器挑任意文件（ZIP/APK/二进制等），只返回路径，不读内容。
   static Future<PickedLocalFile?> pickFile(BuildContext context) {
-    return showModalBottomSheet<PickedLocalFile>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.86,
-        minChildSize: 0.5,
-        maxChildSize: 0.94,
-        builder: (context, _) => ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(
-                sigmaX: Glass.blurStrong, sigmaY: Glass.blurStrong),
-            child: Material(
-              color:
-                  Theme.of(context).colorScheme.surface.withValues(alpha: 0.86),
-              child: const LocalFilePicker(
-                mode: LocalFilePickerMode.anyFile,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
+    return FilePickerFloatController.instance.pickFile();
   }
 
   /// 挑 ZIP 主题包：标题明确、只显示 .zip 文件、返回路径不读内容。
   static Future<PickedLocalFile?> pickZip(BuildContext context) {
-    return showModalBottomSheet<PickedLocalFile>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.86,
-        minChildSize: 0.5,
-        maxChildSize: 0.94,
-        builder: (context, _) => ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(
-                sigmaX: Glass.blurStrong, sigmaY: Glass.blurStrong),
-            child: Material(
-              color:
-                  Theme.of(context).colorScheme.surface.withValues(alpha: 0.86),
-              child: const LocalFilePicker(
-                mode: LocalFilePickerMode.anyFile,
-                title: '选择 ZIP 主题包',
-                extensionFilter: 'zip',
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
+    return FilePickerFloatController.instance.pickZip();
   }
 
   @override
@@ -266,6 +207,15 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
     return _path.substring(0, i);
   }
 
+  void _finish(PickedLocalFile? file) {
+    final cb = widget.onPicked;
+    if (cb != null) {
+      cb(file);
+    } else {
+      Navigator.of(context).pop(file);
+    }
+  }
+
   Future<void> _choose(ShellFileEntry entry, FileKind kind) async {
     if (_reading) return;
     if (widget.mode == LocalFilePickerMode.anyFile) {
@@ -274,8 +224,21 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
         _rejectNotAllowed();
         return;
       }
-      Navigator.of(context).pop(
-        PickedLocalFile(
+      _finish(PickedLocalFile(
+        path: entry.path,
+        name: entry.name,
+        content: '',
+        size: entry.size,
+        truncated: false,
+        scope: _appScope ? 'app' : 'shell',
+        mime: FileKinds.mimeOf(entry.name),
+      ));
+      return;
+    }
+    setState(() => _reading = true);
+    try {
+      if (kind.category == FileCategory.image) {
+        _finish(PickedLocalFile(
           path: entry.path,
           name: entry.name,
           content: '',
@@ -283,24 +246,7 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
           truncated: false,
           scope: _appScope ? 'app' : 'shell',
           mime: FileKinds.mimeOf(entry.name),
-        ),
-      );
-      return;
-    }
-    setState(() => _reading = true);
-    try {
-      if (kind.category == FileCategory.image) {
-        Navigator.of(context).pop(
-          PickedLocalFile(
-            path: entry.path,
-            name: entry.name,
-            content: '',
-            size: entry.size,
-            truncated: false,
-            scope: _appScope ? 'app' : 'shell',
-            mime: FileKinds.mimeOf(entry.name),
-          ),
-        );
+        ));
         return;
       }
       final raw = await _bridge.readFile(
@@ -309,17 +255,15 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
       );
       if (!mounted) return;
       final truncated = raw.length > widget.maxChars;
-      Navigator.of(context).pop(
-        PickedLocalFile(
-          path: entry.path,
-          name: entry.name,
-          content: truncated ? raw.substring(0, widget.maxChars) : raw,
-          size: entry.size,
-          truncated: truncated,
-          language: kind.language,
-          scope: _appScope ? 'app' : 'shell',
-        ),
-      );
+      _finish(PickedLocalFile(
+        path: entry.path,
+        name: entry.name,
+        content: truncated ? raw.substring(0, widget.maxChars) : raw,
+        size: entry.size,
+        truncated: truncated,
+        language: kind.language,
+        scope: _appScope ? 'app' : 'shell',
+      ));
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -387,23 +331,25 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
     }
   }
 
+  void _toast(String message) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger != null) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+      );
+      return;
+    }
+    // 外部悬浮窗没有 ScaffoldMessenger，退化成面板内的错误提示。
+    setState(() => _error = message);
+  }
+
   void _rejectBinary(FileKind kind) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('${kind.label}没法当附件：AI 读的是文字，二进制内容塞进去只会挤掉对话'),
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    _toast('${kind.label}没法当附件：AI 读的是文字，二进制内容塞进去只会挤掉对话');
   }
 
   void _rejectNotAllowed() {
     final ext = widget.extensionFilter ?? '该类型';
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('只能选择 .$ext 文件'),
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    _toast('只能选择 .$ext 文件');
   }
 
   @override
@@ -458,7 +404,7 @@ class _LocalFilePickerState extends State<LocalFilePicker> {
                 ),
                 IconButton(
                   tooltip: '取消',
-                  onPressed: () => Navigator.of(context).maybePop(),
+                  onPressed: () => _finish(null),
                   icon: const Icon(Icons.close),
                 ),
               ],
@@ -765,5 +711,70 @@ class _Tile extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// 一次文件选择悬浮窗请求。
+class FilePickerFloatRequest {
+  FilePickerFloatRequest({
+    required this.mode,
+    required this.maxChars,
+    this.title,
+    this.extensionFilter,
+  }) : key = UniqueKey();
+
+  final LocalFilePickerMode mode;
+  final int maxChars;
+  final String? title;
+  final String? extensionFilter;
+  final Key key;
+  final Completer<PickedLocalFile?> completer = Completer<PickedLocalFile?>();
+}
+
+/// 文件选择器改成全局悬浮窗的控制器。
+class FilePickerFloatController {
+  FilePickerFloatController._();
+
+  static final FilePickerFloatController instance =
+      FilePickerFloatController._();
+
+  final ValueNotifier<FilePickerFloatRequest?> state =
+      ValueNotifier<FilePickerFloatRequest?>(null);
+
+  Future<PickedLocalFile?> pick({int maxChars = 20000}) {
+    return _open(FilePickerFloatRequest(
+      mode: LocalFilePickerMode.attachment,
+      maxChars: maxChars,
+    ));
+  }
+
+  Future<PickedLocalFile?> pickFile() {
+    return _open(FilePickerFloatRequest(
+      mode: LocalFilePickerMode.anyFile,
+      maxChars: 0,
+    ));
+  }
+
+  Future<PickedLocalFile?> pickZip() {
+    return _open(FilePickerFloatRequest(
+      mode: LocalFilePickerMode.anyFile,
+      maxChars: 0,
+      title: '选择 ZIP 主题包',
+      extensionFilter: 'zip',
+    ));
+  }
+
+  Future<PickedLocalFile?> _open(FilePickerFloatRequest request) {
+    complete(null);
+    state.value = request;
+    return request.completer.future;
+  }
+
+  void complete(PickedLocalFile? file) {
+    final request = state.value;
+    state.value = null;
+    if (request != null && !request.completer.isCompleted) {
+      request.completer.complete(file);
+    }
   }
 }

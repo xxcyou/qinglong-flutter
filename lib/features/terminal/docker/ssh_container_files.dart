@@ -2,8 +2,11 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+
+import '../../floating/float_bounds_registry.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../router.dart';
 import '../../../shared/code_editor_page.dart';
 import '../../../shared/confirm_dialog.dart';
 import '../../../shared/file_kinds.dart';
@@ -28,6 +31,7 @@ class SshFloatingFiles {
     String? title,
   }) {
     late final int id;
+    final initialOffset = SshFloatingHost.nextCascadeOffset();
     id = SshFloatingHost.add(
       context,
       group: containerId,
@@ -43,6 +47,8 @@ class SshFloatingFiles {
           SshFloatingHost.close(id);
           _ids.remove(id);
         },
+        boundsId: 'ssh-float-$id',
+        initialOffset: initialOffset,
       ),
     );
     _ids.add(id);
@@ -54,11 +60,18 @@ class ContainerFileEntry {
     required this.name,
     required this.isDirectory,
     required this.size,
+    this.mode = '',
+    this.isSymlink = false,
   });
 
   final String name;
   final bool isDirectory;
   final int size;
+  final bool isSymlink;
+
+  /// `ls -la` 第一列的权限串（如 -rw-r--r-- / drwxr-xr-x）。
+  /// 用户反馈“缺少权限显示”，这里直接展示，点开失败时也好定位。
+  final String mode;
 }
 
 class SshFloatingFilesWindow extends StatefulWidget {
@@ -70,22 +83,38 @@ class SshFloatingFilesWindow extends StatefulWidget {
     required this.onFocus,
     required this.onMinimize,
     required this.onClose,
+    required this.boundsId,
+    this.initialOffset,
   });
 
+  final Object boundsId;
   final String sessionId;
   final String containerId;
   final String? title;
   final VoidCallback onFocus;
   final VoidCallback onMinimize;
   final VoidCallback onClose;
+  final Offset? initialOffset;
 
   @override
   State<SshFloatingFilesWindow> createState() => _SshFloatingFilesWindowState();
 }
 
 class _SshFloatingFilesWindowState extends State<SshFloatingFilesWindow> {
-  Offset _pos = const Offset(32, 100);
+  @override
+  void dispose() {
+    FloatBoundsRegistry.remove(widget.boundsId);
+    super.dispose();
+  }
+
+  late Offset _pos;
   Size _size = const Size(420, 360);
+
+  @override
+  void initState() {
+    super.initState();
+    _pos = widget.initialOffset ?? const Offset(32, 100);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -93,8 +122,10 @@ class _SshFloatingFilesWindowState extends State<SshFloatingFilesWindow> {
     final width = (_size.width).clamp(320.0, media.size.width - 12);
     final height = (_size.height).clamp(280.0, media.size.height - 100);
     final left = _pos.dx.clamp(0.0, media.size.width - width - 8);
-    final top = _pos.dy.clamp(MediaQuery.paddingOf(context).top,
-        media.size.height - height - 8);
+    final top = _pos.dy.clamp(
+        MediaQuery.paddingOf(context).top, media.size.height - height - 8);
+    FloatBoundsRegistry.report(
+        widget.boundsId, Rect.fromLTWH(left, top, width, height));
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -151,10 +182,12 @@ class _SshFloatingFilesWindowState extends State<SshFloatingFilesWindow> {
                 child: IconButton(
                   tooltip: '最小化容器文件管理',
                   visualDensity: VisualDensity.compact,
-                  constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                  constraints:
+                      const BoxConstraints(minWidth: 30, minHeight: 30),
                   iconSize: 14,
                   padding: EdgeInsets.zero,
-                  icon: const Icon(Icons.picture_in_picture_alt, color: Colors.black54),
+                  icon: const Icon(Icons.picture_in_picture_alt,
+                      color: Colors.black54),
                   onPressed: widget.onMinimize,
                 ),
               ),
@@ -164,7 +197,8 @@ class _SshFloatingFilesWindowState extends State<SshFloatingFilesWindow> {
                 child: IconButton(
                   tooltip: '关闭容器文件管理',
                   visualDensity: VisualDensity.compact,
-                  constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                  constraints:
+                      const BoxConstraints(minWidth: 30, minHeight: 30),
                   iconSize: 14,
                   padding: EdgeInsets.zero,
                   icon: const Icon(Icons.close_rounded, color: Colors.black54),
@@ -247,19 +281,46 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
     }
   }
 
+  /// 判断路径（通常是指向目录的符号链接）是否为目录。
+  Future<bool> _probeDirectory(String absolute) async {
+    try {
+      final out = await _runRemote(
+        '$_docker sh -c \'[ -d "\$1" ] && echo __DIR__ || echo __FILE__\' '
+        'sh ${_shq(absolute)}',
+      );
+      return out.contains('__DIR__');
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _load() async {
     setState(() {
       loading = true;
       error = null;
     });
     try {
-      final cmd = "$_docker sh -c 'ls -la \"\$1\" 2>&1' sh ${_shq(path)}";
+      // 末尾补 /：普通目录无影响；符号链接指向目录时，ls 会列出目标目录
+      // 内容而不是只显示链接本身（点进 /root 下的链接目录就不会再报
+      // cat: Is a directory）。
+      final listingPath = path == '/' || path.endsWith('/') ? path : '$path/';
+      final cmd =
+          "$_docker sh -c 'ls -la \"\$1\" 2>&1' sh ${_shq(listingPath)}";
       final raw =
           await SshSessionManager.instance.executeFull(widget.sessionId, cmd);
       final parsed = _parse(raw);
       if (!mounted) return;
+      // 权限不足/目录不存在时，ls 的报错以前会被吞成“空目录”，用户以为
+      // 文件管理器坏了。这里把真实错误显示出来。
+      final denied = parsed.isEmpty &&
+          RegExp(
+            r'Permission denied|Operation not permitted|No such file|'
+            r'Not a directory|docker:',
+            caseSensitive: false,
+          ).hasMatch(raw);
       setState(() {
         entries = parsed;
+        error = denied ? raw.trim() : null;
         loading = false;
       });
     } catch (e) {
@@ -278,15 +339,20 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
       final trimmed = line.trim();
       if (trimmed.isEmpty || trimmed.startsWith('total ')) continue;
       final tokens = trimmed.split(RegExp(r'\s+'));
-      if (tokens.length < 8) continue;
+      if (tokens.length < 9) continue;
       final mode = tokens[0];
       if (mode.length < 2 || !mode.startsWith(RegExp(r'[-dlcbps]'))) continue;
-      final name = tokens.sublist(8).join(' ');
+      var name = tokens.sublist(8).join(' ');
+      // 符号链接 `name -> target`：真正点击/打开的是链接名，不是箭头后半段。
+      final arrow = name.indexOf(' -> ');
+      if (arrow > 0) name = name.substring(0, arrow);
       if (name.isEmpty || name == '.' || name == '..') continue;
       result.add(ContainerFileEntry(
         name: name,
         isDirectory: mode.startsWith('d'),
         size: int.tryParse(tokens[4]) ?? 0,
+        mode: mode,
+        isSymlink: mode.startsWith('l'),
       ));
     }
     result.sort((a, b) {
@@ -339,8 +405,8 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
     );
     if (name == null || name.trim().isEmpty || !mounted) return;
     final file = _join(path, name.trim());
-    final r =
-        await _runRemote("$_docker sh -c 'touch \"\$1\" 2>&1' sh ${_shq(file)}");
+    final r = await _runRemote(
+        "$_docker sh -c 'touch \"\$1\" 2>&1' sh ${_shq(file)}");
     if (r.contains('[exit=')) return _toast('新建文件失败：$r');
     await _load();
   }
@@ -401,8 +467,7 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
       return;
     }
     try {
-      final bytes =
-          await DockerService(widget.sessionId).readFileBytes(
+      final bytes = await DockerService(widget.sessionId).readFileBytes(
         widget.containerId,
         _abs(e),
       );
@@ -433,13 +498,17 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
             await DockerService(item.sourceSshId!)
                 .deleteFile(item.sourceContainerId!, item.sourcePath);
           } else if (item.sourceType == ContainerRelaySourceType.ssh) {
-            await ref
-                .read(shellFilesProvider.notifier)
-                .deleteAtScope(item.sourcePath, FileScope.ssh, item.sourceSshId);
+            await ref.read(shellFilesProvider.notifier).deleteAtScope(
+                item.sourcePath, FileScope.ssh, item.sourceSshId);
+          } else if (item.sourceType == ContainerRelaySourceType.adb) {
+            await ref.read(shellFilesProvider.notifier).deleteAtScope(
+                  item.sourcePath,
+                  FileScope.adb,
+                  null,
+                  adbId: item.sourceAdbId,
+                );
           } else {
-            await ref
-                .read(shellFilesProvider.notifier)
-                .deleteAtScope(
+            await ref.read(shellFilesProvider.notifier).deleteAtScope(
                   item.sourcePath,
                   item.sourceType == ContainerRelaySourceType.app
                       ? FileScope.app
@@ -470,11 +539,13 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
       orElse: () => FileScope.shell,
     );
     try {
-      final bytes = await ref.read(shellFilesProvider.notifier).readBytesAtScope(
-            sourcePath,
-            sourceScope,
-            st.clipboardSshId,
-          );
+      final bytes =
+          await ref.read(shellFilesProvider.notifier).readBytesAtScope(
+                sourcePath,
+                sourceScope,
+                st.clipboardSshId,
+                adbId: st.clipboardAdbId,
+              );
       if (bytes == null) {
         _toast('读取源文件失败');
         return;
@@ -487,6 +558,7 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
               sourcePath,
               sourceScope,
               st.clipboardSshId,
+              adbId: st.clipboardAdbId,
             );
       }
       await _load();
@@ -513,18 +585,39 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
   Future<void> _openEntry(ContainerFileEntry e) async {
     if (e.isDirectory) return _enter(e.name);
     final absolute = _abs(e);
+    // 符号链接可能是目录：必须先判断，否则 cat 会报 Is a directory，
+    // 还会把 SSH 登录 shell 的 .bashrc 噪音一起带出来。
+    if (e.isSymlink && await _probeDirectory(absolute)) {
+      if (!mounted) return;
+      return _enter(e.name);
+    }
     final kind = FileKinds.of(e.name);
+    // 先按 `ls` 的尺寸拦一层：文本/图片各有安全上限，别等读进内存才崩。
+    const textLimit = 8 * 1024 * 1024;
+    const imageLimit = 24 * 1024 * 1024;
+    if (kind.category == FileCategory.image && e.size > imageLimit) {
+      _toast('图片太大（${FileKinds.sizeText(e.size)}），暂不支持内置打开');
+      return;
+    }
+    if (kind.isTextLike && e.size > textLimit) {
+      _toast('文件太大（${FileKinds.sizeText(e.size)}），暂不支持内置打开');
+      return;
+    }
+    if (kind.needsExternalApp) {
+      _toast('该类型暂不支持内置打开，可长按复制/下载后用其它应用打开');
+      return;
+    }
     try {
-      final bytes =
-          await DockerService(widget.sessionId).readFileBytes(
+      final bytes = await DockerService(widget.sessionId).readFileBytes(
         widget.containerId,
         absolute,
+        maxBytes: kind.category == FileCategory.image ? imageLimit : textLimit,
       );
       if (kind.category == FileCategory.image) {
         if (!mounted || bytes.isEmpty) return;
         await _openWithAutoMinimize(() async {
           if (!mounted) return;
-          await Navigator.of(context).push(
+          await Navigator.of(_navContext).push(
             MaterialPageRoute(
               builder: (_) => ImageViewerPage(
                 title: e.name,
@@ -537,15 +630,11 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
         });
         return;
       }
-      if (kind.needsExternalApp) {
-        _toast('该类型暂不支持内置打开，可下载到本地后用其它应用打开');
-        return;
-      }
       final text = utf8.decode(bytes, allowMalformed: true);
       if (!mounted) return;
       await _openWithAutoMinimize(() async {
         if (!mounted) return;
-        await Navigator.of(context).push(
+        await Navigator.of(_navContext).push(
           MaterialPageRoute(
             builder: (_) => CodeEditorPage(
               path: absolute,
@@ -573,8 +662,21 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
         );
       });
     } catch (err) {
-      _toast('打开文件失败：$err');
+      _toast('打开文件失败：${_friendlyError(err)}');
     }
+  }
+
+  String _friendlyError(Object err) {
+    var text = err.toString();
+    if (text.startsWith('Bad state: ')) {
+      text = text.substring('Bad state: '.length);
+    }
+    return text
+        .split('\n')
+        .where((line) => !line.contains('.bashrc'))
+        .where((line) => !line.contains('.openclaw/completions'))
+        .join('\n')
+        .trim();
   }
 
   Future<Uint8List?> _readThumb(String name) async {
@@ -582,10 +684,11 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
     final cached = _thumbCache[abs];
     if (cached != null) return cached;
     try {
-      final bytes =
-          await DockerService(widget.sessionId).readFileBytes(
+      // 缩略图只取前 2MB：大图全量读进来再解码最容易在列表里 OOM 闪退。
+      final bytes = await DockerService(widget.sessionId).readFileBytes(
         widget.containerId,
         abs,
+        maxBytes: 2 * 1024 * 1024,
       );
       if (bytes.isNotEmpty) _thumbCache[abs] = bytes;
       return bytes.isEmpty ? null : bytes;
@@ -612,6 +715,9 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
               height: 40,
               fit: BoxFit.cover,
               gaplessPlayback: true,
+              // 缩略图只解码到需要的大小，避免原图 4000×3000 占满内存。
+              cacheWidth: 96,
+              cacheHeight: 96,
             ),
           );
         },
@@ -625,7 +731,7 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
 
   Future<void> _showItemActions(ContainerFileEntry e) async {
     final action = await showModalBottomSheet<String>(
-      context: context,
+      context: _navContext,
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -681,9 +787,14 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
     }
   }
 
+  /// 悬浮窗渲染在 Navigator 之上：APP 内要借根 Navigator 的 context 才能
+  /// push/弹窗；外悬浮模式下根 Navigator 不在树上，回退到悬浮窗自己的
+  /// context（ExternalFloatShell 的内层 Navigator）。
+  BuildContext get _navContext => appNavigatorKey.currentContext ?? context;
+
   void _toast(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+    ScaffoldMessenger.maybeOf(_navContext)?.showSnackBar(SnackBar(
       content: Text(msg),
       behavior: SnackBarBehavior.floating,
     ));
@@ -758,7 +869,8 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
                   ? Center(
                       child: Padding(
                         padding: const EdgeInsets.all(16),
-                        child: Text(error!, style: TextStyle(color: scheme.error)),
+                        child:
+                            Text(error!, style: TextStyle(color: scheme.error)),
                       ),
                     )
                   : entries.isEmpty
@@ -775,12 +887,14 @@ class _SshContainerFilesViewState extends ConsumerState<SshContainerFilesView> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
-                              subtitle: e.isDirectory
-                                  ? null
-                                  : Text(
-                                      '${e.size} B',
-                                      style: const TextStyle(fontSize: 10),
-                                    ),
+                              subtitle: Text(
+                                e.isDirectory
+                                    ? e.mode
+                                    : '${FileKinds.sizeText(e.size)} · ${e.mode}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 10),
+                              ),
                               trailing: IconButton(
                                 tooltip: '操作',
                                 visualDensity: VisualDensity.compact,

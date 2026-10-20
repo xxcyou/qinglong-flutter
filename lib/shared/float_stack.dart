@@ -25,8 +25,23 @@ class FloatStack extends ChangeNotifier {
   /// 浏览器窗（含它自己的抓包脚本编辑器）。
   static const String browser = 'browser';
 
+  /// 文件管理器/独立终端窗。
+  static const String terminal = 'terminal';
+
+  /// SSH 容器终端/日志/文件窗。
+  static const String ssh = 'ssh';
+
+  /// 图片/附件预览窗。
+  static const String attachment = 'attachment';
+
   /// 从底到顶。默认让浏览器在上：它一亮出来就是要用户在上面点验证/登录的。
-  final List<String> _order = <String>[ai, browser];
+  final List<String> _order = <String>[
+    ai,
+    browser,
+    terminal,
+    ssh,
+    attachment,
+  ];
 
   List<String> get order => List<String>.unmodifiable(_order);
 

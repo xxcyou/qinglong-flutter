@@ -124,6 +124,15 @@ class AgentEvent {
   /// 存储撑爆、还拖慢每次读写。人排障看前 3 万字符够了。
   static const persistedFullResultLimit = 30000;
 
+  /// 单条消息最多保留多少事件（内存 + 落盘）。
+  ///
+  /// 流程卡渲染的是 Widget 列表，Column 不虚拟化；一条消息几千个工具/流程
+  /// 步骤会直接把内存和渲染拖爆。完整过程仍在该轮归档里，不会丢。
+  static const persistedEventLimit = 400;
+
+  /// 实时过程卡最多保留多少事件，避免每个事件都复制整张列表。
+  static const liveEventLimit = 300;
+
   Map<String, dynamic> toJson() => {
         'kind': kind.name,
         'message': message,

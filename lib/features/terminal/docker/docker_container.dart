@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../providers/ssh_session_provider.dart';
@@ -38,7 +39,10 @@ class DockerService {
     final lines = raw
         .split('\n')
         .map((l) => l.trim())
-        .where((l) => l.isNotEmpty && !l.contains('Cannot connect') && !l.startsWith('docker:'))
+        .where((l) =>
+            l.isNotEmpty &&
+            !l.contains('Cannot connect') &&
+            !l.startsWith('docker:'))
         .toList();
     final containers = <DockerContainer>[];
     for (final line in lines) {
@@ -78,23 +82,72 @@ class DockerService {
         .then((r) => r.trim().isEmpty ? 'ok' : r);
   }
 
+  /// 读取上限：超过后直接拒绝，避免大文件把手机内存打爆（用户反馈闪退）。
+  ///
+  /// 复制/粘贴也走这里，所以给得比“内置打开”宽一点；打开文本/图片时
+  /// 会再按类型收窄。
+  static const int maxReadBytes = 32 * 1024 * 1024;
+
   /// 读取容器内文件原始字节。
-  Future<Uint8List> readFileBytes(String containerId, String path) async {
+  ///
+  /// 会检查 stderr/exit code，并把二进制错误写进异常，UI 才能显示
+  /// “为什么打不开”（权限不足/路径不存在/文件过大），而不是一个空字符串。
+  Future<Uint8List> readFileBytes(
+    String containerId,
+    String path, {
+    int maxBytes = maxReadBytes,
+  }) async {
     final client = SshSessionManager.instance.clientOf(sessionId);
     if (client == null) throw StateError('SSH 未连接：$sessionId');
     final session = await client.execute(
       'docker exec $containerId cat ${_shq(path)}',
     );
     final builder = BytesBuilder(copy: false);
+    final errorText = StringBuffer();
+    final stderrDone = session.stderr.listen((chunk) {
+      if (errorText.length < 4096) {
+        errorText.write(utf8.decode(chunk, allowMalformed: true));
+      }
+    }).asFuture<void>();
+    var exceeded = false;
     await for (final chunk in session.stdout) {
+      if (builder.length + chunk.length > maxBytes) {
+        exceeded = true;
+        session.close();
+        break;
+      }
       builder.add(chunk);
     }
     await session.done;
+    await stderrDone;
+    if (exceeded) {
+      final limit = maxBytes >= 1024 * 1024
+          ? '${(maxBytes / (1024 * 1024)).toStringAsFixed(0)}MB'
+          : '${(maxBytes / 1024).toStringAsFixed(0)}KB';
+      throw StateError('文件超过 $limit，为避免闪退已阻止直接读取');
+    }
+    final rawErr = errorText.toString().trim();
+    // 交互式 SSH 登录 shell 可能把宿主机的 .bashrc 报错混进 stderr；真正
+    // 的错误信息要留下，但不要把这类噪音原样甩给用户。
+    final err = rawErr
+        .split('\n')
+        .where((line) => !line.contains('.openclaw/completions'))
+        .where((line) => !line.contains('.bashrc: line'))
+        .join('\n')
+        .trim();
+    final code = session.exitCode;
+    if (code != null && code != 0) {
+      if (rawErr.contains('Is a directory') || err.contains('Is a directory')) {
+        throw StateError('这是一个目录，不能按文件打开');
+      }
+      throw StateError(err.isEmpty ? '读取失败（exit=$code）' : err);
+    }
     return builder.takeBytes();
   }
 
   /// 把原始字节写入容器内文件（不存在自动创建/存在则覆盖）。
-  Future<void> writeFileBytes(String containerId, String path, Uint8List bytes) async {
+  Future<void> writeFileBytes(
+      String containerId, String path, Uint8List bytes) async {
     final client = SshSessionManager.instance.clientOf(sessionId);
     if (client == null) throw StateError('SSH 未连接：$sessionId');
     final session = await client.execute(

@@ -1,7 +1,7 @@
 name: qinglong_flutter
 description: 青龙AI —— 青龙面板移动客户端，内置浏览器抓包与 AI 助手。
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -41,6 +41,8 @@ dependencies:
   webview_flutter_android: ^4.12.0
   flutter_js: ^0.8.7
   dartssh2: ^4.1.0
+  flutter_adb: ^1.0.0
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:

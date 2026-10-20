@@ -17,6 +17,7 @@ import '../../../shared/image_viewer_page.dart';
 import '../../../shared/text_input_dialog.dart';
 import '../providers/shell_files_provider.dart';
 import '../providers/ssh_session_provider.dart';
+import '../providers/adb_session_provider.dart';
 import '../docker/container_file_relay.dart';
 import '../docker/docker_container.dart';
 import '../floating_terminal.dart';
@@ -54,6 +55,8 @@ class ShellFilesPage extends ConsumerStatefulWidget {
     this.onClose,
     this.closeIcon,
     this.dragToAttachEnabled = false,
+    this.initialSelectPath,
+    this.initialDir,
   });
 
   /// 以底部面板形式出现时自带拖动把手与关闭按钮，不画返回箭头。
@@ -61,6 +64,12 @@ class ShellFilesPage extends ConsumerStatefulWidget {
 
   /// 在 AI 半屏面板里开启：长按文件/文件夹拖到 AI 正文区作为附件。
   final bool dragToAttachEnabled;
+
+  /// 打开后自动滚动并常亮选中该路径（下载完成后跳转定位用）。
+  final String? initialSelectPath;
+
+  /// 打开文件管理器时初始进入的目录；为空用当前 provider 目录。
+  final String? initialDir;
 
   /// 在 AI 半屏文件面板里使用时，点文本/代码文件弹出悬浮编辑器，
   /// 而不是全屏跳转。
@@ -73,7 +82,10 @@ class ShellFilesPage extends ConsumerStatefulWidget {
   final IconData? closeIcon;
 
   /// 从终端页底部拉起文件管理。
-  static Future<void> showSheet(BuildContext context) {
+  static Future<void> showSheet(
+    BuildContext context, {
+    String? initialSelectPath,
+  }) {
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -92,12 +104,31 @@ class ShellFilesPage extends ConsumerStatefulWidget {
             child: Material(
               color:
                   Theme.of(context).colorScheme.surface.withValues(alpha: 0.86),
-              child: const ShellFilesPage(asSheet: true),
+              child: ShellFilesPage(
+                asSheet: true,
+                initialSelectPath: initialSelectPath,
+              ),
             ),
           ),
         ),
       ),
     );
+  }
+
+  /// 打开某个目录并定位选中指定文件（下载完成后“跳到文件”用）。
+  static Future<void> showDirAndSelect(
+    BuildContext context, {
+    required String dir,
+    required String file,
+  }) async {
+    final container = ProviderScope.containerOf(context, listen: false);
+    final notifier = container.read(shellFilesProvider.notifier);
+    await notifier.switchScope(FileScope.app);
+    await notifier.open(dir);
+    notifier.clearSelection();
+    notifier.toggleSelect(file);
+    if (!context.mounted) return;
+    return showSheet(context, initialSelectPath: file);
   }
 
   @override
@@ -111,11 +142,43 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
   /// 拖拽附件模式下的“多选”开关：开启后点条目直接勾选，
   /// 勾选多个后长按任一选中项，把整组一起拖到 AI 页。
   bool _attachMultiSelectMode = false;
+  final GlobalKey _highlightKey = GlobalKey();
+  bool _didScrollHighlight = false;
+  int _scrollHighlightAttempts = 0;
 
   @override
   void initState() {
     super.initState();
-    Future.microtask(() => ref.read(shellFilesProvider.notifier).open());
+    Future.microtask(() async {
+      await ref
+          .read(shellFilesProvider.notifier)
+          .open(widget.initialDir ?? ref.read(shellFilesProvider).path);
+      if (widget.initialSelectPath != null) {
+        final notifier = ref.read(shellFilesProvider.notifier);
+        notifier.clearSelection();
+        notifier.toggleSelect(widget.initialSelectPath!);
+      }
+      if (mounted) _maybeScrollToHighlight();
+    });
+  }
+
+  void _maybeScrollToHighlight() {
+    if (_didScrollHighlight || widget.initialSelectPath == null) return;
+    if (_scrollHighlightAttempts >= 8) return;
+    _scrollHighlightAttempts++;
+    final ctx = _highlightKey.currentContext;
+    if (ctx != null) {
+      _didScrollHighlight = true;
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 350),
+        alignment: 0.3,
+      );
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _maybeScrollToHighlight();
+      });
+    }
   }
 
   @override
@@ -344,31 +407,57 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
       child: Column(
         children: [
-          SegmentedButton<FileScope>(
-            segments: const [
-              ButtonSegment(
-                value: FileScope.shell,
-                icon: Icon(Icons.terminal, size: 17),
-                label: Text('终端文件'),
+          Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: _ScopeOptionTile(
+                      scope: FileScope.shell,
+                      selected: state.scope == FileScope.shell,
+                      onTap: () =>
+                          _notifier.switchScope(FileScope.shell),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _ScopeOptionTile(
+                      scope: FileScope.app,
+                      selected: state.scope == FileScope.app,
+                      onTap: () => _notifier.switchScope(FileScope.app),
+                    ),
+                  ),
+                ],
               ),
-              ButtonSegment(
-                value: FileScope.app,
-                icon: Icon(Icons.phone_android, size: 17),
-                label: Text('APP 文件'),
-              ),
-              ButtonSegment(
-                value: FileScope.ssh,
-                icon: Icon(Icons.dns_outlined, size: 17),
-                label: Text('SSH 文件'),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: _ScopeOptionTile(
+                      scope: FileScope.ssh,
+                      selected: state.scope == FileScope.ssh,
+                      onTap: () => _notifier.switchScope(FileScope.ssh),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _ScopeOptionTile(
+                      scope: FileScope.adb,
+                      selected: state.scope == FileScope.adb,
+                      onTap: () => _notifier.switchScope(FileScope.adb),
+                    ),
+                  ),
+                ],
               ),
             ],
-            selected: {state.scope},
-            showSelectedIcon: false,
-            onSelectionChanged: (v) => _notifier.switchScope(v.first),
           ),
           if (state.scope == FileScope.ssh) ...[
             const SizedBox(height: 8),
             _SshSessionPicker(state: state),
+          ],
+          if (state.scope == FileScope.adb) ...[
+            const SizedBox(height: 8),
+            _AdbSessionPicker(state: state),
           ],
           if (_searchVisible) ...[
             const SizedBox(height: 8),
@@ -514,7 +603,10 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
             onMore: () => _showActions(entry),
             bytesResolver: (path) => _notifier.readImageBytes(path),
           );
-          if (!widget.dragToAttachEnabled) return tile;
+          final highlighted = entry.path == widget.initialSelectPath
+              ? KeyedSubtree(key: _highlightKey, child: tile)
+              : tile;
+          if (!widget.dragToAttachEnabled) return highlighted;
           final multi = state.selected.isNotEmpty &&
               state.selected.contains(entry.path)
               ? entries
@@ -527,7 +619,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
               scope: state.scope.name,
               entries: multi != null && multi.length > 1 ? multi : null,
             ),
-            child: tile,
+            child: highlighted,
           );
         },
       ),
@@ -564,7 +656,10 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
                 : () => _showActions(entry),
             bytesResolver: (path) => _notifier.readImageBytes(path),
           );
-          if (!widget.dragToAttachEnabled) return tile;
+          final highlighted = entry.path == widget.initialSelectPath
+              ? KeyedSubtree(key: _highlightKey, child: tile)
+              : tile;
+          if (!widget.dragToAttachEnabled) return highlighted;
           final multi = state.selected.isNotEmpty &&
               state.selected.contains(entry.path)
               ? entries
@@ -577,7 +672,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
               scope: state.scope.name,
               entries: multi != null && multi.length > 1 ? multi : null,
             ),
-            child: tile,
+            child: highlighted,
           );
         },
       ),
@@ -612,9 +707,43 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
     );
   }
 
+  Future<void> _openPath(String path) async {
+    // 手机公共存储根：Android 11+ 没有“所有文件访问”授权时只能列出目录，
+    // 看不到文件。先进授权引导，避免用户误以为文件丢了。
+    if ((path.startsWith('/storage/emulated/0/') || path == '/storage/emulated/0') &&
+        !await ProotBridge().hasAllFilesAccess()) {
+      if (!mounted) return;
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('需要“所有文件访问”权限'),
+          content: const Text(
+            'Android 11 以上查看手机公共存储里的文件，需要先在系统设置里'
+            '开启“所有文件访问”。当前普通权限只能看到文件夹，看不到文件。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('去开启'),
+            ),
+          ],
+        ),
+      );
+      if (go == true && mounted) {
+        await ProotBridge().openAllFilesAccess();
+      }
+      return;
+    }
+    await _notifier.open(path);
+  }
+
   Future<void> _open(ShellFileEntry entry) async {
     if (entry.isDirectory) {
-      await _notifier.open(entry.path);
+      await _openPath(entry.path);
       return;
     }
     final kind = FileKinds.of(entry.name);
@@ -674,6 +803,33 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
             !e.isDirectory &&
             FileKinds.of(e.name).category == FileCategory.image)
         .toList();
+    // ADB 每张图都要 base64 拉一次，整目录预读会卡很久甚至“点了没反应”：
+    // 只先打开点击的这张，左右滑预留给本地/SSH。
+    if (state.scope == FileScope.adb) {
+      final b = await _notifier.readImageBytes(entry.path, thumbnail: false);
+      if ((b == null || b.isEmpty) || !mounted) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('这张图片无法解码打开')),
+          );
+        }
+        return;
+      }
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => ImageViewerPage(
+            imageBytes: [b],
+            imageNames: [entry.name],
+            initialIndex: 0,
+            title: entry.name,
+            subtitle: FileKinds.sizeText(entry.size),
+            onOpenExternal: null,
+          ),
+        ),
+      );
+      return;
+    }
+
     final bytesList = <Uint8List>[];
     final names = <String>[];
     for (final e in images) {
@@ -804,7 +960,8 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
       final sourceType = switch (state.scope) {
         FileScope.ssh => ContainerRelaySourceType.ssh,
         FileScope.app => ContainerRelaySourceType.app,
-        _ => ContainerRelaySourceType.shell,
+        FileScope.adb => ContainerRelaySourceType.adb,
+        FileScope.shell => ContainerRelaySourceType.shell,
       };
       ContainerFileRelay.set(ContainerRelayItem(
         name: entry.name,
@@ -813,6 +970,7 @@ class _ShellFilesPageState extends ConsumerState<ShellFilesPage> {
         sourceType: sourceType,
         sourcePath: entry.path,
         sourceSshId: state.scope == FileScope.ssh ? state.sshSessionId : null,
+        sourceAdbId: state.scope == FileScope.adb ? state.adbSessionId : null,
       ));
     } catch (_) {
       // 读不到字节就不放中转，普通同区复制剪切仍走原逻辑。
@@ -1108,6 +1266,39 @@ class _PathBarState extends State<_PathBar> {
     }
   }
 
+  Future<void> _openRoot(String path) async {
+    if ((path.startsWith('/storage/emulated/0/') ||
+            path == '/storage/emulated/0') &&
+        !await ProotBridge().hasAllFilesAccess()) {
+      if (!mounted) return;
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('需要“所有文件访问”权限'),
+          content: const Text(
+            'Android 11 以上查看手机公共存储里的文件，需要先在系统设置里'
+            '开启“所有文件访问”。当前普通权限只能看到文件夹，看不到文件。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('去开启'),
+            ),
+          ],
+        ),
+      );
+      if (go == true && mounted) {
+        await ProotBridge().openAllFilesAccess();
+      }
+      return;
+    }
+    await notifier.open(path);
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1125,7 +1316,7 @@ class _PathBarState extends State<_PathBar> {
                 IconButton(
                   tooltip: '上一级',
                   visualDensity: VisualDensity.compact,
-                  onPressed: state.atRoot ? null : notifier.goUp,
+                  onPressed: notifier.goUp,
                   icon: const Icon(Icons.arrow_upward, size: 20),
                 ),
                 Expanded(
@@ -1256,7 +1447,7 @@ class _PathBarState extends State<_PathBar> {
                         ),
                         selected: state.path == state.roots[i] ||
                             state.path.startsWith('${state.roots[i]}/'),
-                        onSelected: (_) => notifier.open(state.roots[i]),
+                        onSelected: (_) => _openRoot(widget.state.roots[i]),
                       ),
                     ),
                 ],
@@ -1690,6 +1881,67 @@ class _FileTile extends StatelessWidget {
   }
 }
 
+class _ScopeOptionTile extends StatelessWidget {
+  const _ScopeOptionTile({
+    required this.scope,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final FileScope scope;
+  final bool selected;
+  final VoidCallback onTap;
+
+  IconData _icon() => switch (scope) {
+        FileScope.shell => Icons.terminal,
+        FileScope.app => Icons.phone_android,
+        FileScope.ssh => Icons.dns_outlined,
+        FileScope.adb => Icons.smartphone,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: selected
+          ? scheme.primaryContainer.withValues(alpha: 0.85)
+          : scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              Icon(
+                _icon(),
+                size: 18,
+                color: selected ? scheme.primary : scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  scope.label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                    color: selected
+                        ? scheme.onPrimaryContainer
+                        : scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              if (selected)
+                Icon(Icons.check_circle, size: 16, color: scheme.primary),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _SshSessionPicker extends ConsumerWidget {
   const _SshSessionPicker({required this.state});
 
@@ -1734,6 +1986,57 @@ class _SshSessionPicker extends ConsumerWidget {
             ),
             onSelected: (_) =>
                 ref.read(shellFilesProvider.notifier).setSshSession(s.id),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _AdbSessionPicker extends ConsumerWidget {
+  const _AdbSessionPicker({required this.state});
+
+  final ShellFilesState state;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final adbState = ref.watch(adbSessionsProvider);
+    final sessions = adbState.sessions;
+    if (sessions.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: Text('还没有 ADB 设备，请先在 ADB 设备管理里连接'),
+      );
+    }
+
+    return SizedBox(
+      height: 40,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        itemCount: sessions.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final s = sessions[i];
+          final selected = state.adbSessionId == s.id;
+          final scheme = Theme.of(context).colorScheme;
+          return ChoiceChip(
+            selected: selected,
+            showCheckmark: false,
+            avatar: Icon(
+              s.isConnected ? Icons.smartphone : Icons.smartphone_outlined,
+              size: 15,
+              color: s.isConnected ? Colors.greenAccent : scheme.outline,
+            ),
+            label: Text(
+              '${s.name}${s.isConnected ? '' : '（未连接）'}',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+            onSelected: (_) =>
+                ref.read(shellFilesProvider.notifier).setAdbSession(s.id),
           );
         },
       ),

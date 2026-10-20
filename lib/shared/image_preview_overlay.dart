@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../features/ai/models/ai_message.dart';
+import 'image_preview_overlay_controller.dart';
 
 /// 聊天图片的独立悬浮预览。
 ///
@@ -14,6 +15,7 @@ class ImagePreviewOverlay extends StatefulWidget {
     super.key,
     required this.image,
     this.networkUrl,
+    this.onClose,
   });
 
   final AiImageAttachment image;
@@ -21,42 +23,18 @@ class ImagePreviewOverlay extends StatefulWidget {
   /// 网络图直接展示用；dataUri 为空时走这个。
   final String? networkUrl;
 
+  /// 悬浮窗宿主传入的关闭回调；没有时回退到 Navigator.pop。
+  final VoidCallback? onClose;
+
+  /// 图片附件统一走 [AttachmentPreviewController]，渲染在 [AppFloatLayer] 的
+  /// 常驻悬浮层里，APP 内/APP 外都能点开和拖动。
   static Future<void> show(BuildContext context, AiImageAttachment image) {
-    return showGeneralDialog(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: '关闭图片预览',
-      barrierColor: Colors.black.withValues(alpha: 0.82),
-      transitionDuration: const Duration(milliseconds: 180),
-      pageBuilder: (_, __, ___) => ImagePreviewOverlay(image: image),
-      transitionBuilder: (_, animation, __, child) => FadeTransition(
-        opacity: animation,
-        child: child,
-      ),
-    );
+    return AttachmentPreviewController.instance.showImage(image);
   }
 
   /// 网络图片预览：直接用 URL 渲染，不用先把整张图下载成 base64。
   static Future<void> showNetwork(BuildContext context, String url) {
-    return showGeneralDialog(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: '关闭图片预览',
-      barrierColor: Colors.black.withValues(alpha: 0.82),
-      transitionDuration: const Duration(milliseconds: 180),
-      pageBuilder: (_, __, ___) => ImagePreviewOverlay(
-        networkUrl: url,
-        image: const AiImageAttachment(
-          name: 'network_image',
-          mime: 'image/png',
-          dataUri: '',
-        ),
-      ),
-      transitionBuilder: (_, animation, __, child) => FadeTransition(
-        opacity: animation,
-        child: child,
-      ),
-    );
+    return AttachmentPreviewController.instance.showNetwork(url);
   }
 
   @override
@@ -156,7 +134,14 @@ class _ImagePreviewOverlayState extends State<ImagePreviewOverlay> {
           child: _FloatingButton(
             icon: Icons.close_rounded,
             tooltip: '关闭',
-            onTap: () => Navigator.of(context).maybePop(),
+            onTap: () {
+              final close = widget.onClose;
+              if (close != null) {
+                close();
+              } else {
+                Navigator.of(context).maybePop();
+              }
+            },
           ),
         ),
       ],

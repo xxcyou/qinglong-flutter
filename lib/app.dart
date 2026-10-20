@@ -11,12 +11,13 @@ import 'core/theme/glass.dart';
 import 'core/theme/theme_effects_controller.dart';
 import 'core/theme/startup_splash.dart';
 import 'core/theme/theme_store.dart';
-import 'features/ai/floating/ai_dock_overlay.dart';
-import 'features/browser/browser_host.dart';
+import 'features/ai/floating/ai_dock_provider.dart';
+import 'features/external/external_float_shell.dart';
+import 'features/external/external_overlay_controller.dart';
+import 'features/floating/app_float_layer.dart';
 import 'features/panels/providers/panel_list_provider.dart';
 import 'features/settings/providers/settings_provider.dart';
 import 'router.dart';
-import 'shared/float_stack.dart';
 
 /// 应用根组件：主题、语言、路由全部挂载在这里。
 class QingLongApp extends ConsumerStatefulWidget {
@@ -42,9 +43,27 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
     ref.listenManual(currentPanelProvider, (previous, next) {
       configureDioForPanel(next);
     });
+    // AI 悬浮球开关 = APP 外悬浮总开关。这里只“准备”服务，不切窗口、不
+    // finish APP；等系统把 APP 退到后台，原生再挂覆盖窗口，悬浮层原位续显。
+    ref.listenManual(aiDockProvider, (previous, next) {
+      if (next.visible) {
+        _ensureExternalArmed();
+      } else {
+        ExternalOverlayController.instance.disable();
+      }
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (ref.read(aiDockProvider).visible) _ensureExternalArmed();
+    });
+    // 主题包 ZIP 里的组件风格（controller.js componentStyle）随主题切换立即生效。
+    ref.listenManual(themeProvider, (previous, next) {
+      _applyThemeStyle(next.active);
+    });
     Future.microtask(() async {
       await ref.read(settingsProvider.notifier).load();
       await ref.read(themeProvider.notifier).load();
+      _applyThemeStyle(ref.read(themeProvider).active);
       ApiDebugLog.enabled = ref.read(settingsProvider).debugLogEnabled;
       // 提供商总表要在设置之后读：第一次启动时它会把老的单份 AI 配置
       // （llmBaseUrl / 那把全局 Key / 模型缓存）迁移成一家提供商，
@@ -53,6 +72,23 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
       await ref.read(panelListProvider.notifier).load();
       configureDioForPanel(ref.read(currentPanelProvider));
     });
+  }
+
+  void _applyThemeStyle(ThemeConfig? theme) {
+    if (theme == null || theme.componentStyle.isEmpty) {
+      ThemeEffectsController.instance.setThemeStyle(null);
+      return;
+    }
+    ThemeEffectsController.instance.setThemeStyle(
+      ThemeEffectBridge.parseComponentStyle({'style': theme.componentStyle}),
+    );
+  }
+
+  Future<void> _ensureExternalArmed() async {
+    if (!mounted) return;
+    final controller = ExternalOverlayController.instance;
+    if (controller.armed.value) return;
+    await controller.ensureArmed(MediaQuery.of(context));
   }
 
   void _finishSplash() {
@@ -97,13 +133,23 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
       // 悬浮 AI 挂在 Navigator 之上：push 出去的脚本页、日志页也能随手问 AI。
       // GlassFlowDriver 包住整棵树：它只旁听指针/滚动事件，用来把背景光斑
       // "推"起来（空闲时背景一帧都不画，实测省下一整个核）。
-      builder: (context, child) => GlassFlowDriver(
+      builder: (context, child) => ValueListenableBuilder<bool>(
+        valueListenable: ExternalOverlayController.instance.active,
+        builder: (context, externalActive, _) {
+          if (externalActive) {
+            return const ExternalFloatShell();
+          }
+          return GlassFlowDriver(
         child: Stack(
           children: [
             // 全局唯一主题背景层：所有页面共享一个 WebView/光斑层，
             // 切页/返回不创建销毁 WebView，导航秒开秒退。
-            const Positioned.fill(
-              key: ValueKey('app-theme-bg'),
+            // key 带上 activeId + revision：应用主题时强制重建背景 WebView，
+            // 让新主题的 JS 特效/组件发光立即重跑，不用重启。
+            Positioned.fill(
+              key: ValueKey(
+                'app-theme-bg-${themeState.activeId}-${themeState.revision}',
+              ),
               child: IgnorePointer(child: ThemeBackgroundLayer()),
             ),
             // key 必不可少：这个 Stack 的孩子个数会变（child 可能为 null），
@@ -137,32 +183,9 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
             //
             // 两个宿主都始终挂在树上（只是换顺序）：WebView 一旦被摘下来，
             // 页面里的定时器和 CF 挑战脚本就断了，票白拿。
-            Positioned.fill(
-              key: const ValueKey('app-floats'),
-              child: AnimatedBuilder(
-                animation: FloatStack.instance,
-                builder: (context, _) => Stack(
-                  children: [
-                    for (final id in FloatStack.instance.order)
-                      if (id == FloatStack.ai)
-                        const Positioned.fill(
-                          key: ValueKey('float-ai'),
-                          child: AiDockHost(),
-                        )
-                      else
-                        const Positioned.fill(
-                          key: ValueKey('float-browser'),
-                          child: BrowserHost(),
-                        ),
-                    // 悬浮球永远画在两个窗口之上：浏览器一最大化就盖住整块屏幕，
-                    // 气泡要是跟着聊天窗沉下去，用户就没有任何入口能把 AI 叫回来。
-                    const Positioned.fill(
-                      key: ValueKey('float-bubble'),
-                      child: AiBubbleHost(),
-                    ),
-                  ],
-                ),
-              ),
+            const Positioned.fill(
+              key: ValueKey('app-floats'),
+              child: AppFloatLayer(),
             ),
             if (showSplash)
               Positioned.fill(
@@ -174,6 +197,8 @@ class _QingLongAppState extends ConsumerState<QingLongApp> {
               ),
           ],
         ),
+      );
+        },
       ),
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,

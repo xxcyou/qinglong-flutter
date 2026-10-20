@@ -12,6 +12,7 @@ import '../../../core/llm/llm_config_provider.dart';
 import '../../../core/llm/llm_registry_provider.dart';
 import '../../../core/local_shell/proot_bridge.dart';
 import '../../../core/theme/glass.dart';
+import '../../../core/widgets/premium_logo.dart';
 import '../../../core/theme/theme_effects_controller.dart';
 import '../../../core/utils/formatter.dart';
 import '../../../core/utils/error_text.dart';
@@ -81,6 +82,9 @@ class AiChatPage extends ConsumerStatefulWidget {
 class _AiChatPageState extends ConsumerState<AiChatPage> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
+
+  /// 上次进入的会话 id：切会话后首帧自动滚到最新一条。
+  String? _lastSessionId;
 
   /// 当前正在“引用追问”的消息下标；null=没有引用。
   int? _followUpIndex;
@@ -264,8 +268,17 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     if (!_scrollController.hasClients) return;
     final pos = _scrollController.position;
     // 160 逻辑像素的容差：手指刚好停在最后一条上也算"在底部"。
-    final atBottom = pos.maxScrollExtent - pos.pixels <= 160;
+    // 列表是 reverse 的，offset 0 就是底部。
+    final atBottom = pos.pixels <= 160;
     if (atBottom != _pinned) setState(() => _pinned = atBottom);
+  }
+
+  void _resetProgressiveMessages(int total) {
+    // 只要进了会话，首帧后立刻跳到最新，用户不用从顶部一路滑下去。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _scrollToBottom();
+    });
   }
 
   /// 内容变了就跟到底。用 jumpTo 而不是动画：流式回复每秒改好几次
@@ -274,9 +287,9 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
     if (!_pinned) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) return;
-      final max = _scrollController.position.maxScrollExtent;
-      if ((max - _scrollController.position.pixels).abs() < 1) return;
-      _scrollController.jumpTo(max);
+      final px = _scrollController.position.pixels;
+      if (px.abs() < 1) return;
+      _scrollController.jumpTo(0);
     });
   }
 
@@ -693,8 +706,14 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
   void _scrollToIndex(int index) {
     if (!mounted || !_scrollController.hasClients) return;
     final list = _scrollController.position;
-    // 粗略估算：每条消息高度不一，这里直接把目标滚到可视区中央偏上。
-    final rough = index * 96.0;
+    final state = ref.read(chatProvider);
+    final extraCount = (state.livePlan.isNotEmpty ? 1 : 0) +
+        (state.liveAgentEvents.isNotEmpty ? 1 : 0) +
+        (state.isLoading ? 1 : 0) +
+        1;
+    final total = state.messages.length + extraCount;
+    // reverse 列表里 offset 0 是底部，所以目标消息离底部越远 offset 越大。
+    final rough = (total - 1 - index) * 96.0;
     final target = (rough - list.viewportDimension * 0.35).clamp(
       0.0,
       list.maxScrollExtent,
@@ -1078,11 +1097,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
 
   void _scrollToBottom() {
     if (!_scrollController.hasClients) return;
-    _scrollController.animateTo(
-      _scrollController.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 200),
-      curve: Curves.easeOut,
-    );
+    _pinned = true;
+    // 列表是 reverse 的，offset 0 永远是最新底部，不存在 maxScrollExtent 估算偏小的问题。
+    if (_scrollController.position.pixels > 0) {
+      _scrollController.jumpTo(0);
+    }
   }
 
   void _showSessionManager() => AiSessionList.showSheet(context);
@@ -1673,6 +1692,11 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
       if (changed || streaming) _followTail();
     });
     final state = ref.watch(chatProvider);
+    // 切会话时在 build 阶段就设好“只画最新 N 条”，避免先整段渲染一帧再降级。
+    if (_lastSessionId != state.currentSessionId) {
+      _lastSessionId = state.currentSessionId;
+      _resetProgressiveMessages(state.messages.length);
+    }
     final notifier = ref.read(chatProvider.notifier);
     final scheme = Theme.of(context).colorScheme;
     // 附件与悬浮窗共用一份：composePrompt 也只认这一份。
@@ -1894,10 +1918,16 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
                                   child: ListView.builder(
                                 key: _listKey,
                                 controller: _scrollController,
+                                reverse: true,
                                 padding:
                                     const EdgeInsets.fromLTRB(12, 12, 12, 4),
                                 itemCount: state.messages.length + extraCount,
-                                itemBuilder: (context, index) {
+                                itemBuilder: (context, builderIndex) {
+                                  final index =
+                                      state.messages.length +
+                                              extraCount -
+                                              1 -
+                                          builderIndex;
                                   if (index < state.messages.length) {
                                     final message = state.messages[index];
                                     final frozenBelow = _editMode &&
@@ -2678,22 +2708,7 @@ class _WelcomeView extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(20, 32, 20, 12),
       children: [
         Center(
-          child: Container(
-            width: 64,
-            height: 64,
-            decoration: BoxDecoration(
-              color: scheme.primaryContainer.withValues(alpha: 0.85),
-              shape: BoxShape.circle,
-            ),
-            child: ClipOval(
-              child: Image.asset(
-                'assets/images/app_icon.png',
-                width: 64,
-                height: 64,
-                fit: BoxFit.cover,
-              ),
-            ),
-          ),
+          child: const PremiumLogo(size: 64),
         ),
         const SizedBox(height: 10),
         const Center(

@@ -9,11 +9,14 @@ import '../../../shared/confirm_dialog.dart';
 import '../../../shared/glass_scaffold.dart';
 import '../../../shared/mono_text.dart';
 import '../../settings/providers/settings_provider.dart';
+import '../providers/adb_session_provider.dart';
 import '../providers/ssh_session_provider.dart';
 import '../providers/terminal_session_provider.dart';
 import '../terminal_palettes.dart';
 import '../widgets/package_install_sheet.dart';
 import '../widgets/ssh_manager_sheet.dart';
+import '../widgets/adb_manager_sheet.dart';
+import '../widgets/adb_terminal_sheet.dart';
 import '../widgets/ssh_terminal_view.dart';
 import '../widgets/terminal_key_bar.dart';
 import '../widgets/terminal_selection_bar.dart';
@@ -219,9 +222,64 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
     }
   }
 
+  Future<void> _openAdbTerminal() async {
+    final sessions = ref
+        .read(adbSessionsProvider)
+        .sessions
+        .where((s) => s.isConnected)
+        .toList();
+    if (sessions.isEmpty) return;
+    if (sessions.length == 1) {
+      await AdbTerminalSheet.show(
+        context,
+        sessionId: sessions.first.id,
+        title: sessions.first.name,
+      );
+      return;
+    }
+    final picked = await showModalBottomSheet<AdbSession>(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 14, 16, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '选择 ADB 终端',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
+            for (final s in sessions)
+              ListTile(
+                leading: const Icon(Icons.smartphone),
+                title: Text(s.name),
+                subtitle: Text('${s.host}:${s.port}'),
+                onTap: () => Navigator.pop(context, s),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (picked != null && mounted) {
+      await AdbTerminalSheet.show(
+        context,
+        sessionId: picked.id,
+        title: picked.name,
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(terminalSessionProvider);
+    final hasAdbConnected =
+        ref.watch(adbSessionsProvider).sessions.any((s) => s.isConnected);
     final notifier = ref.read(terminalSessionProvider.notifier);
     final settings = ref.watch(settingsProvider);
     final palette = TerminalPalette.byId(settings.terminalPalette);
@@ -243,6 +301,17 @@ class _TerminalPageState extends ConsumerState<TerminalPage> {
           onPressed: () => SshManagerSheet.show(context),
           icon: const Icon(Icons.dns_outlined),
         ),
+        IconButton(
+          tooltip: 'ADB 设备管理（无线调试/文件管理）',
+          onPressed: () => AdbManagerSheet.show(context),
+          icon: const Icon(Icons.smartphone_outlined),
+        ),
+        if (hasAdbConnected)
+          IconButton(
+            tooltip: 'ADB 终端',
+            onPressed: _openAdbTerminal,
+            icon: const Icon(Icons.terminal),
+          ),
         IconButton(
           tooltip: '文件管理',
           onPressed: () => ShellFilesPage.showSheet(context),

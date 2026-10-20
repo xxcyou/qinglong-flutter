@@ -1486,6 +1486,7 @@ class AgentLoop {
           response = await LlmClient.complete(
             config: config,
             messages: messages,
+            maxRetries: LlmClient.maxAutoRetries,
             cancelToken: httpToken,
             onDelta: onDelta == null ? null : pipe,
             tools: enableTools

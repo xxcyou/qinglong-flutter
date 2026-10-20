@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../core/network/dio_client.dart';
 import '../../../core/network/error_handler.dart';
+import '../../../core/network/qinglong_version_compat.dart';
 import '../../panels/adapters/qinglong_api_adapter.dart';
 import '../models/script_node.dart';
 
@@ -22,46 +23,6 @@ class ScriptApi {
     return (file.substring(0, index), file.substring(index + 1));
   }
 
-  static Future<List<ScriptNode>> files({
-    required String apiBaseUrl,
-    String? searchValue,
-  }) async {
-    if (await QinglongApiAdapterRegistry.hasFunction('script_list')) {
-      try {
-        final data = await QinglongApiAdapterRegistry.invoke(
-          apiBaseUrl: apiBaseUrl,
-          function: 'script_list',
-          query: {
-            if (searchValue != null && searchValue.isNotEmpty)
-              'searchValue': searchValue,
-          },
-        );
-        if (data != null) {
-          final result = _extractScriptList(data);
-          if (result.isNotEmpty) return result;
-        }
-      } catch (_) {
-        // 插件失败不阻断：继续走内置硬编码。
-      }
-    }
-    final response = await DioClient.dio.get<dynamic>(
-      '$apiBaseUrl/scripts',
-      queryParameters: {
-        // 新版后端返回完整目录树，搜索在本地完成；searchValue 保留兼容旧版。
-        if (searchValue != null && searchValue.isNotEmpty)
-          'searchValue': searchValue,
-      },
-    );
-    final data = parseQlResponse(response);
-    return _extractScriptList(data);
-  }
-
-  /// 兼容不同青龙版本的 /scripts 返回形态：
-  /// - 直接是 List
-  /// - { data: [...] }
-  /// - { data: { tree: [...] } }
-  /// - { data: { children: [...] } }
-  /// - { tree: [...] } / { children: [...] }
   static List<ScriptNode> _extractScriptList(dynamic data) {
     if (data is List) {
       return data
@@ -83,12 +44,6 @@ class ScriptApi {
           if (nested.isNotEmpty) return nested;
         }
       }
-      // 有的版本直接返回 { code:200, data:{ list:[...] } }
-      final listMap = data['list'];
-      if (listMap is Map<String, dynamic>) {
-        final nested = _extractScriptList(listMap);
-        if (nested.isNotEmpty) return nested;
-      }
       final list = data['list'];
       if (list is List) {
         return list
@@ -100,102 +55,168 @@ class ScriptApi {
     return const [];
   }
 
+  static String _extractScriptContent(dynamic data) {
+    if (data is String) return data;
+    if (data is Map<String, dynamic>) {
+      for (final key in ['content', 'data', 'value']) {
+        final v = data[key];
+        if (v is String && v.isNotEmpty) return v;
+        if (v is Map<String, dynamic>) {
+          final nested = _extractScriptContent(v);
+          if (nested.isNotEmpty) return nested;
+        }
+      }
+    }
+    return data?.toString() ?? '';
+  }
+
+  /// 按当前面板版本执行兼容规格；失败返回 null（调用方回退内置）。
+  static Future<dynamic> _compatCall({
+    required String apiBaseUrl,
+    required String function,
+    Map<String, String> pathParams = const {},
+    Map<String, dynamic> query = const {},
+    Map<String, dynamic> body = const {},
+  }) async {
+    final spec = await QinglongVersionCompat.specForCurrentVersion(
+      function,
+      pathParams: pathParams,
+    );
+    if (spec == null) return null;
+
+    final path = QinglongCompatRender.render(spec.path, pathParams, query);
+    final queryParameters = <String, dynamic>{
+      for (final e in spec.query.entries)
+        e.key: QinglongCompatRender.renderValue(e.value, pathParams, query),
+      ...query,
+    };
+    final requestBody = QinglongCompatRender.renderBody(
+      spec.body,
+      pathParams,
+      body,
+    );
+    final response = await DioClient.dio.request<dynamic>(
+      '$apiBaseUrl$path',
+      options: Options(method: spec.method),
+      queryParameters: queryParameters,
+      data: requestBody.isEmpty ? null : requestBody,
+    );
+    return parseQlResponse(response);
+  }
+
+  /// 当前面板版本存在适配插件时优先走插件；插件失败返回 null，调用方回退内置版本表。
+  static Future<dynamic> _adapterCall({
+    required String apiBaseUrl,
+    required String function,
+    Map<String, String> pathParams = const {},
+    Map<String, dynamic> query = const {},
+    Map<String, dynamic> body = const {},
+  }) async {
+    if (!await QinglongApiAdapterRegistry.hasFunction(function)) return null;
+    try {
+      return await QinglongApiAdapterRegistry.invoke(
+        apiBaseUrl: apiBaseUrl,
+        function: function,
+        pathParams: pathParams,
+        query: query,
+        body: body,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<List<ScriptNode>> files({
+    required String apiBaseUrl,
+    String? searchValue,
+  }) async {
+    final adapterData = await _adapterCall(
+      apiBaseUrl: apiBaseUrl,
+      function: 'script_list',
+      query: {
+        if (searchValue != null && searchValue.isNotEmpty)
+          'searchValue': searchValue,
+      },
+    );
+    if (adapterData != null) {
+      final result = _extractScriptList(adapterData);
+      if (result.isNotEmpty) return result;
+    }
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_list',
+        query: {
+          if (searchValue != null && searchValue.isNotEmpty)
+            'searchValue': searchValue,
+        },
+      );
+      if (data != null) {
+        final result = _extractScriptList(data);
+        if (result.isNotEmpty) return result;
+      }
+    } catch (_) {
+      // 兼容请求失败继续内置。
+    }
+    final response = await DioClient.dio.get<dynamic>(
+      '$apiBaseUrl/scripts',
+      queryParameters: {
+        // 新版后端返回完整目录树，搜索在本地完成；searchValue 保留兼容旧版。
+        if (searchValue != null && searchValue.isNotEmpty)
+          'searchValue': searchValue,
+      },
+    );
+    final data = parseQlResponse(response);
+    final result = _extractScriptList(data);
+    if (result.isNotEmpty) return result;
+    return const [];
+  }
+
   static Future<String> read({
     required String apiBaseUrl,
     required String file,
   }) async {
     final (dir, name) = _split(file);
-    if (await QinglongApiAdapterRegistry.hasFunction('script_read')) {
-      try {
-        final data = await QinglongApiAdapterRegistry.invoke(
-          apiBaseUrl: apiBaseUrl,
-          function: 'script_read',
-          pathParams: {'dir': dir, 'name': name},
-          query: {'path': dir, 'name': name},
-        );
-        if (data != null) {
-          final result = _extractScriptContent(data);
-          if (result.isNotEmpty) return result;
-        }
-      } catch (_) {
-        // 插件失败继续内置回退。
-      }
+    final adapterData = await _adapterCall(
+      apiBaseUrl: apiBaseUrl,
+      function: 'script_read',
+      pathParams: {'dir': dir, 'name': name},
+    );
+    if (adapterData != null) {
+      final content = _extractScriptContent(adapterData);
+      if (content.isNotEmpty) return content;
     }
     try {
-      // 新版青龙（2.16+）已下线 GET /scripts/:file，改用 /scripts/detail。
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_read',
+        pathParams: {'dir': dir, 'name': name},
+      );
+      if (data != null) {
+        final content = _extractScriptContent(data);
+        if (content.isNotEmpty) return content;
+      }
+    } catch (_) {
+      // 兼容请求失败继续内置。
+    }
+    try {
       final response = await DioClient.dio.get<dynamic>(
-        '$apiBaseUrl/scripts/detail',
-        queryParameters: {'path': dir, 'file': name},
+        '$apiBaseUrl/scripts/$name',
+        queryParameters: {
+          // v2.15 的 /scripts/:file 要求 path 始终存在（空串也可），缺失会 500。
+          'path': dir,
+        },
       );
       final data = parseQlResponse(response);
-      return _extractScriptContent(data);
+      if (data is String) return data;
+      if (data is Map<String, dynamic>) {
+        final content = data['content'] ?? data['data'];
+        if (content is String) return content;
+      }
+      return data?.toString() ?? '';
     } on DioException catch (e) {
-      // 旧版没有 /scripts/detail：遇到 404/405/410 回退旧路径 /scripts/:file。
-      if (_isNotFound(e.response?.statusCode) ||
-          _isNotFound(_businessCode(e.response?.data))) {
-        try {
-          final response = await DioClient.dio.get<dynamic>(
-            '$apiBaseUrl/scripts/$name',
-            queryParameters: {
-              // v2.15 的 /scripts/:file 要求 path 始终存在（空串也可），缺失会 500。
-              'path': dir,
-            },
-          );
-          final data = parseQlResponse(response);
-          return _extractScriptContent(data);
-        } on DioException catch (e2) {
-          throw ApiException(message: readableError(e2));
-        }
-      }
       throw ApiException(message: readableError(e));
-    } on ApiException catch (e) {
-      // detail 接口存在但返回 404/410（比如文件不存在/接口下线）也回退。
-      if (_isNotFound(e.code)) {
-        try {
-          final response = await DioClient.dio.get<dynamic>(
-            '$apiBaseUrl/scripts/$name',
-            queryParameters: {'path': dir},
-          );
-          final data = parseQlResponse(response);
-          return _extractScriptContent(data);
-        } on DioException catch (e2) {
-          throw ApiException(message: readableError(e2));
-        }
-      }
-      rethrow;
     }
-  }
-
-  static bool _isNotFound(dynamic code) {
-    if (code is int) return code == 404 || code == 405 || code == 410;
-    if (code is String) {
-      return code == '404' || code == '405' || code == '410';
-    }
-    return false;
-  }
-
-  static int? _businessCode(dynamic data) {
-    if (data is Map<String, dynamic>) {
-      final code = data['code'];
-      if (code is int) return code;
-      if (code is String) return int.tryParse(code);
-    }
-    return null;
-  }
-
-  static String _extractScriptContent(dynamic data) {
-    if (data is String) return data;
-    if (data is Map<String, dynamic>) {
-      final content = data['content'];
-      if (content is String) return content;
-      final nested = data['data'];
-      if (nested is Map<String, dynamic>) {
-        final inner = nested['content'];
-        if (inner is String) return inner;
-      }
-      return data.toString();
-    }
-    return data?.toString() ?? '';
   }
 
   /// 保证 `dir` 这一串目录在面板上存在。
@@ -230,18 +251,23 @@ class ScriptApi {
   }) async {
     final (dir, name) = _split(path);
     await ensureDirectory(apiBaseUrl: apiBaseUrl, dir: dir);
-    if (await QinglongApiAdapterRegistry.hasFunction('script_create')) {
-      try {
-        await QinglongApiAdapterRegistry.invoke(
-          apiBaseUrl: apiBaseUrl,
-          function: 'script_create',
-          pathParams: {'dir': dir, 'name': name},
-          body: {'path': dir, 'filename': name, 'content': content},
-        );
-        return;
-      } catch (_) {
-        // 插件失败继续内置。
-      }
+    final adapterData = await _adapterCall(
+      apiBaseUrl: apiBaseUrl,
+      function: 'script_create',
+      pathParams: {'dir': dir, 'name': name},
+      body: {'content': content},
+    );
+    if (adapterData != null) return;
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_create',
+        pathParams: {'dir': dir, 'name': name},
+        body: {'content': content},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 继续内置。
     }
     final response = await DioClient.dio.post<dynamic>(
       '$apiBaseUrl/scripts',
@@ -263,18 +289,23 @@ class ScriptApi {
     final (dir, name) = _split(path);
     // 保存也要建目录：PUT 对新文件同样是 writeFile，缺目录一样 500。
     await ensureDirectory(apiBaseUrl: apiBaseUrl, dir: dir);
-    if (await QinglongApiAdapterRegistry.hasFunction('script_save')) {
-      try {
-        await QinglongApiAdapterRegistry.invoke(
-          apiBaseUrl: apiBaseUrl,
-          function: 'script_save',
-          pathParams: {'dir': dir, 'name': name},
-          body: {'path': dir, 'filename': name, 'content': content},
-        );
-        return;
-      } catch (_) {
-        // 插件失败继续内置。
-      }
+    final adapterData = await _adapterCall(
+      apiBaseUrl: apiBaseUrl,
+      function: 'script_save',
+      pathParams: {'dir': dir, 'name': name},
+      body: {'content': content},
+    );
+    if (adapterData != null) return;
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_save',
+        pathParams: {'dir': dir, 'name': name},
+        body: {'content': content},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 继续内置。
     }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts',
@@ -294,18 +325,21 @@ class ScriptApi {
     required String newFilename,
   }) async {
     final (dir, name) = _split(path);
-    if (await QinglongApiAdapterRegistry.hasFunction('script_rename')) {
-      try {
-        await QinglongApiAdapterRegistry.invoke(
-          apiBaseUrl: apiBaseUrl,
-          function: 'script_rename',
-          pathParams: {'dir': dir, 'name': name, 'newName': newFilename},
-          body: {'path': dir, 'filename': name, 'newFilename': newFilename},
-        );
-        return;
-      } catch (_) {
-        // 插件失败继续内置。
-      }
+    final adapterData = await _adapterCall(
+      apiBaseUrl: apiBaseUrl,
+      function: 'script_rename',
+      pathParams: {'dir': dir, 'name': name, 'newName': newFilename},
+    );
+    if (adapterData != null) return;
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_rename',
+        pathParams: {'dir': dir, 'name': name, 'newName': newFilename},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 继续内置。
     }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts/rename',
@@ -323,18 +357,21 @@ class ScriptApi {
     required String path,
     required String directory,
   }) async {
-    if (await QinglongApiAdapterRegistry.hasFunction('script_create_directory')) {
-      try {
-        await QinglongApiAdapterRegistry.invoke(
-          apiBaseUrl: apiBaseUrl,
-          function: 'script_create_directory',
-          pathParams: {'dir': path, 'name': directory},
-          body: {'path': path, 'directory': directory},
-        );
-        return;
-      } catch (_) {
-        // 插件失败继续内置。
-      }
+    final adapterData = await _adapterCall(
+      apiBaseUrl: apiBaseUrl,
+      function: 'script_create_directory',
+      pathParams: {'path': path, 'directory': directory},
+    );
+    if (adapterData != null) return;
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_create_directory',
+        pathParams: {'path': path, 'directory': directory},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 继续内置。
     }
     final response = await DioClient.dio.post<dynamic>(
       '$apiBaseUrl/scripts',
@@ -346,38 +383,123 @@ class ScriptApi {
     parseQlResponse(response);
   }
 
+  /// 删除脚本或脚本目录。
+  ///
+  /// [isDirectory] 缺省时自动判断：先拉一次脚本树，按 key 找到目标是
+  /// file 还是 directory。面板的删除接口靠 `type` 区分，
+  /// **对目录用 `type:file` 会 500 `EISDIR: illegal operation on a
+  /// directory, unlink ...`，且目录会原样留着**——AI 删除目录时最常踩
+  /// 这个坑。即使自动判断失败，下面还会在收到 EISDIR 后自动换
+  /// `type:directory` 重试一次。
   static Future<void> delete({
     required String apiBaseUrl,
     required String path,
-    bool isDirectory = false,
+    bool? isDirectory,
   }) async {
     final (dir, name) = _split(path);
-    if (await QinglongApiAdapterRegistry.hasFunction('script_delete')) {
+    final asDirectory = isDirectory ??
+        (await _looksLikeDirectory(apiBaseUrl, dir, name) ?? false);
+
+    Future<void> request(bool dirFlag) async {
+      final type = dirFlag ? 'directory' : 'file';
+      final adapterData = await _adapterCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_delete',
+        pathParams: {'dir': dir, 'name': name, 'type': type},
+      );
+      if (adapterData != null) return;
       try {
-        await QinglongApiAdapterRegistry.invoke(
+        final data = await _compatCall(
           apiBaseUrl: apiBaseUrl,
           function: 'script_delete',
-          pathParams: {'dir': dir, 'name': name},
-          body: {
-            'path': dir,
-            'filename': name,
-            'type': isDirectory ? 'directory' : 'file',
-          },
+          pathParams: {'dir': dir, 'name': name, 'type': type},
         );
-        return;
+        if (data != null) return;
       } catch (_) {
-        // 插件失败继续内置。
+        // 继续内置。
+      }
+      final response = await DioClient.dio.delete<dynamic>(
+        '$apiBaseUrl/scripts',
+        data: {
+          'path': dir,
+          'filename': name,
+          'type': type,
+        },
+      );
+      parseQlResponse(response);
+    }
+
+    try {
+      await request(asDirectory);
+    } on DioException catch (e) {
+      final body = _errorText(e);
+      if (!asDirectory && _looksLikeDirectoryError(body)) {
+        await request(true);
+        return;
+      }
+      if (_looksLikeMissingError(body)) {
+        throw ApiException(message: '脚本或目录不存在：$path');
+      }
+      throw ApiException(message: readableError(e));
+    } on ApiException catch (e) {
+      if (!asDirectory && _looksLikeDirectoryError(e.message)) {
+        await request(true);
+        return;
+      }
+      if (_looksLikeMissingError(e.message)) {
+        throw ApiException(message: '脚本或目录不存在：$path');
+      }
+      rethrow;
+    }
+  }
+
+  /// 找到就返回该路径是不是目录；列表失败或没找到返回 null，让调用方按文件试。
+  static Future<bool?> _looksLikeDirectory(
+    String apiBaseUrl,
+    String dir,
+    String name,
+  ) async {
+    final key = dir.isEmpty ? name : '$dir/$name';
+    try {
+      final nodes = await files(apiBaseUrl: apiBaseUrl);
+      final node = _findNode(nodes, key);
+      if (node == null) return null;
+      return !node.isLeaf;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static ScriptNode? _findNode(List<ScriptNode> nodes, String key) {
+    for (final node in nodes) {
+      final nodeKey = (node.key == null || node.key!.isEmpty)
+          ? node.title
+          : node.key!;
+      if (nodeKey == key) return node;
+      if (node.children.isNotEmpty) {
+        final found = _findNode(node.children, key);
+        if (found != null) return found;
       }
     }
-    final response = await DioClient.dio.delete<dynamic>(
-      '$apiBaseUrl/scripts',
-      data: {
-        'path': dir,
-        'filename': name,
-        'type': isDirectory ? 'directory' : 'file',
-      },
-    );
-    parseQlResponse(response);
+    return null;
+  }
+
+  static String _errorText(DioException e) {
+    final data = e.response?.data;
+    final text = data is Map
+        ? '${data['message'] ?? data['msg'] ?? data}'
+        : '${data ?? e.message ?? ''}';
+    return text;
+  }
+
+  static bool _looksLikeDirectoryError(String body) {
+    final lower = body.toLowerCase();
+    return body.contains('EISDIR') || lower.contains('is a directory');
+  }
+
+  static bool _looksLikeMissingError(String body) {
+    final lower = body.toLowerCase();
+    return body.contains('ENOENT') || lower.contains('no such file or directory');
   }
 
   /// 手动运行脚本。返回面板给的 pid（用于停止）。
@@ -392,18 +514,23 @@ class ScriptApi {
     required String content,
   }) async {
     final (dir, name) = _split(path);
-    if (await QinglongApiAdapterRegistry.hasFunction('script_run')) {
-      try {
-        final data = await QinglongApiAdapterRegistry.invoke(
-          apiBaseUrl: apiBaseUrl,
-          function: 'script_run',
-          pathParams: {'dir': dir, 'name': name},
-          body: {'path': dir, 'filename': name, 'content': content},
-        );
-        if (data != null) return data;
-      } catch (_) {
-        // 插件失败继续内置。
-      }
+    final adapterData = await _adapterCall(
+      apiBaseUrl: apiBaseUrl,
+      function: 'script_run',
+      pathParams: {'dir': dir, 'name': name},
+      body: {'content': content},
+    );
+    if (adapterData != null) return adapterData;
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_run',
+        pathParams: {'dir': dir, 'name': name},
+        body: {'content': content},
+      );
+      if (data != null) return data;
+    } catch (_) {
+      // 继续内置。
     }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts/run',
@@ -422,22 +549,23 @@ class ScriptApi {
     int? pid,
   }) async {
     final (dir, name) = _split(path);
-    if (await QinglongApiAdapterRegistry.hasFunction('script_stop')) {
-      try {
-        await QinglongApiAdapterRegistry.invoke(
-          apiBaseUrl: apiBaseUrl,
-          function: 'script_stop',
-          pathParams: {'dir': dir, 'name': name},
-          body: {
-            'path': dir,
-            'filename': name,
-            if (pid != null) 'pid': pid,
-          },
-        );
-        return;
-      } catch (_) {
-        // 插件失败继续内置。
-      }
+    final adapterData = await _adapterCall(
+      apiBaseUrl: apiBaseUrl,
+      function: 'script_stop',
+      pathParams: {'dir': dir, 'name': name},
+      body: {if (pid != null) 'pid': pid},
+    );
+    if (adapterData != null) return;
+    try {
+      final data = await _compatCall(
+        apiBaseUrl: apiBaseUrl,
+        function: 'script_stop',
+        pathParams: {'dir': dir, 'name': name},
+        body: {if (pid != null) 'pid': pid},
+      );
+      if (data != null) return;
+    } catch (_) {
+      // 继续内置。
     }
     final response = await DioClient.dio.put<dynamic>(
       '$apiBaseUrl/scripts/stop',

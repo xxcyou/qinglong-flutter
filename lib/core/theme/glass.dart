@@ -102,13 +102,13 @@ class Glass {
     final dark = scheme.brightness == Brightness.dark;
     return [
       BoxShadow(
-        color: Colors.black.withValues(alpha: dark ? 0.42 : 0.14),
-        blurRadius: y * 2.2,
-        offset: Offset(0, y),
+        color: Colors.black.withValues(alpha: dark ? 0.26 : 0.10),
+        blurRadius: y * 2.0,
+        offset: Offset(0, y * 0.8),
       ),
       BoxShadow(
-        color: scheme.primary.withValues(alpha: dark ? 0.10 : 0.06),
-        blurRadius: y * 3,
+        color: scheme.primary.withValues(alpha: dark ? 0.06 : 0.04),
+        blurRadius: y * 2.6,
         spreadRadius: -y,
       ),
     ];
@@ -189,12 +189,21 @@ class GlassPanel extends StatelessWidget {
             : (style?.borderWidth ?? borderWidth);
         final effectiveShadowColor =
             style?.shadowColor ?? visual?.shadowColor ?? Colors.black;
-        final effectiveShadowOpacity = style?.shadowOpacity ??
-            (visual?.glassShadowOpacity ??
-                (scheme.brightness == Brightness.dark ? 0.34 : 0.10));
+        // 阴影上限：主题里 glassShadowOpacity 默认 0.42，在悬浮窗/桌面上
+        // 看起来太重；这里统一压到柔和范围，用户仍可通过主题微调但不会刺眼。
+        // 悬浮层通过主题把 glassShadowOpacity 设成 0，此时无视组件样式，
+        // 彻底不画阴影（桌面覆盖窗按并集裁剪，有阴影反而会被切出硬边）。
+        final shadowDisabled = (visual?.glassShadowOpacity ?? 1) <= 0;
+        final effectiveShadowOpacity = shadowDisabled
+            ? 0.0
+            : (style?.shadowOpacity ??
+                    (visual?.glassShadowOpacity ??
+                        (scheme.brightness == Brightness.dark ? 0.34 : 0.10)))
+                .clamp(0.0, 0.22);
         final effectiveShadowBlur =
-            style?.shadowBlur ?? (effectiveShadowY * 2.2);
-        final effectiveShadowOffsetY = style?.shadowOffsetY ?? effectiveShadowY;
+            style?.shadowBlur ?? (effectiveShadowY * 2.0);
+        final effectiveShadowOffsetY =
+            style?.shadowOffsetY ?? (effectiveShadowY * 0.8);
         // 液体玻璃默认要透：主题没显式给 fillOpacity 时，自动压到半透明，
         // 否则原来的不透明 colors/纯色会把“液态”直接盖成一块实心板。
         final defaultLiquidFill = liquidActive ? 0.55 : null;
@@ -312,6 +321,8 @@ class GlassPanel extends StatelessWidget {
                               painter: ThemeInnerDecorPainter(
                                 style: style,
                                 cornerRadius: br.topLeft.x,
+                                glowShape: style.glowShape,
+                                glowSharpness: style.innerGlowSharpness ?? 0,
                               ),
                             ),
                           ),
@@ -348,54 +359,73 @@ class GlassPanel extends StatelessWidget {
           );
         }
 
-        final glow = style?.glowColor != null
-            ? [
-                BoxShadow(
-                  color: (style!.glowColor ?? Colors.transparent)
-                      .withValues(alpha: style.glowOpacity ?? 0.6),
-                  blurRadius: style.glowRadius ?? 12,
-                  spreadRadius: 0,
-                ),
-              ]
-            : const <BoxShadow>[];
+        final gs = style;
+        final glowColor = gs?.glowColor;
+        final hasOuterGlow = glowColor != null &&
+            (gs?.glowOpacity ?? 0.6) > 0 &&
+            (gs?.glowRadius ?? 12) > 0;
 
         return ComponentAnchorTracker(
           type: 'panel',
           index: anchorIndex,
-          child: Opacity(
-            opacity: (style?.opacity ?? 1).clamp(0.0, 1.0),
-            child: Container(
-              margin: margin,
-              decoration: BoxDecoration(
-                borderRadius: br,
-                boxShadow: [
-                  BoxShadow(
-                    color: effectiveShadowColor.withValues(
-                        alpha: effectiveShadowOpacity),
-                    blurRadius: effectiveShadowBlur,
-                    offset: Offset(0, effectiveShadowOffsetY),
-                  ),
-                  BoxShadow(
-                    color: scheme.primary.withValues(
-                      alpha: scheme.brightness == Brightness.dark ? 0.10 : 0.06,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              if (hasOuterGlow && gs != null)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: CustomPaint(
+                      painter: _OuterGlowPainter(
+                        glowColor: glowColor,
+                        glowOpacity: gs.glowOpacity ?? 0.6,
+                        glowRadius: gs.glowRadius ?? 12,
+                        glowSharpness: gs.glowSharpness ?? 0,
+                        glowShape: gs.glowShape,
+                        cornerRadius: br.topLeft.x,
+                      ),
                     ),
-                    blurRadius: effectiveShadowY * 3,
-                    spreadRadius: -effectiveShadowY,
                   ),
-                  ...glow,
-                ],
-              ),
-              child: ClipRRect(
-                borderRadius: br,
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(
-                    sigmaX: effectiveBlur,
-                    sigmaY: effectiveBlur,
+                ),
+              Opacity(
+                opacity: (style?.opacity ?? 1).clamp(0.0, 1.0),
+                child: Container(
+                  margin: margin,
+                  decoration: BoxDecoration(
+                    borderRadius: br,
+                    boxShadow: effectiveShadowOpacity <= 0
+                        ? const <BoxShadow>[]
+                        : [
+                            BoxShadow(
+                              color: effectiveShadowColor.withValues(
+                                  alpha: effectiveShadowOpacity),
+                              blurRadius: effectiveShadowBlur,
+                              offset: Offset(0, effectiveShadowOffsetY),
+                            ),
+                            if (effectiveShadowY > 0)
+                              BoxShadow(
+                                color: scheme.primary.withValues(
+                                  alpha: scheme.brightness == Brightness.dark
+                                      ? 0.05
+                                      : 0.03,
+                                ),
+                                blurRadius: effectiveShadowY * 2.6,
+                                spreadRadius: -effectiveShadowY,
+                              ),
+                          ],
                   ),
-                  child: content,
+                  child: ClipRRect(
+                    borderRadius: br,
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(
+                        sigmaX: effectiveBlur,
+                        sigmaY: effectiveBlur,
+                      ),
+                      child: content,
+                    ),
+                  ),
                 ),
               ),
-            ),
+            ],
           ),
         );
       },
@@ -404,6 +434,68 @@ class GlassPanel extends StatelessWidget {
 
   Widget _padded(Widget child) =>
       padding == null ? child : Padding(padding: padding!, child: child);
+}
+
+/// 组件外发光绘制器：直接沿圆角边框画一条高斯模糊描边。
+///
+/// 用 Stack(clipBehavior: Clip.none) 挂在组件底下，光晕可以画到边框外侧，
+/// 不再依赖 BoxShadow 被父布局裁剪/误看成内发光。
+class _OuterGlowPainter extends CustomPainter {
+  const _OuterGlowPainter({
+    required this.glowColor,
+    required this.glowOpacity,
+    required this.glowRadius,
+    required this.glowSharpness,
+    required this.glowShape,
+    required this.cornerRadius,
+  });
+
+  final Color glowColor;
+  final double glowOpacity;
+  final double glowRadius;
+  final double glowSharpness;
+  final String glowShape;
+  final double cornerRadius;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty || glowRadius <= 0) return;
+    final rect = Offset.zero & size;
+    // 锐化：sharpness=0 全模糊，1 几乎不 blur。
+    final sharp = glowSharpness.clamp(0.0, 1.0);
+    final blur = glowRadius * (1 - sharp);
+    final strokeWidth = glowRadius * (1.4 + 0.6 * (1 - sharp));
+    // 组件是圆角矩形就按圆角矩形发光；只有显式传 oval 才用椭圆/圆形光。
+    final shape = glowShape == 'oval';
+    final Path path = Path();
+    if (shape) {
+      path.addOval(rect);
+    } else if (glowShape == 'rect') {
+      path.addRect(rect);
+    } else {
+      path.addRRect(
+        RRect.fromRectAndRadius(rect, Radius.circular(cornerRadius)),
+      );
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = strokeWidth
+        ..maskFilter =
+            blur > 0.5 ? MaskFilter.blur(BlurStyle.normal, blur) : null
+        ..color = glowColor.withValues(alpha: glowOpacity.clamp(0.0, 1.0)),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _OuterGlowPainter oldDelegate) =>
+      oldDelegate.glowColor != glowColor ||
+      oldDelegate.glowOpacity != glowOpacity ||
+      oldDelegate.glowRadius != glowRadius ||
+      oldDelegate.glowSharpness != glowSharpness ||
+      oldDelegate.glowShape != glowShape ||
+      oldDelegate.cornerRadius != cornerRadius;
 }
 
 /// 顶部玻璃标题条：替代 AppBar，内容从状态栏下方开始，没有"额头"色块。
@@ -915,9 +1007,13 @@ class _WebThemeBackgroundState extends State<_WebThemeBackground> {
       );
     // 无论是否当前页都预加载 HTML/CSS/JS：打开二级页时 WebView 已就绪，
     // 只有等 active 后把缓冲的特效一次性落到全局，避免 3~6 秒空窗。
-    // 启动放到首帧之后，避免 WebView 初始化/路由首帧抢同一帧。
+    // 启动放到首帧之后，再延迟一小段让主界面/渐变背景先画出来；
+    // HTML 动态背景属于“次要”增强，晚 800ms 加载用户感知不到，但能避免
+    // 旧主题大 HTML 把首帧和 Logo 一起卡住。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _load();
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (mounted) _load();
+      });
     });
   }
 
