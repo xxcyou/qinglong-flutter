@@ -637,6 +637,8 @@ class _ColorSpanBuilder extends MarkdownElementBuilder {
     'green': Color(0xFF69F0AE),
     'blue': Color(0xFF82B1FF),
     'yellow': Color(0xFFFFD740),
+    'gold': Color(0xFFFFD700),
+    'amber': Color(0xFFFFC107),
     'orange': Color(0xFFFFAB40),
     'purple': Color(0xFFB388FF),
     'pink': Color(0xFFFF80AB),

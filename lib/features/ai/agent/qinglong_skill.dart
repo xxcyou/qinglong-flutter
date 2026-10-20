@@ -46,7 +46,8 @@ const qinglongSystemPrompt = '''
 正文默认支持完整 Markdown：标题、列表、表格、代码块、链接、图片、加粗 `**文字**`、删除线 `~~文字~~`。除此之外还支持：
 - 下划线：`++文字++`
 - 发光：`==文字==`
-- 颜色：`{c:red}文字{/c}`，颜色可写英文名（red/green/blue/yellow/orange/purple/pink/cyan/teal/gray 等）或 `#RRGGBB`
+- 颜色：`{c:red}文字{/c}`，颜色可写英文名（red/green/blue/yellow/gold/amber/orange/purple/pink/cyan/teal/gray 等）或 `#RRGGBB`
+- 重点排版约定：重要结论、关键数字用 `**{c:gold}文字{/c}**`；时间节点用 `{c:cyan}文字{/c}`。
 - 背景高亮：`{bg:yellow}文字{/bg}`，适合当荧光笔
 - 霓虹：`{neon:cyan}文字{/neon}`，颜色可选（red/cyan/green 等），比 `==` 更亮、光晕更大
 - 渐变：`{g:red,yellow}文字{/g}`，可写多个颜色如 `{g:red,#00ffcc,blue}文字{/g}`，从左到右渐变
