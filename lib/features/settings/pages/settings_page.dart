@@ -12,6 +12,7 @@ import 'ai_settings_page.dart';
 import 'linux_container_page.dart' show LinuxContainerPage;
 import 'font_settings_page.dart';
 import 'theme_settings_page.dart';
+import 'about_page.dart';
 
 class SettingsPage extends ConsumerWidget {
   const SettingsPage({super.key});
@@ -328,29 +329,38 @@ class SettingsPage extends ConsumerWidget {
           ),
           const SectionLabel('关于'),
           GlassCard(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Column(
               children: [
-                const Icon(Icons.info_outline),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '关于',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '青龙面板 Flutter 客户端 v0.1.0\n数据仅存本地，无第三方统计',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.info_outline),
+                  title: const Text(
+                    '关于青龙AI',
+                    style: TextStyle(fontWeight: FontWeight.w600),
                   ),
+                  subtitle: const Text('版本信息、项目说明与开源地址'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AboutPage()),
+                  ),
+                ),
+                Divider(
+                  height: 1,
+                  color: Theme.of(context)
+                      .colorScheme
+                      .outlineVariant
+                      .withValues(alpha: 0.5),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.code_rounded),
+                  title: const Text(
+                    'GitHub 开源地址',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: const Text(AboutPage.githubLabel),
+                  trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+                  onTap: () => AboutPage.openGithub(context),
                 ),
               ],
             ),
