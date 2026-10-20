@@ -6,8 +6,6 @@ import android.graphics.RectF
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.android.FlutterView
@@ -63,7 +61,6 @@ class MainActivity : FlutterActivity() {
         externalArmed = ExternalOverlayService.isRunning()
         ExternalOverlayService.currentBounds()?.let { lastBounds = it }
         consumeViewIntent(intent)
-        maybeEnterExternalForPreview(intent, savedInstanceState)
         // 高刷屏不锁 60：把窗口首选模式指到设备支持的最高刷新率，
         // 让 Flutter 层和 WebView 的 HTML 动画都能吃满 120/144/240Hz。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -225,25 +222,6 @@ class MainActivity : FlutterActivity() {
     private fun disarmExternal() {
         externalArmed = false
         ExternalOverlayService.disarm(this)
-    }
-
-    /// 预览分支自动化测试入口：`am start ... --ez qinglong_preview_enter_external true`。
-    /// arm 之后主动 moveTaskToBack，模拟用户按 Home；正式发布前应删除。
-    private fun maybeEnterExternalForPreview(intent: Intent?, saved: Bundle?) {
-        if (saved != null) return
-        if (intent?.getBooleanExtra("qinglong_preview_enter_external", false) != true) return
-        val dm = resources.displayMetrics
-        val left = intent.getFloatExtra("left", 0f)
-        val top = intent.getFloatExtra("top", dm.heightPixels / 3f)
-        val right = intent.getFloatExtra("right", dm.widthPixels.toFloat())
-        val bottom = intent.getFloatExtra("bottom", dm.heightPixels * 2f / 3f)
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (isFinishing) return@postDelayed
-            val bounds = RectF(left, top, right, bottom)
-            if (armExternal(bounds)) {
-                moveTaskToBack(true)
-            }
-        }, 800)
     }
 
     private fun MethodCall.toRectF(): RectF {

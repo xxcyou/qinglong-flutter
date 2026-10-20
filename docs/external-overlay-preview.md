@@ -1,6 +1,6 @@
-# APP 外系统悬浮窗预览（preview-system-overlay）
+# APP 外系统悬浮窗（正式版）
 
-> 这是独立预览分支，不是正式版。正式版 `restore-28b8319` 不受影响。
+> 已合入 `main`，作为青龙AI 正式版的系统级悬浮窗能力。
 
 ## 目标
 
@@ -157,7 +157,7 @@ engine 也已 attach，但第一帧不会主动提交到 `SurfaceFlinger`，表�
 - [ ] 权限被拒、服务被系统回收、旋转/分屏、多显示器场景。
 - [ ] 快问结果窗 bounds 精确化。
 - [ ] 通知常驻与「返回 APP」交互打磨。
-- [ ] 预览自动化 hook（`qinglong_preview_enter_external`）在正式发布前删除。
+- [x] 预览自动化 hook（`qinglong_preview_enter_external`）已在正式版移除。
 
 ## 悬浮层阴影移除
 
