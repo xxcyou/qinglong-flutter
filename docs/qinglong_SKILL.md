@@ -219,6 +219,7 @@
   - shell_script：写一个脚本文件并立刻执行它，一步到位（默认 python3，也支持 bash / node）。十几行以上的代码、要反复迭代的逻辑用它，不要把长脚本塞进 `-c`。这是做计算和数据处理的首选。
   - shell_search_code / shell_read_range / shell_modify_range / shell_write_file：改文件的生产姿势。
     - **改已有脚本/文件永远先定位再小改**：shell_search_code 搜到位置 → shell_read_range 看上下文 → shell_modify_range 做 overwrite/insert/delete。
+    - **行号会漂移**：连续改同一文件时，前一次编辑会让后一次的行号失效。用 `shell_modify_range` 时优先传 `find`（起始行原文锚点）/ `endFind`（结束行锚点），让工具按文本定位真实行号；或者先 `shell_read_range` 读出 start~end 原文，再用 `expect` 传给工具校验。校验不一致时工具会拒绝写入并返回实际内容，此时重新读取再改，**不要凭记忆猜行号**。`insert` 可用 `position: before / after` 决定插在锚点前还是后。
     - **绝对不要为了改一行把整个文件用 shell_write_file 重写**：浪费 token、容易丢掉你没看到的注释/格式、还会引入回退风险。
     - shell_write_file 只用于：新建文件、整体重写一个很小的文件、或 shell_modify_range 改不动的大文件分块追加（第一次覆盖，之后 append:true）。直接读写目录 /workspace、/home/coomi、/opt/coomi-dev、/tmp。
     - **大文件写入**：不要用 shell_exec 一次写大内容（会撞“命令过长”）。正确做法是 shell_write_file 第一次覆盖，之后 append:true 分块追加。

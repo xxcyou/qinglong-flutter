@@ -593,6 +593,8 @@ class _TimelineRowState extends State<_TimelineRow> {
     'script_modify_range',
     'shell_write_file',
     'shell_modify_range',
+    'phone_write_file',
+    'phone_modify_range',
     'shell_write_binary',
     'shell_exec',
     'shell_script',

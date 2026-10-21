@@ -71,6 +71,38 @@ class AgentCancelledException implements Exception {
   String toString() => '任务已被用户中断';
 }
 
+/// LLM 请求在自动重试后仍然失败：携带失败请求的精确快照。
+///
+/// ChatNotifier 捕获它后把快照写进 InterruptedRun。用户点“继续”时，
+/// AgentLoop 直接用 [messages] 从 [turnIndex] 重发同一个请求，
+/// 不再把原始任务当新任务重跑。
+class AgentRequestException implements Exception {
+  const AgentRequestException({
+    required this.cause,
+    required this.messages,
+    required this.turnIndex,
+    required this.plan,
+    required this.content,
+  });
+
+  final Object cause;
+
+  /// 失败那次请求真正发出去的完整 messages（已经过 requestTransformer）。
+  final List<LlmMessage> messages;
+
+  /// 失败请求对应的 0-based 轮次下标。
+  final int turnIndex;
+
+  /// 失败前 AgentLoop 内存里的任务清单。
+  final AgentTaskPlan plan;
+
+  /// 失败前已经累积的 assistant 正文。
+  final String content;
+
+  @override
+  String toString() => cause.toString();
+}
+
 /// 运行中由用户插进来的待发消息。
 ///
 /// AgentLoop 不会边生成边打断；它在每一轮之间的安全点（上一轮工具结果已经
@@ -461,7 +493,8 @@ class AgentLoop {
       final inner = args['args'] as Map;
       if (inner.isNotEmpty) raw = _timeoutRaw(inner);
     }
-    final seconds = raw is num ? raw.toInt() : int.tryParse(raw?.toString() ?? '');
+    final seconds =
+        raw is num ? raw.toInt() : int.tryParse(raw?.toString() ?? '');
     if (seconds == null || seconds <= 0) return null;
     // 命令本体超时外再留 120 秒余量：排队、锁、启动开销、壳层等待都算进去。
     return Duration(seconds: seconds.clamp(1, 7200).toInt() + 120);
@@ -751,6 +784,10 @@ class AgentLoop {
       'sub_log',
       'shell_read_file',
       'shell_list_files',
+      'phone_list_files',
+      'phone_read_file',
+      'phone_read_range',
+      'phone_search_code',
       'browser_capture',
       'editor_read',
     ];
@@ -1225,6 +1262,18 @@ class AgentLoop {
 
   Future<AgentResult> run({
     required List<LlmMessage> history,
+
+    /// 真实续跑：失败请求的完整 messages。非空时忽略 [history]，直接从
+    /// [resumeTurnIndex] 重发这轮请求，而不是把原任务当新任务重跑。
+    List<LlmMessage>? resumeMessages,
+    int resumeTurnIndex = 0,
+    AgentTaskPlan resumePlan = const AgentTaskPlan(),
+    String resumeContent = '',
+    List<ToolCallRecord> resumeRecords = const [],
+
+    /// 第一个恢复请求成功后回调一次，让上层清掉“待续跑快照”，避免每次
+    /// 工具事件都把整份 messages 重新落盘。
+    void Function()? onRequestSucceeded,
     void Function(AgentEvent event)? onEvent,
     void Function(AgentDelta delta)? onDelta,
     void Function(AgentTaskPlan plan)? onPlan,
@@ -1233,13 +1282,16 @@ class AgentLoop {
     /// 关掉某个画布窗口（`*` = 全部）。
     void Function(String window)? onCanvasClose,
   }) async {
-    var messages = List<LlmMessage>.from(history);
-    final records = <ToolCallRecord>[];
+    final resuming = resumeMessages != null && resumeMessages.isNotEmpty;
+    var messages = resuming
+        ? List<LlmMessage>.from(resumeMessages)
+        : List<LlmMessage>.from(history);
+    final records = <ToolCallRecord>[...resumeRecords];
     final pending = <AiPlanAction>[];
     final readCache = <String, String>{};
     final readCacheAt = <String, DateTime>{};
     final errorCache = <String, int>{};
-    var content = '';
+    var content = resuming ? resumeContent : '';
     var usage = const LlmUsage();
     final usageDetails = <LlmUsage>[];
     var outcome = AgentOutcome.exhausted;
@@ -1263,7 +1315,7 @@ class AgentLoop {
     // 保持干净，否则模型会把簿记当自己的说话模板抄，见
     // ChatNotifier._historyNote）。按 assistant 找会永远找不到，
     // 追问链识别整条失效。
-    final askedBefore = history.any((m) => m.content.contains('ask_user'));
+    final askedBefore = messages.any((m) => m.content.contains('ask_user'));
 
     /// 每个工具名被调了几次（判断"在同一个地方打转"）。
     final callCounts = <String, int>{};
@@ -1301,10 +1353,14 @@ class AgentLoop {
     };
     var lastPromptTokens = 0;
     var lastCacheHitTokens = 0;
-    var plan = const AgentTaskPlan();
+    var plan = resuming ? resumePlan : const AgentTaskPlan();
     final canvases = <AiCanvas>[];
 
     var nextEventIndex = 0;
+    for (final r in resumeRecords) {
+      final idx = r.eventIndex;
+      if (idx != null && idx >= nextEventIndex) nextEventIndex = idx + 1;
+    }
     void emit(AgentEvent event) {
       onEvent?.call(event);
       nextEventIndex++;
@@ -1459,8 +1515,9 @@ class AgentLoop {
       return true;
     }
 
+    final startTurn = resuming ? resumeTurnIndex : 0;
     try {
-      for (var turn = 0; turn < maxTurns; turn++) {
+      for (var turn = startTurn; turn < maxTurns; turn++) {
         drainInbox();
         drainSubagentResults();
         checkCancelled();
@@ -1474,7 +1531,10 @@ class AgentLoop {
         pipe(const LlmDelta(reset: true));
         LlmResponse response;
         final transformer = requestTransformer;
-        if (transformer != null) {
+        // 恢复出来的 messages 已经经过一次 requestTransformer；第一轮恢复请求
+        // 不再重复过插件，否则可能被二次改写。
+        final firstResumedTurn = resuming && turn == startTurn;
+        if (!firstResumedTurn && transformer != null) {
           final transformed = transformer(messages);
           if (transformed != null) messages = transformed;
         }
@@ -1517,6 +1577,7 @@ class AgentLoop {
                   ]
                 : null,
           );
+          onRequestSucceeded?.call();
         } on ApiException catch (e) {
           // 取消导致的失败不算错误：翻译成中断，走统一的中断收尾。
           if (e.type == ApiExceptionType.cancelled ||
@@ -1533,7 +1594,15 @@ class AgentLoop {
             }
             throw const AgentCancelledException();
           }
-          rethrow;
+          // 自动重试已经耗尽。把失败请求的精确快照交给上层，用户点“继续”
+          // 时从这里重发，而不是从头再跑一遍。
+          throw AgentRequestException(
+            cause: e,
+            messages: List<LlmMessage>.from(messages),
+            turnIndex: turn,
+            plan: plan,
+            content: content,
+          );
         } finally {
           cancelToken?.httpToken = null;
         }
@@ -1950,7 +2019,8 @@ class AgentLoop {
             emit(
               AgentEvent(
                 kind: AgentEventKind.thinking,
-                message: '任务清单还有 ${finishUnfinished.length} 步未完成，已打回收尾（第 $finishRejections 次）',
+                message:
+                    '任务清单还有 ${finishUnfinished.length} 步未完成，已打回收尾（第 $finishRejections 次）',
                 result: lines,
                 turn: turnsUsed,
               ),
@@ -1990,9 +2060,8 @@ class AgentLoop {
           emit(
             AgentEvent(
               kind: AgentEventKind.done,
-              message: outcome == AgentOutcome.failed
-                  ? '任务失败'
-                  : '任务完成$finishNote',
+              message:
+                  outcome == AgentOutcome.failed ? '任务失败' : '任务完成$finishNote',
               result: content,
               ok: outcome != AgentOutcome.failed,
               turn: turnsUsed,

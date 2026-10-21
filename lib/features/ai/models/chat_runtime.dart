@@ -1,6 +1,8 @@
 import 'dart:convert';
 
+import '../../../core/llm/llm_client.dart';
 import 'agent_event.dart';
+import 'agent_task_plan.dart';
 import 'ai_message.dart';
 
 /// 排队中的一条待发消息。
@@ -89,6 +91,10 @@ class InterruptedRun {
     required this.startedAt,
     this.confirmedKeys = const [],
     this.roundId = '',
+    this.resumeMessages = const [],
+    this.resumeTurnIndex = 0,
+    this.resumePlan = const AgentTaskPlan(),
+    this.resumeContent = '',
   });
 
   final String sessionId;
@@ -106,7 +112,21 @@ class InterruptedRun {
   /// 本地完整轮归档 ID；继续时沿用同一个文件，不新建完整轮。
   final String roundId;
 
-  bool get isEmpty => userInput.trim().isEmpty && events.isEmpty;
+  /// 失败的那次 LLM 请求的完整 messages。非空时“继续”会原样重发这轮请求，
+  /// 而不是把原任务当新任务重新跑一遍。
+  final List<LlmMessage> resumeMessages;
+
+  /// 失败请求对应的 0-based 轮次下标（AgentLoop 下一轮从它继续）。
+  final int resumeTurnIndex;
+
+  /// 失败前 AgentLoop 内存里的任务清单，续跑时恢复进度。
+  final AgentTaskPlan resumePlan;
+
+  /// 失败前已经累积的 assistant 正文，续跑时接着拼，不丢前文。
+  final String resumeContent;
+
+  bool get isEmpty =>
+      userInput.trim().isEmpty && events.isEmpty && resumeMessages.isEmpty;
 
   Map<String, dynamic> toJson() => {
         'sessionId': sessionId,
@@ -115,6 +135,11 @@ class InterruptedRun {
         'startedAt': startedAt.toIso8601String(),
         'confirmedKeys': confirmedKeys,
         if (roundId.isNotEmpty) 'roundId': roundId,
+        if (resumeMessages.isNotEmpty)
+          'resumeMessages': [for (final m in resumeMessages) m.toJson()],
+        if (resumeTurnIndex > 0) 'resumeTurnIndex': resumeTurnIndex,
+        if (resumePlan.isNotEmpty) 'resumePlan': resumePlan.toJson(),
+        if (resumeContent.isNotEmpty) 'resumeContent': resumeContent,
       };
 
   factory InterruptedRun.fromJson(Map<String, dynamic> json) => InterruptedRun(
@@ -131,6 +156,19 @@ class InterruptedRun {
             k.toString(),
         ],
         roundId: json['roundId']?.toString() ?? '',
+        resumeMessages: [
+          for (final m in (json['resumeMessages'] as List? ?? const []))
+            if (m is Map<String, dynamic>)
+              LlmMessage.fromJson(m)
+            else if (m is Map)
+              LlmMessage.fromJson(m.cast<String, dynamic>()),
+        ],
+        resumeTurnIndex: (json['resumeTurnIndex'] as num?)?.toInt() ?? 0,
+        resumePlan: json['resumePlan'] is Map
+            ? AgentTaskPlan.fromJson(
+                (json['resumePlan'] as Map).cast<String, dynamic>())
+            : const AgentTaskPlan(),
+        resumeContent: json['resumeContent']?.toString() ?? '',
       );
 
   static String encode(InterruptedRun run) => jsonEncode(run.toJson());

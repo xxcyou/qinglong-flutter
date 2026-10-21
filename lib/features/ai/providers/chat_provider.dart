@@ -497,6 +497,13 @@ class _SessionRun {
   /// 继续上次被打断的运行时要带给模型的中断前事件快照。
   List<AgentEvent> resumeEvents = const [];
 
+  /// 真实续跑：失败请求的完整 messages、轮次下标、任务清单和已累积正文。
+  /// 非空时 AgentLoop 直接重发这轮请求，而不是从历史重新开一轮。
+  List<LlmMessage> resumeMessages = const [];
+  int resumeTurnIndex = 0;
+  AgentTaskPlan resumePlan = const AgentTaskPlan();
+  String resumeContent = '';
+
   /// 这次发送是否由“继续中断任务”触发；失败时用来保留中断快照，避免丢了没法再试。
   bool isResume = false;
 
@@ -917,35 +924,23 @@ class ChatNotifier extends Notifier<ChatState> {
       ];
     }
     // 继续被中断的运行：把中断前**已经真实执行过的工具链和结果**注入历史。
-    // 以前这里只把原始用户输入再发一遍，模型看不到执行到一半的过程，
-    // 于是它以为这条消息从未发生，要么从头重来、要么只知道上一个完整任务的
-    // 总结——这正是"执行一半再继续，AI 没上下文"的根因。
+    // 关键：这不是"重新问一遍"，而是同一次运行的中断续跑。除了工具结果，
+    // 还要把中断前的任务清单和已经流出的思考/正文交给模型，并明确要求
+    // 从断点继续、不要重做已完成步骤——否则模型看到原始输入会从头再来。
     if (resumeEvents != null && resumeEvents.isNotEmpty) {
-      final digest = _toolDigestFromEvents(resumeEvents);
-      if (digest.isNotEmpty) {
-        final note = '（系统记录 · 上次运行被中断。**下面这些工具已经真的执行过了，'
-            '结果就在这儿**，不要重复调用同样的参数——接着往下做，'
-            '或者按用户新说的方向走。）\n$digest';
-        if (history.length > 1) {
-          final last = history.last;
-          history = [
-            ...history.take(history.length - 1),
-            LlmMessage(
-              role: last.role,
-              content: last.content.trim().isEmpty
-                  ? note
-                  : '${last.content}\n\n$note',
-            ),
-          ];
-        } else {
-          history.add(LlmMessage(role: 'user', content: note));
-        }
-      }
+      final note = _resumeNote(
+        resumeEvents,
+        partialReasoning: partialReasoning,
+        partialContent: partialContent,
+      );
+      // 作为最后一条 user 消息追加，确保它是模型看到的最新指令。
+      history.add(LlmMessage(role: 'user', content: note));
     }
     // 用户说“继续”时，把上一轮还没收尾的任务清单交回去。否则模型只能看到
     // 上一轮的文字总结，看不到“目标/第几步已完成/下一步是什么”，就会反问
-    // “你想让我继续做什么？”。
-    if (_isContinuationIntent(userInput)) {
+    // “你想让我继续做什么？”。中断续跑已经有更精确的快照，不再重复注入旧清单。
+    if ((resumeEvents == null || resumeEvents.isEmpty) &&
+        _isContinuationIntent(userInput)) {
       final note = _lastTaskPlanNote(sessionId);
       if (note != null) {
         if (history.length > 1) {
@@ -1068,6 +1063,97 @@ class ChatNotifier extends Notifier<ChatState> {
   String _toolDigest(AiChatMessage m) => _toolDigestFromEvents(m.agentEvents);
 
   /// 工具结果明细的通用实现：给已完成的 assistant 消息用，也给出中断快照用。
+  /// 中断续跑的上下文：工具结果 + 任务清单 + 已流出的思考/正文。
+  ///
+  /// 只发工具摘要不够——模型看不到自己做到清单哪一步、刚想到哪，
+  /// 就会把原任务当成新任务从头再做。这里明确告诉它"这是续跑"。
+  String _resumeNote(
+    List<AgentEvent> events, {
+    String partialReasoning = '',
+    String partialContent = '',
+  }) {
+    final digest = _toolDigestFromEvents(events);
+    final plan = _lastEventText(events, AgentEventKind.taskPlan);
+    final reasoning = partialReasoning.trim().isNotEmpty
+        ? partialReasoning.trim()
+        : _lastEventText(events, AgentEventKind.thinking);
+    final content = partialContent.trim().isNotEmpty
+        ? partialContent.trim()
+        : _lastEventText(events, AgentEventKind.answer);
+    final buffer = StringBuffer()
+      ..writeln('（系统记录 · 这是同一次运行被中断后的续跑，不是新任务。）')
+      ..writeln('如果用户刚发了新方向，以新方向为准；否则不要从头开始，'
+          '也不要重复已经执行过的工具调用，请从下面断点继续。');
+    if (digest.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..writeln('【中断前已经真实执行过的工具和结果】')
+        ..writeln(digest);
+    }
+    if (plan.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..writeln('【中断前的任务清单】')
+        ..writeln(_clipHead(plan, 4000))
+        ..writeln('如果用户没有改变方向，请从 [>] 进行中或 [ ] 未完成的步骤继续；'
+            '[x] 已完成的部分不要重做。');
+    }
+    if (reasoning.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..writeln('【中断前已经流出的思考片段】')
+        ..writeln(_tail(reasoning))
+        ..writeln('接着这个思路往下做，不要从头重想。');
+    }
+    if (content.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..writeln('【中断前已经流出的正文片段】')
+        ..writeln(_tail(content))
+        ..writeln('接着这段正文往下写，不要重写已经写过的内容。');
+    }
+    if (digest.isEmpty &&
+        plan.isEmpty &&
+        reasoning.isEmpty &&
+        content.isEmpty) {
+      buffer.writeln(
+        '中断前还没有产生可复用的进度；如果任务较长，请先说明你准备从哪一步开始，'
+        '避免重复用户已经知道的部分。',
+      );
+    }
+    return buffer.toString().trimRight();
+  }
+
+  /// 取最后一条指定类型事件的文本（任务清单/思考/正文）。
+  String _lastEventText(List<AgentEvent> events, AgentEventKind kind) {
+    for (final e in events.reversed) {
+      if (e.kind == kind && e.message.trim().isNotEmpty) {
+        return e.message.trim();
+      }
+    }
+    return '';
+  }
+
+  /// 只保留头部，避免把超长清单塞满上下文。
+  static String _clipHead(String text, int max) =>
+      text.length <= max ? text : '${text.substring(0, max)}…';
+
+  /// 从已有事件还原工具记录：真实续跑时 AgentLoop 重新接管，最终
+  /// AgentResult.toolRecords 要包含中断前已经完成的工具，审计跳转也不会断。
+  List<ToolCallRecord> _recordsFromEvents(List<AgentEvent> events) => [
+        for (var i = 0; i < events.length; i++)
+          if (events[i].kind == AgentEventKind.toolEnd &&
+              (events[i].toolName ?? '').trim().isNotEmpty)
+            ToolCallRecord(
+              toolName: events[i].toolName!,
+              args: events[i].args ?? const {},
+              status: events[i].ok ? 'ok' : 'error',
+              result: events[i].displayResult,
+              durationMs: events[i].durationMs,
+              eventIndex: i,
+            ),
+      ];
+
   String _toolDigestFromEvents(List<AgentEvent> events) {
     final done = [
       for (final e in events)
@@ -1351,6 +1437,19 @@ class ChatNotifier extends Notifier<ChatState> {
       ..add(
         '- 本机 Debian：/workspace、/home/coomi、/opt/coomi-dev、/tmp 可读写；'
         '终端页和 shell_* 工具看到的是同一份文件。',
+      )
+      ..add(
+        '- 手机公共存储：/storage/emulated/0（/sdcard 是别名）用 phone_* 工具读写'
+        '（phone_list_files / phone_read_file / phone_read_range / phone_search_code / '
+        'phone_write_file / phone_modify_range）。需要系统“所有文件访问”授权；'
+        '未授权时先 phone_storage_status，再 phone_open_storage_access 让用户开启。'
+        '不要用 shell_* 去读手机公共存储。',
+      )
+      ..add(
+        '- 改本地文件优先 shell_modify_range。行号会漂移：能用 find/endFind 文本锚点就用锚点；'
+        '用行号时必须先 shell_read_range 读该范围，并把原文通过 expect 传入。'
+        '工具校验不一致会拒绝写入并返回实际内容，此时重新读取再改，不要凭记忆猜行号。'
+        '改完用返回的 diff 自检，必要时跑语法检查（node --check / python -m py_compile）。',
       )
       // 精确到小时：秒级时间戳会让每一次请求都缓存未命中，而任务里几乎
       // 没有需要秒级精度的场景，要精确时间可以自己 shell_exec date。
@@ -2030,6 +2129,10 @@ class ChatNotifier extends Notifier<ChatState> {
     String? sessionId,
     List<AgentEvent>? resumeEvents,
     String? resumeRoundId,
+    List<LlmMessage> resumeMessages = const [],
+    int resumeTurnIndex = 0,
+    AgentTaskPlan resumePlan = const AgentTaskPlan(),
+    String resumeContent = '',
     List<AiImageAttachment> images = const [],
     String displayText = '',
     List<String> modeLabels = const [],
@@ -2045,7 +2148,11 @@ class ChatNotifier extends Notifier<ChatState> {
         (resumeRoundId == null || resumeRoundId.isEmpty) ? null : resumeRoundId;
     final run = _SessionRun(sessionId: session.id)
       ..resumeEvents = resumeEvents ?? const []
-      ..isResume = resumeEvents != null
+      ..resumeMessages = resumeMessages
+      ..resumeTurnIndex = resumeTurnIndex
+      ..resumePlan = resumePlan
+      ..resumeContent = resumeContent
+      ..isResume = resumeEvents != null || resumeMessages.isNotEmpty
       ..roundId = resumeFrom ?? RoundArchiveService.newRoundId()
       ..partialReasoning = partialReasoning
       ..partialContent = partialContent;
@@ -2266,6 +2373,17 @@ class ChatNotifier extends Notifier<ChatState> {
       if (_runs[session.id] != run) return;
       final current = _sessionById(session.id);
       if (current == null) return;
+      // AgentLoop 在自动重试耗尽后抛出 AgentRequestException：它带着失败请求的
+      // 完整 messages / 轮次 / 任务清单。把它们挂到 run 上，用户点“继续”时
+      // 直接重发这一轮请求，而不是把原任务当新任务重跑。
+      final requestFailure = e is AgentRequestException ? e : null;
+      if (requestFailure != null) {
+        run.resumeMessages = requestFailure.messages;
+        run.resumeTurnIndex = requestFailure.turnIndex;
+        run.resumePlan = requestFailure.plan;
+        run.resumeContent = requestFailure.content;
+      }
+      final cause = requestFailure?.cause ?? e;
       // 模型调用失败 = 这句话根本没送出去。
       //
       // 以前这里追加一条 assistant「出错了：xxx」，两个后果都很糟：
@@ -2278,7 +2396,7 @@ class ChatNotifier extends Notifier<ChatState> {
         // 不要因为“这条消息带图片”就把主模型的错误硬说成图片识别模型错误。
         // 支持图片的主模型 503/超时就是主模型的问题；image_recognize 的失败
         // 在工具内部已经转成文字返回，不会走到这里。
-        final sendError = _friendlyError(e);
+        final sendError = _friendlyError(cause);
         messages[lastUser] = messages[lastUser].copyWith(
           sendError: sendError,
           // 失败前已经跑过的工具照样留着：多轮任务中途断线时，
@@ -2304,6 +2422,10 @@ class ChatNotifier extends Notifier<ChatState> {
         events: _boundedEvents(run.events),
         startedAt: DateTime.now(),
         roundId: run.roundId,
+        resumeMessages: run.resumeMessages,
+        resumeTurnIndex: run.resumeTurnIndex,
+        resumePlan: run.resumePlan,
+        resumeContent: run.resumeContent,
       );
       state = state.copyWith(
         interruptedRunBySession: {
@@ -2330,7 +2452,7 @@ class ChatNotifier extends Notifier<ChatState> {
           liveAgentEvents: const [],
           clearLiveText: true,
           liveUsageDetails: const [],
-          error: e,
+          error: cause,
           runningSessionIds: {..._runs.keys},
         );
       } else {
@@ -2417,6 +2539,10 @@ class ChatNotifier extends Notifier<ChatState> {
             events: _boundedEvents(run == null ? _runEvents : run.events),
             startedAt: DateTime.now(),
             roundId: run?.roundId ?? '',
+            resumeMessages: run?.resumeMessages ?? const [],
+            resumeTurnIndex: run?.resumeTurnIndex ?? 0,
+            resumePlan: run?.resumePlan ?? const AgentTaskPlan(),
+            resumeContent: run?.resumeContent ?? '',
           ),
         ),
       );
@@ -2513,6 +2639,10 @@ class ChatNotifier extends Notifier<ChatState> {
       sessionId: state.currentSessionId,
       resumeEvents: run.events,
       resumeRoundId: run.roundId,
+      resumeMessages: run.resumeMessages,
+      resumeTurnIndex: run.resumeTurnIndex,
+      resumePlan: run.resumePlan,
+      resumeContent: run.resumeContent,
     );
     _pumpQueue(state.currentSessionId);
   }
@@ -3671,6 +3801,19 @@ class ChatNotifier extends Notifier<ChatState> {
     if (text.contains('timeout') || text.contains('Timeout')) {
       return 'AI 服务响应超时。可以重试，或换一个更快的模型。';
     }
+    if (text.contains('没有可用账号') ||
+        text.contains('Service temporarily unavailable') ||
+        text.contains('upstream_error')) {
+      return 'AI 上游服务暂时不可用（没有可用账号/服务临时不可用）。'
+          '任务进度已保留，等几分钟再点“继续”即可；也可以到设置里换一个模型或提供商。';
+    }
+    if (text.contains('502') ||
+        text.contains('503') ||
+        text.contains('Bad gateway') ||
+        text.contains('bad gateway')) {
+      return 'AI 上游服务暂时不可用（502/503）。'
+          '任务进度已保留，稍后点“继续”即可；也可以换一个模型或提供商。';
+    }
     if (text.contains('401') || text.contains('403')) {
       return 'AI 服务拒绝访问（鉴权失败）。到设置里检查 API Key。';
     }
@@ -3722,10 +3865,12 @@ class ChatNotifier extends Notifier<ChatState> {
     _SessionRun? run,
   }) async {
     // 清单是"这一轮"的东西，开跑先清掉上一轮残留（只影响当前会话视图）。
+    // 真实续跑时用快照里的清单恢复进度，否则界面会在重发请求期间显示空清单。
+    final restoredPlan = run?.resumePlan ?? const AgentTaskPlan();
     if (run == null || run.sessionId == state.currentSessionId) {
-      state = state.copyWith(livePlan: const AgentTaskPlan());
+      state = state.copyWith(livePlan: restoredPlan);
     } else {
-      run.livePlan = const AgentTaskPlan();
+      run.livePlan = restoredPlan;
     }
     _toolScreenshotsBySession.remove(run?.sessionId ?? state.currentSessionId);
     _lastToolScreenshot = null;
@@ -3751,15 +3896,20 @@ class ChatNotifier extends Notifier<ChatState> {
       approvalMode: state.approvalMode,
       onProvidersChanged: () => ref.read(llmRegistryProvider.notifier).reload(),
     );
-    final history = _historyWithAutoCompress(
-      userInput: userInput,
-      sessionId: run?.sessionId,
-      resumeEvents: run?.resumeEvents,
-      // 主模型支持图片时直接把图发过去；不支持时用文字标注 + image_recognize 工具。
-      includeImages: mainCaps.supportsImage,
-      partialReasoning: run?.partialReasoning ?? '',
-      partialContent: run?.partialContent ?? '',
-    );
+    // 真实续跑：失败请求的 messages 已经带 system prompt + 完整工具链，
+    // 直接用它，不再从会话历史重新拼一遍。
+    final resumingRequest = run != null && run.resumeMessages.isNotEmpty;
+    final history = resumingRequest
+        ? const <LlmMessage>[]
+        : _historyWithAutoCompress(
+            userInput: userInput,
+            sessionId: run?.sessionId,
+            resumeEvents: run?.resumeEvents,
+            // 主模型支持图片时直接把图发过去；不支持时用文字标注 + image_recognize 工具。
+            includeImages: mainCaps.supportsImage,
+            partialReasoning: run?.partialReasoning ?? '',
+            partialContent: run?.partialContent ?? '',
+          );
     Logger.d(
       'ai',
       '_history imageMessages=${history.where((m) => m.images.isNotEmpty).length} '
@@ -4018,6 +4168,19 @@ class ChatNotifier extends Notifier<ChatState> {
         },
       ).run(
         history: history,
+        resumeMessages: run?.resumeMessages,
+        resumeTurnIndex: run?.resumeTurnIndex ?? 0,
+        resumePlan: run?.resumePlan ?? const AgentTaskPlan(),
+        resumeContent: run?.resumeContent ?? '',
+        resumeRecords: _recordsFromEvents(run?.events ?? const []),
+        onRequestSucceeded: () {
+          if (run == null) return;
+          // 恢复请求已经成功，旧快照不再需要每次工具事件都重写。
+          run.resumeMessages = const [];
+          run.resumeTurnIndex = 0;
+          run.resumePlan = const AgentTaskPlan();
+          run.resumeContent = '';
+        },
         onEvent: onEvent,
         onDelta: (delta) =>
             _appendAgentDelta(run?.sessionId ?? state.currentSessionId, delta),

@@ -63,6 +63,43 @@ class LlmMessage {
               },
           ],
       };
+
+  /// 从 [toJson] 的结构还原。用于中断续跑时持久化失败请求的完整 messages。
+  factory LlmMessage.fromJson(Map<String, dynamic> json) {
+    final raw = json['content'];
+    var content = '';
+    final images = <String>[];
+    if (raw is String) {
+      content = raw;
+    } else if (raw is List) {
+      for (final part in raw) {
+        if (part is! Map) continue;
+        final type = part['type']?.toString() ?? '';
+        if (type == 'text') {
+          content += part['text']?.toString() ?? '';
+        } else if (type == 'image_url') {
+          final image = part['image_url'];
+          final url = image is Map ? image['url']?.toString() ?? '' : '';
+          if (url.isNotEmpty) images.add(url);
+        }
+      }
+    }
+    final rawCalls = json['tool_calls'];
+    return LlmMessage(
+      role: json['role']?.toString() ?? 'user',
+      content: content,
+      images: images,
+      toolCalls: [
+        for (final t in (rawCalls as List? ?? const []))
+          if (t is Map<String, dynamic>)
+            LlmToolCall.fromJson(t)
+          else if (t is Map)
+            LlmToolCall.fromJson(t.cast<String, dynamic>()),
+      ],
+      toolCallId: json['tool_call_id']?.toString(),
+      name: json['name']?.toString(),
+    );
+  }
 }
 
 class LlmToolCall {
@@ -75,6 +112,34 @@ class LlmToolCall {
   final String id;
   final String name;
   final Map<String, dynamic> arguments;
+
+  /// 兼容 OpenAI 的 `function.arguments`（JSON 字符串）和内部直接存 Map 两种形态。
+  factory LlmToolCall.fromJson(Map<String, dynamic> json) {
+    final fn = json['function'];
+    if (fn is Map) {
+      final rawArgs = fn['arguments'];
+      Map<String, dynamic> args = const {};
+      if (rawArgs is String && rawArgs.trim().isNotEmpty) {
+        try {
+          final decoded = jsonDecode(rawArgs);
+          if (decoded is Map) args = decoded.cast<String, dynamic>();
+        } catch (_) {}
+      } else if (rawArgs is Map) {
+        args = rawArgs.cast<String, dynamic>();
+      }
+      return LlmToolCall(
+        id: json['id']?.toString() ?? '',
+        name: fn['name']?.toString() ?? '',
+        arguments: args,
+      );
+    }
+    final rawArgs = json['arguments'];
+    return LlmToolCall(
+      id: json['id']?.toString() ?? '',
+      name: json['name']?.toString() ?? '',
+      arguments: rawArgs is Map ? rawArgs.cast<String, dynamic>() : const {},
+    );
+  }
 }
 
 class LlmFunctionSpec {
@@ -593,7 +658,6 @@ class AnthropicStreamAssembler {
   }
 }
 
-
 /// Google Gemini 流式事件装配器。
 ///
 /// 每次 SSE data 里是一个 candidate 片段，text 直接给增量，
@@ -654,7 +718,9 @@ class GoogleStreamAssembler {
 
   void _absorb(Map<String, dynamic> json) {
     final candidates = json['candidates'];
-    if (candidates is List && candidates.isNotEmpty && candidates.first is Map) {
+    if (candidates is List &&
+        candidates.isNotEmpty &&
+        candidates.first is Map) {
       final cand = candidates.first as Map;
       final reason = cand['finishReason']?.toString() ?? '';
       if (reason.isNotEmpty && reason != 'null') _finishReason = reason;
@@ -822,9 +888,11 @@ class LlmClient {
         ...config.extraHeaders,
       };
 
-  /// AI 消息网络波动自动重试次数上限：超时/网络抖动/5xx/429 最多重试 3 次。
+  /// AI 消息网络波动自动重试次数上限：超时/网络抖动/5xx/429 最多重试 5 次
+  /// （首次 + 5 次重试 = 6 次请求）。上游 502/503 有时几秒内就恢复，重试
+  /// 不够会过早把用户任务丢进“中断继续”。
   /// 手动停止（CancelToken）和 App 被杀不算网络故障，不进入重试。
-  static const int maxAutoRetries = 3;
+  static const int maxAutoRetries = 5;
 
   static Future<LlmResponse> complete({
     required LlmConfig config,
@@ -858,7 +926,11 @@ class LlmClient {
             code == 429 ||
             (code != null && code >= 500);
         if (!retryable || attempt == maxRetries) rethrow;
-        await Future<void>.delayed(Duration(milliseconds: 800 * (attempt + 1)));
+        // 指数退避 + 15 秒封顶：1s / 2s / 4s / 8s / 15s。
+        final backoffMs = 1000 * (1 << attempt);
+        await Future<void>.delayed(
+          Duration(milliseconds: backoffMs > 15000 ? 15000 : backoffMs),
+        );
       }
     }
     throw lastError is ApiException
@@ -1180,8 +1252,7 @@ class LlmClient {
       'generationConfig': {
         if (config.temperature != null) 'temperature': config.temperature,
         if (config.topP != null) 'topP': config.topP,
-        if (config.maxTokens != null)
-          'maxOutputTokens': config.maxTokens,
+        if (config.maxTokens != null) 'maxOutputTokens': config.maxTokens,
         ...config.extraBody,
       },
     };
@@ -1755,7 +1826,9 @@ class LlmClient {
     final content = StringBuffer();
     final reasoning = StringBuffer();
     final toolCalls = <LlmToolCall>[];
-    if (candidates is List && candidates.isNotEmpty && candidates.first is Map) {
+    if (candidates is List &&
+        candidates.isNotEmpty &&
+        candidates.first is Map) {
       final cand = candidates.first as Map;
       final finish = cand['finishReason']?.toString() ?? '';
       final c = cand['content'];
@@ -1873,7 +1946,8 @@ class LlmClient {
       content: content.toString(),
       reasoningContent: LlmClient.sanitizeReasoning(reasoning.toString()),
       toolCalls: toolCalls,
-      finishReason: _mapAnthropicStopReason(body?['stop_reason']?.toString() ?? ''),
+      finishReason:
+          _mapAnthropicStopReason(body?['stop_reason']?.toString() ?? ''),
       usage: usage,
     );
   }
@@ -2289,9 +2363,7 @@ class LlmClient {
 
   static List<String> _anthropicModelsEndpoints(String baseUrl) {
     final raw = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
-    final withV1 = raw.endsWith('/v1')
-        ? '$raw/models'
-        : '$raw/v1/models';
+    final withV1 = raw.endsWith('/v1') ? '$raw/models' : '$raw/v1/models';
     final without = '$raw/models';
     return without == withV1 ? [withV1] : [withV1, without];
   }

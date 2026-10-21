@@ -84,8 +84,10 @@
 - **AI 自定义超时**：shell_exec / shell_script / MCP 的 mcp_query / mcp_invoke 都支持 `timeoutSeconds`，AI 按命令预估耗时传参，长任务不会被统一默认超时杀掉
 - **本地工具可靠性**：
   - `shell_modify_range` 多行替换按原换行风格逐行拼接，不再把 content 与下一行粘在一起
+  - `shell_modify_range` / `phone_modify_range` 新增 `expect` 原文校验与 `find` / `endFind` 文本锚点：行号漂移时拒绝写入并返回实际内容，连续编辑不再越改越乱
   - 自动识别 UTF-8 / UTF-16 LE/BE / GBK，保留 BOM；搜索与按字节读改的偏移按真实编码计算
   - `script_search_code` 按匹配行数而不是文件数计上限
+- **手机公共存储**：`phone_*` 工具直接读写 `/storage/emulated/0`（`/sdcard` 是别名）——列目录、读文本、范围读、搜代码、写文件、按行/字节改文件；未授权时引导开启“所有文件访问”，不再受 Debian 容器路径限制
 - **聊天体验**：SSE 流式、任务计划卡片、确认 / 拒绝、执行过程卡片、会话持久化、失败消息重发保留原始用户内容
 - **过程卡性能**：内联最多画 30 行 / 20 个流程步骤，超出折叠；完整过程页用 `ListView.builder` 懒加载；单条消息事件上限 400、实时事件上限 300，落盘和启动时自动压缩，避免几千步骤全量 mount 导致卡死
 - **增强 Markdown**：重要结论 / 关键数字用 `**{c:gold}文字{/c}**`，时间节点用 `{c:cyan}文字{/c}`；另支持下划线、发光、背景高亮、霓虹、渐变、闪烁、彩虹、脉冲、流光、跳动、打字机、函数图等
@@ -158,7 +160,7 @@ lib/
 
 ## 当前状态
 
-- 版本：**1.1.0+2（青龙AI 正式版）**
+- 版本：**1.1.1+3（青龙AI 正式版）**
 - 主分支：`main`
 - Release APK 可稳定构建安装
 - `flutter analyze lib` 无错误

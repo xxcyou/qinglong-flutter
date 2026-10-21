@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -77,6 +78,198 @@ class ConfirmRequiredException implements Exception {
   @override
   String toString() => '该操作需要用户确认后才能执行';
 }
+
+/// shell_modify_range 的 Python 实现（提取为常量，便于单元测试直接执行）。
+const shellModifyRangeScript = r'''
+import sys, codecs
+p, act, s, e, content, by = (
+    sys.argv[1], sys.argv[2],
+    int(sys.argv[3]), int(sys.argv[4]),
+    sys.argv[5], sys.argv[6] == '1',
+)
+if s < 1: s = 1
+
+
+def detect_encoding(data):
+    # 按原始文件编码读/写，否则在 UTF-16/GBK 文件上做局部替换会写进
+    # UTF-8 字节，原文件立刻变成乱码（这正是“替换结果和理想不一致”的来源之一）。
+    if data.startswith(codecs.BOM_UTF8):
+        return 'utf-8', 3
+    if data.startswith(codecs.BOM_UTF16_LE):
+        return 'utf-16-le', 2
+    if data.startswith(codecs.BOM_UTF16_BE):
+        return 'utf-16-be', 2
+    if data.count(0) > 0:
+        for enc in ('utf-16-le', 'utf-16-be'):
+            try:
+                data.decode(enc)
+                return enc, 0
+            except Exception:
+                pass
+    try:
+        data.decode('utf-8')
+        return 'utf-8', 0
+    except UnicodeDecodeError:
+        try:
+            data.decode('gbk')
+            return 'gbk', 0
+        except Exception:
+            return 'latin-1', 0
+
+
+def decode_bytes(data):
+    enc, bom = detect_encoding(data)
+    return data[bom:].decode(enc, errors='replace'), enc, bom
+
+
+def emit_diff(old_lines, new_lines):
+    out = []
+    out.append('```diff')
+    out.append('@@ %s @@' % p)
+    for line in old_lines:
+        out.append('- ' + line.rstrip('\n'))
+    for line in new_lines:
+        out.append('+ ' + line.rstrip('\n'))
+    out.append('```')
+    sys.stdout.write('\n' + '\n'.join(out) + '\n')
+
+if by:
+    with open(p, 'rb') as f:
+        data = f.read()
+    if e <= 0: e = len(data)
+    if e > len(data): e = len(data)
+    if e < s: e = s
+    enc, bom = detect_encoding(data)
+    # 把 BOM 单独留在文件头，正文按“去掉 BOM 后的字节”计算区间；
+    # 这样 search 给出的 startByte（含 BOM 偏移）也能正确落点，且不会切掉 BOM。
+    bom_bytes = data[:bom]
+    body = data[bom:]
+    bs = max(s - 1 - bom, 0)
+    be = max(e - bom, 0)
+    if be > len(body): be = len(body)
+    if be < bs: be = bs
+    old = body[bs:be]
+    payload = content.encode(enc)
+    if act == 'delete':
+        newbody = body[:bs] + body[be:]
+    elif act == 'overwrite':
+        newbody = body[:bs] + payload + body[be:]
+    elif act == 'insert':
+        newbody = body[:bs] + payload + body[bs:]
+    else:
+        raise SystemExit('bad action')
+    newdata = bom_bytes + newbody
+    with open(p, 'wb') as f:
+        f.write(newdata)
+    sys.stdout.write('bytes %d -> %d' % (len(data), len(newdata)))
+    emit_diff(
+        [decode_bytes(old)[0]] if old else [],
+        content.split('\n') if act != 'delete' else [],
+    )
+else:
+    with open(p, 'rb') as f:
+        raw = f.read()
+    text, enc, bom = decode_bytes(raw)
+    newline = '\r\n' if '\r\n' in text else '\n'
+    has_trailing = text.endswith(newline)
+    lines = [] if text == '' else text.split(newline)
+    if has_trailing and lines:
+        lines.pop()
+
+    # 行号会随前面的编辑漂移。可选 expect（原文校验）和 find/endFind
+    # （文本锚点）用来保证「改的就是想改的那一段」，避免越改越乱。
+    expect = sys.argv[7] if len(sys.argv) > 7 else ''
+    find = sys.argv[8] if len(sys.argv) > 8 else ''
+    end_find = sys.argv[9] if len(sys.argv) > 9 else ''
+    position = (sys.argv[10] if len(sys.argv) > 10 else 'before').strip().lower()
+    orig_s, orig_e = s, e
+
+    def _norm(s):
+        return s.replace('\r\n', '\n').replace('\r', '\n').strip('\n')
+
+    def _bail(msg, start=0, show_lines=()):
+        sys.stdout.write('__MODIFY_MISMATCH__\n' + msg + '\n')
+        for off, ln in enumerate(show_lines[:80]):
+            sys.stdout.write('%d: %s\n' % (start + off, ln.rstrip('\n')))
+        if len(show_lines) > 80:
+            sys.stdout.write('...（仅显示前 80 行）\n')
+        sys.exit(0)
+
+    if find:
+        matches = [i for i, ln in enumerate(lines) if find in ln]
+        if not matches:
+            needle = find.strip()
+            matches = [i for i, ln in enumerate(lines) if needle and needle in ln.strip()]
+        if not matches:
+            _bail('find 锚点未找到: ' + find + '（文件共 %d 行）' % len(lines))
+        if len(matches) > 1:
+            _bail(
+                'find 锚点匹配到多行，请换更独特的文本: ' +
+                ', '.join(str(i + 1) for i in matches[:30])
+            )
+        anchor = matches[0]
+        if end_find:
+            e_matches = [i for i, ln in enumerate(lines) if end_find in ln]
+            if not e_matches:
+                needle = end_find.strip()
+                e_matches = [i for i, ln in enumerate(lines) if needle and needle in ln.strip()]
+            if not e_matches:
+                _bail('endFind 锚点未找到: ' + end_find + '（文件共 %d 行）' % len(lines))
+            if len(e_matches) > 1:
+                _bail(
+                    'endFind 锚点匹配到多行，请换更独特的文本: ' +
+                    ', '.join(str(i + 1) for i in e_matches[:30])
+                )
+            if e_matches[0] < anchor:
+                _bail('endFind 在 find 之前（%d < %d），锚点顺序不对' % (e_matches[0] + 1, anchor + 1))
+            s = anchor + 1
+            e = e_matches[0] + 1
+        elif act == 'insert':
+            s = anchor + (2 if position == 'after' else 1)
+            e = s
+        else:
+            # 单行覆盖/删除；若原本传了 end>start，按原跨度保留。
+            s = anchor + 1
+            e = s + max(0, orig_e - orig_s)
+        if e < s:
+            e = s
+
+    if e <= 0: e = len(lines)
+    if e > len(lines): e = len(lines)
+    if e < s: e = s
+    old_lines = lines[s - 1:e]
+    if expect:
+        actual = _norm(newline.join(old_lines))
+        wanted = _norm(expect)
+        if wanted != actual:
+            _bail(
+                'expect 与实际内容不一致（%d..%d），已拒绝写入。'
+                '请重新 shell_read_range 后复制原文再试。' % (s, e),
+                s,
+                old_lines,
+            )
+    # content 必须拆成独立行再拼回；直接 [content] 插入时，如果 content
+    # 不以换行结尾，最后一行会和后一行原文粘在一起，写出来就是错乱代码。
+    content_lines = content.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    if act == 'delete':
+        newlines = lines[:s - 1] + lines[e:]
+        new_lines = []
+    elif act == 'overwrite':
+        newlines = lines[:s - 1] + content_lines + lines[e:]
+        new_lines = content_lines
+    elif act == 'insert':
+        newlines = lines[:s - 1] + content_lines + lines[s - 1:]
+        new_lines = content_lines
+    else:
+        raise SystemExit('bad action')
+    result = newline.join(newlines)
+    if has_trailing:
+        result += newline
+    with open(p, 'wb') as f:
+        f.write(raw[:bom] + result.encode(enc))
+    sys.stdout.write('lines %d -> %d' % (len(lines), len(newlines)))
+    emit_diff(old_lines, new_lines)
+''';
 
 class QlToolRegistry {
   QlToolRegistry({
@@ -1172,8 +1365,14 @@ class QlToolRegistry {
               'action=insert 在 start 前插入 content；'
               'action=delete 删除 start~end 闭区间（content 可空）。'
               'byBytes=true 按字节，false/缺省按行。start/end 都是 1-based。'
-              '**修改已有脚本/文件的局部内容首选这个工具**：先 shell_search_code 定行、'
-              'shell_read_range 看上下文，再这里小改，别用 shell_write_file 全量重写。',
+              '**修改已有脚本/文件的局部内容首选这个工具**。'
+              '行号会随其它编辑漂移，强烈建议二选一保护自己：'
+              '① find/endFind 传一行原文当锚点，工具按文本定位真实行号'
+              '（insert 用 position=before/after 决定插在锚点前/后，此时 start/end 可传 0）；'
+              '② expect 传 start~end 的完整原文，工具写入前会校验，不一致就拒绝写入'
+              '并返回实际内容，你重新 shell_read_range 后再改。'
+              '改完看工具返回的 diff 自检，必要时跑 node --check / python -m py_compile。'
+              '别用 shell_write_file 全量重写。',
           parameters: _obj([
             'path',
             'action',
@@ -1192,6 +1391,23 @@ class QlToolRegistry {
             'byBytes': {
               'type': 'boolean',
               'description': 'true 按字节；false/缺省按行',
+            },
+            'expect': {
+              'type': 'string',
+              'description': 'start~end 的原文（原样粘贴）。写入前校验，不一致拒绝写入并返回实际内容',
+            },
+            'find': {
+              'type': 'string',
+              'description': '起始行锚点：一行原文，工具按它定位真实行号，忽略 start 的漂移',
+            },
+            'endFind': {
+              'type': 'string',
+              'description': '结束行锚点：多行覆盖/删除时用一行原文定位结束行',
+            },
+            'position': {
+              'type': 'string',
+              'enum': ['before', 'after'],
+              'description': 'insert 时插在锚点前（缺省）还是后',
             },
           }),
           isWrite: true,
@@ -1265,6 +1481,147 @@ class QlToolRegistry {
           }),
           isWrite: true,
           impact: '在本地 Debian 解压归档，会创建/覆盖目标目录里的文件',
+          reversible: false,
+        ),
+        ToolDefinition(
+          name: 'phone_storage_status',
+          description: '查询手机公共存储（/storage/emulated/0、/sdcard）的“所有文件访问”'
+              '授权状态。读手机存储前先调它：granted=false 时只能列目录、读不到文件，'
+              '要先让用户在系统设置里开启权限（可用 phone_open_storage_access 跳转）。',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'phone_open_storage_access',
+          description: '打开系统“所有文件访问”授权页，让用户手动开启后重试。'
+              '只能跳转，不能代替用户授权；调用前先说明为什么要开。',
+          parameters: _obj([], {}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'phone_list_files',
+          description: '列出手机公共存储或 APP 沙箱目录内容。path 例如 '
+              '/storage/emulated/0、/storage/emulated/0/Download、/sdcard/DCIM。'
+              '未授权“所有文件访问”时先调 phone_storage_status；'
+              '本地 Debian 容器目录请改用 shell_list_files。',
+          parameters: _obj(['path'], {'path': _stringProp}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'phone_read_file',
+          description: '读取手机公共存储/APP 沙箱里的文本文件（按 UTF-8，最多 1MB，超长截断）。'
+              'path 例如 /storage/emulated/0/Download/note.txt。'
+              '只读文本；本地 Debian 文件用 shell_read_file，图片识别用 image_recognize。',
+          parameters: _obj(['path'], {'path': _stringProp}),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'phone_read_range',
+          description: '读取手机存储文本文件的指定范围（按 UTF-8，按行或按字节，1-based 闭区间）。'
+              '大日志/配置只看局部时用，避免整份文件截断。',
+          parameters: _obj([
+            'path',
+            'start',
+            'end'
+          ], {
+            'path': _stringProp,
+            'start': _intProp,
+            'end': _intProp,
+            'byBytes': {
+              'type': 'boolean',
+              'description': 'true 按字节读取；false/缺省按行读取',
+            },
+          }),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'phone_search_code',
+          description: '在手机公共存储/APP 沙箱目录里递归搜索文件名或文本内容（支持正则），'
+              '返回文件、行号和匹配行。先搜到文件，再用 phone_read_range 精读。',
+          parameters: _obj(['pattern', 'path'], {
+            'pattern': {
+              'type': 'string',
+              'description': '关键字或正则，例如 "error" / "TODO\\s+.*"',
+            },
+            'path': _stringProp,
+            'maxMatches': {
+              'type': 'integer',
+              'description': '最多返回多少条，默认 50，最大 200',
+            },
+            'matchContent': {
+              'type': 'boolean',
+              'description': '是否同时搜文本内容，默认 true；false 只搜文件名',
+            },
+          }),
+          isWrite: false,
+        ),
+        ToolDefinition(
+          name: 'phone_write_file',
+          description: '写入/追加手机公共存储/APP 沙箱文本文件。'
+              '首次覆盖不传 append；大文件分块追加传 append:true。'
+              '写已有文件前先用 phone_read_file/phone_read_range 看清内容，别盲目覆盖。',
+          parameters: _obj([
+            'path',
+            'content'
+          ], {
+            'path': _stringProp,
+            'content': _stringProp,
+            'append': {
+              'type': 'boolean',
+              'description': 'true=追加到文件末尾；省略/false=覆盖写入',
+            },
+          }),
+          isWrite: true,
+          impact: '覆盖/追加手机存储里的文件，旧内容可能不保留',
+          reversible: false,
+        ),
+        ToolDefinition(
+          name: 'phone_modify_range',
+          description: '在手机存储文本文件里按 UTF-8 按行/字节范围修改：'
+              'action=overwrite 用 content 替换 start~end 闭区间；'
+              'action=insert 在 start 前插入 content；action=delete 删除 start~end。'
+              '先 phone_search_code/phone_read_range 定位，再小改，不要整份重写。'
+              '行号会漂移，建议用 find/endFind 文本锚点定位（insert 可配 position=before/after），'
+              '或传 expect=start~end 原文做写入前校验；不一致会拒绝写入并返回实际内容。',
+          parameters: _obj([
+            'path',
+            'action',
+            'start',
+            'end'
+          ], {
+            'path': _stringProp,
+            'action': {
+              'type': 'string',
+              'enum': ['overwrite', 'insert', 'delete'],
+              'description': 'overwrite / insert / delete',
+            },
+            'start': _intProp,
+            'end': _intProp,
+            'content': _stringProp,
+            'byBytes': {
+              'type': 'boolean',
+              'description': 'true 按字节；false/缺省按行',
+            },
+            'expect': {
+              'type': 'string',
+              'description': 'start~end 的原文（原样粘贴）。写入前校验，不一致拒绝写入并返回实际内容',
+            },
+            'find': {
+              'type': 'string',
+              'description': '起始行锚点：一行原文，按它定位真实行号，忽略 start 的漂移',
+            },
+            'endFind': {
+              'type': 'string',
+              'description': '结束行锚点：多行覆盖/删除时用一行原文定位结束行',
+            },
+            'position': {
+              'type': 'string',
+              'enum': ['before', 'after'],
+              'description': 'insert 时插在锚点前（缺省）还是后',
+            },
+          }),
+          isWrite: true,
+          impact: '按范围修改手机存储文件内容（覆盖/插入/删除）',
           reversible: false,
         ),
         ToolDefinition(
@@ -1464,6 +1821,14 @@ class QlToolRegistry {
     'shell_write_binary',
     'shell_read_binary',
     'shell_archive_extract',
+    'phone_storage_status',
+    'phone_open_storage_access',
+    'phone_list_files',
+    'phone_read_file',
+    'phone_read_range',
+    'phone_search_code',
+    'phone_write_file',
+    'phone_modify_range',
     'shell_session_start',
     'shell_session_list',
     'shell_session_status',
@@ -1484,6 +1849,272 @@ class QlToolRegistry {
         out.addAll(_flattenScriptPaths(n.children, path));
       }
     }
+    return out;
+  }
+
+  // ------------------------------------------------------------ 手机存储工具
+
+  /// 是否是手机公共存储路径（Android 的 /sdcard 是 /storage/emulated/0 的别名）。
+  bool _isPhonePublicPath(String path) {
+    final p = path.trim();
+    return p == '/storage/emulated/0' ||
+        p.startsWith('/storage/emulated/0/') ||
+        p == '/sdcard' ||
+        p.startsWith('/sdcard/');
+  }
+
+  Future<bool> _phoneAllFilesGranted() async {
+    try {
+      return await ProotBridge().hasAllFilesAccess();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<String> _phonePathError(String path) async => jsonEncode({
+        'error': '没有“所有文件访问”权限，读不到公共存储里的文件。',
+        'path': path,
+        'granted': false,
+        'hint': '先调 phone_storage_status 查看授权状态；'
+            '可用 phone_open_storage_access 打开系统设置，'
+            '让用户开启“所有文件访问”后再试。',
+      });
+
+  Future<String> _phoneHostPath(String path) async {
+    final host = await ProotBridge().hostPath(path: path, scope: 'app');
+    if (host.trim().isEmpty) throw StateError('无法解析路径：$path');
+    return host;
+  }
+
+  Map<String, dynamic> _phoneEntryMap(ShellFileEntry e) => {
+        'name': e.name,
+        'path': e.path,
+        'type': e.isDirectory ? 'dir' : 'file',
+        'size': e.size,
+        'modified': e.modified.millisecondsSinceEpoch,
+        'readable': e.readable,
+        'writable': e.writable,
+      };
+
+  /// 按原始换行符切行，保留每行末尾的 \n / \r\n。
+  List<String> _phoneSplitLines(String text) {
+    final out = <String>[];
+    final re = RegExp(r'\r\n|\n|\r');
+    var last = 0;
+    for (final m in re.allMatches(text)) {
+      out.add(text.substring(last, m.end));
+      last = m.end;
+    }
+    if (last < text.length) out.add(text.substring(last));
+    return out;
+  }
+
+  String _phoneClipLine(String line) {
+    final t = line.trim();
+    return t.length > 160 ? '${t.substring(0, 160)}…' : t;
+  }
+
+  /// 文本锚点 -> 真实行号。行号会随其它编辑漂移，find/endFind 比行号稳。
+  ///
+  /// 返回 null 时 [error] 里是失败原因；没有锚点时原样返回 start/end。
+  ({int start, int end})? _phoneResolveLines({
+    required List<String> lines,
+    required String action,
+    required int start,
+    required int end,
+    required String find,
+    required String endFind,
+    required String position,
+    required void Function(String) error,
+  }) {
+    if (find.isEmpty) return (start: start, end: end);
+    List<int> matchLines(String needle) {
+      var out = <int>[];
+      for (var i = 0; i < lines.length; i++) {
+        if (lines[i].contains(needle)) out.add(i);
+      }
+      if (out.isEmpty) {
+        final t = needle.trim();
+        if (t.isNotEmpty) {
+          for (var i = 0; i < lines.length; i++) {
+            if (lines[i].trim().contains(t)) out.add(i);
+          }
+        }
+      }
+      return out;
+    }
+
+    final matches = matchLines(find);
+    if (matches.isEmpty) {
+      error('find 锚点未找到: $find（文件共 ${lines.length} 行）');
+      return null;
+    }
+    if (matches.length > 1) {
+      error('find 锚点匹配到多行: ${matches.take(30).map((i) => i + 1).join(', ')}');
+      return null;
+    }
+    final anchor = matches.first;
+    var s = anchor + 1;
+    var e = s;
+    if (endFind.isNotEmpty) {
+      final em = matchLines(endFind);
+      if (em.isEmpty) {
+        error('endFind 锚点未找到: $endFind（文件共 ${lines.length} 行）');
+        return null;
+      }
+      if (em.length > 1) {
+        error('endFind 锚点匹配到多行: ${em.take(30).map((i) => i + 1).join(', ')}');
+        return null;
+      }
+      if (em.first < anchor) {
+        error('endFind 在 find 之前（${em.first + 1} < ${anchor + 1}），锚点顺序不对');
+        return null;
+      }
+      e = em.first + 1;
+    } else if (action == 'insert') {
+      s = anchor + (position == 'after' ? 2 : 1);
+      e = s;
+    } else {
+      e = s + (end > start ? end - start : 0);
+    }
+    if (e < s) e = s;
+    return (start: s, end: e);
+  }
+
+  /// 校验 expect 时只忽略行尾差异，不忽略空格/缩进。
+  String _phoneNormText(String value) =>
+      value.replaceAll('\r\n', '\n').replaceAll('\r', '\n').replaceAll(RegExp(r'\n+$'), '');
+
+  String _phoneModifyLines(
+    String text,
+    String action,
+    int start,
+    int end,
+    String content,
+  ) {
+    final lines = _phoneSplitLines(text);
+    var act = action;
+    var s = start < 1 ? 1 : start;
+    if (s > lines.length + 1) s = lines.length + 1;
+    var e = end <= 0 ? s : end;
+    if (e > lines.length) e = lines.length;
+    if (e < s) e = s;
+    if (act == 'overwrite' && s > lines.length) act = 'insert';
+    switch (act) {
+      case 'overwrite':
+        final repl = (content.endsWith('\n') || content.endsWith('\r'))
+            ? content
+            : (e < lines.length ? '$content\n' : content);
+        lines.replaceRange(s - 1, e, [repl]);
+      case 'insert':
+        final ins = (content.endsWith('\n') || content.endsWith('\r'))
+            ? content
+            : (s <= lines.length ? '$content\n' : content);
+        lines.insert(s - 1, ins);
+      case 'delete':
+        if (s <= lines.length) lines.removeRange(s - 1, e);
+    }
+    return lines.join();
+  }
+
+  String _phoneModifyBytes(
+    String text,
+    String action,
+    int start,
+    int end,
+    String content,
+  ) {
+    final bytes = utf8.encode(text);
+    final ins = utf8.encode(content);
+    var s = start < 1 ? 1 : start;
+    if (s > bytes.length + 1) s = bytes.length + 1;
+    var e = end <= 0 ? s : end;
+    if (e > bytes.length) e = bytes.length;
+    if (e < s) e = s;
+    final out = <int>[];
+    switch (action) {
+      case 'overwrite':
+        out.addAll(bytes.take(s - 1));
+        out.addAll(ins);
+        out.addAll(bytes.skip(e));
+      case 'insert':
+        out.addAll(bytes.take(s - 1));
+        out.addAll(ins);
+        out.addAll(bytes.skip(s - 1));
+      case 'delete':
+        out.addAll(bytes.take(s - 1));
+        out.addAll(bytes.skip(e));
+    }
+    return utf8.decode(out, allowMalformed: true);
+  }
+
+  Future<List<Map<String, dynamic>>> _phoneSearch({
+    required String root,
+    required RegExp re,
+    required int maxMatches,
+    required bool matchContent,
+  }) async {
+    final out = <Map<String, dynamic>>[];
+    var scanned = 0;
+    Future<void> walk(Directory dir, int depth) async {
+      if (out.length >= maxMatches || scanned >= 2000 || depth > 12) return;
+      List<FileSystemEntity> children;
+      try {
+        children = dir.listSync(followLinks: false);
+      } catch (_) {
+        return;
+      }
+      for (final child in children) {
+        if (out.length >= maxMatches || scanned >= 2000) return;
+        final name = child.uri.pathSegments.isEmpty
+            ? child.path
+            : child.uri.pathSegments.last;
+        if (child is Directory) {
+          if (name == '.git' ||
+              name == 'node_modules' ||
+              name == '.dart_tool' ||
+              name == 'build') {
+            continue;
+          }
+          await walk(child, depth + 1);
+          continue;
+        }
+        if (child is! File) continue;
+        scanned++;
+        if (re.hasMatch(name)) {
+          out.add({
+            'file': child.path,
+            'line': 0,
+            'column': 0,
+            'match': 'name',
+            'text': name,
+          });
+          continue;
+        }
+        if (!matchContent) continue;
+        try {
+          if (child.lengthSync() > 512 * 1024) continue;
+          final text = await child.readAsString();
+          final lines = const LineSplitter().convert(text).toList();
+          for (var i = 0; i < lines.length && out.length < maxMatches; i++) {
+            final m = re.firstMatch(lines[i]);
+            if (m != null) {
+              out.add({
+                'file': child.path,
+                'line': i + 1,
+                'column': m.start + 1,
+                'match': 'content',
+                'text': _phoneClipLine(lines[i]),
+              });
+            }
+          }
+        } catch (_) {
+          // 单个文件读不了就跳过，不让整个搜索失败。
+        }
+      }
+    }
+
+    await walk(Directory(root), 0);
     return out;
   }
 
@@ -2331,6 +2962,309 @@ class QlToolRegistry {
         await SystemApi.update(apiBaseUrl: base);
         return '已发送面板更新指令';
 
+      case 'phone_storage_status':
+        final granted = await _phoneAllFilesGranted();
+        return jsonEncode({
+          'granted': granted,
+          'publicRoots': ['/storage/emulated/0', '/sdcard'],
+          'hint': granted
+              ? '已授权，可以读写手机公共存储。'
+              : '未授权“所有文件访问”：只能列目录、读不到文件。'
+                  '请用户开启系统设置里的“所有文件访问”，'
+                  '或调用 phone_open_storage_access 跳转。',
+        });
+
+      case 'phone_open_storage_access':
+        try {
+          await ProotBridge().openAllFilesAccess();
+          return '已打开系统“所有文件访问”授权页，请用户开启后回来重试。';
+        } catch (e) {
+          return jsonEncode({'error': '打开设置失败：$e'});
+        }
+
+      case 'phone_list_files':
+        final pListPath =
+            args['path']?.toString().trim() ?? '/storage/emulated/0';
+        if (pListPath.isEmpty) return jsonEncode({'error': '缺少 path'});
+        if (_isPhonePublicPath(pListPath) && !await _phoneAllFilesGranted()) {
+          return _phonePathError(pListPath);
+        }
+        try {
+          final host = await _phoneHostPath(pListPath);
+          if (!Directory(host).existsSync()) {
+            return jsonEncode({'error': '目录不存在', 'path': pListPath});
+          }
+          final listing = await ProotBridge().listAppFiles(path: pListPath);
+          return jsonEncode({
+            'path': listing.path,
+            'granted': true,
+            'entries': [for (final e in listing.entries) _phoneEntryMap(e)],
+          });
+        } catch (e) {
+          return jsonEncode({'error': '列目录失败：$e', 'path': pListPath});
+        }
+
+      case 'phone_read_file':
+        final pReadPath = args['path']?.toString().trim() ?? '';
+        if (pReadPath.isEmpty) return jsonEncode({'error': '缺少 path'});
+        if (_isPhonePublicPath(pReadPath) && !await _phoneAllFilesGranted()) {
+          return _phonePathError(pReadPath);
+        }
+        try {
+          final host = await _phoneHostPath(pReadPath);
+          final file = File(host);
+          if (!file.existsSync()) {
+            return jsonEncode({'error': '文件不存在', 'path': pReadPath});
+          }
+          final length = file.lengthSync();
+          if (length > 1048576) {
+            return jsonEncode({
+              'error': '文件过大（$length 字节），请用 phone_read_range 分块读取',
+              'path': pReadPath,
+            });
+          }
+          final content = await ProotBridge().readFile(
+            path: pReadPath,
+            scope: 'app',
+            maxBytes: 1048576,
+          );
+          return content.length > 20000
+              ? '${content.substring(0, 20000)}\n…（内容过长已截断，可用 phone_read_range 精读）'
+              : content;
+        } catch (e) {
+          return jsonEncode({'error': '读取失败：$e', 'path': pReadPath});
+        }
+
+      case 'phone_read_range':
+        final pRangePath = args['path']?.toString().trim() ?? '';
+        if (pRangePath.isEmpty) return jsonEncode({'error': '缺少 path'});
+        if (_isPhonePublicPath(pRangePath) && !await _phoneAllFilesGranted()) {
+          return _phonePathError(pRangePath);
+        }
+        final pStart = (args['start'] as num?)?.toInt() ?? 1;
+        final pEnd = (args['end'] as num?)?.toInt() ?? pStart;
+        final pByBytes = args['byBytes'] == true || args['byBytes'] == 'true';
+        try {
+          final host = await _phoneHostPath(pRangePath);
+          final file = File(host);
+          if (!file.existsSync()) {
+            return jsonEncode({'error': '文件不存在', 'path': pRangePath});
+          }
+          if (file.lengthSync() > 8 * 1024 * 1024) {
+            return jsonEncode({
+              'error': '文件过大，phone_read_range 最多处理 8MB',
+              'path': pRangePath,
+            });
+          }
+          final content = await ProotBridge().readFile(
+            path: pRangePath,
+            scope: 'app',
+            maxBytes: 8 * 1024 * 1024,
+          );
+          if (pByBytes) {
+            final bytes = utf8.encode(content);
+            var s = pStart < 1 ? 1 : pStart;
+            var e = pEnd <= 0 ? bytes.length : pEnd;
+            if (e > bytes.length) e = bytes.length;
+            if (e < s) e = s;
+            final slice = bytes.sublist(s - 1, e);
+            return '读取字节 $s..$e 结果（共 ${slice.length} 字节）：\n'
+                '${utf8.decode(slice, allowMalformed: true)}';
+          }
+          final lines = const LineSplitter().convert(content).toList();
+          var s = pStart < 1 ? 1 : pStart;
+          var e = pEnd <= 0 ? lines.length : pEnd;
+          if (e > lines.length) e = lines.length;
+          if (e < s) e = s;
+          final slice = lines.sublist(s - 1, e);
+          return '读取行 $s..$e 结果（共 ${slice.length} 行）：\n${slice.join('\n')}';
+        } catch (e) {
+          return jsonEncode({'error': '读取范围失败：$e', 'path': pRangePath});
+        }
+
+      case 'phone_search_code':
+        final pSearchPath = args['path']?.toString().trim() ?? '';
+        final pPattern = args['pattern']?.toString() ?? '';
+        if (pSearchPath.isEmpty) return jsonEncode({'error': '缺少 path'});
+        if (pPattern.isEmpty) return jsonEncode({'error': '缺少 pattern'});
+        if (_isPhonePublicPath(pSearchPath) && !await _phoneAllFilesGranted()) {
+          return _phonePathError(pSearchPath);
+        }
+        final pMax =
+            ((args['maxMatches'] as num?)?.toInt() ?? 50).clamp(1, 200);
+        final pMatchContent = args['matchContent'] != false;
+        RegExp pRe;
+        try {
+          pRe = RegExp(pPattern);
+        } catch (_) {
+          pRe = RegExp(RegExp.escape(pPattern));
+        }
+        try {
+          final host = await _phoneHostPath(pSearchPath);
+          if (FileSystemEntity.typeSync(host) == FileSystemEntityType.notFound) {
+            return jsonEncode({'error': '路径不存在', 'path': pSearchPath});
+          }
+          final matches = await _phoneSearch(
+            root: host,
+            re: pRe,
+            maxMatches: pMax,
+            matchContent: pMatchContent,
+          );
+          return jsonEncode({
+            'path': pSearchPath,
+            'pattern': pPattern,
+            'total': matches.length,
+            'matches': matches,
+          });
+        } catch (e) {
+          return jsonEncode({'error': '搜索失败：$e', 'path': pSearchPath});
+        }
+
+      case 'phone_write_file':
+        final pWritePath = args['path']?.toString().trim() ?? '';
+        if (pWritePath.isEmpty) return jsonEncode({'error': '缺少 path'});
+        if (_isPhonePublicPath(pWritePath) && !await _phoneAllFilesGranted()) {
+          return _phonePathError(pWritePath);
+        }
+        final pContent = args['content']?.toString() ?? '';
+        final pAppend = args['append'] == true || args['append'] == 'true';
+        try {
+          if (pAppend) {
+            await ProotBridge().appendFile(
+              path: pWritePath,
+              content: pContent,
+              scope: 'app',
+            );
+          } else {
+            await ProotBridge().writeFile(
+              path: pWritePath,
+              content: pContent,
+              scope: 'app',
+            );
+          }
+          return jsonEncode({
+            'ok': true,
+            'path': pWritePath,
+            'append': pAppend,
+            'bytes': utf8.encode(pContent).length,
+          });
+        } catch (e) {
+          return jsonEncode({'error': '写入失败：$e', 'path': pWritePath});
+        }
+
+      case 'phone_modify_range':
+        final pModPath = args['path']?.toString().trim() ?? '';
+        final pAction = args['action']?.toString() ?? '';
+        if (pModPath.isEmpty) return jsonEncode({'error': '缺少 path'});
+        if (!const {'overwrite', 'insert', 'delete'}.contains(pAction)) {
+          return jsonEncode({'error': 'action 必须是 overwrite/insert/delete'});
+        }
+        if (_isPhonePublicPath(pModPath) && !await _phoneAllFilesGranted()) {
+          return _phonePathError(pModPath);
+        }
+        final pModStart = (args['start'] as num?)?.toInt() ?? 1;
+        final pModEnd = (args['end'] as num?)?.toInt() ?? pModStart;
+        final pModContent = args['content']?.toString() ?? '';
+        final pModExpect = args['expect']?.toString() ?? '';
+        final pModFind = args['find']?.toString() ?? '';
+        final pModEndFind = args['endFind']?.toString() ?? '';
+        final pModPosition = args['position']?.toString() ?? 'before';
+        if ((pAction == 'overwrite' || pAction == 'insert') &&
+            pModContent.trim().isEmpty) {
+          return jsonEncode({
+            'error': 'overwrite/insert 必须提供非空 content；想删除请用 delete。',
+          });
+        }
+        final pModByBytes =
+            args['byBytes'] == true || args['byBytes'] == 'true';
+        if (pModByBytes &&
+            (pModFind.isNotEmpty ||
+                pModEndFind.isNotEmpty ||
+                pModExpect.isNotEmpty)) {
+          return jsonEncode({
+            'error': 'find/endFind/expect 只支持按行模式；byBytes=true 时请用 start/end 字节偏移',
+            'path': pModPath,
+          });
+        }
+        try {
+          final host = await _phoneHostPath(pModPath);
+          final file = File(host);
+          if (!file.existsSync()) {
+            return jsonEncode({'error': '文件不存在', 'path': pModPath});
+          }
+          if (file.lengthSync() > 8 * 1024 * 1024) {
+            return jsonEncode({
+              'error': '文件过大，phone_modify_range 最多处理 8MB',
+              'path': pModPath,
+            });
+          }
+          final original = await ProotBridge().readFile(
+            path: pModPath,
+            scope: 'app',
+            maxBytes: 8 * 1024 * 1024,
+          );
+          var effectiveStart = pModStart;
+          var effectiveEnd = pModEnd;
+          if (!pModByBytes) {
+            final lines = _phoneSplitLines(original);
+            String? anchorError;
+            final resolved = _phoneResolveLines(
+              lines: lines,
+              action: pAction,
+              start: pModStart,
+              end: pModEnd,
+              find: pModFind,
+              endFind: pModEndFind,
+              position: pModPosition,
+              error: (m) => anchorError = m,
+            );
+            if (resolved == null) {
+              return jsonEncode({'error': anchorError, 'path': pModPath});
+            }
+            effectiveStart = resolved.start;
+            effectiveEnd = resolved.end;
+            if (pModExpect.isNotEmpty) {
+              final from = (effectiveStart - 1).clamp(0, lines.length);
+              final to = effectiveEnd.clamp(0, lines.length);
+              final actual = lines.sublist(from, to).join();
+              if (_phoneNormText(actual) != _phoneNormText(pModExpect)) {
+                final buf = StringBuffer();
+                for (var i = from; i < to && i < lines.length; i++) {
+                  buf.writeln(
+                      '${i + 1}: ${lines[i].replaceAll(RegExp(r'\r?\n$'), '')}');
+                }
+                return jsonEncode({
+                  'error':
+                      'expect 与实际内容不一致（$effectiveStart..$effectiveEnd），'
+                          '已拒绝写入。请重新 phone_read_range 后复制原文再试。',
+                  'actual': buf.toString().trimRight(),
+                  'path': pModPath,
+                });
+              }
+            }
+          }
+          final updated = pModByBytes
+              ? _phoneModifyBytes(
+                  original, pAction, pModStart, pModEnd, pModContent)
+              : _phoneModifyLines(original, pAction, effectiveStart,
+                  effectiveEnd, pModContent);
+          await ProotBridge().writeFile(
+            path: pModPath,
+            content: updated,
+            scope: 'app',
+          );
+          return jsonEncode({
+            'ok': true,
+            'path': pModPath,
+            'action': pAction,
+            'byBytes': pModByBytes,
+            'oldBytes': utf8.encode(original).length,
+            'newBytes': utf8.encode(updated).length,
+          });
+        } catch (e) {
+          return jsonEncode({'error': '修改失败：$e', 'path': pModPath});
+        }
+
       case 'filemanager_current_dir':
         return '文件管理器当前目录：${fileManagerCwd.value}';
 
@@ -2995,127 +3929,12 @@ else:
           });
         }
         final mByBytes = args['byBytes'] == true || args['byBytes'] == 'true';
-        const mScript = r'''
-import sys, codecs
-p, act, s, e, content, by = (
-    sys.argv[1], sys.argv[2],
-    int(sys.argv[3]), int(sys.argv[4]),
-    sys.argv[5], sys.argv[6] == '1',
-)
-if s < 1: s = 1
+        final mExpect = args['expect']?.toString() ?? '';
+        final mFind = args['find']?.toString() ?? '';
+        final mEndFind = args['endFind']?.toString() ?? '';
+        final mPosition = args['position']?.toString() ?? 'before';
+        // 脚本见文件顶部 shellModifyRangeScript 常量。
 
-
-def detect_encoding(data):
-    # 按原始文件编码读/写，否则在 UTF-16/GBK 文件上做局部替换会写进
-    # UTF-8 字节，原文件立刻变成乱码（这正是“替换结果和理想不一致”的来源之一）。
-    if data.startswith(codecs.BOM_UTF8):
-        return 'utf-8', 3
-    if data.startswith(codecs.BOM_UTF16_LE):
-        return 'utf-16-le', 2
-    if data.startswith(codecs.BOM_UTF16_BE):
-        return 'utf-16-be', 2
-    if data.count(0) > 0:
-        for enc in ('utf-16-le', 'utf-16-be'):
-            try:
-                data.decode(enc)
-                return enc, 0
-            except Exception:
-                pass
-    try:
-        data.decode('utf-8')
-        return 'utf-8', 0
-    except UnicodeDecodeError:
-        try:
-            data.decode('gbk')
-            return 'gbk', 0
-        except Exception:
-            return 'latin-1', 0
-
-
-def decode_bytes(data):
-    enc, bom = detect_encoding(data)
-    return data[bom:].decode(enc, errors='replace'), enc, bom
-
-
-def emit_diff(old_lines, new_lines):
-    out = []
-    out.append('```diff')
-    out.append('@@ %s @@' % p)
-    for line in old_lines:
-        out.append('- ' + line.rstrip('\n'))
-    for line in new_lines:
-        out.append('+ ' + line.rstrip('\n'))
-    out.append('```')
-    sys.stdout.write('\n' + '\n'.join(out) + '\n')
-
-if by:
-    with open(p, 'rb') as f:
-        data = f.read()
-    if e <= 0: e = len(data)
-    if e > len(data): e = len(data)
-    if e < s: e = s
-    enc, bom = detect_encoding(data)
-    # 把 BOM 单独留在文件头，正文按“去掉 BOM 后的字节”计算区间；
-    # 这样 search 给出的 startByte（含 BOM 偏移）也能正确落点，且不会切掉 BOM。
-    bom_bytes = data[:bom]
-    body = data[bom:]
-    bs = max(s - 1 - bom, 0)
-    be = max(e - bom, 0)
-    if be > len(body): be = len(body)
-    if be < bs: be = bs
-    old = body[bs:be]
-    payload = content.encode(enc)
-    if act == 'delete':
-        newbody = body[:bs] + body[be:]
-    elif act == 'overwrite':
-        newbody = body[:bs] + payload + body[be:]
-    elif act == 'insert':
-        newbody = body[:bs] + payload + body[bs:]
-    else:
-        raise SystemExit('bad action')
-    newdata = bom_bytes + newbody
-    with open(p, 'wb') as f:
-        f.write(newdata)
-    sys.stdout.write('bytes %d -> %d' % (len(data), len(newdata)))
-    emit_diff(
-        [decode_bytes(old)[0]] if old else [],
-        content.split('\n') if act != 'delete' else [],
-    )
-else:
-    with open(p, 'rb') as f:
-        raw = f.read()
-    text, enc, bom = decode_bytes(raw)
-    newline = '\r\n' if '\r\n' in text else '\n'
-    has_trailing = text.endswith(newline)
-    lines = [] if text == '' else text.split(newline)
-    if has_trailing and lines:
-        lines.pop()
-    if e <= 0: e = len(lines)
-    if e > len(lines): e = len(lines)
-    if e < s: e = s
-    old_lines = lines[s - 1:e]
-    # content 必须拆成独立行再拼回；直接 [content] 插入时，如果 content
-    # 不以换行结尾，最后一行会和后一行原文粘在一起，写出来就是错乱代码。
-    content_lines = content.replace('\r\n', '\n').replace('\r', '\n').split('\n')
-    if act == 'delete':
-        newlines = lines[:s - 1] + lines[e:]
-        new_lines = []
-    elif act == 'overwrite':
-        newlines = lines[:s - 1] + content_lines + lines[e:]
-        new_lines = content_lines
-    elif act == 'insert':
-        newlines = lines[:s - 1] + content_lines + lines[s - 1:]
-        new_lines = content_lines
-    else:
-        raise SystemExit('bad action')
-    result = newline.join(newlines)
-    if has_trailing:
-        result += newline
-    with open(p, 'wb') as f:
-        f.write(raw[:bom] + result.encode(enc))
-    sys.stdout.write('lines %d -> %d' % (len(lines), len(newlines)))
-    emit_diff(old_lines, new_lines)
-''';
 
         final mRes = await ShellLock.run(
           ShellLock.file(mPath),
@@ -3123,23 +3942,35 @@ else:
             'python3',
             args: [
               '-c',
-              mScript,
+              shellModifyRangeScript,
               mPath,
               mAction,
               '$mStart',
               '$mEnd',
               mContent,
               mByBytes ? '1' : '0',
+              mExpect,
+              mFind,
+              mEndFind,
+              mPosition,
             ],
             timeoutSeconds: 120,
           ),
           label: 'shell_modify_range:$mPath',
           timeout: const Duration(seconds: 180),
         );
+        final mOut = mRes.stdout.trim();
+        if (mOut.startsWith('__MODIFY_MISMATCH__')) {
+          return mOut.substring('__MODIFY_MISMATCH__'.length).trim();
+        }
         if (mRes.exitCode != 0) {
           return jsonEncode({'error': '修改范围失败', 'stderr': mRes.stderr});
         }
-        return '已按${mByBytes ? '字节' : '行'}${switch (mAction) {
+        final mWarn = (!mByBytes && mFind.isEmpty && mExpect.isEmpty)
+            ? '⚠️ 未提供 expect/find，本次按行号写入；行号漂移时可能改错。'
+                '建议下次先 shell_read_range 读出原文，用 find/endFind 锚点或 expect 校验。\n'
+            : '';
+        return '$mWarn已按${mByBytes ? '字节' : '行'}${switch (mAction) {
           'overwrite' => '覆盖',
           'insert' => '插入',
           _ => '删除',

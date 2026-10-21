@@ -361,6 +361,7 @@ class FileDiffView extends StatelessWidget {
     if (_append) return '追加';
 
     if (toolName == 'shell_write_file') return '覆盖';
+    if (toolName == 'phone_write_file') return '写入手机文件';
     if (toolName == 'script_write') return '保存/覆盖';
     if (toolName == 'config_save') return '覆盖配置';
     if (toolName == 'editor_write') return '全量覆盖';
